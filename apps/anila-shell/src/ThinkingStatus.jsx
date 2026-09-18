@@ -23,6 +23,7 @@ export function ThinkingStatus({
   label = "思考中",
   style,
 }) {
+  const orbSize = size === 64 ? 64 : 20;
   return (
     <span
       role="status"
@@ -37,7 +38,7 @@ export function ThinkingStatus({
         ...style,
       }}
     >
-      <ThinkingOrb state={state} size={size} theme="auto" />
+      <ThinkingOrb state={state} size={orbSize} theme="auto" />
       {label ? <span>{label}</span> : null}
     </span>
   );

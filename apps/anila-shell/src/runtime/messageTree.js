@@ -102,6 +102,9 @@ export function applyServerPath(prevList, serverMapped, convId) {
         attachments: m.attachments,
         reasoning: m.reasoning,
         reasoningPersist: m.reasoningPersist,
+        thinkingSummaries: m.thinkingSummaries,
+        thinkingStatus: m.thinkingStatus,
+        thinkingElapsedMs: m.thinkingElapsedMs,
       });
     }
   }
@@ -141,6 +144,21 @@ export function applyServerPath(prevList, serverMapped, convId) {
     }
     if (sm.reasoningPersist) {
       next.reasoningPersist = sm.reasoningPersist;
+    }
+    const liveSummaries = Array.isArray(preserved.thinkingSummaries)
+      ? preserved.thinkingSummaries
+      : [];
+    const serverSummaries = Array.isArray(sm.thinkingSummaries)
+      ? sm.thinkingSummaries
+      : [];
+    if (liveSummaries.length > serverSummaries.length) {
+      next.thinkingSummaries = liveSummaries;
+    }
+    if (!next.thinkingStatus && preserved.thinkingStatus) {
+      next.thinkingStatus = preserved.thinkingStatus;
+    }
+    if (next.thinkingElapsedMs == null && typeof preserved.thinkingElapsedMs === "number") {
+      next.thinkingElapsedMs = preserved.thinkingElapsedMs;
     }
     return next;
   });

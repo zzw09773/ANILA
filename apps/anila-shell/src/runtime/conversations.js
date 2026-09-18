@@ -521,6 +521,16 @@ export function setConversationRouterModel(authRequest, convId, { routerModelId,
   });
 }
 
+export function summarizeThinking(authRequest, { added, previous } = {}) {
+  return authRequest("/api/thinking/summarize", {
+    method: "POST",
+    body: JSON.stringify({
+      added: added || "",
+      previous: Array.isArray(previous) ? previous : [],
+    }),
+  });
+}
+
 export function setConversationThinking(authRequest, convId, { thinkingTier, expectedVersion } = {}) {
   return authRequest(`/api/conversations/${convId}/thinking`, {
     method: "PUT",

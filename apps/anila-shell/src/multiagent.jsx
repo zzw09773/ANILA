@@ -2,6 +2,7 @@
 import React from "react";
 import { IconNodes, IconChevRight, IconColumns, IconPlus, IconX, IconCheck } from "./icons.jsx";
 import { Button, IconButton } from "./components.jsx";
+import { latestAssistantMessageId } from "./runtime/thinkingSummary.js";
 
 // ---- Handoff Timeline ----
 export const HandoffTimeline = ({ chain, agents }) => {
@@ -116,6 +117,7 @@ export const ParallelCompareView = ({
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: `repeat(${columns.length}, 1fr)`, gap: 0, minHeight: 0 }}>
         {columns.map((col, idx) => {
           const msgs = messagesByColumn[col.id] || [];
+          const latestAssistantId = latestAssistantMessageId(msgs);
           return (
             <div key={col.id} style={{
               display: "flex", flexDirection: "column",
@@ -144,7 +146,12 @@ export const ParallelCompareView = ({
                   </div>
                 )}
                 {msgs.map(m => (
-                  <MessageBubble key={m.id} msg={m} agents={agents} />
+                  <MessageBubble
+                    key={m.id}
+                    msg={m}
+                    agents={agents}
+                    isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
+                  />
                 ))}
               </div>
             </div>

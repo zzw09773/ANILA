@@ -47,6 +47,7 @@ import {
   listRouterModels as apiListRouterModels,
   setConversationRouterModel as apiSetConversationRouterModel,
   setConversationThinking as apiSetConversationThinking,
+  summarizeThinking as apiSummarizeThinking,
   createConversation as apiCreateConversation,
   adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
@@ -132,8 +133,15 @@ import {
   persistThinkingTierPreference,
   readStoredThinkingTier,
   shouldReplayOneShotDeep,
+  isThinkingDisplayOff,
 } from "./runtime/thinkingTier.js";
 import { persistFieldsFromSaved } from "./runtime/reasoningPersist.js";
+import {
+  appendThinkingSummary,
+  createThinkingSummaryPump,
+  latestAssistantMessageId,
+  thinkingStatusFromFinish,
+} from "./runtime/thinkingSummary.js";
 import {
   AgentSelector,
   Composer,
@@ -956,6 +964,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     return () => { document.title = "ANILA"; };
   }, [selectedConv?.title]);
   const currentMsgs = selectedConvId ? messagesByConv[selectedConvId] || [] : [];
+  const latestAssistantId = latestAssistantMessageId(currentMsgs);
   const isClassified = Boolean(selectedConv?.classified);
   const isClassificationInherited = Boolean(selectedConv?.classificationInherited);
   const activeAgent = useMemo(
@@ -1188,6 +1197,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ratingScore: typeof msg.rating_score === "number" ? msg.rating_score : null,
       reasoning: meta.reasoning || null,
       reasoningPersist: meta.reasoning_persist || null,
+      thinkingSummaries: Array.isArray(meta.thinking_summaries) ? meta.thinking_summaries : [],
+      thinkingStatus: meta.thinking_status || null,
+      thinkingElapsedMs: typeof meta.thinking_elapsed_ms === "number" ? meta.thinking_elapsed_ms : null,
       thinkingLocked: meta.thinking_locked === true,
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
@@ -1837,6 +1849,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         : [reserved.id],
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+      thinkingStartedAt: Date.now(),
+      thinkingApplied: outgoingThinkingApplied({ thinkingTier }),
     };
     const newUserMsg = {
       ...mapServerMessage(savedUser),
@@ -1885,6 +1899,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       let accumulatedReasoning = "";
       let streamState = STREAM_STATE.COMPLETE;
       let streamError = null;
+      const thinkingPump = makeThinkingSummaryPump(
+        convId,
+        assistantId,
+        isThinkingDisplayOff(outgoingThinkingApplied({ thinkingTier })),
+      );
 
       if (queueRecord.cancelled) {
         // 排隊期間使用者按了「停止產生」—— 串流不開始,但預留列必須誠實收尾。
@@ -1928,6 +1947,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             },
             onReasoning: (delta) => {
               accumulatedReasoning += delta;
+              thinkingPump.feed(delta);
               setMessagesByConv((prev) => ({
                 ...prev,
                 [convId]: (prev[convId] || []).map((m) =>
@@ -1983,9 +2003,18 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         effectiveTarget,
         agents,
       );
+      thinkingPump.close();
+      await thinkingPump.flush();
+      const thinkingSnap = thinkingPump.snapshot({
+        finishReason: lengthBudget ? "length" : undefined,
+        lengthBudget,
+        hadReasoning: accumulatedReasoning.length > 0,
+      });
+      updateMsg(convId, assistantId, thinkingSnap);
       const persistMeta = buildPersistMeta(finalMeta, {
         trace: accumulatedTrace,
         reasoning: accumulatedReasoning,
+        ...thinkingSnap,
       });
       const persisted = await finalizeStreamedAssistant({
         updateMessage: apiUpdateMessage,
@@ -2035,6 +2064,53 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         };
       }),
     );
+  }
+
+  function makeThinkingSummaryPump(convId, assistantId, hideThinking) {
+    const previous = [];
+    const startedAt = Date.now();
+    if (hideThinking) {
+      return {
+        feed() {},
+        async flush() {},
+        close() {},
+        startedAt,
+        snapshot() {
+          return { thinkingSummaries: [] };
+        },
+      };
+    }
+    const pump = createThinkingSummaryPump({
+      requestSummary: async (added) => {
+        const data = await apiSummarizeThinking(authRequest, {
+          added,
+          previous: previous.map((row) => ({ text: row.text })),
+        });
+        return data?.summary || null;
+      },
+      onSummary: (text) => {
+        const next = appendThinkingSummary(previous, text, Date.now());
+        previous.splice(0, previous.length, ...next);
+        updateMsg(convId, assistantId, { thinkingSummaries: [...previous] });
+      },
+    });
+    return {
+      feed: (delta) => pump.feed(delta),
+      flush: () => pump.flush(),
+      close: () => pump.close(),
+      startedAt,
+      snapshot(extra = {}) {
+        const summaries = [...previous];
+        if (!summaries.length && !extra.hadReasoning) {
+          return { thinkingSummaries: [] };
+        }
+        return {
+          thinkingSummaries: summaries,
+          thinkingStatus: thinkingStatusFromFinish(extra),
+          thinkingElapsedMs: Date.now() - startedAt,
+        };
+      },
+    };
   }
 
   function updateMsg(convId, msgId, patch) {
@@ -2262,6 +2338,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
       thinkingApplied: outgoingThinkingApplied({ oneShotDeep, thinkingTier }),
+      thinkingStartedAt: Date.now(),
     };
     setMessagesByConv((prev) => ({
       ...prev,
@@ -2459,6 +2536,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       let accumulatedReasoning = "";
       let streamState = STREAM_STATE.COMPLETE;
       let streamError = null;
+      const thinkingPump = makeThinkingSummaryPump(
+        convId,
+        assistantId,
+        isThinkingDisplayOff(outgoingThinkingApplied({ oneShotDeep, thinkingTier })),
+      );
 
       try {
         await streamWithAbort(convId, {
@@ -2497,6 +2579,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
+            thinkingPump.feed(delta);
             setMessagesByConv((prev) => ({
               ...prev,
               [convId]: (prev[convId] || []).map((m) =>
@@ -2538,10 +2621,18 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ) {
         clearPendingArtifactRevision(assistantId);
       }
+      thinkingPump.close();
+      await thinkingPump.flush();
+      const thinkingSnap = thinkingPump.snapshot({
+        finishReason: lengthBudget ? "length" : undefined,
+        lengthBudget,
+        hadReasoning: accumulatedReasoning.length > 0,
+      });
       updateMsg(convId, assistantId, {
         streaming: false,
         streamState,
         incompleteNotice: notice,
+        ...thinkingSnap,
         error:
           !lengthBudget && streamState === STREAM_STATE.FAILED
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
@@ -2564,6 +2655,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const persistMeta = buildPersistMeta(finalMeta, {
         trace: accumulatedTrace,
         reasoning: accumulatedReasoning,
+        ...thinkingSnap,
       });
       const persisted = await finalizeStreamedAssistant({
         updateMessage: apiUpdateMessage,
@@ -2689,6 +2781,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         let finalMeta = null;
         const accumulatedTrace = [];
         let accumulatedReasoning = "";
+        const thinkingPump = makeThinkingSummaryPump(
+          convId,
+          placeholderId,
+          isThinkingDisplayOff(outgoingThinkingApplied({ thinkingTier })),
+        );
         const streamPhase = await runRegenerateStreamPhase({
           preList: preActionList,
           stream: async () => {
@@ -2722,6 +2819,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               },
               onReasoning: (delta) => {
                 accumulatedReasoning += delta;
+                thinkingPump.feed(delta);
                 setMessagesByConv((prev) => ({
                   ...prev,
                   [convId]: (prev[convId] || []).map((m) =>
@@ -2732,10 +2830,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 }));
               },
             });
-            updateMsg(convId, placeholderId, { streaming: false });
+            thinkingPump.close();
+            await thinkingPump.flush();
+            const thinkingSnap = thinkingPump.snapshot({
+              hadReasoning: accumulatedReasoning.length > 0,
+            });
+            updateMsg(convId, placeholderId, { streaming: false, ...thinkingSnap });
           },
         });
         if (!streamPhase.ok) {
+          thinkingPump.close();
           setMessagesByConv((prev) => ({
             ...prev,
             [convId]: sanitizeRestoredMessages(streamPhase.messages),
@@ -2746,12 +2850,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             content: "",
           };
         }
+        const thinkingSnap = thinkingPump.snapshot({
+          hadReasoning: accumulatedReasoning.length > 0,
+        });
         return {
           ok: true,
           content: finalText,
           finalMeta,
           accumulatedTrace,
           accumulatedReasoning,
+          ...thinkingSnap,
         };
       },
     });
@@ -2924,6 +3032,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           createdAt: nowIso(),
           timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
           thinkingApplied: outgoingThinkingApplied({ oneShotDeep, thinkingTier }),
+          thinkingStartedAt: Date.now(),
         },
       ],
     }));
@@ -2933,6 +3042,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const accumulatedTrace = [];
     let accumulatedReasoning = "";
     let branchPersisted = false;
+    const thinkingPump = makeThinkingSummaryPump(
+      convId,
+      placeholderId,
+      isThinkingDisplayOff(outgoingThinkingApplied({ oneShotDeep, thinkingTier })),
+    );
     const streamPhase = await runRegenerateStreamPhase({
       preList: preRegenList,
       stream: async () => {
@@ -2969,6 +3083,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
+            thinkingPump.feed(delta);
             setMessagesByConv((prev) => ({
               ...prev,
               [convId]: (prev[convId] || []).map((m) =>
@@ -2979,7 +3094,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             }));
           },
         });
-        updateMsg(convId, placeholderId, { streaming: false });
+        thinkingPump.close();
+        await thinkingPump.flush();
+        updateMsg(convId, placeholderId, {
+          streaming: false,
+          ...thinkingPump.snapshot({
+            hadReasoning: accumulatedReasoning.length > 0,
+          }),
+        });
       },
     });
     if (!streamPhase.ok) {
@@ -3005,6 +3127,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         const persistMeta = buildPersistMeta(finalMeta, {
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
+          ...thinkingPump.snapshot({
+            hadReasoning: accumulatedReasoning.length > 0,
+          }),
         });
         try {
           // Same contract as sendMessage / handleEditUser: backfill dbId on the
@@ -3864,6 +3989,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                             onAction={runMessageAction}
                             onContinue={continueMessage}
                             conversationStreaming={currentMsgs.some((x) => x.streaming)}
+                            isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
                           />
                         </React.Fragment>
                       ))

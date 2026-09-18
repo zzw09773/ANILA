@@ -207,6 +207,9 @@ export async function runActionInvokeFillback({
       ...(buildPersistMeta(finalMeta, {
         trace: accumulatedTrace,
         reasoning: accumulatedReasoning,
+        thinkingSummaries: streamPhase.thinkingSummaries,
+        thinkingStatus: streamPhase.thinkingStatus,
+        thinkingElapsedMs: streamPhase.thinkingElapsedMs,
       }) || {}),
       ...actionMeta,
     };

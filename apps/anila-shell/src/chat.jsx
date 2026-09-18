@@ -93,6 +93,14 @@ import {
   thinkingAppliedFoldSuffix,
 } from "./runtime/usageDisplay.js";
 import { reasoningPersistNotice } from "./runtime/reasoningPersist.js";
+import {
+  THINKING_SUMMARY_PENDING,
+  THINKING_SUMMARY_RAW_LABEL,
+  formatThinkingAborted,
+  formatThinkingComplete,
+  formatThinkingElapsed,
+  thinkingSummaryHeadline,
+} from "./runtime/thinkingSummary.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -246,6 +254,18 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
   );
 };
 
+function useThinkingElapsed(startedAt, streaming, fixedMs) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!streaming || typeof startedAt !== "number") return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [streaming, startedAt]);
+  if (!streaming && typeof fixedMs === "number") return fixedMs;
+  if (typeof startedAt === "number") return Math.max(0, now - startedAt);
+  return 0;
+}
+
 export const ReasoningSummary = ({
   trace,
   reasoning,
@@ -257,8 +277,14 @@ export const ReasoningSummary = ({
   usage = null,
   thinkingApplied = null,
   reasoningPersist = null,
+  thinkingSummaries = null,
+  thinkingStatus = null,
+  thinkingElapsedMs = null,
+  thinkingStartedAt = null,
+  showThinkingOrb = null,
 }) => {
   const [open, setOpen] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
   const hideThinking = isThinkingDisplayOff(thinkingApplied);
   const hasTrace = Array.isArray(trace) && trace.length > 0;
   const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
@@ -266,21 +292,26 @@ export const ReasoningSummary = ({
   const appliedLabel = hideThinking ? null : thinkingAppliedFoldSuffix(thinkingApplied);
   const hasUsageReasoning = typeof usage?.reasoning_tokens === "number" && usage.reasoning_tokens > 0;
   const persistNotice = streaming ? null : reasoningPersistNotice(reasoningPersist, reasoning);
+  const summaries = Array.isArray(thinkingSummaries) ? thinkingSummaries : [];
+  const hasSummaries = summaries.length > 0;
+  const summaryMode = Boolean(streaming || hasSummaries || thinkingStatus);
+  const elapsedMs = useThinkingElapsed(thinkingStartedAt, streaming, thinkingElapsedMs);
   const persistWithoutBody =
     persistNotice
     && !hasReasoning
     && !hasTrace
+    && !hasSummaries
     && (reasoningPersist?.status === "omitted" || reasoningPersist?.status === "truncated");
   if (hideThinking) return null;
-  if (persistWithoutBody) {
+  if (persistWithoutBody && !summaryMode) {
     return (
       <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
         {persistNotice}
       </div>
     );
   }
-  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel) return null;
-  if (!streaming && !hasTrace && !hasReasoning && thinkingLocked && !hasUsageReasoning && !appliedLabel) {
+  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel && !hasSummaries && !thinkingStatus) return null;
+  if (!streaming && !hasTrace && !hasReasoning && thinkingLocked && !hasUsageReasoning && !appliedLabel && !hasSummaries) {
     return (
       <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
         思考程度由管理員鎖定
@@ -288,11 +319,143 @@ export const ReasoningSummary = ({
     );
   }
 
-  // 串流中：時間軸直接攤開，這就是「AI 正在做什麼」的畫面。
-  if (streaming) {
+  if (summaryMode) {
+    const visible = visibleTraceSteps(trace, { streaming, finishedAt });
+    const traceFallback = visible.length
+      ? displayTraceLabel(visible[visible.length - 1]?.label)
+      : "";
+    const headline = hasSummaries
+      ? thinkingSummaryHeadline({ streaming, summaries })
+      : (streaming && traceFallback) || thinkingSummaryHeadline({ streaming, summaries }) || THINKING_SUMMARY_PENDING;
+    const statusLine = thinkingStatus === "aborted"
+      ? formatThinkingAborted(elapsedMs)
+      : (!streaming && (thinkingStatus === "complete" || hasSummaries)
+        ? formatThinkingComplete(elapsedMs)
+        : null);
+    const liveElapsed = streaming ? formatThinkingElapsed(elapsedMs) : "";
+    const canExpand = hasSummaries || hasTrace;
+    const buttonLabel = statusLine || headline;
+    const orbVisible = showThinkingOrb ?? streaming;
+    const liveLine = (
+      <>
+        <span data-testid="thinking-summary-headline" style={{ lineHeight: 1.4 }}>
+          {buttonLabel}
+        </span>
+        {liveElapsed ? (
+          <span data-testid="thinking-elapsed">{liveElapsed}</span>
+        ) : null}
+      </>
+    );
     return (
-      <div className="anila-reasoning anila-reasoning--live" style={{ marginBottom: 10 }}>
-        <StepTimeline trace={trace} streaming finishedAt={finishedAt} />
+      <div className={`anila-reasoning${streaming ? " anila-reasoning--live" : ""}`} style={{ marginBottom: 10 }}>
+        <button
+          type="button"
+          onClick={() => canExpand && setOpen((o) => !o)}
+          className="anila-reasoning-toggle"
+          aria-expanded={open}
+          disabled={!canExpand}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            padding: "2px 8px 2px 4px", margin: "0 0 0 -4px",
+            background: "transparent",
+            border: "none",
+            color: "var(--fg-subtle)",
+            fontSize: 12,
+            fontFamily: "inherit",
+            cursor: canExpand ? "pointer" : "default",
+            borderRadius: 6,
+          }}
+        >
+          {orbVisible && (
+            <ThinkingStatus
+              state={streaming ? "working" : "solving"}
+              size={20}
+              label=""
+            />
+          )}
+          {streaming ? (
+            <span className="anila-thinking-marquee" data-testid="thinking-summary-marquee">
+              <span className="anila-thinking-marquee__text" data-testid="thinking-summary-headline">
+                {buttonLabel}{liveElapsed ? ` ${liveElapsed}` : ""}
+              </span>
+              {liveElapsed ? (
+                <span data-testid="thinking-elapsed" className="sr-only">{liveElapsed}</span>
+              ) : null}
+            </span>
+          ) : (
+            liveLine
+          )}
+          {canExpand && (
+            <IconChevRight size={11} style={{
+              transform: open ? "rotate(90deg)" : "none",
+              transition: "transform 120ms ease",
+            }} />
+          )}
+          {routedAgent && routedAgent.id !== "anila-router" && (
+            <AgentPill agent={routedAgent} size="sm" />
+          )}
+        </button>
+        {thinkingLocked && !streaming && (
+          <div style={{ fontSize: 12, color: "var(--fg-subtle)", marginTop: 2 }}>
+            思考程度由管理員鎖定
+          </div>
+        )}
+        {open && canExpand && (
+          <div className="anila-reasoning__body" data-testid="thinking-summary-history">
+            {hasSummaries && (
+              <ol style={{ margin: 0, padding: "6px 0 0 18px", color: "var(--fg-subtle)", fontSize: 12, lineHeight: 1.6 }}>
+                {summaries.map((row, i) => (
+                  <li key={`${row.at || 0}-${i}`}>{row.text}</li>
+                ))}
+              </ol>
+            )}
+            {hasTrace && <StepTimeline trace={trace} streaming={false} finishedAt={finishedAt} />}
+          </div>
+        )}
+        {!streaming && (hasReasoning || persistNotice) && (
+          <div style={{ marginTop: 4 }}>
+            {persistNotice && (
+              <div style={{ fontSize: 12, color: "var(--fg-subtle)", marginBottom: 4 }}>
+                {persistNotice}
+              </div>
+            )}
+            {hasReasoning && (
+              <>
+                <button
+                  type="button"
+                  className="anila-reasoning-toggle"
+                  onClick={() => setRawOpen((o) => !o)}
+                  aria-expanded={rawOpen}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    padding: "2px 8px 2px 4px", margin: "0 0 0 -4px",
+                    background: "transparent", border: "none",
+                    color: "var(--fg-subtle)", fontSize: 12,
+                    fontFamily: "inherit", cursor: "pointer",
+                  }}
+                >
+                  {THINKING_SUMMARY_RAW_LABEL}
+                </button>
+                {rawOpen && (
+                  <div
+                    className="anila-reasoning__body"
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11.5,
+                      lineHeight: 1.6,
+                      color: "var(--fg-subtle)",
+                      maxHeight: 320,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {reasoning}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -684,6 +847,7 @@ export const MessageBubble = ({
   onContinue,
   /** True when any message in this conversation is streaming — locks all pagers/deletes. */
   conversationStreaming = false,
+  isLatestAssistant = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1073,6 +1237,11 @@ export const MessageBubble = ({
               usage={msg.usage}
               thinkingApplied={msg.thinkingApplied}
               reasoningPersist={msg.reasoningPersist}
+              thinkingSummaries={msg.thinkingSummaries}
+              thinkingStatus={msg.thinkingStatus}
+              thinkingElapsedMs={msg.thinkingElapsedMs}
+              thinkingStartedAt={msg.thinkingStartedAt}
+              showThinkingOrb={isLatestAssistant}
             />
             <div
               className="anila-msg-body"

@@ -99,6 +99,16 @@ export function buildPersistMeta(finalMeta, messageState) {
     base.interrupt = state.interrupt;
   }
 
+  if (Array.isArray(state.thinkingSummaries) && state.thinkingSummaries.length > 0) {
+    base.thinking_summaries = state.thinkingSummaries.slice(-24);
+  }
+  if (state.thinkingStatus === "complete" || state.thinkingStatus === "aborted") {
+    base.thinking_status = state.thinkingStatus;
+  }
+  if (typeof state.thinkingElapsedMs === "number") {
+    base.thinking_elapsed_ms = state.thinkingElapsedMs;
+  }
+
   // Drop undefined-only results (empty-object meta isn't useful to persist).
   const hasAnyValue = Object.values(base).some(
     (v) => v !== undefined && v !== null && (!Array.isArray(v) || v.length > 0),

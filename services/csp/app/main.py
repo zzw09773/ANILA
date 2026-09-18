@@ -16,6 +16,7 @@ from app.config import settings
 from app.database import engine, Base
 from app.api.router import api_router
 from app.api.conversations import router as conversations_router
+from app.api.thinking import router as thinking_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.directory import router as directory_router
@@ -629,6 +630,7 @@ _allowed_hosts = install_host_allowlist(app, settings.ALLOWED_HOSTS)
 
 app.include_router(api_router)
 app.include_router(conversations_router)
+app.include_router(thinking_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
 app.include_router(directory_router)

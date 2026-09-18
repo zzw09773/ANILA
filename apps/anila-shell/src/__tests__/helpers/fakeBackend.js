@@ -783,6 +783,10 @@ export function createFakeBackend(options = {}) {
       convs.set(convId, updated);
       return jsonResponse(updated);
     }
+    if (path === "/api/thinking/summarize" && method === "POST") {
+      // Fail-open: tests without a summarizer still get 200, never a 404.
+      return jsonResponse({ summary: null });
+    }
     const convMatch = path.match(/^\/api\/conversations\/(\d+)$/);
     if (convMatch) {
       const convId = Number(convMatch[1]);

@@ -164,6 +164,21 @@ describe("buildPersistMeta - edge cases", () => {
     expect(buildPersistMeta({ trace_id: "t" }, null).trace_id).toBe("t");
   });
 
+  it("persists thinking summaries separately from raw reasoning", () => {
+    const result = buildPersistMeta(
+      { reasoning: "raw dump" },
+      {
+        thinkingSummaries: [{ text: "探索宇宙奧秘的提問。", at: 1 }],
+        thinkingStatus: "complete",
+        thinkingElapsedMs: 31000,
+      },
+    );
+    expect(result.thinking_summaries).toEqual([{ text: "探索宇宙奧秘的提問。", at: 1 }]);
+    expect(result.thinking_status).toBe("complete");
+    expect(result.thinking_elapsed_ms).toBe(31000);
+    expect(result.reasoning).toBe("raw dump");
+  });
+
   it("preserves scalar fields from final meta", () => {
     const finalMeta = {
       trace_id: "abc",

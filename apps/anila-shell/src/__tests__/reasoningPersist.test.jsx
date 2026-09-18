@@ -112,4 +112,34 @@ describe("applyServerPath 保留當下全文、採用伺服器保存狀態", () 
     expect(next[0].reasoningPersist.status).toBe("truncated");
     expect(next[0].text).toBe("正文");
   });
+
+  it("伺服器尚未寫入摘要歷程時保留本地摘要與完成狀態", () => {
+    const prev = [
+      {
+        id: "srv-3",
+        dbId: 3,
+        role: "assistant",
+        text: "正文",
+        thinkingSummaries: [
+          { text: "探索宇宙奧秘的提問。", at: 1 },
+          { text: "正在整理暗物質與暗能量的差異。", at: 2 },
+        ],
+        thinkingStatus: "complete",
+        thinkingElapsedMs: 31000,
+      },
+    ];
+    const serverMapped = [
+      {
+        id: "srv-3",
+        dbId: 3,
+        role: "assistant",
+        text: "正文",
+        thinkingSummaries: [],
+      },
+    ];
+    const next = applyServerPath(prev, serverMapped, 9);
+    expect(next[0].thinkingSummaries).toHaveLength(2);
+    expect(next[0].thinkingStatus).toBe("complete");
+    expect(next[0].thinkingElapsedMs).toBe(31000);
+  });
 });
