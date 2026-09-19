@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Float, Index, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import JSON
@@ -13,6 +13,9 @@ class ModelRegistry(Base):
     __tablename__ = "model_registry"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    # Exact UNIQUE(name) is case-sensitive on PostgreSQL. Case-folded
+    # uniqueness is uq_model_registry_name_lower (r1_0043) below —
+    # nvidia/NV-embed-V2 and nvidia/nv-embed-v2 must not both exist.
     name = Column(String(200), unique=True, nullable=False, index=True)  # e.g. "aia/asrd"
     display_name = Column(String(200), nullable=False)
     model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image' / 'asr'
@@ -113,4 +116,12 @@ class ModelRegistry(Base):
     updated_at = Column(DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_model_registry_name_lower",
+            func.lower(name),
+            unique=True,
+        ),
     )

@@ -99,21 +99,23 @@ def _add_embedding(db, *, name: str, designated: bool = False, native: int | Non
 
 
 def test_resolve_uses_designation_not_hardcoded_name(db):
-    """The production defect: hardcoded ``nvidia/NV-embed-V2`` never
-    matched registered ``nvidia/nv-embed-v2``. Designation must win
-    regardless of case.
+    """Designation wins over another active embedding.
 
-    Mutant: fall back to ``DEFAULT_EMBED_MODEL`` exact-name lookup —
-    this test stays green only if the designated lowercase row is what
-    resolve returns (revert the designation filter → fails).
+    The production defect was a hardcoded ``nvidia/NV-embed-V2`` that
+    never matched registered ``nvidia/nv-embed-v2``. r1_0043 forbids those
+    two spellings as separate registry rows, so the decoy is a different
+    embedder inserted first: drop the designation filter and resolve
+    would return the first active row instead.
     """
-    _add_embedding(db, name="nvidia/nv-embed-v2", designated=True, native=4096)
-    # A differently-cased decoy that the old hardcoded path would prefer.
-    _add_embedding(db, name="nvidia/NV-embed-V2", designated=False, native=4096)
+    _add_embedding(db, name="other/embedder", designated=False, native=768)
+    designated = _add_embedding(
+        db, name="nvidia/nv-embed-v2", designated=True, native=4096
+    )
 
     resolved = resolve_platform_embedding(db)
     assert resolved is not None
     assert resolved.name == "nvidia/nv-embed-v2"
+    assert resolved.model.id == designated.id
     assert resolved.native_dim == 4096
     assert resolved.truncates is True
 
@@ -206,6 +208,42 @@ def test_pending_recompute_counts_non_designated_rows(db):
     assert counts["document_chunks"] == 1
     assert counts["ingestion_images"] == 1
     assert counts["total"] == 4
+
+
+def test_pending_recompute_treats_designation_casing_as_the_same_model(db):
+    """A chunk stored as ``nvidia/NV-embed-V2`` is not pending under
+    designated ``nvidia/nv-embed-v2``.
+
+    Mutant: drop ``lower()`` from either side of the pending predicate —
+    this counts the live casing variant as stale.
+    """
+    db.execute(
+        __import__("sqlalchemy").text(
+            "INSERT INTO ingestion_collections (id) VALUES (1)"
+        )
+    )
+    db.execute(
+        __import__("sqlalchemy").text(
+            "INSERT INTO conversation_memory_chunks "
+            "(embedding, embedding_source_model) VALUES "
+            "('x', 'nvidia/NV-embed-V2'), "
+            "('x', 'nvidia/nv-embed-v2'), "
+            "('x', 'other/model')"
+        )
+    )
+    db.execute(
+        __import__("sqlalchemy").text(
+            "INSERT INTO document_chunks "
+            "(collection_id, embedding, embedding_source_model) VALUES "
+            "(1, 'x', 'nvidia/NV-embed-V2')"
+        )
+    )
+    db.commit()
+
+    counts = count_pending_recompute(db, "nvidia/nv-embed-v2")
+    assert counts["conversation_memory_chunks"] == 1  # only other/model
+    assert counts["document_chunks"] == 0
+    assert counts["total"] == 1
 
 
 class _RlsAwareSession:
@@ -321,16 +359,56 @@ def test_pending_recompute_preserves_original_error_if_cleanup_fails():
         count_pending_recompute(_OriginalAndCleanupFailSession(), "new/embedder")
 
 
-def test_memory_retrieve_sql_filters_by_source_model():
-    """The retrieve SQL must require ``embedding_source_model = :source_model``.
+def test_memory_retrieve_sql_filters_by_source_model(monkeypatch):
+    """The retrieve query must filter source model case-insensitively.
 
-    Mutant: drop the WHERE clause — this assertion fails.
+    Mutant: drop the WHERE clause, or drop ``lower()`` from either side —
+    this assertion fails. Used to grep inspect.getsource, which a helper
+    or rewritten SQL string walks past.
     """
-    import inspect
+    import asyncio
     from app.services import memory_service
 
-    src = inspect.getsource(memory_service.retrieve_relevant_chunks)
-    assert "embedding_source_model = :source_model" in src
+    captured: dict = {}
+
+    async def fake_embed(db, text_input, **kwargs):
+        return [0.1, 0.2, 0.3], "nvidia/NV-embed-V2", 3
+
+    monkeypatch.setattr(memory_service, "_embed", fake_embed)
+    monkeypatch.setattr(
+        memory_service,
+        "get_setting",
+        lambda db, key: 3 if key.endswith("top_k") else 0.0,
+    )
+
+    class _Result:
+        def fetchall(self):
+            return []
+
+    class _DB:
+        def begin_nested(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, statement, params=None):
+            captured["sql"] = str(statement)
+            captured["params"] = dict(params)
+            return _Result()
+
+    hits = asyncio.run(
+        memory_service.retrieve_relevant_chunks(
+            _DB(), user_id=7, query_text="去年的採購"
+        )
+    )
+    assert hits == []
+    assert "lower(embedding_source_model) = lower(:source_model)" in captured["sql"]
+    assert captured["params"]["source_model"] == "nvidia/NV-embed-V2"
+    assert captured["params"]["user_id"] == 7
 
 
 # ── Invariant 3 (API warning) ────────────────────────────────────────────────

@@ -140,7 +140,7 @@ def resolve_kb_threshold(
     stamped = (stamp.value or "").strip() if stamp is not None else ""
     current = (embedding_model or "").strip()
     if not current:
-        return value, True
+        return value, False
     if not stamped or stamped != current:
         return value, False
     return value, True

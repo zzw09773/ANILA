@@ -38,11 +38,11 @@ class WorkerSettings(BaseSettings):
         description=(
             "OpenAI-compatible embedding endpoint base URL. Default points at "
             "the on-host embedding-proxy container (port 7011) which serves "
-            "nvidia/NV-embed-V2 with a /v1/embeddings shape."
+            "nvidia/nv-embed-v2 with a /v1/embeddings shape."
         ),
     )
     embedding_model: str = Field(
-        default="nvidia/NV-embed-V2",
+        default="nvidia/nv-embed-v2",
         description="Embedding model identifier passed to the endpoint.",
     )
     embedding_api_key: str = Field(

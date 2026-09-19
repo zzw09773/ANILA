@@ -18,7 +18,6 @@ existing rows wrong rather than complete.
 from __future__ import annotations
 
 import asyncio
-import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -67,6 +66,7 @@ def _install_fake_embedder(monkeypatch, captured: dict):
 
     async def fake_proxy_request(**kwargs):
         captured["record_usage"] = kwargs.get("record_usage", True)
+        captured["record_usage_passed"] = "record_usage" in kwargs
         captured["role"] = kwargs.get("embedding_input_role")
         return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
 
@@ -92,15 +92,22 @@ def test_memory_embed_asks_the_proxy_not_to_meter(monkeypatch, role):
 
 
 def test_the_no_metering_choice_is_written_down(monkeypatch):
-    """A flag this consequential must carry its reasoning at the call site.
+    """A flag this consequential must be passed explicitly, not omitted.
 
-    Guards against the failure mode that produced this defect: the metering
-    behaviour changed as a side effect of a refactor, with nothing in the code
-    or the commit message saying it had.
+    ``proxy_request`` defaults to metering. Grepping the source for
+    ``record_usage=False`` / ``Not metered`` would miss a wrapper that
+    forwards a different value. Capture the kwargs ``_embed`` actually
+    hands the proxy: the key must be present and False.
     """
-    src = inspect.getsource(memory_service._embed)
-    assert "record_usage=False" in src
-    assert "Not metered" in src
+    captured: dict = {}
+    _install_fake_embedder(monkeypatch, captured)
+    asyncio.run(
+        memory_service._embed(MagicMock(), "hello", embedding_input_role="query")
+    )
+    assert captured["record_usage_passed"] is True, (
+        "_embed omitted record_usage; proxy_request would meter by default"
+    )
+    assert captured["record_usage"] is False
 
 
 def test_proxy_honours_record_usage_false_on_the_triton_path(monkeypatch):

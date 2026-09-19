@@ -29,6 +29,7 @@ import pytest
 
 import app.api.ingestion.search as search_mod
 from anila_core.storage.adapters.pgvector_store import SourceModelCoverage
+from sqlalchemy.exc import IntegrityError
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
 from app.services.platform_embedding import (
@@ -181,7 +182,11 @@ class TestCreateStoresTheRegistrySpelling:
         ``canonical_embedding_model_name`` — this fails.
         """
         _register_model(db, REGISTERED, designated=True)
-        _register_model(db, LIVE_MISCASED, model_type="llm", is_active=False)
+        # r1_0043: a case-variant name is no longer insertable, even for an
+        # unrelated model_type. The type filter is still the right predicate;
+        # the decoy here is a different llm so the unique index is not the
+        # thing under test.
+        _register_model(db, "gemma4", model_type="llm", is_active=False)
         user = make_user(db, username="canon_decoy", role="developer")
         token = login(client, user.username)
 
@@ -207,21 +212,16 @@ class TestCreateStoresTheRegistrySpelling:
 
         assert row.embedding_model == REGISTERED
 
-    def test_two_registry_spellings_leave_the_request_alone(self, client, db):
-        """#56 item 8: ``model_registry.name`` has no case-insensitive key.
+    def test_two_registry_spellings_are_rejected(self, db):
+        """r1_0043 closed #56 item 8: lower(name) is unique.
 
-        Two rows differing only in case is the original defect's own
-        shape, and picking one of them here would be a coin toss the
-        caller cannot see. Left untouched, and said so in the log.
+        Two rows differing only in case used to be insertable, and the
+        canonicaliser refused to guess. The functional unique index now
+        rejects the second insert; the migration aborts on leftovers.
         """
         _register_embedding(db, REGISTERED)
-        _register_embedding(db, LIVE_MISCASED, designated=False)
-        user = make_user(db, username="canon_ambig", role="developer")
-        token = login(client, user.username)
-
-        row = _create(client, db, token, "canon-ambig-kb", embedding_model="NVIDIA/NV-EMBED-V2")
-
-        assert row.embedding_model == "NVIDIA/NV-EMBED-V2"
+        with pytest.raises(IntegrityError):
+            _register_embedding(db, LIVE_MISCASED, designated=False)
 
 
 class TestCanonicaliser:

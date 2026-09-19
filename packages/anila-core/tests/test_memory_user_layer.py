@@ -303,4 +303,4 @@ def test_default_embed_model_is_documented_default():
     so a deployment change doesn't accidentally reach into
     unrelated code paths.
     """
-    assert DEFAULT_EMBED_MODEL == "nvidia/NV-embed-V2"
+    assert DEFAULT_EMBED_MODEL == "nvidia/nv-embed-v2"

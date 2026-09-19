@@ -121,6 +121,24 @@ def _document(db, coll: IngestionCollection, filename: str, level: str) -> Inges
     return doc
 
 
+
+def _platform_embedding(db, name: str = "emb-a"):
+    from app.models.model_registry import ModelRegistry
+
+    row = ModelRegistry(
+        name=name,
+        display_name=name,
+        model_type="embedding",
+        endpoint_url="http://embed.test/v1",
+        is_active=True,
+        is_platform_embedding=True,
+        embedding_native_dim=8,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
 @pytest.fixture()
 def admin_token(client, db) -> str:
     make_user(db, username="kb_threshold_admin", role="admin")
@@ -319,13 +337,14 @@ def test_default_is_declared_uncalibrated(client, admin_token):
     assert body["calibrated"] is False
 
 
-def test_setting_the_threshold_marks_it_calibrated(client, admin_token):
+def test_setting_the_threshold_marks_it_calibrated(client, admin_token, db):
     """上一支的另一半。
 
     少了這一支，把 ``calibrated`` 硬寫成 ``False`` 也會全綠——而那個實作等於
     「永遠說沒校準」，跟永遠說已校準一樣沒有資訊。有人真的看過分數、按下
     儲存之後，這個旗標必須翻面。
     """
+    _platform_embedding(db)
     assert client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()[
         "calibrated"
     ] is False
@@ -449,6 +468,7 @@ def test_what_a_successful_put_saved_is_what_retrieval_runs_on(
     1.0（只認完全相同、實質上什麼都不收）是校準中的管理員合法會按的東西，
     跟 0.0（全收）是同一件事的兩端，所以值域兩端都收，兩端都要證明存得住。
     """
+    _platform_embedding(db)
     put = client.put(_THRESHOLD_URL, json={"value": value}, headers=_auth(admin_token))
     assert put.status_code == 200, put.text
     # 回應就是重新解析出來的結果 —— 存進去卻算不出來的值在這裡就會現形。
@@ -493,13 +513,14 @@ def test_a_stored_value_that_cannot_be_used_is_not_calibrated(
     assert body["calibrated"] is False, f"{stored!r} 退回預設值了，不可以說已校準"
 
 
-def test_storing_exactly_the_default_still_counts_as_calibrated(client, admin_token):
+def test_storing_exactly_the_default_still_counts_as_calibrated(client, admin_token, db):
     """按下儲存的是 0.3 也算校準過 —— 差別在於有沒有人看過證據，不在數字。
 
     ⚠ 這條保證原本只寫在報告裡、沒有測試守著：把判準改成「值不等於預設值才算
     校準」，十支測試全綠。那個實作會讓「我看過分數，確認 0.3 就是對的」這個
     結論**存不進系統**，下一個人打開設定頁看到的還是「沒有人量過」。
     """
+    _platform_embedding(db)
     put = client.put(
         _THRESHOLD_URL, json={"value": KB_THRESHOLD_DEFAULT}, headers=_auth(admin_token)
     )
@@ -508,6 +529,22 @@ def test_storing_exactly_the_default_still_counts_as_calibrated(client, admin_to
     body = client.get(_THRESHOLD_URL, headers=_auth(admin_token)).json()
     assert body["value"] == KB_THRESHOLD_DEFAULT
     assert body["calibrated"] is True
+
+
+
+def test_empty_current_embedding_is_not_calibrated(db):
+    """沒有現行 embedding 名就不能宣稱已校準。
+
+    ``embedding_model=""`` / ``None`` 以前回 ``True``，等於把「對不上戳記」
+    說成量過。有校準戳記也一樣：對不上現行模型，就不能背書。
+    """
+    set_kb_threshold(db, 0.4, embedding_model="emb-a")
+    value, calibrated = resolve_kb_threshold(db, embedding_model="")
+    assert value == 0.4
+    assert calibrated is False
+    value, calibrated = resolve_kb_threshold(db, embedding_model=None)
+    assert value == 0.4
+    assert calibrated is False
 
 
 def test_preview_says_not_searched_when_no_library_is_marked(client, admin_token, backend):

@@ -373,7 +373,7 @@ async def retrieve_relevant_chunks(
                1 - (embedding <=> CAST(:vec AS halfvec)) AS cosine
         FROM conversation_memory_chunks
         WHERE user_id = :user_id
-          AND embedding_source_model = :source_model
+          AND lower(embedding_source_model) = lower(:source_model)
           AND (:only_conv IS NULL OR conversation_id = :only_conv)
           AND (:exclude_conv IS NULL OR conversation_id <> :exclude_conv)
         ORDER BY embedding <=> CAST(:vec AS halfvec) ASC

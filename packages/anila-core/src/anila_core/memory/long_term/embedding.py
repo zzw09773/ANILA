@@ -37,7 +37,7 @@ EMBED_NATIVE_DIM = 4096
 
 # Fallback name only — runtime resolution goes through the platform's
 # ``is_platform_embedding`` designation, not this string.
-DEFAULT_EMBED_MODEL = "nvidia/NV-embed-V2"
+DEFAULT_EMBED_MODEL = "nvidia/nv-embed-v2"
 
 
 def truncate_embedding(

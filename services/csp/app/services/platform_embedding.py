@@ -224,7 +224,7 @@ def count_pending_recompute(db: Session, designated_name: str | None) -> dict[st
     if designated_name is not None:
         pending_predicate += (
             " AND (embedding_source_model IS NULL "
-            "OR embedding_source_model != :name)"
+            "OR lower(embedding_source_model) != lower(:name))"
         )
 
     out: dict[str, int] = {}
