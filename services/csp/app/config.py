@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # Leave ENABLED=false until IT provides the Outlook/relay details.
     # ANILA_ALERT_SMTP_TO should be a **group mailbox**, not a personal one
     # (same reason as PLAN 5.4 support address).
+    # 目前只寫 log，未寄信：這組欄位無人讀取；開告警走
+    # UnwiredSmtpNotifier 打 WARNING，不會真的連 SMTP。
     ANILA_ALERT_SMTP_ENABLED: bool = False
     ANILA_ALERT_SMTP_HOST: str = ""
     ANILA_ALERT_SMTP_PORT: int = 587

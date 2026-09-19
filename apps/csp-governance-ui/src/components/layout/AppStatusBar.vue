@@ -38,14 +38,14 @@ const apiLabel = computed(() => {
   return 'probing'
 })
 
-// 一句話講連線狀態，不是「api online · 40ms」那種儀表板碎片。
+// 一句話講 CSP /health（liveness）探針結果，不是整套系統就緒。
 const apiSentence = computed(() => {
   const label = String(apiLabel.value || '')
   const ms = label.match(/(\d+\s*ms)/)?.[1]
-  if (apiStatus.value === 'ok') return ms ? `系統連線正常，回應 ${ms}` : '系統連線正常'
-  if (apiStatus.value === 'warn') return '系統回應變慢'
-  if (apiStatus.value === 'danger') return '系統連線中斷'
-  return '正在確認連線'
+  if (apiStatus.value === 'ok') return ms ? `CSP 存活探針正常，回應 ${ms}` : 'CSP 存活探針正常'
+  if (apiStatus.value === 'warn') return 'CSP 存活探針回應偏慢'
+  if (apiStatus.value === 'danger') return 'CSP 存活探針失敗'
+  return '正在確認 CSP 存活探針'
 })
 
 let pollHandle = null

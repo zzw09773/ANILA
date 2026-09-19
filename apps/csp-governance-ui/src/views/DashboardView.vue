@@ -28,7 +28,7 @@
     <section class="kpi-grid">
       <TermStat label="24h · 請求數" :value="kpiValue(summary?.total_requests)" :format="kpiFormat" tone="accent" />
       <TermStat label="24h · Token"   :value="kpiValue(summary?.total_tokens)" :format="kpiFormat" />
-      <TermStat label="健康模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="通過健康檢查的模型數" />
+      <TermStat label="健康模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="近 24 小時有實際呼叫的模型數，不是健康檢查通過數" />
       <TermStat label="近 24h 有呼叫的金鑰"  :value="kpiValue(summary?.active_api_keys)" :format="kpiFormat" hint="區間內實際發出請求的金鑰" />
     </section>
 

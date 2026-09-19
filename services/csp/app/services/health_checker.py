@@ -330,7 +330,10 @@ async def _health_check_loop():
                                 "endpoint_url": endpoint_url,
                             },
                         )
-                    elif status == HEALTH_HEALTHY:
+                    else:
+                        # degraded / healthy / unknown / disabled: close the
+                        # offline alert. Resolving only on healthy left
+                        # red→yellow still showing 「離線」.
                         resolve_alert_by_fingerprint(db, f"health:model:{model_id}")
                     model.health_status = status
                     model.health_checked_at = datetime.now(timezone.utc)
@@ -407,7 +410,9 @@ async def _agent_health_check_loop():
                                 "endpoint_url": endpoint_url,
                             },
                         )
-                    elif status == HEALTH_HEALTHY:
+                    else:
+                        # Same as the model loop: anything other than
+                        # unhealthy clears the offline alert.
                         resolve_alert_by_fingerprint(db, fingerprint)
                     agent.health_status = status
                 db.commit()
