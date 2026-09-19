@@ -411,6 +411,11 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
     # literals still fail closed. Scheme is already validated above.
     trusted = host in _trusted_hosts()
 
+    # Exact deny-list names (localhost / metadata / host.docker.internal)
+    # are structural. Operator trusted-hosts must not override them — that
+    # is a different rule from generic `.internal` suffixes, which remain
+    # FIXABLE_BY_TRUST_HOST. The `.docker.internal` suffix check below is
+    # a second net for subdomains of the Docker host gateway.
     if host in _DENY_HOSTS:
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is on the deny list "
@@ -419,7 +424,7 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
             reason=REASON_DENY_HOST,
         )
     if host.endswith(".docker.internal"):
-        # host.docker.internal and any subdomain. Structural: the
+        # Subdomains such as gateway.docker.internal. Structural: the
         # trusted-hosts UI must not reopen the Docker host gateway.
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is the Docker host gateway "

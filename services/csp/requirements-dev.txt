@@ -4,3 +4,8 @@
 
 # module boundary lint gate(infra/ci/lint-boundaries.sh + .importlinter)。
 import-linter==2.12
+
+# collect-time import: tests/test_conversation_compact.py 讀 alembic
+# ScriptDirectory。runtime requirements.txt 已釘同版；此處再釘一次，避免有人
+# 把 runtime alembic 拿掉後 collect 又變成 ERROR。
+alembic==1.14.1

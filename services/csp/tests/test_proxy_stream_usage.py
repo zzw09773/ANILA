@@ -107,6 +107,7 @@ def test_proxy_stream_estimates_usage_when_missing(monkeypatch):
     assert recorded[0]["total_tokens"] == (
         recorded[0]["prompt_tokens"] + recorded[0]["completion_tokens"]
     )
+    assert recorded[0]["token_source"] == "estimated"
     assert any("event: anila.meta" in chunk for chunk in chunks)
 
 
@@ -192,20 +193,25 @@ def test_proxy_stream_prefers_upstream_usage(monkeypatch):
             pass
 
     asyncio.run(run())
-    assert recorded == [{
-        "api_key_id": 1,
-        "user_id": 2,
-        "department_id": None,
-        "model_id": 3,
-        "prompt_tokens": 11,
-        "completion_tokens": 7,
-        "total_tokens": 18,
-        "request_duration_ms": recorded[0]["request_duration_ms"],
-        "conversation_id": None,
-        "trace_id": None,
-        "caller_agent_id": None,
-        "caller_client_id": None,
-    }]
+    assert recorded, "upstream usage 必須入帳"
+    row = recorded[0]
+    # 契約是優先用上游 reported 數字,不是 freeze enqueue_usage 的 kwargs 形狀。
+    # token_source / reasoning_tokens / invocation_id 是後來加上的計量欄位。
+    assert row["api_key_id"] == 1
+    assert row["user_id"] == 2
+    assert row["department_id"] is None
+    assert row["model_id"] == 3
+    assert row["prompt_tokens"] == 11
+    assert row["completion_tokens"] == 7
+    assert row["total_tokens"] == 18
+    assert row["conversation_id"] is None
+    assert row["trace_id"] is None
+    assert row["caller_agent_id"] is None
+    assert row["caller_client_id"] is None
+    assert row["token_source"] == "reported"
+    assert row.get("reasoning_tokens") in (None, 0)
+    assert row["invocation_id"]
+    assert isinstance(row["request_duration_ms"], int)
 
 
 def test_proxy_stream_preserves_custom_anila_events(monkeypatch):

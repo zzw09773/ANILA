@@ -82,8 +82,9 @@ class _StubPool:
     ``acquire()`` → context manager → ``conn.fetch(sql, *args)``.
     """
 
-    def __init__(self, rows: list[dict]):
+    def __init__(self, rows: list[dict], coverage_rows: list[dict] | None = None):
         self._rows = rows
+        self._coverage_rows = coverage_rows if coverage_rows is not None else []
         self.last_sql: str | None = None
         self.last_args: tuple | None = None
 
@@ -106,6 +107,8 @@ class _StubPool:
                 return _Txn()
 
             async def fetch(self, sql, *args):
+                if "has_other" in sql or "bool_or" in sql:
+                    return outer._coverage_rows
                 outer.last_sql = sql
                 outer.last_args = args
                 return rows
@@ -212,6 +215,7 @@ def test_image_search_empty_collection_returns_empty_results(
     assert body["results"] == []
     assert body["embedding_model"] == "nv-embed"
     assert body["embedding_dim"] == 4096
+    assert body["source_model_mismatch"] is False
 
 
 # ── 404: collection does not exist ────────────────────────────────────────
@@ -268,3 +272,37 @@ def test_image_search_default_top_k_is_8(
     # args order: (collection_id, q_value, max_dist, top_k)
     assert captured["pool"].last_args is not None
     assert captured["pool"].last_args[3] == 8
+
+
+def test_image_search_source_model_mismatch_is_visible(
+    client: TestClient, db, alice, alice_collection, monkeypatch,
+):
+    """Stranded images stay 200 + empty, but the flag is on."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "app.services.platform_embedding.resolve_platform_embedding",
+        lambda db: SimpleNamespace(name="nv-embed-v2"),
+    )
+    pool = _StubPool(
+        [],
+        coverage_rows=[
+            {
+                "has_matching": False,
+                "has_other": True,
+                "sample_other": "old-embed",
+            }
+        ],
+    )
+    monkeypatch.setattr(search_mod, "get_pool", lambda: pool)
+
+    resp = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/images/search",
+        json={"query": "anything"},
+        headers=_bearer(alice),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["results"] == []
+    assert body["source_model_mismatch"] is True
+    assert body["embedding_model"] == "nv-embed-v2"

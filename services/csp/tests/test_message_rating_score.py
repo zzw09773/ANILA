@@ -155,14 +155,25 @@ def test_legacy_thumb_only_rows_appear_on_governance_and_csv(client, db: Session
     rows = list(csv.reader(io.StringIO(text[1:])))
     assert rows[0][0] == "評分"
     assert rows[0][1] == "分數（好評 6–10／差評 1–5）"
-    data = [r for r in rows[1:] if r[-1] == str(msg.id)]
+    # 9ef47d7a 之後 CSV 在訊息 ID 後面多了提問／回覆兩欄;舊列仍要進檔。
+    message_id_idx = rows[0].index("訊息 ID")
+    data = [r for r in rows[1:] if r[message_id_idx] == str(msg.id)]
     assert data, "舊列沒進 CSV"
     assert data[0][0] == "差評"
     assert data[0][1] == ""
+    assert rows[0][-2:] == ["使用者提問", "被評分回覆"]
+    assert data[0][message_id_idx + 2] == "old reply"
 
 
 def test_csv_still_cannot_carry_message_content_with_score(client, db: Session):
-    """細分分數上線後,CSV 仍不得夾帶訊息正文(既有保證不得弱化)。"""
+    """細分分數上線後,JSON 列表仍不得夾帶訊息正文;CSV 只在明示欄位帶被評分回覆。
+
+    9ef47d7a 把 CSV 從「同一份 JSON 白名單」改成另外附提問／回覆,並對密等
+    >= 營業秘密落 access_classified_conversation。本條釘的是:JSON 沒有正文、
+    沒有 content 欄、CSV 只在「被評分回覆」出現密文,且列管匯出有稽核。
+    """
+    from app.models.audit_log import AuditLog
+
     admin = make_user(db, username="score-csv-admin", role="admin")
     owner = make_user(db, username="score-csv-u", role="user")
     conv = Conversation(
@@ -182,14 +193,34 @@ def test_csv_still_cannot_carry_message_content_with_score(client, db: Session):
     db.add(msg)
     db.commit()
 
+    json_resp = client.get(FEEDBACK_URL, headers=_bearer(admin))
+    assert json_resp.status_code == 200, json_resp.text
+    assert SECRET_PAYLOAD not in json_resp.text
+    item = next(i for i in json_resp.json()["items"] if i["message_id"] == msg.id)
+    assert "content" not in item
+    assert set(item.keys()) == FEEDBACK_ITEM_KEYS
+
     resp = client.get(
         FEEDBACK_URL, headers=_bearer(admin), params={"format": "csv"}
     )
-    assert resp.status_code == 200
-    assert SECRET_PAYLOAD not in resp.text
+    assert resp.status_code == 200, resp.text
     rows = list(csv.reader(io.StringIO(resp.text.lstrip("﻿"))))
     assert "content" not in rows[0]
-    assert len(rows[0]) == len(FEEDBACK_ITEM_KEYS)
+    assert rows[0][-2:] == ["使用者提問", "被評分回覆"]
+    assert len(rows[0]) == len(FEEDBACK_ITEM_KEYS) + 2
+    scored = [r for r in rows[1:] if r[rows[0].index("訊息 ID")] == str(msg.id)]
+    assert scored
+    assert scored[0][-1] == SECRET_PAYLOAD
+    assert scored[0][1] == "9"
+    assert resp.text.count(SECRET_PAYLOAD) == 1
+
+    audits = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "access_classified_conversation")
+        .all()
+    )
+    assert len(audits) == 1
+    assert audits[0].actor_user_id == admin.id
 
 
 def test_thumb_without_score_stays_null(client, db: Session):

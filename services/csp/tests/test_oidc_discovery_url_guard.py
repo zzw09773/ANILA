@@ -176,3 +176,18 @@ async def test_fetch_jwks_guards_jwks_uri_already_in_metadata():
     with pytest.raises(ValueError, match="jwks_uri"):
         await eas._fetch_jwks(client, _provider(), {"jwks_uri": _BAD["loopback"]})
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_oidc_discovery_client_does_not_follow_redirects():
+    """Manifest fetch uses follow_redirects=False; IdP discovery must match."""
+    captured = {}
+    client = _Client(_discovery())
+
+    def factory(**kw):
+        captured.update(kw)
+        return client
+
+    with patch.object(eas.httpx, "AsyncClient", factory):
+        await eas._resolve_oidc_metadata(_provider())
+    assert captured.get("follow_redirects") is False

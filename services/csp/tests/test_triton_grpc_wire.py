@@ -742,18 +742,22 @@ def test_an_oversized_batch_still_says_shrink_the_batch(monkeypatch):
 def _private_ipv4() -> str | None:
     """A non-loopback RFC1918 address this host can bind and reach."""
     candidates: list[str] = []
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        probe.connect(("10.255.255.255", 1))  # no packet leaves the host
-        candidates.append(probe.getsockname()[0])
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError:
-        pass
-    finally:
-        probe.close()
+        probe = None
+    if probe is not None:
+        try:
+            probe.connect(("10.255.255.255", 1))  # no packet leaves the host
+            candidates.append(probe.getsockname()[0])
+        except OSError:
+            pass
+        finally:
+            probe.close()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             candidates.append(info[4][0])
-    except socket.gaierror:
+    except OSError:
         pass
     for addr in candidates:
         try:

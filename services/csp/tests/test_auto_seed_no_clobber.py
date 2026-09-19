@@ -6,26 +6,99 @@ console saw it save, and saw it silently revert on the next deploy — the same
 silent-revert family as the rest of docs/FAKE-CONTROLS.md, and harder to catch
 because the revert happens hours later during an unrelated restart.
 """
-import inspect
+from __future__ import annotations
 
+import json
+
+from app.models.model_registry import ModelRegistry
 from app.services import auto_seed
 
 
-def test_seed_does_not_reassign_endpoint_url_for_existing_models():
-    src = inspect.getsource(auto_seed)
-    # The assignment that caused the revert must not come back.
-    assert 'existing.endpoint_url = m["endpoint_url"]' not in src, (
+class _KeepOpen:
+    """auto_seed() closes its session; the pytest fixture still needs it."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def close(self):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
+def _run_seed(db, monkeypatch, models: list[dict]) -> None:
+    monkeypatch.setattr(auto_seed, "SessionLocal", lambda: _KeepOpen(db))
+    monkeypatch.setattr(auto_seed, "_parse_model_env_vars", lambda: [])
+    monkeypatch.setattr(
+        auto_seed.settings,
+        "AUTO_REGISTER_MODELS",
+        json.dumps(models),
+    )
+    monkeypatch.setattr(auto_seed.settings, "AUTO_REGISTER_AGENTS", "")
+    monkeypatch.setattr(auto_seed.settings, "AUTO_SEED_API_KEYS", "")
+    auto_seed.auto_seed()
+
+
+def test_seed_does_not_reassign_endpoint_url_for_existing_models(db, monkeypatch):
+    existing = ModelRegistry(
+        name="nv-embed",
+        display_name="nv-embed",
+        model_type="embedding",
+        endpoint_url="http://admin-chosen:8000/v1",
+        is_active=True,
+    )
+    db.add(existing)
+    db.commit()
+
+    _run_seed(
+        db,
+        monkeypatch,
+        [
+            {
+                "name": "nv-embed",
+                "display_name": "env label",
+                "model_type": "embedding",
+                "endpoint_url": "http://env-seed:8000/v1",
+            }
+        ],
+    )
+
+    row = db.query(ModelRegistry).filter(ModelRegistry.name == "nv-embed").one()
+    assert row.endpoint_url == "http://admin-chosen:8000/v1", (
         "auto_seed must not overwrite an existing model's endpoint_url — "
         "env creates the row, the admin owns it afterwards"
     )
+    assert row.display_name == "nv-embed"
 
 
-def test_seed_still_creates_missing_models():
+def test_seed_still_creates_missing_models(db, monkeypatch):
     """The other half: env must still be able to seed a model that is absent."""
-    src = inspect.getsource(auto_seed)
-    assert 'endpoint_url=m["endpoint_url"]' in src, (
-        "creation must still take the endpoint from the seed config"
+    _run_seed(
+        db,
+        monkeypatch,
+        [
+            {
+                "name": "brand-new-llm",
+                "display_name": "Brand New",
+                "model_type": "llm",
+                "endpoint_url": "http://env-seed:8000/v1",
+                "api_version": "v1",
+                "description": "from seed",
+                "context_window": 8192,
+            }
+        ],
     )
+
+    row = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.name == "brand-new-llm")
+        .one()
+    )
+    assert row.endpoint_url == "http://env-seed:8000/v1"
+    assert row.display_name == "Brand New"
+    assert row.model_type == "llm"
+    assert row.context_window == 8192
 
 
 def test_skip_reason_tells_deactivated_apart_from_unregistered():

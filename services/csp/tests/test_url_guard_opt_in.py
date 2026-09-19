@@ -139,11 +139,24 @@ def test_trusted_host_does_not_bypass_scheme(monkeypatch):
 
 
 def test_trusted_host_is_case_insensitive(monkeypatch):
-    """hostname 比對一律 lowercase — admin 寫 GEMMA4 跟 gemma4 都該 work。"""
+    """hostname 比對一律 lowercase — admin 寫 GEMMA4 跟 gemma4 都該 work。
+
+    host.docker.internal 在 _DENY_HOSTS 與 *.docker.internal 後綴兩條規則裡
+    都是結構性拒絕,trusted-hosts 蓋不掉。大小寫測試改用可 allow-list 的
+    單標籤與 .internal 區(FIXABLE_BY_TRUST_HOST)。
+    """
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
-    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "GEMMA4,Host.Docker.Internal")
+    monkeypatch.setenv(
+        "ANILA_TRUSTED_HOSTS",
+        "GEMMA4,Nv-Embed-Proxy,Models.Internal,Host.Docker.Internal",
+    )
     validate_outbound_url("http://gemma4:8000/v1")
-    validate_outbound_url("http://HOST.DOCKER.INTERNAL:8000/v1")
+    validate_outbound_url("http://NV-EMBED-PROXY:8000/v1")
+    validate_outbound_url("http://MODELS.INTERNAL:8000/v1")
+    with pytest.raises(UnsafeEndpointError):
+        validate_outbound_url("http://HOST.DOCKER.INTERNAL:8000/v1")
+    with pytest.raises(UnsafeEndpointError):
+        validate_outbound_url("http://gateway.docker.internal:8000/v1")
 
 
 def test_trusted_host_empty_or_whitespace(monkeypatch):

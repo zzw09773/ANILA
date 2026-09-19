@@ -1,4 +1,3 @@
-from app.models.router_model_grant import RouterModelGrant
 """Slice 2b-C — task_id wiring through the CSP data plane (/v1/chat/completions).
 
 Locks the doc-04/05 contract:
@@ -36,6 +35,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models.agent import UserAgentPermission
 from app.models.api_key import ApiKeyModelPermission
 from app.models.policy_decision import PolicyDecision
+from app.models.router_model_grant import RouterModelGrant
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.services import proxy_service

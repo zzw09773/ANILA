@@ -213,7 +213,16 @@ def actor(db: Session):
 
 @pytest.fixture
 def model_target(db: Session):
-    return make_model(db, name="kb-llm")
+    from app.models.router_model_grant import RouterModelGrant
+
+    # X-ANILA-Route 會走 Router 基礎模型權限：router_enabled + active grant。
+    # conftest.make_model 預設兩者都沒有；這裡就地補，不要改共用 helper。
+    model = make_model(db, name="kb-llm")
+    model.router_enabled = True
+    db.add(RouterModelGrant(model_id=model.id, scope_type="all"))
+    db.commit()
+    db.refresh(model)
+    return model
 
 
 @pytest.fixture

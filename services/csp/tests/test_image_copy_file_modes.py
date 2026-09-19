@@ -91,8 +91,13 @@ def _copied_roots(dockerfile: Path) -> set[Path]:
 
 
 def _unreadable_by_others(paths: list[Path], roots: set[Path]) -> list[str]:
-    """Files without ``o+r``, or ancestor directories (inside a COPY root)
-    without ``o+rx``. Reported as ``mode path`` so the fix is one chmod."""
+    """Files without ``o+r``, or ancestor directories strictly inside a COPY
+    root without ``o+rx``. Reported as ``mode path`` so the fix is one chmod.
+
+    The COPY root inode is excluded: ``COPY dir/`` ships the directory's
+    contents (and nested-dir metadata), not ``dir`` itself, and ``dir``'s
+    mode follows the host umask rather than the image.
+    """
     problems: list[str] = []
     seen_dirs: set[Path] = set()
     for path in paths:
@@ -105,9 +110,9 @@ def _unreadable_by_others(paths: list[Path], roots: set[Path]) -> list[str]:
             if parent in seen_dirs:
                 break
             seen_dirs.add(parent)
-            if parent not in roots and not any(
-                root in parent.parents for root in roots
-            ):
+            # ``parent in roots`` would flag the COPY source directory, whose
+            # mode is host/umask and is not copied into the image.
+            if not any(root in parent.parents for root in roots):
                 break
             pmode = parent.stat().st_mode
             if not (pmode & stat.S_IROTH and pmode & stat.S_IXOTH):
@@ -151,6 +156,7 @@ def test_every_file_the_image_copies_is_readable_by_the_runtime_user(dockerfile:
 def test_checker_flags_a_0600_file(tmp_path: Path):
     root = tmp_path / "app"
     root.mkdir()
+    os.chmod(root, 0o750)
     secret = root / "guard.py"
     secret.write_text("x")
     os.chmod(secret, 0o600)
@@ -165,11 +171,13 @@ def test_checker_flags_a_directory_without_o_rx(tmp_path: Path):
     f = inner / "m.py"
     f.write_text("x")
     os.chmod(f, 0o644)
+    os.chmod(root, 0o750)
     os.chmod(inner, 0o750)
     try:
         problems = _unreadable_by_others([f], {root.resolve()})
     finally:
         os.chmod(inner, 0o755)
+        os.chmod(root, 0o755)
     assert problems == [f"0750 {_display_path(inner.resolve())}/"]
 
 
