@@ -8,7 +8,6 @@ WORKDIR /build
 # Router deps (pydantic-core / cryptography / asyncpg / uvloop) ship musllinux
 # wheels. Do not apk-add gcc here: the compiler package set is huge and the
 # previous isolated build stalled for 16+ minutes on `apk add gcc`.
-RUN rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Install anila-core SDK (pure runtime — no RAG extras).
 # Router only needs the runtime foundation (api, registry, tools, providers);
