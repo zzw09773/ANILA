@@ -16,7 +16,7 @@
 
 1. 在 Agent Console 按「下載樣板」取得 zip（解壓後核對是否已含驗簽與 CA——見下方三級制）。
 2. 接上派工 JWT 驗簽（樣板內建、或單檔 `anila_verify.py`），設定非祕密 `.env`，部署服務。
-3. 確認 `GET /health` 回 200、`POST /v1/chat/completions` 可接 OpenAI-compat 請求。
+3. 確認三條 OpenAI 相容端點：`GET /health`、`GET /v1/models`、`POST /v1/chat/completions`（欄位見 §3）。架構不限。
 4. 回到 Agent Console 按「註冊 Agent」，填名稱、endpoint URL、router 描述（**不領鑰匙**）。
 5. 等 admin 核准 → Router 自動 discover → 在前端對話列表看得到。
 
@@ -92,16 +92,17 @@ ANILA_CA_FILE=/path/to/cspki_ca_bundle.pem
 
 ## 3. Endpoint 合約（你必須實作的）
 
-Router 只會碰你的 agent 這幾條路徑，其他都可以自己加。
+**架構不限。** 樣板、LangChain、LangGraph、自寫 FastAPI 都可以；平台不問 runtime 型別。
+Router 與 CSP **只認** OpenAI 相容這三條路徑，其他你可以自己加。
 
-| 方法 | 路徑 | 目的 | 驗證 |
+| 方法 | 路徑 | 驗證 | 平台必讀的欄位 |
 |---|---|---|---|
-| `GET` | `/health` | CSP discovery / docker healthcheck | 公開 |
-| `GET` | `/v1/models` | 回報可用模型 ID（OpenAI-compat） | 派工 JWT |
-| `POST` | `/v1/chat/completions` | 主要推論端點 | 派工 JWT |
+| `GET` | `/health` | 公開 | HTTP **200**。建議 JSON `{"status":"ok"}`（探測只看 2xx，也接受 `GET /v1/models` 當備援） |
+| `GET` | `/v1/models` | 派工 JWT | `object`=`"list"`；`data[]` 至少一筆，每筆有 `id`、`object`=`"model"` |
+| `POST` | `/v1/chat/completions` | 派工 JWT | **入向**必讀 `messages`（`[{role, content}]`）與 `stream`。**出向**見 §3.3／§3.4 |
 
 驗證讀 `Authorization: Bearer <JWT>`，以平台 JWKS 驗簽（fail-closed）。身分在 JWT claims 內，
-**不要**再依賴明文 `X-ANILA-User-*` 當信任根。
+**不要**再依賴明文 `X-ANILA-User-*` 當信任根。空的 `messages` 回 400／422 可以——連線探測就是這樣打。
 
 任務內回呼平台（RAG 搜尋、trace、artifacts）**複用同一張派工 JWT**
 （`Authorization: Bearer <同一 JWT>`）；平台驗簽後仍做 `bound_collection_id` 範圍檢查。
@@ -116,7 +117,7 @@ Router 只會碰你的 agent 這幾條路徑，其他都可以自己加。
 }
 ```
 
-只要 HTTP 200 且 `status == "ok"`，Router 就認為健康。
+探測認 HTTP 2xx（`/health` 或備援 `/v1/models`）。`status == "ok"` 建議有，方便人讀。
 
 ### 3.2 `/v1/models` 輸出格式（OpenAI-compat）
 
@@ -136,6 +137,10 @@ Router 只會碰你的 agent 這幾條路徑，其他都可以自己加。
 
 ### 3.3 `/v1/chat/completions` 輸入
 
+平台一定會送、你一定要讀的只有兩欄：`messages`、`stream`。
+`model`、`temperature` 以及其他 OpenAI 欄位會原樣轉發，可忽略。
+空 `messages` 回 400／422 沒關係（連線探測用）。
+
 ```json
 {
   "model":    "rag/google/gemma4",
@@ -149,6 +154,12 @@ Router 只會碰你的 agent 這幾條路徑，其他都可以自己加。
 ```
 
 ### 3.4 `/v1/chat/completions` 輸出 — **這就是「模型的輸出格式」**
+
+平台要顯示回覆，**最少**要有：
+- 非串流：`choices[0].message.content`
+- 串流：`choices[0].delta.content` 若干筆，最後一行 `data: [DONE]`，`Content-Type: text/event-stream`
+
+`usage` 選填；沒回的話 CSP 會估算 token。`reasoning_content` 選填（思考／檢索軌跡）。
 
 **非串流**（`stream: false`）— 一次回一個 JSON：
 

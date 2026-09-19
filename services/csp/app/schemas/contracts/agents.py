@@ -28,7 +28,7 @@ from app.schemas.contracts.classification import ClassificationLevel
 
 
 class RuntimeType(str, enum.Enum):
-    """agent runtime 種類。"""
+    """註冊列上的 provenance 標籤。派工不讀此欄，一律走 OpenAI 相容 HTTP。"""
 
     ANILA_AGENT = "anila_agent"
     LANGCHAIN = "langchain"

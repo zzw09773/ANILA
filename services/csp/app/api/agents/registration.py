@@ -211,7 +211,8 @@ class AgentRegisterRequest(BaseModel):
         description="（相容）單一知識庫 id；未送 collection_ids 時展開為單元素集合",
     )
     input_schema: dict | None = None
-    # doc 05 §3 runtime_type(5 值;預設 openai_compatible_agent = 現況 endpoint proxy)。
+    # 派工只認 OpenAI 相容 /v1/chat/completions；治理 UI 不再讓人選型別。
+    # 欄位保留給 CLI／舊呼叫，未送時寫預設。
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
     # doc 05 §3 agent semver。**欄位名以資料庫欄位為準**(models/agent.py:83
     # ``agent_version``),回應也是這個名字(AgentResponse.agent_version)。

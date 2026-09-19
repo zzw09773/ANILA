@@ -1232,23 +1232,32 @@ async function handleProbeThinking() {
   }
 }
 
+// 授權收尾（正常送出、trust-retry 共用）。判斷依據是**回應列**的
+// router_enabled——不是送出的 payload；create schema 若漏欄，payload 說
+// true 而列上是 false，授權就會寫給一個沒開放的模型。清單沒載成功時
+// 只警告、不覆蓋既有授權（與舊行為一致）。
+async function syncRouterGrants(modelId, row) {
+  if (modelId == null || !row?.router_enabled) return
+  if (!canReplaceRouterGrants(grantsLoadState.value)) {
+    toast('授權清單未成功載入，已保存模型但未變更授權', { tone: 'warn' })
+    return
+  }
+  await replaceRouterGrants(modelId, serializeRouterGrants())
+}
+
 async function handleSubmit() {
   try {
     const payload = buildModelPayload()
     if (editingId.value) {
       const { name, ...updateData } = payload
       noticeThinkingProbe(await modelsStore.update(editingId.value, updateData))
-      if (updateData.router_enabled) {
-        if (!canReplaceRouterGrants(grantsLoadState.value)) {
-          toast('授權清單未成功載入，已保存模型但未變更授權', { tone: 'warn' })
-        } else {
-          await replaceRouterGrants(editingId.value, serializeRouterGrants())
-        }
-      }
+      await syncRouterGrants(editingId.value, updateData)
     } else {
       const created = await modelsStore.create(payload)
       noticeThinkingProbe(created)
-      if (payload.router_enabled && created && created.id) await replaceRouterGrants(created.id, serializeRouterGrants())
+      // 讀**回應值**而不是送出的 payload:create schema 若漏欄,pydantic 會
+      // 靜默丟掉,payload 說 true 但列上是 false,授權會寫給一個沒開放的模型。
+      await syncRouterGrants(created?.id, created)
     }
     showModal.value = false
   } catch (e) {
@@ -1302,9 +1311,14 @@ async function confirmTrustAndRetry() {
     const { retryPayload, retryMode, retryId } = prompt
     if (retryMode === 'update') {
       const { name, ...updateData } = retryPayload
-      noticeThinkingProbe(await modelsStore.update(retryId, updateData))
+      const saved = await modelsStore.update(retryId, updateData)
+      noticeThinkingProbe(saved)
+      await syncRouterGrants(retryId, saved)
     } else {
-      noticeThinkingProbe(await modelsStore.create(retryPayload))
+      // 與正常路徑同一支收尾——先前這條補救路徑只 create,授權整組漏掉。
+      const created = await modelsStore.create(retryPayload)
+      noticeThinkingProbe(created)
+      await syncRouterGrants(created?.id, created)
     }
     untrustedHostPrompt.value = null
     showModal.value = false

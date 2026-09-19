@@ -59,13 +59,13 @@ def employee_count(department: str) -&gt; int:
           <li>
             <span class="guide__step">03</span>
             <div>
-              <p>your agent must expose these s2s endpoints:</p>
+              <p>架構不限（樣板／LangChain／自建皆可）。平台只認 OpenAI 相容這三條；欄位見註冊視窗與開發者指南。</p>
               <table class="term-table guide__table">
-                <thead><tr><th style="width: 70px">method</th><th>path</th><th>purpose</th></tr></thead>
+                <thead><tr><th style="width: 70px">方法</th><th>路徑</th><th>平台要的欄位</th></tr></thead>
                 <tbody>
-                  <tr><td><code>GET</code></td><td><code>/health</code></td><td>discovery + health probe (public)</td></tr>
-                  <tr><td><code>GET</code></td><td><code>/v1/models</code></td><td>list available model ids</td></tr>
-                  <tr><td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>main inference, openai-compat</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/health</code></td><td>公開；HTTP 200。建議 <code>{"status":"ok"}</code></td></tr>
+                  <tr><td><code>GET</code></td><td><code>/v1/models</code></td><td>派工 JWT；<code>{"object":"list","data":[{"id":"…","object":"model"}]}</code></td></tr>
+                  <tr><td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>派工 JWT；入向 <code>messages</code>＋<code>stream</code>；出向 <code>choices[0].message.content</code> 或 SSE <code>delta.content</code>＋<code>[DONE]</code></td></tr>
                 </tbody>
               </table>
             </div>
@@ -132,7 +132,7 @@ def employee_count(department: str) -&gt; int:
           <tr>
             <th>名稱</th>
             <th>端點</th>
-            <th style="width: 140px">型別 / 版本</th>
+            <th style="width: 100px">版本</th>
             <th style="width: 100px">健康</th>
             <th style="width: 120px">審批狀態</th>
             <th style="width: 100px">分類等級</th>
@@ -150,7 +150,6 @@ def employee_count(department: str) -&gt; int:
               <code class="cell-url" :title="agent.endpoint_url">{{ agent.endpoint_url }}</code>
             </td>
             <td>
-              <div class="cell-strong" style="font-family: var(--font-mono); font-size: var(--t-2xs);">{{ agent.runtime_type || '—' }}</div>
               <div class="cell-meta">{{ agent.agent_version || '—' }}</div>
             </td>
             <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
@@ -197,13 +196,42 @@ def employee_count(department: str) -&gt; int:
     <TermModal
       :visible="showRegisterModal"
       title="註冊 · Agent"
-      width="640px"
+      width="720px"
       @close="finishRegister"
     >
       <div class="form-grid">
         <p class="cell-meta">
-          平台派工時會現簽 5 分鐘憑條；你不需要領取或保管任何長效祕密。
+          架構不限。只要端點是 OpenAI 相容 <code>/v1/chat/completions</code>，平台就能派工。
+          派工時會現簽 5 分鐘憑條；你不需要領取或保管任何長效祕密。
         </p>
+        <TermSection title="平台契約 · 必實作端點" />
+        <table class="term-table guide__table">
+          <thead>
+            <tr><th style="width: 56px">方法</th><th>路徑</th><th>必填</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/health</code></td>
+              <td>公開、HTTP 200。建議 body <code>{"status":"ok"}</code></td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/models</code></td>
+              <td>驗派工 JWT。<code>object=list</code>，<code>data[].id</code></td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/chat/completions</code></td>
+              <td>
+                驗派工 JWT。入向必讀 <code>messages</code>、<code>stream</code>。
+                非串流回 <code>choices[0].message.content</code>；
+                串流回 SSE <code>delta.content</code>，最後 <code>data: [DONE]</code>。
+                <code>usage</code> 選填（沒回平台會估算）。
+              </td>
+            </tr>
+          </tbody>
+        </table>
         <TermField label="名稱" hint="不可變更的識別碼 · 英數字與連字號" :error="formErrors.name">
           <input v-model="form.name" class="term-input" placeholder="hr-policy-agent" />
         </TermField>
@@ -246,11 +274,6 @@ def employee_count(department: str) -&gt; int:
             <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
           </select>
         </TermField>
-        <TermField label="runtime 型別" :hint="runtimeTypeHint">
-          <select v-model="form.runtime_type" class="term-select">
-            <option v-for="o in RUNTIME_TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-          </select>
-        </TermField>
         <TermField label="版本" hint="agent 版本字串，例如 1.0.0（選填）">
           <input v-model="form.agent_version" class="term-input" placeholder="1.0.0" />
         </TermField>
@@ -261,7 +284,7 @@ def employee_count(department: str) -&gt; int:
           <li :class="/^https?:\/\//.test(form.endpoint_url) ? 'is-ok' : 'is-pending'">{{ /^https?:\/\//.test(form.endpoint_url) ? '●' : '○' }} endpoint 為 http(s) URL</li>
           <li :class="form.description_for_router.trim().length >= 24 ? 'is-ok' : 'is-pending'">{{ form.description_for_router.trim().length >= 24 ? '●' : '○' }} 說明 ≥ 24 字</li>
           <li :class="form.base_model_id ? 'is-ok' : 'is-pending'">{{ form.base_model_id ? '●' : '○' }} 已選基礎模型</li>
-          <li class="is-pending">○ 已實作 <code>GET /health</code> + <code>POST /v1/chat/completions</code>（手動確認）</li>
+          <li class="is-pending">○ 已實作 OpenAI 相容 <code>/health</code>、<code>/v1/models</code>、<code>/v1/chat/completions</code>（手動確認）</li>
         </ul>
       </div>
 
@@ -328,7 +351,7 @@ def employee_count(department: str) -&gt; int:
         <dl class="detail__list">
           <div><dt>端點</dt><dd><code>{{ detailAgent.endpoint_url }}</code></dd></div>
           <div><dt>API 版本</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
-          <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
+          <div><dt>派工契約</dt><dd>OpenAI 相容 <code>POST /v1/chat/completions</code></dd></div>
           <div><dt>版本</dt><dd>{{ detailAgent.agent_version || '—' }}</dd></div>
           <div><dt>健康</dt><dd>{{ detailAgent.health_status }}</dd></div>
           <div>
@@ -524,20 +547,12 @@ const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' 
 const form = ref({
   name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
   base_model_id: null, collection_ids: [],
-  runtime_type: 'openai_compatible_agent', agent_version: '',
+  agent_version: '',
   default_classification_level: '無機密',
 })
 const formErrors = ref({})
 
 const approvalFilterOptions = APPROVAL_STATUSES
-
-const RUNTIME_TYPE_OPTIONS = [
-  { value: 'anila_agent', label: 'anila_agent', hint: '官方 anila-agent 樣板（openai-agents runtime）' },
-  { value: 'langchain', label: 'langchain', hint: 'LangChain / LangGraph 服務' },
-  { value: 'openwebui_pipe_compatible', label: 'openwebui_pipe_compatible', hint: '相容 OpenWebUI pipe 介面的既有 agent' },
-  { value: 'openai_compatible_agent', label: 'openai_compatible_agent', hint: 'OpenAI 相容 /v1/chat/completions（預設）' },
-  { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
-]
 
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 
@@ -546,9 +561,6 @@ function levelBadgeVariant(level) {
   if (level === '營業秘密') return 'accent'
   return ''
 }
-
-const runtimeTypeHint = computed(() =>
-  RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')
 
 const collections = ref([])
 const availableModels = ref([])
@@ -611,7 +623,7 @@ function resetForm() {
   form.value = {
     name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
     base_model_id: null, collection_ids: [],
-    runtime_type: 'openai_compatible_agent', agent_version: '',
+    agent_version: '',
     default_classification_level: '無機密',
   }
   formErrors.value = {}
@@ -693,7 +705,6 @@ async function handleRegister() {
       collection_ids: Array.isArray(form.value.collection_ids)
         ? [...form.value.collection_ids]
         : [],
-      runtime_type: form.value.runtime_type || 'openai_compatible_agent',
       agent_version: form.value.agent_version.trim() || null,
       default_classification_level: form.value.default_classification_level || '無機密',
     })
