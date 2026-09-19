@@ -1,10 +1,9 @@
 /* =========================================================================
-   ANILA · CSP 治理中心 design tokens — 「官方藍」institutional console
-   - 淺色優先(default = light);深色主題保留但重調為柔和藍灰(非碳黑+霓虹綠)
+   ANILA · CSP 治理中心 design tokens — 內容優先的中性平台
+   - 淺色優先(default = light);深色為近灰黑、不是碳黑+霓虹
    - 由 <html> 的 [data-theme="light"|"dark"] 切換;未指定則 :root = 淺色
-   - 視覺語言:去終端機/駭客風,改中性專業;sans 為主、等寬只用於 ID/數字/代碼
+   - 系統 sans 全站（含標題）;等寬只用於 ID/數字/代碼
    - 所有 view 樣式一律吃這些變數(view 內禁 raw hex)
-   - Fable 5 重設計(2026-07-02):替換原 carbon+mint-green 終端美學
    ========================================================================= */
 
 :root {
@@ -20,22 +19,22 @@
     "IBM Plex Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
   /* 表格/數據一律等寬數字對齊(sans 也吃);連字關閉避免介面誤合字。 */
   --font-feat: "tnum" on, "calt" off, "liga" off;
-  /* 2026-09-02 行政風改版：刊頭與頁面主標題用明體（公文感），只此兩處；
-     內文一律正黑。系統字型堆疊，仍不下載 webfont。 */
-  --font-display: "Noto Serif TC", "Source Han Serif TC", "PMingLiU", "新細明體",
-    "Songti TC", Georgia, "Times New Roman", serif;
+  /* 標題與刊頭跟內文同一套系統 sans，不再用明體公文抬頭。 */
+  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
+    "PingFang TC", "Noto Sans TC", "Source Han Sans TC", "Helvetica Neue", Arial,
+    "Apple Color Emoji", sans-serif;
 
   --t-3xs: 12px;
   --t-2xs: 12px;
-  --t-xs:  12px;
-  --t-sm:  12px;
+  --t-xs:  13px;
+  --t-sm:  13px;
   --t-base: 14px;
-  --t-md:  15px;
-  --t-lg:  17px;
-  --t-xl:  20px;
-  --t-2xl: 24px;
-  --t-3xl: 30px;
-  --t-4xl: 36px;
+  --t-md:  14px;
+  --t-lg:  16px;
+  --t-xl:  18px;
+  --t-2xl: 22px;
+  --t-3xl: 24px;
+  --t-4xl: 28px;
 
   --lh-tight: 1.3;
   --lh-base:  1.5;
@@ -50,11 +49,11 @@
   --input-h: 34px;
   --tap-h: 38px;
 
-  /* Radius — 溫圓角,去零圓角終端感 --------------------------------------- */
+  /* Radius — 克制圓角 --------------------------------------------------- */
   --r-sharp: 0;
-  --r-soft: 4px;
-  --r-md:   8px;
-  --r-lg:   10px;
+  --r-soft: 6px;
+  --r-md:   10px;
+  --r-lg:   12px;
   --r-pill: 999px;
 
   --border-w: 1px;
@@ -83,39 +82,37 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   LIGHT · 「官方藍」institutional — 預設。乾淨微藍白底 + 深 slate-blue,
-   讀作官方、可信、專業;非奇色 cream、非終端綠。
+   LIGHT · 中性淺底。刊頭與主畫面同一層表面，單一克制 accent。
    ──────────────────────────────────────────────────────────────────────── */
 :root,
 [data-theme="light"] {
   /* Surfaces */
-  --c-bg:        #f4f6f9;
+  --c-bg:        #f7f7f8;
   --c-surface-1: #ffffff;
-  --c-surface-2: #eef1f5;
-  --c-surface-3: #e2e7ee;
+  --c-surface-2: #f0f0f2;
+  --c-surface-3: #e8e8eb;
   --c-elev:      #ffffff;
-  --c-overlay:   rgba(17, 24, 39, 0.45);
+  --c-overlay:   rgba(17, 24, 39, 0.40);
 
   /* Strokes */
-  --c-border:        #dfe3ea;
-  --c-border-strong: #c3cad6;
-  --c-border-accent: #b9c8dd;
-  --c-divider:       #e9ecf1;
+  --c-border:        #e5e5e8;
+  --c-border-strong: #d2d2d6;
+  --c-border-accent: #c8cde0;
+  --c-divider:       #ececf0;
 
-  /* Foreground — 冷調 slate 灰,近墨主色（WCAG AA：fg-3／mute 略加深） */
-  --c-fg-1: #1b2230;
-  --c-fg-2: #48505f;
-  --c-fg-3: #686f7e;
-  --c-fg-mute: #6a7280;
+  --c-fg-1: #0d0d0d;
+  --c-fg-2: #5c5c66;
+  --c-fg-3: #62626b;
+  --c-fg-mute: #62626b;
 
-  /* Accent — 官方 slate-blue */
-  --c-accent:        #2b4c7e;
-  --c-accent-strong: #1f3a63;
-  --c-accent-soft:   rgba(43, 76, 126, 0.08);
+  --c-accent:        #3b5bdb;
+  --c-accent-strong: #2f4bc4;
+  --c-accent-soft:   rgba(59, 91, 219, 0.08);
   --c-accent-fg:     #ffffff;
-  /* 刊頭（治理中心橫幅）：深藍底、白字；深色主題另訂，不跟 accent 走（accent 在深色是調亮的） */
-  --c-masthead:      #1f3a63;
-  --c-masthead-fg:   #ffffff;
+  /* 刊頭跟主表面同色，前景跟內文同色，讓 logo 用原色即可見。 */
+  --c-masthead:      #ffffff;
+  --c-masthead-fg:   #0d0d0d;
+  --logo-on-masthead: none;
 
   /* Status — 去飽和、institutional（WCAG AA：warn／ok 略加深） */
   --c-info:    #2b6cb0;
@@ -135,9 +132,9 @@
   --c-image:     #b83280;
 
   /* Selection / focus */
-  --c-selection-bg: rgba(43, 76, 126, 0.14);
-  --c-focus-ring:   #2b4c7e;
-  --c-row-hover:    #eef1f5;
+  --c-selection-bg: rgba(59, 91, 219, 0.12);
+  --c-focus-ring:   #3b5bdb;
+  --c-row-hover:    #f0f0f2;
 
   /* Chart palette — 分類用，**相鄰兩色必須分得開**。
    *
@@ -161,37 +158,35 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   DARK · 「柔和藍灰」— 保留給偏好深色/長時間盯畫面者。非碳黑、非霓虹綠;
-   藍灰深底 + 去飽和 slate-blue accent。
+   DARK · 近灰黑中性底。刊頭與主表面同層；主按鈕用較亮 accent + 深色字。
    ──────────────────────────────────────────────────────────────────────── */
 [data-theme="dark"] {
   /* Surfaces */
-  --c-bg:        #12151c;
-  --c-surface-1: #1c212b;
-  --c-surface-2: #232936;
-  --c-surface-3: #2b3240;
-  --c-elev:      #252b36;
-  --c-overlay:   rgba(10, 13, 18, 0.62);
+  --c-bg:        #212121;
+  --c-surface-1: #2a2a2a;
+  --c-surface-2: #333333;
+  --c-surface-3: #3c3c3c;
+  --c-elev:      #333333;
+  --c-overlay:   rgba(10, 10, 10, 0.62);
 
   /* Strokes */
-  --c-border:        #2a303c;
-  --c-border-strong: #3a4353;
-  --c-border-accent: #3a4c6b;
-  --c-divider:       #242a35;
+  --c-border:        #3a3a3a;
+  --c-border-strong: #4a4a4a;
+  --c-border-accent: #4a5280;
+  --c-divider:       #333333;
 
-  /* Foreground（WCAG AA：fg-3／mute 略提亮；mute 與 fg-3 層級會收斂） */
-  --c-fg-1: #dbe1ec;
-  --c-fg-2: #9aa3b4;
-  --c-fg-3: #828a98;
-  --c-fg-mute: #808896;
+  --c-fg-1: #ececec;
+  --c-fg-2: #b4b4b8;
+  --c-fg-3: #b0b0b8;
+  --c-fg-mute: #b0b0b8;
 
-  /* Accent — 去飽和 slate-blue(深色可讀,非霓虹) */
-  --c-accent:        #6f8fc2;
-  --c-accent-strong: #8aa5d1;
-  --c-accent-soft:   rgba(111, 143, 194, 0.12);
-  --c-accent-fg:     #10131a;
-  --c-masthead:      #101a2b;
-  --c-masthead-fg:   #e6edf7;
+  --c-accent:        #8b9cf0;
+  --c-accent-strong: #a8b4f4;
+  --c-accent-soft:   rgba(139, 156, 240, 0.14);
+  --c-accent-fg:     #121212;
+  --c-masthead:      #2a2a2a;
+  --c-masthead-fg:   #ececec;
+  --logo-on-masthead: brightness(0) invert(1);
 
   /* Status */
   --c-info:    #6c99d6;
@@ -211,9 +206,9 @@
   --c-image:     #d68fc2;
 
   /* Selection / focus */
-  --c-selection-bg: rgba(111, 143, 194, 0.22);
-  --c-focus-ring:   #6f8fc2;
-  --c-row-hover:    #1f2530;
+  --c-selection-bg: rgba(139, 156, 240, 0.22);
+  --c-focus-ring:   #8b9cf0;
+  --c-row-hover:    #333333;
 
   /* Chart palette */
   /* 深色是**另外選過**的四步,不是把淺色翻過來 —— 實測最差相鄰 ΔE 23.0、全部通過。 */
@@ -233,25 +228,26 @@
 /* 預設已是淺色;僅在使用者未指定且 OS 偏好深色時,於 :root scope 重發深色 token。 */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --c-bg:        #161a22;
-    --c-surface-1: #1c212b;
-    --c-surface-2: #232936;
-    --c-surface-3: #2b3240;
-    --c-overlay:   rgba(10, 13, 18, 0.62);
-    --c-border:        #2a303c;
-    --c-border-strong: #3a4353;
-    --c-border-accent: #3a4c6b;
-    --c-divider:       #242a35;
-    --c-fg-1: #dbe1ec;
-    --c-fg-2: #9aa3b4;
-    --c-fg-3: #828a98;
-    --c-fg-mute: #808896;
-    --c-accent:        #6f8fc2;
-    --c-accent-strong: #8aa5d1;
-    --c-accent-soft:   rgba(111, 143, 194, 0.12);
-    --c-accent-fg:     #10131a;
-    --c-masthead:      #101a2b;
-    --c-masthead-fg:   #e6edf7;
+    --c-bg:        #212121;
+    --c-surface-1: #2a2a2a;
+    --c-surface-2: #333333;
+    --c-surface-3: #3c3c3c;
+    --c-overlay:   rgba(10, 10, 10, 0.62);
+    --c-border:        #3a3a3a;
+    --c-border-strong: #4a4a4a;
+    --c-border-accent: #4a5280;
+    --c-divider:       #333333;
+    --c-fg-1: #ececec;
+    --c-fg-2: #b4b4b8;
+    --c-fg-3: #b0b0b8;
+    --c-fg-mute: #b0b0b8;
+    --c-accent:        #8b9cf0;
+    --c-accent-strong: #a8b4f4;
+    --c-accent-soft:   rgba(139, 156, 240, 0.14);
+    --c-accent-fg:     #121212;
+    --c-masthead:      #2a2a2a;
+    --c-masthead-fg:   #ececec;
+    --logo-on-masthead: brightness(0) invert(1);
     --c-info:    #6c99d6;
     --c-info-soft: rgba(108, 153, 214, 0.12);
     --c-warn:    #d6a95f;
@@ -265,9 +261,9 @@
     --c-embedding: #6bbf8f;
     --c-agent:     #d6a95f;
     --c-image:     #d68fc2;
-    --c-selection-bg: rgba(111, 143, 194, 0.22);
-    --c-focus-ring:   #6f8fc2;
-    --c-row-hover:    #1f2530;
+    --c-selection-bg: rgba(139, 156, 240, 0.22);
+    --c-focus-ring:   #8b9cf0;
+    --c-row-hover:    #333333;
     --chart-1: #5a86c4;
     --chart-2: #c4853a;
     --chart-3: #9a6fd4;

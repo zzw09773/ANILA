@@ -42,6 +42,7 @@ const KNOWN_SOURCE_TEXT_GUARDS = [
   "composerFileAccept.test.js",
   "dupReplyReconcile.test.js",
   "editResend.test.js",
+  "feedbackSubmitLayout.test.jsx",
   "guards/aboutVersion.test.js",
   "guards/composerNarrowHint.test.js",
   "guards/headerLinesPresent.test.js",

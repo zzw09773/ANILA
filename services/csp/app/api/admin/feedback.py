@@ -27,8 +27,10 @@ model 篩。維運者據此決定要不要調 prompt、換模型,或拿 ``conver
 匯出(``?format=csv``)
 ---------------------
 維運者要能把回饋拉出來排序、統計,不是只能捲畫面。CSV 走**同一支端點、
-同一個 ``require_admin``、同一份白名單** —— 匯出不是另一條讀取路徑,所以
-不會出現「JSON 擋住、CSV 漏出」的分歧。列數上限見 ``FEEDBACK_EXPORT_MAX_ROWS``。
+同一個 ``require_admin``**。JSON 列表仍不含訊息正文;CSV 另外帶「使用者提問」
+與「被評分回覆」,對齊畫面上點開查看的那兩段。密等 ≥ 營業秘密時,每一個被
+寫進檔案的對話會落 ``access_classified_conversation`` 稽核(與對話 GET 相同)。
+列數上限見 ``FEEDBACK_EXPORT_MAX_ROWS``。
 """
 
 from __future__ import annotations
@@ -44,11 +46,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import require_admin
 from app.schemas.base import ApiResponseModel
+from app.schemas.contracts.classification import (
+    ClassificationLevel,
+    classification_audit_required,
+)
 from app.utils.csv_formula import csv_formula_safe
 
 router = APIRouter(prefix="/api/admin/feedback", tags=["使用者回饋"])
@@ -95,6 +102,12 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("username", "使用者"),
     ("conversation_id", "對話 ID"),
     ("message_id", "訊息 ID"),
+)
+
+#: CSV 才有的兩欄。不進 JSON 白名單,列表頁仍然不是正文旁路。
+_CSV_BODY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("user_prompt", "使用者提問"),
+    ("rated_reply", "被評分回覆"),
 )
 
 _RATING_LABELS = {"down": "差評", "up": "好評"}
@@ -201,6 +214,24 @@ def _item_from_row(
     )
 
 
+
+def _user_prompt_for(db: Session, msg: Message, cache: dict[int, Message | None]) -> str:
+    """沿 parent_id 找最近的使用者提問,與畫面 locateRatedReply 同一條規則。"""
+    parent_id = msg.parent_id
+    seen: set[int] = set()
+    while parent_id is not None and parent_id not in seen:
+        seen.add(parent_id)
+        if parent_id not in cache:
+            cache[parent_id] = db.get(Message, parent_id)
+        parent = cache[parent_id]
+        if parent is None:
+            break
+        if parent.role == "user":
+            return parent.content or ""
+        parent_id = parent.parent_id
+    return ""
+
+
 def _csv_value(key: str, value) -> str:
     if key == "reasons":
         return " · ".join(value or [])
@@ -215,7 +246,11 @@ def _csv_value(key: str, value) -> str:
     return "" if value is None else str(value)
 
 
-def _items_to_csv(items: list[FeedbackItem]) -> str:
+def _items_to_csv(
+    items: list[FeedbackItem],
+    *,
+    bodies: dict[int, tuple[str, str]] | None = None,
+) -> str:
     """展平成 CSV;首列 BOM 供 Excel 正確以 UTF-8 開啟。
 
     欄位只從 :class:`FeedbackItem`(= 白名單)取。白名單裡若出現 ``_CSV_COLUMNS``
@@ -228,13 +263,21 @@ def _items_to_csv(items: list[FeedbackItem]) -> str:
     """
     declared = {key for key, _ in _CSV_COLUMNS}
     extra = [key for key in sorted(FEEDBACK_ITEM_KEYS) if key not in declared]
-    columns = [*_CSV_COLUMNS, *((key, key) for key in extra)]
+    columns = [
+        *_CSV_COLUMNS,
+        *((key, key) for key in extra),
+        *_CSV_BODY_COLUMNS,
+    ]
 
+    bodies = bodies or {}
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow([header for _, header in columns])
     for item in items:
         data = item.model_dump()
+        prompt, reply = bodies.get(item.message_id, ("", ""))
+        data["user_prompt"] = prompt
+        data["rated_reply"] = reply
         writer.writerow(
             [
                 csv_formula_safe(_csv_value(key, data.get(key)))
@@ -244,7 +287,13 @@ def _items_to_csv(items: list[FeedbackItem]) -> str:
     return "﻿" + buffer.getvalue()
 
 
-def _export_csv(q, *, only_with_comment: bool) -> StreamingResponse:
+def _export_csv(
+    q,
+    *,
+    only_with_comment: bool,
+    db: Session,
+    admin: User,
+) -> StreamingResponse:
     """把**整個篩選結果**(不是畫面當前那頁)展成 CSV。
 
     ``only_with_comment`` 是 Python 端篩選(留言在 JSON metadata 裡,SQLite 與
@@ -253,6 +302,9 @@ def _export_csv(q, *, only_with_comment: bool) -> StreamingResponse:
     掃,湊滿上限就停,而超過上限一律回 400 說清楚。
     """
     items: list[FeedbackItem] = []
+    bodies: dict[int, tuple[str, str]] = {}
+    parent_cache: dict[int, Message | None] = {}
+    classified_ids: set[int] = set()
     overflow = False
     for msg, conv, username in q.yield_per(500):
         item = _item_from_row(msg, conv, username)
@@ -262,6 +314,16 @@ def _export_csv(q, *, only_with_comment: bool) -> StreamingResponse:
             overflow = True
             break
         items.append(item)
+        bodies[item.message_id] = (
+            _user_prompt_for(db, msg, parent_cache),
+            msg.content or "",
+        )
+        try:
+            level = ClassificationLevel.from_storage(conv.classification_level)
+        except ValueError:
+            level = ClassificationLevel.UNCLASSIFIED
+        if classification_audit_required(level):
+            classified_ids.add(conv.id)
 
     if overflow:
         raise HTTPException(
@@ -273,9 +335,25 @@ def _export_csv(q, *, only_with_comment: bool) -> StreamingResponse:
             ),
         )
 
+    if classified_ids:
+        for conv_id in sorted(classified_ids):
+            db.add(AuditLog(
+                actor_user_id=admin.id,
+                actor_username=admin.username,
+                action="access_classified_conversation",
+                resource_type="conversation",
+                resource_id=str(conv_id),
+                status="success",
+                detail=(
+                    f"User {admin.username} exported classified "
+                    f"conversation {conv_id} via feedback CSV"
+                ),
+            ))
+        db.commit()
+
     filename = f"feedback-{datetime.now(_TPE_TZ).strftime('%Y%m%d')}.csv"
     return StreamingResponse(
-        iter([_items_to_csv(items)]),
+        iter([_items_to_csv(items, bodies=bodies)]),
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f"attachment; filename={filename}",
@@ -307,7 +385,7 @@ def list_feedback(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FeedbackListResponse | StreamingResponse:
-    """列出有評分的助理訊息。永不回傳訊息正文。
+    """列出有評分的助理訊息。JSON 永不回傳訊息正文;CSV 另附提問與被評分回覆。
 
     ``?format=csv`` 用**同樣的篩選條件**回傳含 BOM 的 UTF-8 ``text/csv``,
     且不受 ``limit`` 這個畫面分頁參數限制(匯出的是整個篩選結果)。筆數超過
@@ -332,7 +410,7 @@ def list_feedback(
         q = q.filter(Message.rating == rating)
 
     if format == "csv":
-        return _export_csv(q, only_with_comment=only_with_comment)
+        return _export_csv(q, only_with_comment=only_with_comment, db=db, admin=admin)
 
     # 頂部好評／差評看同一時間窗與 agent／模型篩選，不受「目前只看差評」影響。
     window_up = base.filter(Message.rating == "up").count()

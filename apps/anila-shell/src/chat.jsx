@@ -863,6 +863,7 @@ export const MessageBubble = ({
   const [fbReasons, setFbReasons] = useState([]);
   const [fbComment, setFbComment] = useState("");
   const [fbSent, setFbSent] = useState(false);
+  const [fbBusy, setFbBusy] = useState(false);
   const routedAgent = agents.find((a) => a.id === msg.routedAgentId);
   // 真分類浮水印:優先讀對話 classificationLevel,缺欄位時以 boolean classified
   // 回退 floor「密」。仍維持「classified 或級別≥密」才顯示的既有 gating。
@@ -1173,7 +1174,7 @@ export const MessageBubble = ({
 
   return (
     <div
-      className="anila-msg anila-msg-assistant"
+      className={"anila-msg anila-msg-assistant" + (fbSent ? " anila-msg-feedback-sent" : "")}
       style={{ position: "relative", marginBottom: 28 }}
     >
       {watermark && <ClassificationWatermark level={watermark} />}
@@ -1417,7 +1418,7 @@ export const MessageBubble = ({
         <div
           className="anila-msg-actions"
           style={{
-            display: "flex", gap: 2, marginTop: 8,
+            display: "flex", gap: 2,
             color: "var(--fg-subtle)", alignItems: "center",
           }}
         >
@@ -1801,7 +1802,7 @@ export const MessageBubble = ({
           // `:focus-within` 讓鍵盤操作時仍然看得到,不會按到看不見的東西。
           className="anila-msg-actions"
           style={{
-            marginTop: 8, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+            display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
           }}
         >
           <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
@@ -1834,9 +1835,11 @@ export const MessageBubble = ({
           訊號。列管對話不收集(內容不外傳)。送出後收合顯示已送出。 */}
       {!msg.streaming && msg.rating === "down" && !classified && typeof onRate === "function" && (
         fbSent ? (
-          <div style={{ marginTop: 6, fontSize: 12, color: "var(--success)" }}>✓ 感謝回饋</div>
+          <div data-testid="feedback-thanks" style={{ marginTop: 6, fontSize: 12, color: "var(--success)" }}>✓ 感謝回饋</div>
         ) : (
-          <div style={{
+          <div
+            data-testid="feedback-form"
+            style={{
             marginTop: 8, padding: 10, background: "var(--bg-subtle)",
             border: "1px solid var(--border)", borderRadius: "var(--radius)",
           }}>
@@ -1870,13 +1873,29 @@ export const MessageBubble = ({
                 }}
               />
               <button
-                onClick={() => {
-                  onRate(msg, "down", { comment: fbComment.trim(), reasons: fbReasons });
-                  setFbSent(true);
+                type="button"
+                data-testid="feedback-submit"
+                disabled={fbBusy}
+                onClick={async () => {
+                  if (fbBusy || typeof onRate !== "function") return;
+                  setFbBusy(true);
+                  try {
+                    const result = await onRate(msg, "down", {
+                      comment: fbComment.trim(),
+                      reasons: fbReasons,
+                    });
+                    if (result !== false) setFbSent(true);
+                  } catch {
+                    // 既有 onRate 契約：失敗可能 throw 或回 false。兩者都不能先說已送出。
+                  } finally {
+                    setFbBusy(false);
+                  }
                 }}
                 style={{
                   fontSize: 12, padding: "5px 12px", background: "var(--accent)",
-                  color: "var(--accent-fg)", border: "none", borderRadius: 4, cursor: "pointer",
+                  color: "var(--accent-fg)", border: "none", borderRadius: 4,
+                  cursor: fbBusy ? "not-allowed" : "pointer",
+                  opacity: fbBusy ? 0.6 : 1,
                 }}
               >送出</button>
             </div>

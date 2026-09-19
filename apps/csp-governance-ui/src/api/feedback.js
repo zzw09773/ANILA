@@ -18,3 +18,11 @@ export const exportFeedbackCsv = (params = {}) =>
     params: { ...params, format: 'csv' },
     responseType: 'blob',
   })
+
+/**
+ * 點「查看被評分回覆」才打。view=all 才能拿到非活躍分支。
+ * 沿用既有 client（admin cookie／CSRF）；後端 GET 本身會做密等稽核。
+ * 不快取正文。
+ */
+export const getConversationAll = (conversationId) =>
+  client.get(`/api/conversations/${conversationId}`, { params: { view: 'all' } })

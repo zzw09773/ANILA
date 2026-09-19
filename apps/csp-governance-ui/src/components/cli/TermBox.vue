@@ -1,7 +1,6 @@
 <!--
-  Titled terminal box. Renders a thin-bordered surface with a small-caps
-  legend label inset in the top edge — `┌─ TITLE ────────────…`.
-  Slots: default (body), trailing (right side of the title bar — actions / hints).
+  Titled surface. Thin border, stacked title + wrapping hint, trailing actions.
+  Slots: default (body), trailing (right side of the title bar).
 -->
 <template>
   <section class="term-box" :class="[`term-box--pad-${pad}`, { 'term-box--inset': inset }]">
@@ -45,31 +44,32 @@ defineProps({
 
 .term-box__head {
   display: flex;
-  align-items: center;
-  gap: var(--gap-2);
-  padding: var(--gap-2) var(--gap-3);
+  align-items: flex-start;
+  gap: var(--gap-3);
+  padding: var(--gap-3) var(--gap-4);
   border-bottom: var(--border-w) solid var(--c-border);
   background: transparent;
-  min-height: 30px;
+  min-width: 0;
 }
 .term-box__legend {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--gap-2);
-  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 12rem;
 }
 .term-box__title {
   font-size: var(--t-sm);
   font-weight: 600;
   color: var(--c-fg-1);
-  letter-spacing: 0;
-  color: var(--c-fg-1);
-  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .term-box__hint {
-  font-size: var(--t-2xs);
+  font-size: var(--t-xs);
   color: var(--c-fg-3);
-  letter-spacing: 0.05em;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .term-box__rule {
   display: none;
@@ -79,6 +79,7 @@ defineProps({
   align-items: center;
   gap: var(--gap-2);
   flex-shrink: 0;
+  margin-inline-start: auto;
 }
 
 .term-box__body--flush { padding: 0 !important; overflow-x: auto; min-width: 0; }

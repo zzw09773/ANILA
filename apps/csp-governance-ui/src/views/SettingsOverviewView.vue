@@ -28,22 +28,22 @@
         pad="none"
         flush
       >
-        <table class="term-table">
-          <thead>
+        <table class="term-table settings-table">
+          <thead class="settings-table__head">
             <tr>
-              <th style="width: 32%">設定</th>
-              <th>目前值</th>
-              <th style="width: 30%">改成</th>
+              <th :id="colId(section, 'key')" scope="col" style="width: 32%">設定</th>
+              <th :id="colId(section, 'value')" scope="col">目前值</th>
+              <th :id="colId(section, 'edit')" scope="col" style="width: 30%">改成</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="item in section.items" :key="item.key">
-              <td>
+              <td :headers="colId(section, 'key')" data-label="設定">
                 <div class="cell-strong">{{ item.description || item.key }}</div>
-                <div class="cell-meta">{{ item.key }}</div>
+                <div class="cell-meta cell-meta--key">{{ item.key }}</div>
                 <div class="cell-meta">{{ applyWhenLabel(item) }}</div>
               </td>
-              <td>
+              <td :headers="colId(section, 'value')" data-label="目前值">
                 <dl class="setting-cells">
                   <div v-for="cell in valueCells(item)" :key="cell.field" class="setting-cell" :class="cell.className">
                     <dt>{{ cell.label }}</dt>
@@ -51,7 +51,7 @@
                   </div>
                 </dl>
               </td>
-              <td>
+              <td :headers="colId(section, 'edit')" data-label="改成">
                 <div v-if="canEdit(item) && isTextSetting(item)" class="setting-editor setting-editor--text">
                   <textarea
                     v-model="drafts[item.key]"
@@ -59,12 +59,15 @@
                     rows="12"
                     spellcheck="false"
                     :aria-label="`${item.key} 的全文`"
+                    :aria-invalid="errors[item.key] ? true : undefined"
+                    :aria-describedby="errors[item.key] ? errorId(item) : undefined"
                   ></textarea>
                   <div class="setting-editor__actions">
                     <TermButton
                       variant="primary"
                       :loading="!!saving[item.key]"
                       label="儲存"
+                      :aria-label="saveAccessibleName(item)"
                       @click="handleSave(item)"
                     />
                     <TermButton
@@ -82,23 +85,34 @@
                       type="checkbox"
                       :checked="drafts[item.key] === 'true' || drafts[item.key] === true"
                       :aria-label="item.description || item.key"
+                      :aria-invalid="errors[item.key] ? true : undefined"
+                      :aria-describedby="errors[item.key] ? errorId(item) : undefined"
                       @change="onBoolDraft(item, $event)"
                     />
                     {{ isDraftOn(item) ? '開啟' : '關閉' }}
                   </label>
-                  <TermButton variant="primary" :loading="!!saving[item.key]" label="儲存" @click="handleSave(item)" />
+                  <TermButton
+                    variant="primary"
+                    :loading="!!saving[item.key]"
+                    label="儲存"
+                    :aria-label="saveAccessibleName(item)"
+                    @click="handleSave(item)"
+                  />
                 </div>
                 <div v-else-if="canEdit(item)" class="setting-editor">
                   <input
                     v-model="drafts[item.key]"
                     class="term-input"
                     :aria-label="item.key + ' 的新值'"
+                    :aria-invalid="errors[item.key] ? true : undefined"
+                    :aria-describedby="errors[item.key] ? errorId(item) : undefined"
                   />
                   <span v-if="settingUnit(item)" class="cell-meta">{{ settingUnit(item) }}</span>
                   <TermButton
                     variant="primary"
                     :loading="!!saving[item.key]"
                     label="儲存"
+                    :aria-label="saveAccessibleName(item)"
                     @click="handleSave(item)"
                   />
                 </div>
@@ -107,8 +121,16 @@
                   v-if="notices[item.key]"
                   class="setting-notice"
                   :class="`setting-notice--${notices[item.key].tone}`"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
                 >{{ notices[item.key].message }}</p>
-                <p v-if="errors[item.key]" class="setting-error">{{ errors[item.key] }}</p>
+                <p
+                  v-if="errors[item.key]"
+                  :id="errorId(item)"
+                  class="setting-error"
+                  role="alert"
+                >{{ errors[item.key] }} 修改內容會保留，可再按「儲存」重試。</p>
               </td>
             </tr>
           </tbody>
@@ -163,6 +185,16 @@ function onBoolDraft(item, event) {
   drafts.value[item.key] = event.target.checked ? 'true' : 'false'
 }
 
+function colId(section, col) {
+  return `settings-${section.id}-${col}`
+}
+function errorId(item) {
+  return `setting-error-${String(item.key).replaceAll('.', '-')}`
+}
+function saveAccessibleName(item) {
+  return `儲存「${item.description || item.key}」`
+}
+
 async function load() {
   loading.value = true
   try {
@@ -213,25 +245,132 @@ async function handleSave(item) {
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
-.settings-region { display: flex; flex-direction: column; gap: var(--gap-4); }
-.cell-strong { color: var(--c-fg-1); font-weight: 500; }
-.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.settings-region { display: flex; flex-direction: column; gap: var(--gap-4); min-width: 0; }
+.cell-strong { color: var(--c-fg-1); font-weight: 600; font-size: var(--t-sm); line-height: var(--lh-tight); overflow-wrap: anywhere; }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); overflow-wrap: anywhere; }
+.cell-meta--key { font-family: var(--font-mono); margin-top: 2px; }
 .settings-count-warning { border-left: 2px solid var(--c-warn); padding-left: var(--gap-3); font-size: var(--t-sm); color: var(--c-warn); }
 .settings-load-error__msg { font-size: var(--t-sm); color: var(--c-fg-1); margin-bottom: 4px; }
 .settings-load-error__detail { font-size: var(--t-xs); color: var(--c-danger); margin-bottom: var(--gap-3); overflow-wrap: anywhere; }
-.setting-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 4px 10px; margin: 0; }
+.setting-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--gap-1) var(--gap-3); margin: 0; min-width: 0; }
 .setting-cell dt { font-size: var(--t-2xs); color: var(--c-fg-mute); }
 .setting-cell dd { margin: 0; font-size: var(--t-xs); overflow-wrap: anywhere; }
 .setting-cell--effective dd { color: var(--c-fg-1); font-weight: 500; }
 .setting-cell--stored dd { color: var(--c-fg-2); }
 .setting-cell--unusable dd { color: var(--c-danger); text-decoration: line-through; }
 .setting-cell--source dd { color: var(--c-fg-3); }
-.setting-editor { display: flex; gap: 6px; align-items: center; }
-.setting-editor .term-input { flex: 1; min-width: 0; }
+.settings-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+.settings-table th,
+.settings-table td {
+  overflow-wrap: anywhere;
+  min-width: 0;
+  vertical-align: top;
+  height: auto;
+  white-space: normal;
+}
+.settings-table th:first-child,
+.settings-table td:first-child,
+.settings-table th:last-child,
+.settings-table td:last-child {
+  min-width: 0;
+  position: static;
+  box-shadow: none;
+  white-space: normal;
+}
+.settings-table tbody td {
+  padding: var(--gap-3);
+}
+.settings-table tbody tr {
+  background: var(--c-surface-1);
+}
+.setting-editor {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+.setting-editor .term-input { flex: 1; min-width: 0; max-width: 100%; }
 .setting-editor--text { flex-direction: column; align-items: stretch; }
-.setting-textarea { width: 100%; font-family: var(--font-mono, monospace); font-size: var(--t-xs); line-height: 1.5; resize: vertical; white-space: pre; }
-.setting-editor__actions { display: flex; gap: 6px; align-items: center; }
-.setting-notice { font-size: var(--t-2xs); margin-top: 4px; overflow-wrap: anywhere; }
+.setting-textarea {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+.setting-editor__actions { display: flex; gap: var(--gap-2); align-items: center; flex-wrap: wrap; }
+.setting-notice { font-size: var(--t-2xs); margin-top: var(--gap-2); overflow-wrap: anywhere; }
 .setting-notice--ok { color: var(--c-fg-2); }
-.setting-error { font-size: var(--t-2xs); margin-top: 4px; color: var(--c-danger); overflow-wrap: anywhere; }
+.setting-error { font-size: var(--t-2xs); margin-top: var(--gap-2); color: var(--c-danger); overflow-wrap: anywhere; }
+
+@media (max-width: 48rem) {
+  .settings-table__head {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .settings-table,
+  .settings-table tbody,
+  .settings-table tr,
+  .settings-table td {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+  }
+  .settings-table tbody tr {
+    background: transparent;
+    border-bottom: var(--border-w) solid var(--c-border);
+    padding: var(--gap-3) 0;
+  }
+  .settings-table tbody tr + tr {
+    border-top: var(--border-w) solid var(--c-border);
+  }
+  .settings-table tbody td {
+    padding: var(--gap-2) 0;
+    border-bottom: 0;
+    background: transparent;
+  }
+  .settings-table tbody td + td {
+    margin-top: var(--gap-2);
+    padding-top: var(--gap-3);
+    border-top: var(--border-w) solid var(--c-border);
+  }
+  .settings-table tbody td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--t-xs);
+    font-weight: 600;
+    color: var(--c-fg-2);
+    margin-bottom: var(--gap-1);
+  }
+  .settings-table tbody tr:hover td,
+  .settings-table tbody tr:hover td:last-child,
+  .settings-table th:last-child,
+  .settings-table td:last-child {
+    background: transparent;
+    box-shadow: none;
+    position: static;
+    white-space: normal;
+  }
+}
 </style>

@@ -1,6 +1,5 @@
 <template>
-  <!-- 刊頭（2026-09-02 行政風改版）：深藍橫幅、明體站名、目前頁面用中文，
-       不再顯示路徑／@角色／快速鍵提示——長官看的是「這是哪裡、我是誰」。 -->
+  <!-- 刊頭：與主畫面同層中性表面、系統 sans 站名、目前頁面用中文。 -->
   <header class="topbar">
     <a class="skip-link" href="#gov-main">跳到主要內容</a>
     <div class="topbar__left">
@@ -235,7 +234,7 @@ function handleLogout() {
   padding: 0 var(--gap-5);
   background: var(--c-masthead);
   color: var(--c-masthead-fg);
-  border-bottom: 0;
+  border-bottom: var(--border-w) solid var(--c-border);
   font-size: var(--t-sm);
   gap: var(--gap-4);
   min-width: 0;
@@ -305,9 +304,8 @@ function handleLogout() {
 .topbar__left :deep(.term-logo__sub),
 .topbar__left :deep(.term-logo__sep) { color: var(--c-masthead-fg); }
 .topbar__left :deep(.term-logo__mark) {
-  /* PNG 是海軍藍透明底；刊頭也是海軍藍。4756929e 拿掉淺色墊底後標就隱掉。
-     轉成白標，不要再墊白盒。 */
-  filter: brightness(0) invert(1);
+  /* 淺色刊頭用原色海軍標；深色刊頭由 --logo-on-masthead 反相成淺標。 */
+  filter: var(--logo-on-masthead);
 }
 .topbar__crumb {
   padding-left: var(--gap-4);

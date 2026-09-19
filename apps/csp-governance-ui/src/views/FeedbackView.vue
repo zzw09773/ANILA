@@ -74,7 +74,7 @@
       <p v-if="exportNote" class="filters__note filters__note--ok">{{ exportNote }}</p>
     </TermBox>
 
-    <TermBox :title="`回饋 · ${items.length}`" pad="none" flush hint="對話正文請到對話端開啟該對話（會留下稽核）。此頁只列出評分與留言。">
+    <TermBox :title="`回饋 · ${items.length}`" pad="none" flush hint="查看被評分的回覆及當時提問。匯出 CSV 含提問與被評分回覆。">
       <table class="term-table">
         <thead>
           <tr>
@@ -114,7 +114,17 @@
               </TermBadge>
             </td>
             <td class="cell-meta tnum">{{ formatDate(row.message_created_at) }}</td>
-            <td class="cell-meta">在對話端開啟對話 #{{ row.conversation_id }}（訊息 {{ row.message_id }}）</td>
+            <td class="cell-meta">
+              <div>對話 #{{ row.conversation_id }}</div>
+              <div>訊息 {{ row.message_id }}</div>
+              <TermButton
+                size="xs"
+                label="查看被評分回覆"
+                :disabled="viewer.loading && viewer.row?.message_id === row.message_id"
+                data-testid="feedback-view-reply"
+                @click="openViewer(row)"
+              />
+            </td>
           </tr>
           <tr v-if="items.length === 0">
             <td colspan="7">
@@ -124,15 +134,53 @@
         </tbody>
       </table>
     </TermBox>
+
+    <TermModal
+      :visible="!!viewer.row"
+      title="被評分回覆"
+      width="720px"
+      @close="closeViewer"
+    >
+      <div v-if="viewer.row" class="reply-meta" data-testid="feedback-reply-meta">
+        評分 {{ viewer.row.rating === 'down' ? '差評' : '好評' }}
+        · 分數 {{ viewer.row.rating_score == null ? '—' : viewer.row.rating_score }}
+        · 對話 {{ viewer.row.conversation_id }}
+        · 訊息 {{ viewer.row.message_id }}
+      </div>
+      <div v-if="viewer.loading" data-testid="feedback-reply-loading" role="status">載入中…</div>
+      <div v-else-if="viewer.error" data-testid="feedback-reply-error" role="alert" class="feedback is-err">
+        ! {{ viewer.error }}
+        <div class="reply-actions">
+          <TermButton size="xs" label="重試" data-testid="feedback-reply-retry" @click="retryViewer" />
+        </div>
+      </div>
+      <div v-else-if="viewer.notFound" data-testid="feedback-reply-missing" role="alert" class="feedback is-err">
+        ! 找不到這則被評分的助手回覆
+        <div class="reply-actions">
+          <TermButton size="xs" label="重試" data-testid="feedback-reply-retry" @click="retryViewer" />
+        </div>
+      </div>
+      <div v-else-if="viewer.rated" data-testid="feedback-reply-body">
+        <section v-if="viewer.user" class="reply-block">
+          <h3 class="reply-block__title">使用者提問 · #{{ viewer.user.id }}</h3>
+          <pre data-testid="feedback-reply-prompt" class="reply-block__text">{{ viewer.user.content }}</pre>
+        </section>
+        <section class="reply-block">
+          <h3 class="reply-block__title">被評分回覆 · #{{ viewer.rated.id }}</h3>
+          <pre data-testid="feedback-reply-rated" class="reply-block__text">{{ viewer.rated.content }}</pre>
+        </section>
+      </div>
+    </TermModal>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { listFeedback, exportFeedbackCsv } from '../api/feedback'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { listFeedback, exportFeedbackCsv, getConversationAll } from '../api/feedback'
 import { extractError } from '../api/errors'
 import { formatDate } from '../utils/formatDate'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
+import { createRatedReplySession } from '../utils/feedbackRatedReply'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 
 const items = ref([])
 const summary = ref({ total: 0, up: 0, down: 0, with_comment: 0 })
@@ -217,6 +265,36 @@ function levelTone(level) {
   return ''
 }
 
+const viewer = ref({
+  row: null,
+  loading: false,
+  error: '',
+  notFound: false,
+  rated: null,
+  user: null,
+})
+
+const replySession = createRatedReplySession({
+  getConversation: getConversationAll,
+})
+
+function applyViewer(next) {
+  viewer.value = next
+}
+
+function openViewer(row) {
+  replySession.open(row, applyViewer)
+}
+
+function retryViewer() {
+  if (viewer.value.row) replySession.open(viewer.value.row, applyViewer)
+}
+
+function closeViewer() {
+  replySession.close(applyViewer)
+}
+
+onBeforeUnmount(closeViewer)
 onMounted(fetchData)
 </script>
 
@@ -261,4 +339,13 @@ onMounted(fetchData)
 .cell-meta { color: var(--c-fg-2); font-size: var(--t-3xs); margin-top: 2px; }
 .cell-meta--wrap { white-space: normal; }
 .tnum { font-variant-numeric: tabular-nums; }
+.reply-meta { font-size: var(--t-xs); color: var(--c-fg-2); margin-bottom: var(--gap-3); }
+.reply-actions { margin-top: var(--gap-2); }
+.reply-block { margin-bottom: var(--gap-3); }
+.reply-block__title { margin: 0 0 var(--gap-1); font-size: var(--t-xs); color: var(--c-fg-2); font-weight: 600; }
+.reply-block__text {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: inherit; font-size: var(--t-xs); color: var(--c-fg-1);
+  background: var(--c-surface-2); padding: var(--gap-2); border: var(--border-w) solid var(--c-border);
+}
 </style>

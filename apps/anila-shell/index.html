@@ -20,7 +20,7 @@
 <script>
   // ---- Tweak defaults (host may rewrite this block) ----
   window.ANILA_TWEAKS = /*EDITMODE-BEGIN*/{
-    "accent": "#a05a2c",
+    "accent": "#3b5bdb",
     "dark": false,
     "density": 18,
     "sansFamily": "Noto Sans TC",
@@ -32,25 +32,25 @@
 
 <style>
   :root {
-    --bg:            oklch(0.985 0.002 90);
-    --bg-elev:       oklch(1 0 0);
-    --bg-subtle:     oklch(0.965 0.003 90);
-    --fg:            oklch(0.18 0.005 270);
-    --fg-muted:      oklch(0.48 0.005 270);
-    /* WCAG AA: darkened so subtle/status text clears 4.5:1 on --bg*. */
-    --fg-subtle:     oklch(0.54 0.005 270);
-    --border:        oklch(0.91 0.004 270);
-    --border-strong: oklch(0.85 0.005 270);
-    --accent:        #0b7285;
+    /* Calm content-first light surface (ChatGPT/Claude-like). */
+    --bg:            #f7f7f8;
+    --bg-elev:       #ffffff;
+    --bg-subtle:     #ececf1;
+    --fg:            #0d0d0d;
+    --fg-muted:      #5c5c66;
+    --fg-subtle:     #62626b;
+    --border:        #e5e5e8;
+    --border-strong: #d2d2d6;
+    --accent:        #3b5bdb;
     --accent-fg:     #ffffff;
-    --accent-soft:   oklch(0.95 0.02 200);
+    --accent-soft:   #eef1fb;
     --danger:        oklch(0.55 0.18 25);
     --warn:          oklch(0.55 0.14 75);
     --success:       oklch(0.54 0.10 150);
 
-    --radius-sm: 4px;
-    --radius:    6px;
-    --radius-lg: 10px;
+    --radius-sm: 6px;
+    --radius:    10px;
+    --radius-lg: 12px;
 
     /* System font stacks: Latin handles via -apple-system / Segoe UI / system-ui;
        Traditional Chinese falls through to whatever the OS ships (PingFang TC
@@ -63,21 +63,19 @@
   }
 
   [data-theme="dark"] {
-    --bg:            oklch(0.16 0.004 270);
-    --bg-elev:       oklch(0.20 0.004 270);
-    --bg-subtle:     oklch(0.22 0.004 270);
-    --fg:            oklch(0.96 0.003 90);
-    --fg-muted:      oklch(0.72 0.005 270);
-    /* WCAG AA: lighten subtle; dark accent/danger from light fail on dark bg,
-       so override status colours here. Accent fill uses dark --accent-fg
-       (white-on-light-teal cannot clear AA on this near-black bg). */
-    --fg-subtle:     oklch(0.62 0.005 270);
-    --border:        oklch(0.28 0.005 270);
-    --border-strong: oklch(0.36 0.005 270);
-    --accent:        oklch(0.62 0.09 200);
-    --accent-fg:     #0a1214;
-    --accent-soft:   oklch(0.30 0.04 200);
-    --danger:        oklch(0.65 0.16 25);
+    --bg:            #212121;
+    --bg-elev:       #2a2a2a;
+    --bg-subtle:     #333333;
+    --fg:            #ececec;
+    --fg-muted:      #b4b4b8;
+    --fg-subtle:     #b0b0b8;
+    --border:        #3a3a3a;
+    --border-strong: #4a4a4a;
+    /* Dark-theme links and focus rings need a lighter accent. */
+    --accent:        #8b9cf0;
+    --accent-fg:     #121212;
+    --accent-soft:   #2c3150;
+    --danger:        oklch(0.72 0.16 25);
     --warn:          oklch(0.78 0.12 75);
     --success:       oklch(0.72 0.10 150);
   }
@@ -158,13 +156,27 @@
   .anila-msg-actions {
     opacity: 0;
     transition: opacity 140ms ease;
+    margin-top: 8px;
   }
   .anila-msg-assistant:hover .anila-msg-actions,
   .anila-msg-assistant:focus-within .anila-msg-actions {
     opacity: 1;
   }
+  /* Submitted feedback: collapse faded chrome so the thank-you sits
+     next to the answer. Hover / keyboard focus still reveal the
+     toolbar (targets stay in the tree). Touch (hover:none) keeps it open. */
+  .anila-msg-assistant.anila-msg-feedback-sent:not(:hover):not(:focus-within) .anila-msg-actions {
+    max-height: 0;
+    margin-top: 0;
+    overflow: hidden;
+  }
   @media (hover: none) {
     .anila-msg-actions { opacity: 1; }
+    .anila-msg-assistant.anila-msg-feedback-sent:not(:hover):not(:focus-within) .anila-msg-actions {
+      max-height: none;
+      margin-top: 8px;
+      overflow: visible;
+    }
   }
 
   /* Prose rhythm inside assistant replies. Tightens paragraph stacking

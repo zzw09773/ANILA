@@ -25,11 +25,21 @@ test('both themes define a masthead background and foreground', () => {
   }
 })
 
-test('the dark masthead is dark (luminance well below the light one)', () => {
-  const lum = (hex) => { const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
-  const pick = (sel) => block(sel).match(/--c-masthead:\s*(#[0-9a-f]{6})/i)[1]
-  assert.ok(lum(pick('[data-theme="dark"]')) < 0.15, 'dark masthead must be dark')
-  assert.ok(lum(pick('[data-theme="dark"]')) < lum(pick(':root,\n[data-theme="light"]')), 'dark masthead darker than the light one')
+test('masthead text keeps AA contrast in both themes', () => {
+  const lum = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => {
+      const channel = parseInt(hex.slice(i, i + 2), 16) / 255
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+    })
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+  for (const selector of [':root,\n[data-theme="light"]', '[data-theme="dark"]']) {
+    const b = block(selector)
+    const background = lum(b.match(/--c-masthead:\s*(#[0-9a-f]{6})/i)[1])
+    const foreground = lum(b.match(/--c-masthead-fg:\s*(#[0-9a-f]{6})/i)[1])
+    const contrast = (Math.max(background, foreground) + 0.05) / (Math.min(background, foreground) + 0.05)
+    assert.ok(contrast >= 4.5, `${selector}: masthead contrast ${contrast.toFixed(2)} must be at least 4.5:1`)
+  }
 })
 
 test('AppHeader paints only with the masthead tokens, never a hard-coded white or the accent', () => {

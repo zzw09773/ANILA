@@ -44,7 +44,7 @@ describe("AnilaBrand helpers", () => {
 });
 
 describe("EmptyState brand hero", () => {
-  it("plays the brand video above the title", () => {
+  it("shows a static brand mark without autoplay above the title", () => {
     render(
       <EmptyState
         agent={{ id: "anila-router", name: "ANILA" }}
@@ -53,11 +53,8 @@ describe("EmptyState brand hero", () => {
       />,
     );
     expect(screen.getByText("你今天想問 ANILA 什麼？")).toBeTruthy();
-    const video = document.querySelector("video");
-    expect(video?.getAttribute("src")).toContain("brand/anila-logo.mp4");
-    expect(video?.getAttribute("aria-label")).toBe("ANILA");
-    expect(video?.muted).toBe(true);
-    expect(video?.loop).toBe(true);
+    expect(screen.getByRole("img", { name: "ANILA" }).getAttribute("src")).toContain("brand/anila-mark.png");
+    expect(document.querySelector("video")).toBeNull();
   });
 });
 

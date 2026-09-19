@@ -42,6 +42,7 @@ def _seed_rated_message(
     agent_name: str = "briefing-agent",
     comment: str | None = "答非所問",
     reasons: list | None = None,
+    user_content: str | None = None,
 ) -> Message:
     conv = Conversation(
         user_id=owner.id,
@@ -58,10 +59,23 @@ def _seed_rated_message(
                 "reasons": reasons or [],
             }
         }
+    parent_id = None
+    if user_content is not None:
+        user_msg = Message(
+            conversation_id=conv.id,
+            role="user",
+            content=user_content,
+            classification_level=classification_level,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(user_msg)
+        db.flush()
+        parent_id = user_msg.id
     msg = Message(
         conversation_id=conv.id,
         role="assistant",
         content=content,
+        parent_id=parent_id,
         rating=rating,
         rating_score=rating_score,
         model_name=model_name,
@@ -227,12 +241,10 @@ def test_feedback_csv_export_is_really_csv(client, db: Session):
     assert rows[1][2] == "太慢了"
 
 
-def test_feedback_csv_never_contains_message_content(client, db: Session):
-    """匯出不得成為受控對話正文的批量外流路徑。
+def test_feedback_csv_includes_rated_reply_and_audits_classified(client, db: Session):
+    """CSV 帶被評分回覆;JSON 列表仍然沒有正文。列管對話要落稽核。"""
+    from app.models.audit_log import AuditLog
 
-    這條同時盯兩個走位:(a) 正文被塞進任何一欄;(b) 有人放寬白名單,
-    讓 CSV 長出 JSON 擋掉的欄位。
-    """
     admin = make_user(db, username="fb-csv-secret-admin", role="admin")
     owner = make_user(db, username="fb-csv-secret-u", role="user")
     _seed_rated_message(
@@ -241,21 +253,54 @@ def test_feedback_csv_never_contains_message_content(client, db: Session):
         rating="down",
         content=SECRET_PAYLOAD,
         classification_level="機密",
-        comment="留言看得到,正文看不到",
+        comment="留言看得到",
+        user_content="請問院內規章",
+    )
+
+    json_resp = client.get(FEEDBACK_URL, headers=_bearer(admin))
+    assert json_resp.status_code == 200, json_resp.text
+    assert SECRET_PAYLOAD not in json_resp.text
+    assert "content" not in json_resp.json()["items"][0]
+
+    resp = client.get(
+        FEEDBACK_URL, headers=_bearer(admin), params={"format": "csv"}
+    )
+    assert resp.status_code == 200, resp.text
+    rows = _csv_rows(resp)
+    assert rows[0][-2:] == ["使用者提問", "被評分回覆"]
+    assert len(rows[0]) == len(FEEDBACK_ITEM_KEYS) + 2
+    assert rows[1][6] == "機密"
+    assert rows[1][2] == "留言看得到"
+    assert rows[1][-2] == "請問院內規章"
+    assert rows[1][-1] == SECRET_PAYLOAD
+
+    audits = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "access_classified_conversation")
+        .all()
+    )
+    assert len(audits) == 1
+    assert audits[0].actor_user_id == admin.id
+
+
+def test_feedback_csv_includes_user_prompt_for_unclassified(client, db: Session):
+    admin = make_user(db, username="fb-csv-prompt-admin", role="admin")
+    owner = make_user(db, username="fb-csv-prompt-u", role="user")
+    _seed_rated_message(
+        db,
+        owner=owner,
+        rating="down",
+        content="這是助手的回答正文",
+        user_content="請介紹 ANILA",
     )
 
     resp = client.get(
         FEEDBACK_URL, headers=_bearer(admin), params={"format": "csv"}
     )
-
     assert resp.status_code == 200, resp.text
-    assert SECRET_PAYLOAD not in resp.text
-
     rows = _csv_rows(resp)
-    assert "content" not in rows[0], "白名單被放寬,CSV 長出了正文欄"
-    assert len(rows[0]) == len(FEEDBACK_ITEM_KEYS)
-    assert rows[1][6] == "機密"
-    assert rows[1][2] == "留言看得到,正文看不到"
+    assert rows[1][-2] == "請介紹 ANILA"
+    assert rows[1][-1] == "這是助手的回答正文"
 
 
 def test_feedback_csv_honours_the_filters(client, db: Session):
@@ -441,3 +486,24 @@ def test_feedback_csv_neutralizes_reasons_first_element(
     assert reasons_cell[:1] == "'"
     assert reasons_cell[1:].startswith(first)
     assert "not-at-cell-start" in reasons_cell
+
+
+def test_items_to_csv_appends_prompt_and_reply():
+    text = feedback_api._items_to_csv(
+        [_comment_item("ok")],
+        bodies={1: ("請介紹 ANILA", "這是助手的回答正文")},
+    )
+    rows = _rows_from_csv_text(text)
+    assert rows[0][-2:] == ["使用者提問", "被評分回覆"]
+    assert rows[1][-2:] == ["請介紹 ANILA", "這是助手的回答正文"]
+
+
+def test_user_prompt_walks_parent_id(db: Session):
+    owner = make_user(db, username="fb-prompt-walk-u", role="user")
+    msg = _seed_rated_message(
+        db,
+        owner=owner,
+        content="這是助手的回答正文",
+        user_content="請介紹 ANILA",
+    )
+    assert feedback_api._user_prompt_for(db, msg, {}) == "請介紹 ANILA"

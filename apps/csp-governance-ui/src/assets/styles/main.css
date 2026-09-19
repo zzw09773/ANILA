@@ -79,7 +79,7 @@
     outline-offset: 2px;
   }
 
-  /* Heading defaults — sans (institutional), suppress browser bold to control weight */
+  /* Heading defaults — system sans, suppress browser bold to control weight */
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-sans);
     font-weight: 600;
@@ -449,11 +449,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 頁面主標題：明體、稍大，公文抬頭感（只此一處用 display 字型） */
+/* 頁面主標題：與內文同一套系統 sans */
 .page-head__title,
 .page-title {
-  font-family: var(--font-display);
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-weight: 600;
 }
 
 /* Respect reduced-motion requests (vestibular safety / a11y). The TUI uses
@@ -522,9 +522,9 @@
 .page-head__title,
 .page__title,
 .page-title {
-  font-family: var(--font-display);
+  font-family: var(--font-sans);
   font-size: var(--t-2xl);
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: var(--tracking-tight);
   color: var(--c-fg-1);
   margin: 0 0 4px;

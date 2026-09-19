@@ -223,16 +223,20 @@ const MODAL_FOCUSABLE =
 
 export const Modal = ({ open, onClose, title, subtitle, children, width = 480 }) => {
   const panelRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (!open) return;
     // a11y: remember prior focus, move focus into the dialog, trap Tab, and
     // restore focus on close so keyboard/AT users aren't dropped to <body>.
+    // onClose is read from a ref so parent rerenders that pass a new
+    // callback do not remount this trap or reset focus.
     const prevFocus = document.activeElement;
     const panel = panelRef.current;
     const initial = panel?.querySelectorAll(MODAL_FOCUSABLE);
     (initial && initial.length ? initial[0] : panel)?.focus();
     const h = (e) => {
-      if (e.key === "Escape") { onClose(); return; }
+      if (e.key === "Escape") { onCloseRef.current?.(); return; }
       if (e.key === "Tab" && panel) {
         const f = panel.querySelectorAll(MODAL_FOCUSABLE);
         if (!f.length) { e.preventDefault(); return; }
@@ -243,14 +247,15 @@ export const Modal = ({ open, onClose, title, subtitle, children, width = 480 })
     };
     window.addEventListener("keydown", h);
     return () => { window.removeEventListener("keydown", h); prevFocus?.focus?.(); };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
-    <div onClick={onClose} style={{
+    <div onClick={() => onCloseRef.current?.()} style={{
       position: "fixed", inset: 0, zIndex: 100,
       background: "oklch(0.10 0 0 / 0.4)",
       display: "flex", alignItems: "center", justifyContent: "center",
       padding: 20,
+      boxSizing: "border-box",
     }}>
       <div ref={panelRef} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : "對話方塊"} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
         outline: "none",
@@ -258,21 +263,35 @@ export const Modal = ({ open, onClose, title, subtitle, children, width = 480 })
         border: "1px solid var(--border)",
         borderRadius: "var(--radius-lg)",
         width: "100%", maxWidth: width,
+        maxHeight: "min(calc(100vh - 40px), calc(100dvh - 40px))",
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
         boxShadow: "0 24px 60px -20px oklch(0.10 0 0 / 0.35)",
         overflow: "hidden",
       }}>
         <div style={{
-          padding: "16px 20px 12px",
+          padding: "14px 16px 12px 20px",
           borderBottom: "1px solid var(--border)",
-          display: "flex", alignItems: "start", justifyContent: "space-between", gap: 16,
+          background: "var(--bg-subtle)",
+          display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
+          flexShrink: 0,
         }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>{title}</div>
-            {subtitle && <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 2 }}>{subtitle}</div>}
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.35, overflowWrap: "anywhere" }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4, lineHeight: 1.45, overflowWrap: "anywhere" }}>{subtitle}</div>}
           </div>
-          <IconButton onClick={onClose} title="關閉"><IconX/></IconButton>
+          <span style={{ flexShrink: 0, display: "inline-flex" }}>
+            <IconButton onClick={() => onCloseRef.current?.()} title="關閉"><IconX/></IconButton>
+          </span>
         </div>
-        <div style={{ padding: 20 }}>{children}</div>
+        <div style={{
+          padding: 20,
+          overflow: "auto",
+          minHeight: 0,
+          flex: 1,
+          background: "var(--bg-elev)",
+        }}>{children}</div>
       </div>
     </div>
   );

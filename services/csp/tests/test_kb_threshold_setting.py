@@ -43,6 +43,7 @@ from app.models.platform_setting import (
     KB_THRESHOLD_EMBEDDING_KEY,
     KB_THRESHOLD_KEY,
     PlatformSetting,
+    resolve_kb_threshold,
     set_kb_threshold,
     set_setting,
 )
@@ -564,8 +565,8 @@ def test_calibrated_is_false_after_embedding_model_changes(client, admin_token, 
     assert body["calibrated"] is False
 
 
-def test_generic_settings_write_refreshes_calibration_stamp(db):
-    """設定頁走 set_setting 時，不可以沿用舊校準時間替新數字背書。"""
+def test_generic_settings_write_clears_calibration(db):
+    """設定頁只改數字，不能把新值標成已校準。"""
     from app.models.model_registry import ModelRegistry
 
     emb = ModelRegistry(
@@ -590,5 +591,8 @@ def test_generic_settings_write_refreshes_calibration_stamp(db):
     db.expire_all()
     row = db.get(PlatformSetting, KB_THRESHOLD_KEY)
     assert row is not None and float(row.value) == 0.9
-    assert db.get(PlatformSetting, KB_THRESHOLD_EMBEDDING_KEY).value == "emb-a"
-    assert db.get(PlatformSetting, KB_THRESHOLD_CALIBRATED_AT_KEY).value != "2020-01-01T00:00:00+00:00"
+    assert (db.get(PlatformSetting, KB_THRESHOLD_EMBEDDING_KEY).value or "") == ""
+    assert (db.get(PlatformSetting, KB_THRESHOLD_CALIBRATED_AT_KEY).value or "") == ""
+    value, calibrated = resolve_kb_threshold(db, embedding_model="emb-a")
+    assert value == 0.9
+    assert calibrated is False

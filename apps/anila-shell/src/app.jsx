@@ -156,7 +156,7 @@ import {
   Dropdown,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
-import { AnilaLogoImg, AnilaLogoVideo } from "./AnilaBrand.jsx";
+import { AnilaLogoImg } from "./AnilaBrand.jsx";
 import {
   IconColumns,
   IconHistory,
@@ -450,7 +450,11 @@ export function agentReplyMetaFields(meta) {
 function applyTweaks(t) {
   const r = document.documentElement;
   r.setAttribute("data-theme", t.dark ? "dark" : "light");
-  if (t.accent) r.style.setProperty("--accent", t.accent);
+  if (t.accent && t.accent !== DEFAULT_TWEAKS.accent) {
+    r.style.setProperty("--accent", t.accent);
+  } else {
+    r.style.removeProperty("--accent");
+  }
   if (t.density) r.style.setProperty("--density", `${t.density}px`);
   if (t.sansFamily) {
     r.style.setProperty(
@@ -673,51 +677,111 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
   // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
   const uiSettingsHydratedRef = useRef(false);
+  const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false });
+  const uiSettingsSaveErrorRef = useRef(false);
+  const foldersRef = useRef(folders);
+  const redactionModeRef = useRef(redactionMode);
+  const [uiSettingsLoadError, setUiSettingsLoadError] = useState(false);
+  const [uiSettingsUnsaved, setUiSettingsUnsaved] = useState(false);
+  foldersRef.current = folders;
+  redactionModeRef.current = redactionMode;
+
+  const markUiSettingsUserEdited = useCallback((field) => {
+    uiSettingsDirtyRef.current[field] = true;
+    setUiSettingsUnsaved(true);
+  }, []);
+
+  const changeRedactionMode = useCallback((mode) => {
+    markUiSettingsUserEdited("redactionMode");
+    setRedactionMode(mode);
+  }, [markUiSettingsUserEdited]);
+
+  const persistUiSettings = useCallback((nextFolders, nextRedaction) => {
+    return putUiSettings(authRequest, { folders: nextFolders, redactionMode: nextRedaction })
+      .then(() => {
+        uiSettingsDirtyRef.current = { folders: false, redactionMode: false };
+        uiSettingsSaveErrorRef.current = false;
+        setUiSettingsUnsaved(false);
+        setUiSettingsLoadError(false);
+      })
+      .catch(() => {
+        uiSettingsSaveErrorRef.current = true;
+        setUiSettingsUnsaved(true);
+      });
+  }, [authRequest]);
+
+  const applyServerUiSettings = useCallback((s) => {
+    const dirty = uiSettingsDirtyRef.current;
+    const nextFolders = dirty.folders
+      ? foldersRef.current
+      : resolveFoldersFromServer(s.folders);
+    const nextRedaction = dirty.redactionMode
+      ? redactionModeRef.current
+      : (REDACTION_MODES.includes(s.redactionMode) ? s.redactionMode : REDACTION_MODE_DEFAULT);
+    setFolders(nextFolders);
+    setRedactionMode(nextRedaction);
+    uiSettingsHydratedRef.current = true;
+    setUiSettingsLoadError(false);
+    if (dirty.folders || dirty.redactionMode) {
+      persistUiSettings(nextFolders, nextRedaction);
+    } else {
+      uiSettingsSaveErrorRef.current = false;
+      setUiSettingsUnsaved(false);
+    }
+  }, [persistUiSettings]);
+
   useEffect(() => {
     if (!isAuthenticated) {
       uiSettingsHydratedRef.current = false;
+      uiSettingsDirtyRef.current = { folders: false, redactionMode: false };
+      uiSettingsSaveErrorRef.current = false;
       setFolders(DEFAULT_FOLDERS);
       setRedactionMode(REDACTION_MODE_DEFAULT);
+      setUiSettingsLoadError(false);
+      setUiSettingsUnsaved(false);
       return undefined;
     }
     uiSettingsHydratedRef.current = false;
     setFolders(readFoldersCache(window.localStorage, user?.id));
-    // 讀取成功前先回到預設畫面；這不會打開回存，因為 hydrated 仍是 false。
     setRedactionMode(REDACTION_MODE_DEFAULT);
     let alive = true;
     getUiSettings(authRequest)
       .then((res) => {
         if (!alive) return;
-        const s = res?.ui_settings || {};
-        setFolders(resolveFoldersFromServer(s.folders));
-        // 白名單驗證:blob 是使用者可寫的,不明值一律退回預設,不要拿它去比對模式。
-        //
-        // ⚠ 這裡也是**舊值的退場口**。曾經有第三個模式,使用者的 blob 裡可能還
-        // 存著它。那不是錯誤、不是壞資料,是我們自己把選項拿掉了 —— 所以它就
-        // 安安靜靜地落在預設(warn)上:不 throw、不 toast、也不 console.warn。
-        // 對使用者噴一條看起來像 bug 的警告,只會讓他以為自己的帳號壞了。
-        if (REDACTION_MODES.includes(s.redactionMode)) {
-          setRedactionMode(s.redactionMode);
-        }
-        uiSettingsHydratedRef.current = true;
+        applyServerUiSettings(res?.ui_settings || {});
       })
       .catch(() => {
-        // 讀取失敗：維持這位使用者的快取畫面，不准打開回存開關去 PUT 預設值。
+        if (!alive) return;
+        setUiSettingsLoadError(true);
       });
     return () => { alive = false; };
   }, [isAuthenticated, authRequest, user?.id]);
 
+  const retryUiSettings = useCallback(() => {
+    if (!isAuthenticated) return;
+    if (uiSettingsSaveErrorRef.current) {
+      persistUiSettings(foldersRef.current, redactionModeRef.current);
+      return;
+    }
+    getUiSettings(authRequest)
+      .then((res) => {
+        applyServerUiSettings(res?.ui_settings || {});
+      })
+      .catch(() => {
+        setUiSettingsLoadError(true);
+      });
+  }, [isAuthenticated, authRequest, persistUiSettings, applyServerUiSettings]);
+
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    if (!isAuthenticated || !uiSettingsHydratedRef.current) return undefined;
+    if (!isAuthenticated) return undefined;
     writeFoldersCache(window.localStorage, user?.id, folders);
-    // ⚠ PUT 是整包覆寫,所以每一次都要把 blob 的每個 key 都帶上。少帶一個,
-    // 另一個設定就會被這次的寫入洗掉。
+    if (!uiSettingsHydratedRef.current) return undefined;
     const t = setTimeout(() => {
-      putUiSettings(authRequest, { folders, redactionMode }).catch(() => { /* best-effort */ });
+      persistUiSettings(folders, redactionMode);
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, redactionMode, isAuthenticated, authRequest, user?.id]);
+  }, [folders, redactionMode, isAuthenticated, authRequest, user?.id, persistUiSettings]);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -758,6 +822,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const name = (rawName || "").trim();
     if (!name) return;
     const baseId = `usr-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "folder"}`;
+    markUiSettingsUserEdited("folders");
     setFolders((prev) => {
       if (prev.some((f) => f.name === name)) return prev;
       let id = baseId;
@@ -767,10 +832,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
       return [...prev, { id, name, icon: "folder" }];
     });
-  }, []);
+  }, [markUiSettingsUserEdited]);
 
   const deleteFolder = useCallback((id) => {
     if (BUILTIN_FOLDER_IDS.has(id)) return;
+    markUiSettingsUserEdited("folders");
     setFolders((prev) => prev.filter((f) => f.id !== id));
     setConversations((prevConvs) => {
       const doomed = prevConvs.filter((c) => c.folder === id).map((c) => c.id);
@@ -785,7 +851,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return prevConvs.filter((c) => c.folder !== id);
     });
     setFolder((current) => (current === id ? "all" : current));
-  }, []);
+  }, [markUiSettingsUserEdited]);
 
   const scrollRef = useRef(null);
 
@@ -3301,13 +3367,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
     if (typeof convId !== "number" || typeof targetMsg.dbId !== "number") {
       setRuntimeError("此訊息尚未儲存至後端，反饋僅保留於本地。");
-      return;
+      return false;
     }
     try {
       await apiRateMessage(authRequest, convId, targetMsg.dbId, nextRating, feedback);
+      return true;
     } catch (err) {
       updateMsg(convId, targetMsg.id, { rating: prevRating, ratingScore: prevScore });
       setRuntimeError(err.message || "反饋儲存失敗");
+      return false;
     }
   }
 
@@ -3957,7 +4025,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 messagesByColumn={compareMsgs}
                 onSend={(text, atts, meta) => sendCompare(text, atts, meta)}
                 redactionMode={redactionMode}
-                onChangeRedactionMode={setRedactionMode}
+                onChangeRedactionMode={changeRedactionMode}
                 onExit={exitCompare}
                 onAdoptColumn={adoptColumn}
                 AgentSelector={AgentSelector}
@@ -4101,7 +4169,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                       onSend={sendMessage}
                       agents={agents}
                       redactionMode={redactionMode}
-                      onChangeRedactionMode={setRedactionMode}
+                      onChangeRedactionMode={changeRedactionMode}
                       conversationId={selectedConvId}
                       presetPrompts={presetPrompts}
                       deepThinkNext={deepThinkNext}
@@ -4191,7 +4259,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         agents={agents}
         authRequest={authRequest}
         redactionMode={redactionMode}
-        onChangeRedactionMode={setRedactionMode}
+        onChangeRedactionMode={changeRedactionMode}
+        settingsLoadError={uiSettingsLoadError}
+        settingsUnsaved={uiSettingsUnsaved}
+        onRetrySettingsLoad={retryUiSettings}
         onOpenConversation={(id) => {
           if (id == null) return;
           setSettingsOpen(false);
@@ -4261,12 +4332,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 export function EmptyState({ agent, agents, onPick, loading }) {
   const prompts = buildStarterPrompts(agents);
   return (
-    <div style={{ padding: "48px 12px 24px", textAlign: "center" }}>
-      <AnilaLogoVideo width={180} />
-      <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
+    <div style={{ padding: "72px 16px 32px", textAlign: "center" }}>
+      <AnilaLogoImg variant="mark" height={28} style={{ margin: "0 auto" }} />
+      <div style={{ marginTop: 20, fontSize: 22, fontWeight: 600, letterSpacing: -0.3 }}>
         你今天想問 ANILA 什麼？
       </div>
-      <div style={{ marginTop: 6, color: "var(--fg-muted)", fontSize: 13 }}>
+      <div style={{ marginTop: 8, color: "var(--fg-muted)", fontSize: 14 }}>
         {loading
           ? "agent 清單載入中…"
           : agent?.id === ROUTER_AGENT.id
@@ -4274,40 +4345,38 @@ export function EmptyState({ agent, agents, onPick, loading }) {
             : `當前助手： ${agent?.name}`}
       </div>
       <div style={{
-        marginTop: 36, display: "grid",
+        marginTop: 32, display: "grid",
         gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
-        gap: 10,
-        maxWidth: 560, margin: "36px auto 0", textAlign: "left",
+        gap: 8,
+        maxWidth: 520, margin: "32px auto 0", textAlign: "left",
       }}>
         {prompts.map((s, i) => {
           const isPrimary = s.primary === true;
           return (
             <button key={i} onClick={() => onPick(s.q)} style={{
-              padding: isPrimary ? "16px 18px" : "12px 14px",
-              background: isPrimary ? "var(--accent-soft, var(--bg-elev))" : "var(--bg-elev)",
-              border: "1px solid " + (isPrimary ? "var(--accent, var(--border-strong))" : "var(--border)"),
+              padding: isPrimary ? "14px 16px" : "12px 14px",
+              background: "var(--bg-elev)",
+              border: "1px solid " + (isPrimary ? "var(--border-strong)" : "var(--border)"),
               borderRadius: "var(--radius)",
               cursor: "pointer", textAlign: "left",
-              transition: "all .12s",
+              transition: "border-color .12s",
               fontFamily: "inherit",
               color: "var(--fg)",
             }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.borderColor = "var(--border-strong)";
-                e.currentTarget.style.transform = "translateY(-1px)";
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.borderColor = isPrimary
-                  ? "var(--accent, var(--border-strong))"
+                  ? "var(--border-strong)"
                   : "var(--border)";
-                e.currentTarget.style.transform = "";
               }}>
               <div style={{
-                fontSize: isPrimary ? 15 : 13,
+                fontSize: 14,
                 fontWeight: 600,
                 color: "var(--fg)",
               }}>{s.title}</div>
-              <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}>{s.sub}</div>
+              <div style={{ fontSize: 13, color: "var(--fg-muted)", marginTop: 4 }}>{s.sub}</div>
             </button>
           );
         })}
@@ -4323,6 +4392,7 @@ function SettingsModal({
   user, agents, authRequest,
   redactionMode, onChangeRedactionMode,
   onOpenConversation,
+  settingsLoadError, settingsUnsaved, onRetrySettingsLoad,
 }) {
   return (
     <Modal open={open} onClose={onClose} title="設定" subtitle="顯示、隱私與帳號" width={680}>
@@ -4347,6 +4417,36 @@ function SettingsModal({
             </button>
           ))}
         </div>
+        {(settingsLoadError || settingsUnsaved) ? (
+          <div
+            role="status"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+              padding: "8px 10px", fontSize: 12, lineHeight: 1.5,
+              background: "var(--bg-subtle)", border: "1px solid var(--border)",
+              borderRadius: "var(--radius)", color: "var(--fg)",
+            }}
+          >
+            <span>
+              {settingsUnsaved
+                ? "這次修改還沒存到伺服器。"
+                : "設定暫時讀不到伺服器。修改可能還沒保存。"}
+            </span>
+            {onRetrySettingsLoad ? (
+              <button
+                type="button"
+                onClick={onRetrySettingsLoad}
+                style={{
+                  flexShrink: 0, padding: "4px 10px", fontSize: 12, cursor: "pointer",
+                  background: "var(--bg-elev)", border: "1px solid var(--border-strong)",
+                  borderRadius: 4, color: "var(--fg)",
+                }}
+              >
+                重試
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div>
           {tab === "general" && (
             <div style={{ display: "grid", gap: 12 }}>
@@ -4448,7 +4548,7 @@ function SettingsModal({
 
 // ---- Root App (protected) --------------------------------------------------
 const DEFAULT_TWEAKS = {
-  accent: "#0b7285",
+  accent: "#3b5bdb",
   dark: false,
   density: 18,
   sansFamily: "Noto Sans TC",

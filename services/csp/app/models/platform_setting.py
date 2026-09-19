@@ -131,6 +131,9 @@ def resolve_kb_threshold(
             KB_THRESHOLD_DEFAULT,
         )
         return KB_THRESHOLD_DEFAULT, False
+    cal_at = db.get(PlatformSetting, KB_THRESHOLD_CALIBRATED_AT_KEY)
+    if cal_at is None or not (cal_at.value or "").strip():
+        return value, False
     if embedding_model is _OMIT_EMBEDDING:
         return value, True
     stamp = db.get(PlatformSetting, KB_THRESHOLD_EMBEDDING_KEY)
@@ -190,6 +193,7 @@ def set_kb_threshold(
     *,
     actor: User | None = None,
     embedding_model: str | None = None,
+    mark_calibrated: bool = True,
 ) -> None:
     """寫入分數門檻。範圍由呼叫端先擋，這裡再擋一次（值域是這個設定的定義）。
 
@@ -212,8 +216,13 @@ def set_kb_threshold(
         row.value = str(float(value))
         row.updated_at = _utcnow()
     row.updated_by_user_id = actor.id if actor is not None else None
-    _upsert_kb_meta(db, KB_THRESHOLD_EMBEDDING_KEY, (embedding_model or "").strip(), actor)
-    _upsert_kb_meta(db, KB_THRESHOLD_CALIBRATED_AT_KEY, _utcnow().isoformat(), actor)
+    if mark_calibrated:
+        _upsert_kb_meta(db, KB_THRESHOLD_EMBEDDING_KEY, (embedding_model or "").strip(), actor)
+        _upsert_kb_meta(db, KB_THRESHOLD_CALIBRATED_AT_KEY, _utcnow().isoformat(), actor)
+    else:
+        # 一般設定頁只改數字，沒有看過檢索分數。清掉校準戳記，避免新值被當成已量過。
+        _upsert_kb_meta(db, KB_THRESHOLD_EMBEDDING_KEY, "", actor)
+        _upsert_kb_meta(db, KB_THRESHOLD_CALIBRATED_AT_KEY, "", actor)
     db.flush()
 
 
@@ -420,6 +429,7 @@ def set_setting(db: Session, key: str, value: Any, *, actor: User | None = None)
             float(parsed),
             actor=actor,
             embedding_model=resolved.name if resolved is not None else None,
+            mark_calibrated=False,
         )
         return
 
