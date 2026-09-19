@@ -24,8 +24,13 @@ def create_api_key(
     name: str,
     model_ids: list[int],
     expires_at: datetime | None = None,
+    commit: bool = True,
 ) -> tuple[ApiKey, str]:
-    """Create a new API key. Returns (api_key_obj, full_key)."""
+    """Create a new API key. Returns (api_key_obj, full_key).
+
+    ``commit=False`` leaves the row in the current session so a fail-closed
+    audit write can roll the key back if logging fails.
+    """
     full_key, prefix, suffix, key_hash = generate_api_key()
 
     api_key = ApiKey(
@@ -44,8 +49,9 @@ def create_api_key(
         perm = ApiKeyModelPermission(api_key_id=api_key.id, model_id=model_id)
         db.add(perm)
 
-    db.commit()
-    db.refresh(api_key)
+    if commit:
+        db.commit()
+        db.refresh(api_key)
     return api_key, full_key
 
 

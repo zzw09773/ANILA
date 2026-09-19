@@ -34,7 +34,7 @@ from app.schemas.service_access_grant import (
     ServiceAccessGrantCreate,
     ServiceAccessGrantResponse,
 )
-from app.services.audit_service import log_audit_event
+from app.services.audit_service import log_audit_event_or_raise
 from app.services.auth_service import require_admin
 
 router = APIRouter(tags=["服務存取權限"])
@@ -153,17 +153,18 @@ def create_grant(
         granted_by=admin.id,
     )
     db.add(grant)
-    db.commit()
-    db.refresh(grant)
-    log_audit_event(
+    db.flush()
+    log_audit_event_or_raise(
         db,
         actor=admin,
         action="grant",
         resource_type="service_access_grant",
         resource_id=grant.id,
         detail=f"授權 {target_label} 存取「{link.name}」",
-        commit=True,
+        commit=False,
     )
+    db.commit()
+    db.refresh(grant)
     return grant
 
 
@@ -187,14 +188,14 @@ def revoke_grant(
         return {"message": "Grant 已 revoke", "revoked_at": grant.revoked_at}
 
     grant.revoked_at = datetime.now(timezone.utc)
-    db.commit()
-    log_audit_event(
+    log_audit_event_or_raise(
         db,
         actor=admin,
         action="revoke",
         resource_type="service_access_grant",
         resource_id=grant.id,
         detail=f"撤銷 grant id={grant.id} (link_id={grant.platform_link_id})",
-        commit=True,
+        commit=False,
     )
+    db.commit()
     return {"message": "Grant 已 revoke", "revoked_at": grant.revoked_at}

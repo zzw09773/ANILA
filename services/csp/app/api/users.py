@@ -19,7 +19,7 @@ from app.schemas.user import (
     BatchApproveResponse,
     BatchApproveRejectedItem,
 )
-from app.services.audit_service import log_audit_event
+from app.services.audit_service import log_audit_event, log_audit_event_or_raise
 from app.services.auth_service import (
     get_current_user,
     is_admin_tier,
@@ -583,19 +583,20 @@ def approve_user(
     if user.is_approved:
         return {"message": f"使用者「{user.username}」已是核准狀態"}
     user.is_approved = True
-    db.commit()
     detail = f"核准使用者「{user.username}」"
     if actor_is_unit_admin:
         detail += "（單位管理員核准）"
-    log_audit_event(
+    # Fail-closed: audit in the same uncommitted session as the mutation.
+    log_audit_event_or_raise(
         db,
         actor=current_user,
         action="approve",
         resource_type="user",
         resource_id=user.id,
         detail=detail,
-        commit=True,
+        commit=False,
     )
+    db.commit()
     return {"message": f"已核准使用者「{user.username}」"}
 
 
@@ -628,22 +629,23 @@ def deactivate_user(
 
     user.is_active = False
     user.token_version = (user.token_version or 0) + 1
-    # Owner ruling: deactivating an account must immediately revoke the
-    # credential — durable deny-list row + Redis publish, not just the
-    # local token_version bump that only csp itself notices.
-    commit_token_revocation(db, user)
     detail = f"停用使用者「{user.username}」"
     if actor_is_unit_admin:
         detail += "（單位管理員停用）"
-    log_audit_event(
+    # Queue audit before the revocation commit so a failed write rolls back
+    # the is_active / token_version change instead of leaving an unaudited
+    # deactivation. commit_token_revocation then persists user + audit +
+    # TokenRevocation in one commit and publishes Redis.
+    log_audit_event_or_raise(
         db,
         actor=current_user,
         action="deactivate",
         resource_type="user",
         resource_id=user.id,
         detail=detail,
-        commit=True,
+        commit=False,
     )
+    commit_token_revocation(db, user)
     return {"message": "使用者已停用"}
 
 
@@ -683,19 +685,19 @@ def reactivate_user(
         raise HTTPException(status_code=400, detail="使用者已是啟用狀態")
 
     user.is_active = True
-    db.commit()
     detail = f"恢復使用者「{user.username}」"
     if actor_is_unit_admin:
         detail += "（單位管理員恢復）"
-    log_audit_event(
+    log_audit_event_or_raise(
         db,
         actor=current_user,
         action="reactivate",
         resource_type="user",
         resource_id=user.id,
         detail=detail,
-        commit=True,
+        commit=False,
     )
+    db.commit()
     return {"message": f"已恢復使用者「{user.username}」"}
 
 
