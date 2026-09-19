@@ -552,14 +552,14 @@ async def test_constructor_rejects_invalid_agent_id():
 
 **Gate 驗證**：
 ```bash
-# Sprint 1 結束時必須通過：
+# Sprint 1 結束時必須通過（§17.1 搬遷後的路徑；見 §9 現況註記）：
 $ grep -rn "document_chunks" --include="*.py" \
-    /home/aia/c1147259/ANILA/anila-core /home/aia/c1147259/ANILA/AgenticRAG \
+    packages/anila-core/src packages/anila-agent services/ingestion-worker/src \
     | grep -v "_archive\|tests\|__pycache__"
-# 期望輸出：只剩一個檔案 — 新的 anila_core.storage.adapters.pgvector_store_v2
+# 期望輸出：canonical SDK 一個檔案，加上兩個已審查 caller（見 §9 現況註記）
 ```
 
-只允許**一個檔案**直接 query `document_chunks` 表，其他全部走 SDK / API。
+只允許 canonical SDK（`CollectionScopedPgVectorStore`）與已審查 caller allowlist 直接 query `document_chunks` 表，其他全部走 SDK / API。
 
 ---
 
@@ -1208,7 +1208,9 @@ class IngestionError(Exception):
 |---|---|---|---|
 | **G1** | `test_g1_random_workload_no_cross_agent_leak` | `anila-core/tests/integration/test_g1_agent_isolation.py` | ✅ 5 agent × 50 chunks × 30 query × 5 agent = **750 queries 零 leakage** (~1.7s)。`_CHUNKS_PER_AGENT` / `_QUERIES_PER_AGENT` 可調，design doc 原寫 200/1000，CI 跑 50/30 + sanity test 確保不是「RLS 把所有東西擋掉」的 false-positive |
 | **G2** | `test_g2_csp_app_role_lacks_bypass_attributes` + `test_g2_force_rls_enabled_on_document_chunks` + 兩個 raw-psql bypass 測試 | `anila-core/tests/integration/test_g2_rls_bypass.py` | ✅ 4 paths 全擋：role attrs / FORCE / no-GUC / wrong-agent |
-| **G3** | `test_g3_single_sql_entry_point` + literal grep ceiling | `anila-core/tests/test_g3_retrieval_path_uniqueness.py` | ✅ Actual SQL on `document_chunks` = 1 file (`pgvector_store.py`)。Literal grep 7 files (mostly docstrings)；ceiling 12 |
+| **G3** | `test_g3_only_approved_sql_entry_points` + literal grep ceiling | `anila-core/tests/test_g3_retrieval_path_uniqueness.py` | ✅ Actual SQL on `document_chunks` = 1 file (`pgvector_store.py`)。Literal grep 7 files (mostly docstrings)；ceiling 12 |
+
+> **現況註記（2026-09-19，b4276cdb）**：§3.4／§9 的「恰好一個檔案」是 Sprint 1 當時的目標。其後有兩個已審查 caller 合法地保留 inline SQL（`anila-agent/…/anila_pgvector.py`、`ingestion-worker/…/similarity_relations.py`），測試與 §3.4 的 grep 命令仍停在搬遷前的路徑（`anila-core` / `AgenticRAG` / `ingestion-worker`），4 個掃描根有 3 個不存在，G3 因而**假通過**。已改為：基準路徑改走 `packages/` + `services/`；斷言由「單一檔」改為「canonical SDK `CollectionScopedPgVectorStore` + 上述兩檔已審查 allowlist」（`actual == approved`，新增未核准的 SQL 仍會紅）。測試更名為 `test_g3_only_approved_sql_entry_points`。是否把兩個 caller 收斂回單一 SDK，尚未決定。
 
 **Deliverable 驗證**：
 
