@@ -1,0 +1,47 @@
+{
+  "manifest": {
+    "scan": {
+      "target": {
+        "kind": "git_worktree",
+        "targetId": "target_sha256_e5dda1e1b0539b1f494ab95a4a354f3a16977a434b1b4ef0452f111c085bef14",
+        "displayName": "ANILA",
+        "revision": "febad19a350993ce9c182c328f39a5d7826211ad",
+        "snapshotDigest": "codex-security-snapshot/v1:sha256:571a198feb03100ef2e40d9c1bacfa1d9c6b4a1fd2f60b21f2d383fe8e95b1f7"
+      },
+      "scope": {
+        "includePaths": ["."],
+        "excludePaths": []
+      },
+      "summary": {
+        "summary": "Whole-repository Codex Security standard scan. Runtime subagent delegation was unavailable, so the completed audit covered selected security-critical surfaces in the parent thread and explicitly defers the remaining tracked source.",
+        "validationMode": "manual source-backed inspection",
+        "limitations": ["No delegated independent baseline or investigator workers.", "No dynamic tests, dependency CVE scan, or secret scanner run."]
+      }
+    }
+  },
+  "findings": {
+    "findings": []
+  },
+  "coverage": {
+    "mode": "repository",
+    "completeness": "partial",
+    "inventoryStrategy": "repository",
+    "includePaths": ["."],
+    "excludePaths": [],
+    "surfaces": [
+      {"id": "csp-auth-access", "label": "CSP authentication and access control", "disposition": "no_issue_found", "receiptRefs": [], "notes": "Reviewed RS256/JWKS token verification, caller identity extraction, API-key validation, and service access-control algorithm."},
+      {"id": "csp-attachments", "label": "CSP attachment upload and download", "disposition": "no_issue_found", "receiptRefs": [], "notes": "Reviewed upload extension/MIME/size controls, ownership checks, conversation binding, and download authorization."},
+      {"id": "outbound-url-guard", "label": "Outbound URL and SSRF guard", "disposition": "no_issue_found", "receiptRefs": [], "notes": "Reviewed shared validate_outbound_url use and call sites for model, agent, ingestion, authentication, health, memory, and thinking-probe endpoints."},
+      {"id": "subprocess-boundaries", "label": "Studio and core subprocess boundaries", "disposition": "no_issue_found", "receiptRefs": [], "notes": "Reviewed diagram/mindmap renderer exec-style subprocesses and core shell tool sandboxing boundaries."}
+    ],
+    "explicitExclusions": [
+      {"pattern": "node_modules/**", "reason": "Third-party dependency trees are background, not product source."},
+      {"pattern": "dist/**", "reason": "Generated build output is background unless a live flow reaches generated code."},
+      {"pattern": "__pycache__/**", "reason": "Compiled cache is not source."}
+    ],
+    "deferred": [
+      {"id": "remaining-tracked-source", "reason": "Delegation was unavailable in this runtime; the whole-repository tracked-source review is partial and the remaining surfaces require follow-up.", "paths": ["apps", "infra", "packages", "services"]},
+      {"id": "dependency-cve-and-secret-scans", "reason": "Dependency CVE and secret-history scanning were outside this manual source-backed standard scan pass."}
+    ]
+  }
+}

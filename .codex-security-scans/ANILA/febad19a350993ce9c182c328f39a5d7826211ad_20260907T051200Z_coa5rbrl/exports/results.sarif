@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "automationDetails": {
+        "id": "a74c810e-37f1-4c0c-a20e-78db3c207914"
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "level": "warning",
+              "message": {
+                "text": "Delegation was unavailable in this runtime; the whole-repository tracked-source review is partial and the remaining surfaces require follow-up."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "Dependency CVE and secret-history scanning were outside this manual source-backed standard scan pass."
+              }
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "codexSecurityCoverageCompleteness": "partial",
+        "codexSecuritySchemaVersion": "1.0",
+        "codexSecurityTargetKind": "git_worktree"
+      },
+      "results": [],
+      "tool": {
+        "driver": {
+          "name": "Codex Security",
+          "rules": [],
+          "version": "0.1.23"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -1,0 +1,83 @@
+{
+ "summary": "ANILA 是多服務 on-prem AI 平台：nginx（80/443/4443）對外唯一入口，後端 CSP（FastAPI 控制面＋資料面，RS256 JWT＋sk- API key＋卡片/OIDC 登入，PostgreSQL/pgvector＋Redis）、anila-core-router（OpenAI 相容 /v1/chat/completions，代理至 CSP）、anila-studio（artifact 生成，JWKS＋revocation cache 對 CSP 協作）、ingestion-worker（Arq 解析→嵌入→pgvector）、asr-gateway（WS 語音，token 驗證 fail-closed）、pptx-renderer（Node，內網 only）、flux2-dev/agent、docling、models stack（無 host port）。內部服務彼此以 docker 內網明文 HTTP＋X-CSP-Service-Token/5 分鐘派工 JWT 通訊。瀏覽器面：React SPA（anila-shell）cookie-only＋CSRF double-submit、csp-governance-ui（admin Vue）、anilalm。",
+ "assets": [
+  "使用者對話與附件（分類等級、加密記憶 chunk 旗標）",
+  " ingestion 知識庫與 pgvector collection（RLS）",
+  "JWT 私鑰 secrets/jwt-private.pem 與 credential_crypto master key（SECRET_KEY 派生）",
+  "service_client／agent 憑證（AES-256-GCM envelope）",
+  "稽核帳（append-only＋鏈頭錨定）",
+  "service launch token（RS256，送外部 origin）",
+  "治理面 admin 權限（模型/代理/服務登記）"
+ ],
+ "trustBoundaries": [
+  {
+   "actors": "匿名→登入使用者",
+   "data": "帳密/卡片簽章/OIDC code",
+   "controls": "bcrypt、challenge nonce 綁定、PKCS#7＋釘死 CSPKI 鏈驗證、OIDC state/nonce、登入/卡驗 nginx 限速（auth_limit 10r/s、card_verify_limit 2r/s）",
+   "evidence": "services/csp/app/api/auth/password.py:85; services/csp/app/services/card_auth.py:276-306; infra/nginx/anila.conf:32-38"
+  },
+  {
+   "actors": "登入使用者→CSP API",
+   "data": "JSON/上傳檔",
+   "controls": "CSRF double-submit（mutating＋cookie）、get_caller（sk- 或 RS256 JWT＋token_version）、附件副檔名/MIME 白名單、上傳 50MB cap",
+   "evidence": "services/csp/app/middleware/csrf.py; services/csp/app/middleware/caller.py:64-92; services/csp/app/services/attachment_service.py:293-329"
+  },
+  {
+   "actors": "SDK/router→/v1",
+   "data": "chat completions",
+   "controls": "get_caller（/v1/chat/completions:1125）；X-ANILA-Conversation-Id 驗 owner（404 collapse）；X-ANILA-Task-Id 驗 task access＋請求人一致",
+   "evidence": "services/csp/app/api/proxy.py:79-96,1125; services/csp/app/services/proxy/task_link.py:147-152"
+  },
+  {
+   "actors": "studio/router→CSP /v1（s2s）",
+   "data": "artifact job、models 代理",
+   "controls": "require_service_caller（dispatch JWT／service_client csk-／legacy token）；agent 派工 5 分鐘 JWT；非 agent owner 歸因為合法代辦面（見 finding）",
+   "evidence": "services/csp/app/api/artifacts.py:160-209,434-448"
+  },
+  {
+   "actors": "admin→治理面",
+   "data": "模型/代理/服務/帳號管理",
+   "controls": "require_admin/owner；endpoint URL 註冊 SSRF 守衛（validate_outbound_url）；trusted-hosts DB allow-list＋env；openapi.json admin-gated",
+   "evidence": "services/csp/app/api/models.py:193-197; services/csp/app/main.py:393-397,590-600"
+  },
+  {
+   "actors": "CSP→模型/agent/IdP 出站",
+   "data": "LLM/agent 呼叫、OIDC discovery/token",
+   "controls": "validate_outbound_url（scheme/loopback/metadata/RFC1918/trusted-hosts）；proxy call-time 重驗；IdP 四 URL 一律 https＋同一守衛",
+   "evidence": "packages/anila-core/src/anila_core/security/url_guard.py:354-424; services/csp/app/api/proxy.py:1372,1708; services/csp/app/services/external_auth_service.py:435-469"
+  },
+  {
+   "actors": "使用者→附件下載",
+   "data": "上傳檔",
+   "controls": "owner/admin 檢查；FileResponse（filename→Content-Disposition: attachment）；副檔名白名單",
+   "evidence": "services/csp/app/services/attachment_service.py:364-381; services/csp/app/api/attachments.py:189-199"
+  },
+  {
+   "actors": "瀏覽器→nginx→內部服務",
+   "data": "chat/SSE/WS",
+   "controls": "CSP header（script-src 'self' 'unsafe-inline' blob:）+ frame-ancestors；WS /asr/ token 驗證 fail-closed 4401/4503；Host allowlist（compose 預設）；客戶端 mermaid securityLevel strict",
+   "evidence": "infra/nginx/anila.conf:191,519-535; infra/compose/platform.yml:155; services/asr-gateway/app/main.py:380-391; apps/anila-shell/src/markdown.jsx:246-251"
+  }
+ ],
+ "attackerCapabilities": [
+  "匿名網路訪客（nginx 後，可達 login/providers/health/靜態）",
+  "已登入一般使用者（可打 /v1、/api 對話/附件/記憶/交接）",
+  "單位管理員/admin-tier（治理面寫入）",
+  "持有 s2s 憑證的內部服務位置（Studio/router/legacy token）",
+  "內網容器逃逸／DNS 層攻擊者（超出現行記錄的信任模型）"
+ ],
+ "securityObjectives": [
+  "跨使用者對話/附件/記憶/任務/交易不可互讀（404 collapse 防存在性 oracle）",
+  "分類等級資料 recall 需 agent requires_encryption 並 latched",
+  "agent 不可指定他人 owner；s2s 代辦契約收斂",
+  "出站 URL 一律過守衛；IdP 一律 https",
+  "audit ledger append-only＋鏈頭驗證",
+  "憑證 at-rest AES-256-GCM；dev fallback secret 生產拒絕啟動"
+ ],
+ "assumptions": [
+  "內網明文 HTTP 為記錄過的信任模型（SYSTEM-MAP:209; 08-02 裁定）",
+  "docker DNS/ARP 不可被應用租戶干擾",
+  "對外 FQDN 為院內平台（NCSIST 內網），nginx TLS 憑證由部署腳本重簽",
+  "coverage 完整性以本掃描 fully_reviewed 清單為準；大量檔案為結構性走讀而非逐行審計"
+ ]
+}

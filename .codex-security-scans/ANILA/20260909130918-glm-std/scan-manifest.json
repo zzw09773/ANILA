@@ -1,0 +1,59 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "artifacts": [
+      {
+        "mediaType": "application/json",
+        "path": "findings.json",
+        "sha256": "5f04a1c10ec638f72ab0cc323d6f770b8f5d069c2a94fefe4b50f6ba3d5beddd"
+      },
+      {
+        "mediaType": "application/json",
+        "path": "coverage.json",
+        "sha256": "1de0ea37074c339b9e5a1a16065e5323f568165b71da8abed2dc2a7b22d7f1e3"
+      }
+    ],
+    "branch": "main",
+    "completedAt": "2026-09-09T13:38:24.454Z",
+    "coverageRef": "coverage.json",
+    "findingsRef": "findings.json",
+    "generatedAt": "2026-09-09T13:38:24.454Z",
+    "id": "20260909130918-glm-std",
+    "mode": "standard",
+    "producer": {
+      "name": "codex-security-plugin",
+      "version": "0.1.23"
+    },
+    "revision": "151fca19a41ee35e9347050e6b4833a666397830",
+    "scope": {
+      "excludePaths": [
+        "node_modules",
+        "models/model",
+        "data",
+        "share",
+        "logs",
+        ".env",
+        "secrets",
+        "runtime_logic",
+        "myCSPPlatform",
+        "node_modules"
+      ],
+      "includePaths": [
+        "."
+      ]
+    },
+    "sealedAt": "2026-09-09T13:38:24.454Z",
+    "sourceRoot": "/home/c1147259/\u684c\u9762/ANILA/anila-restart-20260729/ANILA",
+    "startedAt": "2026-09-09T13:38:24.454Z",
+    "status": "completed",
+    "target": {
+      "displayName": "ANILA",
+      "kind": "git_worktree",
+      "remote": "https://github.com/zzw09773/ANILA.git",
+      "revision": "151fca19a41ee35e9347050e6b4833a666397830",
+      "snapshotDigest": "codex-security-snapshot/v1:sha256:9d57f3dd9490a689f3ce6f2b8d9501f33f3894f308e8d0bb55982415dc55e055",
+      "targetId": "anila-main-151fca19"
+    }
+  },
+  "schemaVersion": "1.0"
+}

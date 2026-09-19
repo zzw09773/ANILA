@@ -1,0 +1,73 @@
+{
+  "completeness": "partial",
+  "deferred": [
+    {
+      "id": "remaining-tracked-source",
+      "paths": [
+        "apps",
+        "infra",
+        "packages",
+        "services"
+      ],
+      "reason": "Delegation was unavailable in this runtime; the whole-repository tracked-source review is partial and the remaining surfaces require follow-up."
+    },
+    {
+      "id": "dependency-cve-and-secret-scans",
+      "reason": "Dependency CVE and secret-history scanning were outside this manual source-backed standard scan pass."
+    }
+  ],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [],
+  "explicitExclusions": [
+    {
+      "pattern": "node_modules/**",
+      "reason": "Third-party dependency trees are background, not product source."
+    },
+    {
+      "pattern": "dist/**",
+      "reason": "Generated build output is background unless a live flow reaches generated code."
+    },
+    {
+      "pattern": "__pycache__/**",
+      "reason": "Compiled cache is not source."
+    }
+  ],
+  "includePaths": [
+    "."
+  ],
+  "inventoryStrategy": "repository",
+  "mode": "repository",
+  "openQuestions": [],
+  "scanId": "a74c810e-37f1-4c0c-a20e-78db3c207914",
+  "schemaVersion": "1.0",
+  "surfaces": [
+    {
+      "disposition": "no_issue_found",
+      "id": "csp-auth-access",
+      "label": "CSP authentication and access control",
+      "notes": "Reviewed RS256/JWKS token verification, caller identity extraction, API-key validation, and service access-control algorithm.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "csp-attachments",
+      "label": "CSP attachment upload and download",
+      "notes": "Reviewed upload extension/MIME/size controls, ownership checks, conversation binding, and download authorization.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "outbound-url-guard",
+      "label": "Outbound URL and SSRF guard",
+      "notes": "Reviewed shared validate_outbound_url use and call sites for model, agent, ingestion, authentication, health, memory, and thinking-probe endpoints.",
+      "receiptRefs": []
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "subprocess-boundaries",
+      "label": "Studio and core subprocess boundaries",
+      "notes": "Reviewed diagram/mindmap renderer exec-style subprocesses and core shell tool sandboxing boundaries.",
+      "receiptRefs": []
+    }
+  ]
+}

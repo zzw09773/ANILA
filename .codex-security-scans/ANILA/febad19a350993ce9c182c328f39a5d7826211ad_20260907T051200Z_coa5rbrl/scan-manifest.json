@@ -1,0 +1,53 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "artifacts": [
+      {
+        "mediaType": "application/json",
+        "path": "findings.json",
+        "sha256": "5bddc4f15fc23190ed4c5e9b6f2d6ae8286eaea0a59b03bdd96348244d079f47"
+      },
+      {
+        "mediaType": "application/json",
+        "path": "coverage.json",
+        "sha256": "01f762f36f2d8175735f5bdfa01433a92b75c4f90a14d5cce6eba670c93466a6"
+      }
+    ],
+    "completedAt": "2026-09-07T05:40:08.378369Z",
+    "coverageRef": "coverage.json",
+    "findingsRef": "findings.json",
+    "id": "a74c810e-37f1-4c0c-a20e-78db3c207914",
+    "preservedSources": {
+      "checkpoints/4898a5b9d5d36bde98e3aedfbae49ea402638e7121b11391ae61d9ffacdbd397.json": "4898a5b9d5d36bde98e3aedfbae49ea402638e7121b11391ae61d9ffacdbd397"
+    },
+    "producer": {
+      "name": "codex-security-plugin",
+      "version": "0.1.23"
+    },
+    "scope": {
+      "excludePaths": [],
+      "includePaths": [
+        "."
+      ]
+    },
+    "sealedAt": "2026-09-07T05:40:08.378369Z",
+    "startedAt": "2026-09-07T05:12:00.740482Z",
+    "status": "completed",
+    "summary": {
+      "limitations": [
+        "No delegated independent baseline or investigator workers.",
+        "No dynamic tests, dependency CVE scan, or secret scanner run."
+      ],
+      "summary": "Whole-repository Codex Security standard scan. Runtime subagent delegation was unavailable, so the completed audit covered selected security-critical surfaces in the parent thread and explicitly defers the remaining tracked source.",
+      "validationMode": "manual source-backed inspection"
+    },
+    "target": {
+      "displayName": "ANILA",
+      "kind": "git_worktree",
+      "revision": "febad19a350993ce9c182c328f39a5d7826211ad",
+      "snapshotDigest": "codex-security-snapshot/v1:sha256:571a198feb03100ef2e40d9c1bacfa1d9c6b4a1fd2f60b21f2d383fe8e95b1f7",
+      "targetId": "target_sha256_e5dda1e1b0539b1f494ab95a4a354f3a16977a434b1b4ef0452f111c085bef14"
+    }
+  },
+  "schemaVersion": "1.0"
+}

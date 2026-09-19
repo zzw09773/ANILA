@@ -1,0 +1,349 @@
+{
+  "documentType": "codex-security.findings",
+  "findings": [
+    {
+      "attackPath": {
+        "dataflow": {
+          "summary": "POST /v1/artifact-jobs\uff08X-CSP-Service-Token \u6216 legacy fleet token\uff09\u2192 payload.requester_user_id \u2192 resolve_owner \u539f\u6a23\u56de\u50b3 \u2192 ArtifactJob.owner_user_id\uff1b\u540c job_id \u91cd\u547c \u2192 register_job \u8986\u5beb\u65e2\u6709\u5217 owner\uff0fstatus\uff0ftrace\u3002"
+        },
+        "reachability": {
+          "summary": "\u9700\u8981\u6709\u6548\u5e73\u53f0 s2s \u6191\u8b49\uff08Studio\uff0flegacy token\uff09\uff1b\u4f7f\u7528\u8005 JWT \u5df2\u88ab 403\uff08artifacts.py:206-209\uff09\uff1b\u5c6c P2.1 W2 \u523b\u610f\u7559\u4e0b\u7684\u4ee3\u8fa6\u9762\uff0c\u64c1\u6709\u8005\u5951\u7d04\u672a\u88c1\u5b9a\u3002"
+        }
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "source-validated control flow on revision 151fca19; no runtime reproduction"
+      },
+      "evidence": [
+        {
+          "code": "if identity is not None and getattr(identity, \"kind\", None) == \"agent\":\n    pinned = _enforce_agent_requester_scope(...)\n    ...\nelse:\n    owner_user_id, employee_id = artifacts.resolve_owner(db, requester_user_id=payload.requester_user_id, ...)",
+          "endLine": 441,
+          "id": "ev1",
+          "label": "agent-only owner pinning",
+          "language": "python",
+          "path": "services/csp/app/api/artifacts.py",
+          "role": "sink",
+          "startLine": 434
+        },
+        {
+          "code": "if requester_user_id is not None:\n    return requester_user_id, emp",
+          "endLine": 84,
+          "id": "ev2",
+          "label": "resolve_owner \u4e0d\u9a57\u5b58\u5728\u6027",
+          "language": "python",
+          "path": "services/csp/app/modules/artifacts/service.py",
+          "role": "control_gap",
+          "startLine": 83
+        },
+        {
+          "code": "else:\n    for key, value in fields.items():\n        setattr(job, key, value)",
+          "endLine": 141,
+          "id": "ev3",
+          "label": "upsert \u8986\u5beb owner_user_id",
+          "language": "python",
+          "path": "services/csp/app/modules/artifacts/service.py",
+          "role": "sink",
+          "startLine": 129
+        },
+        {
+          "code": "existing = db.get(ArtifactJob, payload.job_id)\nif existing is not None and _is_agent_caller(caller):\n    _enforce_agent_owner_match(...)",
+          "endLine": 448,
+          "id": "ev4",
+          "label": "API \u5c64 owner \u6bd4\u5c0d\u50c5 agent",
+          "language": "python",
+          "path": "services/csp/app/api/artifacts.py",
+          "role": "control_gap",
+          "startLine": 446
+        }
+      ],
+      "findingId": "csf_c80ceacbe7f8efc9a616fc9b",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:3eb97eb82f5469c9d84d4859784be86248f14976e1f500f80dd2bc2e12696f00"
+      },
+      "identity": {
+        "anchor": "s2s-artifact-owner",
+        "instance": "s2s-artifact-owner-instance-1"
+      },
+      "impact": "\u6301\u6709 s2s \u6191\u8b49\u8005\u53ef\u5beb\u5165\u4efb\u610f\u6574\u6578 owner\uff08\u542b\u5e7d\u9748 id\uff09\uff0c\u4e26\u5728\u540c job_id \u4e0a\u596a\u53d6\u4ed6\u4eba job \u7684 owner\uff0fstatus\uff0fresult\u3002\u7528\u91cf\u8207\u7a3d\u6838\u6b78\u56e0\u88ab\u626d\u66f2\uff1b\u4e0d\u662f\u533f\u540d\u53ef\u6253\u7684\u6d1e\u3002",
+      "instance": {
+        "path": "services/csp/app/api/artifacts.py",
+        "startLine": 430
+      },
+      "locations": [
+        {
+          "endLine": 441,
+          "path": "services/csp/app/api/artifacts.py",
+          "role": "sink",
+          "startLine": 434
+        },
+        {
+          "endLine": 84,
+          "path": "services/csp/app/modules/artifacts/service.py",
+          "role": "control_gap",
+          "startLine": 83
+        },
+        {
+          "endLine": 141,
+          "path": "services/csp/app/modules/artifacts/service.py",
+          "role": "sink",
+          "startLine": 129
+        },
+        {
+          "endLine": 448,
+          "path": "services/csp/app/api/artifacts.py",
+          "role": "control_gap",
+          "startLine": 446
+        }
+      ],
+      "occurrenceId": "occ_a7bad3a32b35b26c9883ed48",
+      "prerequisites": "\u6709\u6548 csk-\uff08service_client\uff09\u6216 legacy CSP_SERVICE_TOKEN\uff1bStudio \u9700\u8981\u4ee3\u8fa6\u529f\u80fd\uff0c\u6536\u6582\u5951\u7d04\u5f85 owner \u88c1\u5b9a\u3002",
+      "provenance": {
+        "source": "glm-baseline"
+      },
+      "remediation": "\u5951\u7d04\u5019\u9078\uff08owner \u88c1\u5b9a\uff09\uff1aresolve_owner \u5c0d\u67e5\u7121\u4f7f\u7528\u8005\u56de 400\uff1bupsert \u6642\u89e3\u6790\u5f8c owner \u8207\u65e2\u6709\u5217\u4e0d\u540c\u8996\u70ba\u885d\u7a81\u62d2\u7d55\uff08\u4e0d\u9700 schema \u8b8a\u66f4\uff09\uff1b\u4e0d\u8981\u628a agent \u91d8\u6b7b\u908f\u8f2f\u5957\u5230 Studio \u4ee3\u8fa6\u8def\u5f91\u3002",
+      "rootCause": {
+        "summary": "register_artifact_job \u50c5\u5c0d agent \u547c\u53eb\u8005\u91d8\u6b7b owner\uff1bservice_client\uff0flegacy fleet token \u8d70 else \u5206\u652f\uff0c\u628a payload \u7684 requester_user_id \u539f\u6a23\u4ea4\u7d66 resolve_owner\uff0c\u4e0d\u505a\u5b58\u5728\u6027\u6216\u6388\u6b0a\u6aa2\u67e5\uff1bregister_job upsert \u5c0d\u65e2\u6709\u5217\u7121\u5dee\u5225\u8986\u5beb owner_user_id\uff08\u540c job_id \u53ef\u596a\u53d6\u4ed6\u4eba job\uff09\u3002"
+      },
+      "root_control": {
+        "path": "services/csp/app/api/artifacts.py",
+        "startLine": 434
+      },
+      "ruleId": "s2s-artifact-owner-attribution",
+      "severity": {
+        "level": "medium",
+        "rationale": "medium impact, high-likelihood for s2s holders; owner-adjudication pending"
+      },
+      "summary": "\u975e agent \u670d\u52d9\u547c\u53eb\u8005\u53ef\u6307\u5b9a\uff0f\u8986\u5beb artifact job \u7684 owner_user_id\uff08\u5408\u6cd5\u4ee3\u8fa6\u5951\u7d04\u672a\u6536\u6582\uff09",
+      "taxonomy": {
+        "category": "broken_access_control",
+        "cwe": [
+          "CWE-639"
+        ]
+      },
+      "title": "\u975e agent \u670d\u52d9\u547c\u53eb\u8005\u53ef\u6307\u5b9a\uff0f\u8986\u5beb artifact job \u7684 owner\uff08\u5408\u6cd5\u4ee3\u8fa6\u5951\u7d04\u672a\u6536\u6582\uff09",
+      "validation": {
+        "summary": "services.py:434-441 \u53ea\u6709 identity.kind==agent \u8d70 _enforce_agent_requester_scope\uff1bmodules/artifacts/service.py:83-84 requester_user_id \u76f4\u63a5\u56de\u50b3\u4e0d\u9a57\uff1bservice.py:119-141 register_job \u8986\u5beb\u6240\u6709\u6b04\u4f4d\u542b owner_user_id\uff1b\u65e2\u6709\u6e2c\u8a66\u53ea\u9396 agent \u4e0d\u5f97\u6307\u5b9a\u4ed6\u4eba\uff08test_dispatch_callback_auth.py:472-496\uff09\u3002"
+      }
+    },
+    {
+      "attackPath": {
+        "dataflow": {
+          "summary": "admin \u767b\u8a18 model endpoint_url\uff08\u8a3b\u518a\u6642\u904e\u5b88\u885b\uff09\u2192 set-image-primary \u4e0d\u91cd\u9a57 \u2192 studio\uff0fflux-agent \u57f7\u884c\u671f POST \u8a72 URL\u3002\u82e5 DNS \u6216\u767b\u8a18\u503c\u8a3b\u518a\u5f8c\u8b8a\u52d5\uff0c\u57f7\u884c\u9762\u7121 TOCTOU \u9632\u7dda\u3002"
+        },
+        "reachability": {
+          "summary": "\u9700\u8981 admin-tier \u767b\u8a18\u6b0a\uff0b\u6709\u6548 image-primary\uff1b\u9810\u8a2d compose \u4e0b http \u7aef\u9ede\u8a3b\u518a\u5373\u88ab\u64cb\uff08flag \u51fa\u5ee0 0\uff09\uff1b\u5167\u7db2 http \u662f SYSTEM-MAP \u8a18\u9304\u7684\u5e38\u614b\u3002"
+        }
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "source-validated control flow on revision 151fca19; no runtime reproduction"
+      },
+      "evidence": [
+        {
+          "code": "model = db.query(ModelRegistry).filter(...).first()\nif not model: raise 404\nif model.model_type != \"image\": raise 400\nif not model.is_active: raise 400\n# (\u7121 validate_outbound_url)",
+          "endLine": 1470,
+          "id": "ev1",
+          "label": "set-image-primary \u4e0d\u91cd\u9a57",
+          "language": "python",
+          "path": "services/csp/app/api/models.py",
+          "role": "control_gap",
+          "startLine": 1462
+        },
+        {
+          "code": "resp = await client.post(self._images_endpoint(), json=body, headers=headers)",
+          "endLine": 356,
+          "id": "ev2",
+          "label": "studio \u57f7\u884c\u671f\u76f4\u9023 POST",
+          "language": "python",
+          "path": "services/anila-studio/app/services/flux_image_provider.py",
+          "role": "sink",
+          "startLine": 352
+        },
+        {
+          "code": "_guard_outbound(target, endpoint_kind=ENDPOINT_KIND_AGENT)  # call-time SSRF re-validation (TOCTOU defense)",
+          "endLine": 1375,
+          "id": "ev3",
+          "label": "\u5c0d\u7167\u7d44\uff1aproxy \u6709 call-time \u91cd\u9a57",
+          "language": "python",
+          "path": "services/csp/app/api/proxy.py",
+          "role": "control_reference",
+          "startLine": 1372
+        }
+      ],
+      "findingId": "csf_03638a36ec9a319d17952154",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:6089c5839885d19871517aba7e88cead455628f4adb3ea6c3663d4e3723725b2"
+      },
+      "identity": {
+        "anchor": "flux-image-primary-post",
+        "instance": "flux-image-primary-post-instance-2"
+      },
+      "impact": "\u8207 proxy \u7684 TOCTOU \u9632\u8b77\u4e0d\u4e00\u81f4\uff1b\u5be6\u969b\u53ef\u5229\u7528\u6027\u53d7\u9650\u65bc admin \u4fe1\u4efb\u908a\u754c\u3002GET \u5c0d service token \u56de\u771f\u5be6\u4f4d\u5740\u5c6c\u6307\u63ee\u5b98\u5df2\u88c1\u5b9a\u7684\u4f4d\u5740\u906e\u853d\u4f8b\u5916\uff0c\u975e\u672c\u689d\u672c\u9ad4\u3002",
+      "instance": {
+        "path": "services/anila-studio/app/services/flux_image_provider.py",
+        "startLine": 352
+      },
+      "locations": [
+        {
+          "endLine": 1470,
+          "path": "services/csp/app/api/models.py",
+          "role": "control_gap",
+          "startLine": 1462
+        },
+        {
+          "endLine": 356,
+          "path": "services/anila-studio/app/services/flux_image_provider.py",
+          "role": "sink",
+          "startLine": 352
+        },
+        {
+          "endLine": 1375,
+          "path": "services/csp/app/api/proxy.py",
+          "role": "control_reference",
+          "startLine": 1372
+        }
+      ],
+      "occurrenceId": "occ_86d3b647c7e17095fd007235",
+      "prerequisites": "admin \u767b\u8a18\u904e\u5b88\u885b\u7684 URL\uff1b\u8a3b\u518a\u5f8c DNS\uff0f\u7db2\u8def\u689d\u4ef6\u8b8a\u52d5\u3002",
+      "provenance": {
+        "source": "glm-baseline"
+      },
+      "remediation": "\u82e5\u91cd\u958b\uff1astudio\uff0fflux-agent POST \u524d\u547c\u53eb validate_outbound_url(endpoint_kind=\"model\")\uff0c\u4e26\u88dc\u5169\u500b\u5bb9\u5668\u5404\u81ea\u7684 ANILA_TRUSTED_HOSTS\uff0fANILA_ALLOW_HTTP_ENDPOINT env \u5951\u7d04\uff08\u9810\u8a2d http://flux2-dev:8000 \u5426\u5247\u6703\u65b7\uff09\uff0cset-image-primary \u91cd\u8dd1\u540c\u4e00\u5b88\u885b\u3002\u5951\u7d04\u88c1\u5b9a\u524d\u4e0d\u52d5\u78bc\u3002",
+      "rootCause": {
+        "summary": "CSP \u6a21\u578b\u8a3b\u518a\u6642 _enforce_endpoint_url \u6709 validate_outbound_url\uff08models.py:195\uff09\uff0cset-image-primary \u4e0d\u91cd\u9a57\uff1bstudio \u8207 flux2-dev-agent \u5f9e GET /api/models/image-primary \u53d6\u5f97 endpoint_url \u5f8c\u76f4\u63a5 POST\uff0c\u5168\u6a39\u96f6 validate_outbound_url \u547c\u53eb\u3002\u5c0d\u7167 CSP agent proxy \u5169\u8655 call-time _guard_outbound\uff08proxy.py:1372/1708\uff09\u3002"
+      },
+      "root_control": {
+        "path": "services/csp/app/api/models.py",
+        "startLine": 195
+      },
+      "ruleId": "ssrf-consumer-missing-calltime-guard",
+      "severity": {
+        "level": "low",
+        "rationale": "admin-controlled target; exposure requires post-registration change"
+      },
+      "summary": "studio\uff0fflux2-dev-agent \u57f7\u884c\u671f\u6d88\u8cbb image-primary URL \u672a\u91cd\u9a57 SSRF\uff08TOCTOU \u672a\u5c0d\u9f4a proxy \u5c0d\u7167\u7d44\uff09",
+      "taxonomy": {
+        "category": "ssrf",
+        "cwe": [
+          "CWE-918"
+        ]
+      },
+      "title": "studio\uff0fflux2-dev-agent \u57f7\u884c\u671f\u6d88\u8cbb image-primary URL \u672a\u91cd\u9a57 SSRF\uff08\u8a3b\u518a\u9762\u6709\u5b88\u885b\uff0c\u57f7\u884c\u9762 TOCTOU \u672a\u5c0d\u9f4a\uff09",
+      "validation": {
+        "summary": "rg validate_outbound_url \u5728 services/anila-studio/app \u8207 services/flux2-dev-agent/app \u96f6\u547d\u4e2d\uff1bflux_image_primary.py:82-104 \u5165\u5feb\u53d6\u3001flux_image_provider.py:352-356 POST\u3001flux2-dev-agent image_primary_fetcher.py:92 \u8d77 GET \u5f8c POST\uff1b\u51fa\u7ad9 URL \u662f admin \u767b\u8a18\u503c\u3001\u975e\u4f7f\u7528\u8005 URL\uff1bcompose \u4e09\u8655 ANILA_ALLOW_HTTP_ENDPOINT \u51fa\u5ee0 0\u3001studio\uff0fflux-agent \u5bb9\u5668\u7121 ANILA_TRUSTED_HOSTS env\u3002"
+      }
+    },
+    {
+      "attackPath": {
+        "dataflow": {
+          "summary": "\u653b\u64ca\u8005\u9808\u5148\u80fd\u5728 anila-net \u5e72\u64fe compose DNS\uff0fARP \u624d\u80fd\u9935\u5047 JWKS\uff1b\u64a4\u92b7\u5feb\u53d6\u672a ready \u6642\u670d\u52d9\u672c\u8eab fail-closed\u3002"
+        },
+        "reachability": {
+          "summary": "\u524d\u7f6e\u689d\u4ef6\u662f\u5167\u7db2 MITM \u80fd\u529b\uff0c\u8d85\u51fa\u73fe\u884c\u4fe1\u4efb\u6a21\u578b\u8a18\u9304\uff1b08-02 \u88c1\u5b9a\u7dad\u6301\u73fe\u72c0\uff0c\u91cd\u958b\u9700\u5148\u5efa\u5167\u90e8 TLS\uff08CA\uff0bSAN\uff0bCA \u767c\u9032\u5bb9\u5668\uff09\u3002"
+        }
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "source-validated control flow on revision 151fca19; no runtime reproduction"
+      },
+      "evidence": [
+        {
+          "code": "async def _fetch_jwks(self) -> dict[str, RSAPublicKey]:\n    url = settings.CSP_BASE_URL.rstrip(\"/\") + _JWKS_PATH\n    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:\n        response = await http.get(url)",
+          "endLine": 283,
+          "id": "ev1",
+          "label": "vendored client \u88f8 GET",
+          "language": "python",
+          "path": "services/asr-gateway/app/services/jwks_client.py",
+          "role": "sink",
+          "startLine": 279
+        },
+        {
+          "code": "CSP_BASE_URL: http://csp:8000",
+          "id": "ev2",
+          "label": "compose \u5beb\u6b7b\u660e\u6587",
+          "language": "yaml",
+          "path": "infra/compose/platform.yml",
+          "role": "config",
+          "startLine": 521
+        },
+        {
+          "code": "if scheme == \"http\":\n    raise JwksFetchError(\"JWKS URL must be https (http ignores ca_file / verify; ...)\")",
+          "endLine": 249,
+          "id": "ev3",
+          "label": "\u5c0d\u7167\u7d44\uff1aanila-core \u62d2 http",
+          "language": "python",
+          "path": "packages/anila-core/src/anila_core/api/middleware/jwks_client.py",
+          "role": "control_reference",
+          "startLine": 243
+        }
+      ],
+      "findingId": "csf_734f5aff21589b41534466b8",
+      "fingerprints": {
+        "algorithm": "codex-security/v1",
+        "primary": "codex-security/v1:sha256:2d4a83dc3a10796660ac9b4b88575f4436f1183f82ef5c7ff805f98b34a226c2"
+      },
+      "identity": {
+        "anchor": "internal-jwks-transport",
+        "instance": "internal-jwks-transport-instance-3"
+      },
+      "impact": "\u4fe1\u4efb\u9328\u50b3\u8f38\u672a\u52a0\u5bc6\uff1b\u5728\u73fe\u884c\u5167\u7db2\u4fe1\u4efb\u6a21\u578b\u4e0b\u53ef\u63a5\u53d7\uff0c\u5df2\u8a18\u9304\u6b98\u9918\u98a8\u96aa\u3002\u4e0d\u53ef\u53ea\u63db URL\u2014\u2014JWKS \u6293\u53d6\u5931\u6557\u5169\u670d\u52d9\u5373\u7121\u6cd5\u9a57 token\u3002",
+      "instance": {
+        "path": "services/anila-studio/app/services/jwks_client.py",
+        "startLine": 265
+      },
+      "locations": [
+        {
+          "endLine": 283,
+          "path": "services/asr-gateway/app/services/jwks_client.py",
+          "role": "sink",
+          "startLine": 279
+        },
+        {
+          "path": "infra/compose/platform.yml",
+          "role": "config",
+          "startLine": 521
+        },
+        {
+          "endLine": 249,
+          "path": "packages/anila-core/src/anila_core/api/middleware/jwks_client.py",
+          "role": "control_reference",
+          "startLine": 243
+        }
+      ],
+      "occurrenceId": "occ_46e62b739a9bad719dd73205",
+      "prerequisites": "docker \u7db2\u8def MITM \u80fd\u529b\u3002",
+      "provenance": {
+        "source": "glm-baseline"
+      },
+      "remediation": "\u7dad\u6301\u73fe\u72c0\uff0808-02 \u88c1\u5b9a\uff09\u3002\u82e5\u91cd\u958b\uff1a\u5148\u5167\u90e8 CA\uff0bSAN \u6191\u8b49\uff0bCA \u767c\u9032 studio/asr \u5bb9\u5668\uff0b\u5169\u6975\u6e2c\u8a66\uff08http JWKS\u2192\u555f\u52d5\u5931\u6557\uff1b\u7121 TLS \u6642\u73fe\u884c http \u4ecd\u53ef\u555f\u52d5\uff09\uff0c\u518d\u5171\u7528 anila-core client\u3002",
+      "rootCause": {
+        "summary": "CSP_BASE_URL \u9810\u8a2d\u4e26\u7531 compose \u5beb\u6b7b http://csp:8000\uff1b\u5169\u4efd _fetch_jwks\uff08studio \u539f\u4ef6\u8207 asr vendored \u9010\u5b57\u526f\u672c\uff09\u88f8 httpx GET \u7121 https \u6aa2\u67e5\u3001\u7121 ca_file\u3002\u5c0d\u7167 anila-core jwks_client.py:243-262 \u660e\u78ba\u62d2 http\u3002"
+      },
+      "root_control": {
+        "path": "infra/compose/platform.yml",
+        "startLine": 521
+      },
+      "ruleId": "plaintext-internal-jwks-transport",
+      "severity": {
+        "level": "low",
+        "rationale": "mitigated by internal trust model ruling 2026-08-02"
+      },
+      "summary": "studio\uff0fasr-gateway \u7d93\u5167\u7db2\u660e\u6587 HTTP \u6293 CSP JWKS\uff0808-02 \u5df2\u88c1\u5b9a\u7dad\u6301\u73fe\u72c0\u7684\u4fe1\u4efb\u6a21\u578b\u6b98\u9918\u98a8\u96aa\uff09",
+      "taxonomy": {
+        "category": "insecure_transport",
+        "cwe": [
+          "CWE-319"
+        ]
+      },
+      "title": "studio\uff0fasr-gateway \u7d93\u5167\u7db2\u660e\u6587 HTTP \u6293 CSP JWKS\uff08\u4fe1\u4efb\u9328\u50b3\u8f38\u672a\u52a0\u5bc6\uff09",
+      "validation": {
+        "summary": "platform.yml:521/840 \u5beb\u6b7b\uff1bconfig.py \u9810\u8a2d\uff1bstudio test_jwks_client.py:123-126 \u57fa\u5ea7\u9396 http://csp-test:8000\uff1b2026-08-02 \u79c1\u6709\u7a3d\u6838\u5df2\u88c1\u5b9a\u7dad\u6301\u73fe\u72c0\uff08\u7121\u5167\u90e8 TLS\uff09\uff0crevocation \u672a ready \u6642 fail-closed 503/4503\u3002"
+      }
+    }
+  ],
+  "scanId": "20260909130918-glm-std",
+  "schemaVersion": "1.0",
+  "version": 1
+}

@@ -1,0 +1,326 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "automationDetails": {
+        "id": "20260909130918-glm-std"
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "level": "warning",
+              "message": {
+                "text": "Q22 \u975e agent owner \u6b78\u56e0\u5951\u7d04\u5f85\u64c1\u6709\u8005\u88c1\u5b9a\uff08DECISION-PACK 2026-09-08\uff09\uff1b\u5df2\u4ee5 finding glm-s2s-owner-attribution \u8a18\u9304\uff0c\u5f85\u88c1\u5b9a\u5f8c\u4fee\u88dc"
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "A10 \u57f7\u884c\u671f SSRF \u5951\u7d04\u5f85\u88c1\u5b9a\uff08env \u6210\u672c\uff1astudio/flux-agent \u7121 trusted-hosts env\uff09\uff1b\u5df2\u4ee5 finding glm-consumer-ssrf-toctou \u8a18\u9304"
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "A07 \u5167\u90e8 TLS \u672a\u5efa\uff082026-08-02 \u88c1\u5b9a\u7dad\u6301\u73fe\u72c0\uff09\uff1b\u5df2\u4ee5 finding glm-internal-jwks-plaintext \u8a18\u9304"
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "\u7d04 1100 py + 306 \u524d\u7aef\u6a94\u4e4b\u9918\u91cf\u70ba\u7d50\u69cb\u6027\u8d70\u8b80\uff0c\u672a\u9010\u884c\uff1b\u71b1\u5340\u5df2\u9010\u884c"
+              }
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "codexSecurityCoverageCompleteness": "partial",
+        "codexSecuritySchemaVersion": "1.0",
+        "codexSecurityTargetKind": "git_worktree"
+      },
+      "results": [
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/asr-gateway/app/services/jwks_client.py"
+                },
+                "region": {
+                  "endLine": 283,
+                  "startLine": 279
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "config"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/compose/platform.yml"
+                },
+                "region": {
+                  "endLine": 521,
+                  "startLine": 521
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "control_reference"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "packages/anila-core/src/anila_core/api/middleware/jwks_client.py"
+                },
+                "region": {
+                  "endLine": 249,
+                  "startLine": 243
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "studio\uff0fasr-gateway \u7d93\u5167\u7db2\u660e\u6587 HTTP \u6293 CSP JWKS\uff08\u4fe1\u4efb\u9328\u50b3\u8f38\u672a\u52a0\u5bc6\uff09\n\nstudio\uff0fasr-gateway \u7d93\u5167\u7db2\u660e\u6587 HTTP \u6293 CSP JWKS\uff0808-02 \u5df2\u88c1\u5b9a\u7dad\u6301\u73fe\u72c0\u7684\u4fe1\u4efb\u6a21\u578b\u6b98\u9918\u98a8\u96aa\uff09\n\nSeverity: low\n\nCategory: Insecure transport\n\nWeaknesses: CWE-319\n\nRemediation:\n\u7dad\u6301\u73fe\u72c0\uff0808-02 \u88c1\u5b9a\uff09\u3002\u82e5\u91cd\u958b\uff1a\u5148\u5167\u90e8 CA\uff0bSAN \u6191\u8b49\uff0bCA \u767c\u9032 studio/asr \u5bb9\u5668\uff0b\u5169\u6975\u6e2c\u8a66\uff08http JWKS\u2192\u555f\u52d5\u5931\u6557\uff1b\u7121 TLS \u6642\u73fe\u884c http \u4ecd\u53ef\u555f\u52d5\uff09\uff0c\u518d\u5171\u7528 anila-core client\u3002"
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:2d4a83dc3a10796660ac9b4b88575f4436f1183f82ef5c7ff805f98b34a226c2",
+            "primaryLocationLineHash": "8e4af6084e871733:1"
+          },
+          "properties": {
+            "category": "insecure_transport",
+            "confidence": "high",
+            "findingId": "csf_734f5aff21589b41534466b8",
+            "occurrenceId": "occ_46e62b739a9bad719dd73205",
+            "severity": "low"
+          },
+          "ruleId": "plaintext-internal-jwks-transport",
+          "ruleIndex": 0
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "control_gap"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/csp/app/api/models.py"
+                },
+                "region": {
+                  "endLine": 1470,
+                  "startLine": 1462
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/anila-studio/app/services/flux_image_provider.py"
+                },
+                "region": {
+                  "endLine": 356,
+                  "startLine": 352
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "control_reference"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/csp/app/api/proxy.py"
+                },
+                "region": {
+                  "endLine": 1375,
+                  "startLine": 1372
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "studio\uff0fflux2-dev-agent \u57f7\u884c\u671f\u6d88\u8cbb image-primary URL \u672a\u91cd\u9a57 SSRF\uff08\u8a3b\u518a\u9762\u6709\u5b88\u885b\uff0c\u57f7\u884c\u9762 TOCTOU \u672a\u5c0d\u9f4a\uff09\n\nstudio\uff0fflux2-dev-agent \u57f7\u884c\u671f\u6d88\u8cbb image-primary URL \u672a\u91cd\u9a57 SSRF\uff08TOCTOU \u672a\u5c0d\u9f4a proxy \u5c0d\u7167\u7d44\uff09\n\nSeverity: low\n\nCategory: SSRF\n\nWeaknesses: CWE-918\n\nRemediation:\n\u82e5\u91cd\u958b\uff1astudio\uff0fflux-agent POST \u524d\u547c\u53eb validate_outbound_url(endpoint_kind=\"model\")\uff0c\u4e26\u88dc\u5169\u500b\u5bb9\u5668\u5404\u81ea\u7684 ANILA_TRUSTED_HOSTS\uff0fANILA_ALLOW_HTTP_ENDPOINT env \u5951\u7d04\uff08\u9810\u8a2d http://flux2-dev:8000 \u5426\u5247\u6703\u65b7\uff09\uff0cset-image-primary \u91cd\u8dd1\u540c\u4e00\u5b88\u885b\u3002\u5951\u7d04\u88c1\u5b9a\u524d\u4e0d\u52d5\u78bc\u3002"
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:6089c5839885d19871517aba7e88cead455628f4adb3ea6c3663d4e3723725b2",
+            "primaryLocationLineHash": "c4a93533c9a0ab61:1"
+          },
+          "properties": {
+            "category": "ssrf",
+            "confidence": "high",
+            "findingId": "csf_03638a36ec9a319d17952154",
+            "occurrenceId": "occ_86d3b647c7e17095fd007235",
+            "severity": "low"
+          },
+          "ruleId": "ssrf-consumer-missing-calltime-guard",
+          "ruleIndex": 2
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/csp/app/api/artifacts.py"
+                },
+                "region": {
+                  "endLine": 441,
+                  "startLine": 434
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "control_gap"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/csp/app/modules/artifacts/service.py"
+                },
+                "region": {
+                  "endLine": 84,
+                  "startLine": 83
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/csp/app/modules/artifacts/service.py"
+                },
+                "region": {
+                  "endLine": 141,
+                  "startLine": 129
+                }
+              }
+            },
+            {
+              "message": {
+                "text": "control_gap"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "services/csp/app/api/artifacts.py"
+                },
+                "region": {
+                  "endLine": 448,
+                  "startLine": 446
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "\u975e agent \u670d\u52d9\u547c\u53eb\u8005\u53ef\u6307\u5b9a\uff0f\u8986\u5beb artifact job \u7684 owner\uff08\u5408\u6cd5\u4ee3\u8fa6\u5951\u7d04\u672a\u6536\u6582\uff09\n\n\u975e agent \u670d\u52d9\u547c\u53eb\u8005\u53ef\u6307\u5b9a\uff0f\u8986\u5beb artifact job \u7684 owner_user_id\uff08\u5408\u6cd5\u4ee3\u8fa6\u5951\u7d04\u672a\u6536\u6582\uff09\n\nSeverity: medium\n\nCategory: Broken access control\n\nWeaknesses: CWE-639\n\nRemediation:\n\u5951\u7d04\u5019\u9078\uff08owner \u88c1\u5b9a\uff09\uff1aresolve_owner \u5c0d\u67e5\u7121\u4f7f\u7528\u8005\u56de 400\uff1bupsert \u6642\u89e3\u6790\u5f8c owner \u8207\u65e2\u6709\u5217\u4e0d\u540c\u8996\u70ba\u885d\u7a81\u62d2\u7d55\uff08\u4e0d\u9700 schema \u8b8a\u66f4\uff09\uff1b\u4e0d\u8981\u628a agent \u91d8\u6b7b\u908f\u8f2f\u5957\u5230 Studio \u4ee3\u8fa6\u8def\u5f91\u3002"
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:3eb97eb82f5469c9d84d4859784be86248f14976e1f500f80dd2bc2e12696f00",
+            "primaryLocationLineHash": "31839586863fa813:1"
+          },
+          "properties": {
+            "category": "broken_access_control",
+            "confidence": "high",
+            "findingId": "csf_c80ceacbe7f8efc9a616fc9b",
+            "occurrenceId": "occ_a7bad3a32b35b26c9883ed48",
+            "severity": "medium"
+          },
+          "ruleId": "s2s-artifact-owner-attribution",
+          "ruleIndex": 1
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Codex Security",
+          "rules": [
+            {
+              "fullDescription": {
+                "text": "Plaintext internal jwks transport. Categories: Insecure transport. Weaknesses: CWE-319."
+              },
+              "help": {
+                "markdown": "Plaintext internal jwks transport. Categories: Insecure transport. Weaknesses: CWE-319.\n\n## Remediation\n\n\u7dad\u6301\u73fe\u72c0\uff0808-02 \u88c1\u5b9a\uff09\u3002\u82e5\u91cd\u958b\uff1a\u5148\u5167\u90e8 CA\uff0bSAN \u6191\u8b49\uff0bCA \u767c\u9032 studio/asr \u5bb9\u5668\uff0b\u5169\u6975\u6e2c\u8a66\uff08http JWKS\u2192\u555f\u52d5\u5931\u6557\uff1b\u7121 TLS \u6642\u73fe\u884c http \u4ecd\u53ef\u555f\u52d5\uff09\uff0c\u518d\u5171\u7528 anila-core client\u3002",
+                "text": "Plaintext internal jwks transport. Categories: Insecure transport. Weaknesses: CWE-319.\n\nRemediation:\n\n\u7dad\u6301\u73fe\u72c0\uff0808-02 \u88c1\u5b9a\uff09\u3002\u82e5\u91cd\u958b\uff1a\u5148\u5167\u90e8 CA\uff0bSAN \u6191\u8b49\uff0bCA \u767c\u9032 studio/asr \u5bb9\u5668\uff0b\u5169\u6975\u6e2c\u8a66\uff08http JWKS\u2192\u555f\u52d5\u5931\u6557\uff1b\u7121 TLS \u6642\u73fe\u884c http \u4ecd\u53ef\u555f\u52d5\uff09\uff0c\u518d\u5171\u7528 anila-core client\u3002"
+              },
+              "id": "plaintext-internal-jwks-transport",
+              "name": "Plaintext internal jwks transport",
+              "properties": {
+                "security-severity": "2.0",
+                "tags": [
+                  "external/cwe/cwe-319",
+                  "insecure_transport",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Plaintext internal jwks transport"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "S2s artifact owner attribution. Categories: Broken access control. Weaknesses: CWE-639."
+              },
+              "help": {
+                "markdown": "S2s artifact owner attribution. Categories: Broken access control. Weaknesses: CWE-639.\n\n## Remediation\n\n\u5951\u7d04\u5019\u9078\uff08owner \u88c1\u5b9a\uff09\uff1aresolve_owner \u5c0d\u67e5\u7121\u4f7f\u7528\u8005\u56de 400\uff1bupsert \u6642\u89e3\u6790\u5f8c owner \u8207\u65e2\u6709\u5217\u4e0d\u540c\u8996\u70ba\u885d\u7a81\u62d2\u7d55\uff08\u4e0d\u9700 schema \u8b8a\u66f4\uff09\uff1b\u4e0d\u8981\u628a agent \u91d8\u6b7b\u908f\u8f2f\u5957\u5230 Studio \u4ee3\u8fa6\u8def\u5f91\u3002",
+                "text": "S2s artifact owner attribution. Categories: Broken access control. Weaknesses: CWE-639.\n\nRemediation:\n\n\u5951\u7d04\u5019\u9078\uff08owner \u88c1\u5b9a\uff09\uff1aresolve_owner \u5c0d\u67e5\u7121\u4f7f\u7528\u8005\u56de 400\uff1bupsert \u6642\u89e3\u6790\u5f8c owner \u8207\u65e2\u6709\u5217\u4e0d\u540c\u8996\u70ba\u885d\u7a81\u62d2\u7d55\uff08\u4e0d\u9700 schema \u8b8a\u66f4\uff09\uff1b\u4e0d\u8981\u628a agent \u91d8\u6b7b\u908f\u8f2f\u5957\u5230 Studio \u4ee3\u8fa6\u8def\u5f91\u3002"
+              },
+              "id": "s2s-artifact-owner-attribution",
+              "name": "S2s artifact owner attribution",
+              "properties": {
+                "security-severity": "5.0",
+                "tags": [
+                  "broken_access_control",
+                  "external/cwe/cwe-639",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "S2s artifact owner attribution"
+              }
+            },
+            {
+              "fullDescription": {
+                "text": "SSRF consumer missing calltime guard. Categories: SSRF. Weaknesses: CWE-918."
+              },
+              "help": {
+                "markdown": "SSRF consumer missing calltime guard. Categories: SSRF. Weaknesses: CWE-918.\n\n## Remediation\n\n\u82e5\u91cd\u958b\uff1astudio\uff0fflux-agent POST \u524d\u547c\u53eb validate_outbound_url(endpoint_kind=\"model\")\uff0c\u4e26\u88dc\u5169\u500b\u5bb9\u5668\u5404\u81ea\u7684 ANILA_TRUSTED_HOSTS\uff0fANILA_ALLOW_HTTP_ENDPOINT env \u5951\u7d04\uff08\u9810\u8a2d http://flux2-dev:8000 \u5426\u5247\u6703\u65b7\uff09\uff0cset-image-primary \u91cd\u8dd1\u540c\u4e00\u5b88\u885b\u3002\u5951\u7d04\u88c1\u5b9a\u524d\u4e0d\u52d5\u78bc\u3002",
+                "text": "SSRF consumer missing calltime guard. Categories: SSRF. Weaknesses: CWE-918.\n\nRemediation:\n\n\u82e5\u91cd\u958b\uff1astudio\uff0fflux-agent POST \u524d\u547c\u53eb validate_outbound_url(endpoint_kind=\"model\")\uff0c\u4e26\u88dc\u5169\u500b\u5bb9\u5668\u5404\u81ea\u7684 ANILA_TRUSTED_HOSTS\uff0fANILA_ALLOW_HTTP_ENDPOINT env \u5951\u7d04\uff08\u9810\u8a2d http://flux2-dev:8000 \u5426\u5247\u6703\u65b7\uff09\uff0cset-image-primary \u91cd\u8dd1\u540c\u4e00\u5b88\u885b\u3002\u5951\u7d04\u88c1\u5b9a\u524d\u4e0d\u52d5\u78bc\u3002"
+              },
+              "id": "ssrf-consumer-missing-calltime-guard",
+              "name": "SSRF consumer missing calltime guard",
+              "properties": {
+                "security-severity": "2.0",
+                "tags": [
+                  "external/cwe/cwe-918",
+                  "security",
+                  "ssrf"
+                ]
+              },
+              "shortDescription": {
+                "text": "SSRF consumer missing calltime guard"
+              }
+            }
+          ],
+          "version": "0.1.23"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}
