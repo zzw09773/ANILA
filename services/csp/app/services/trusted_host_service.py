@@ -13,6 +13,10 @@ and the anila-core SSRF guard. Three jobs:
    so the guard sees DB hosts on top of the ``ANILA_TRUSTED_HOSTS``
    env fallback.
 
+Env backfill (``backfill_from_env``) is insert-only. Revoke a host via
+the admin UI DELETE (``remove_host``); dropping it from the env does
+not delete the DB row. Env is only responsible for creation.
+
 The cache is process-local. Other CSP workers / replicas refresh on
 their own TTL tick (default 30s) — the eventual-consistency window
 is the price of skipping a Redis pub/sub for this small admin table.
@@ -198,6 +202,11 @@ def backfill_from_env(db: Session) -> int:
     Backfilled rows have ``created_by_user_id = NULL`` and a note that
     documents the import — so admins reviewing the table can tell which
     rows came from env vs which were admin-added.
+
+    One-way: env -> DB insert-if-missing. Removing a host from the env
+    does **not** delete the DB row. Revocation is UI DELETE
+    (``remove_host`` / ``DELETE /api/trusted-hosts/{id}``). Env is only
+    responsible for creation.
     """
     raw = os.environ.get("ANILA_TRUSTED_HOSTS", "").strip()
     if not raw:

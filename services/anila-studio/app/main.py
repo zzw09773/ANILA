@@ -91,6 +91,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
+    docs_url=None,
+    redoc_url=None,
+    # 預設 ``/docs`` / ``/openapi.json`` 是 unauth public。關掉內建路由,
+    # 避免 schema recon。OpenAPI 產物走 ``scripts/export-openapi.py``。
+    openapi_url=None,
     lifespan=lifespan,
 )
 app.include_router(studio_router)

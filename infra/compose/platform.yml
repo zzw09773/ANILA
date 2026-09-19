@@ -96,10 +96,10 @@ services:
       # metadata / docker service name 永遠擋,不受 flag 影響。Prod 不要 set。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      # Slice 6 旗標分域:ANILA_ENV=production 時「模型」http 一律 fail-closed
-      # (不受任何旗標放行);agent endpoint 的 http 放行改走 AGENT 專用旗標
-      # (內網 MLSteam agent 用;legacy ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可
-      # 放行但記 deprecation warning)。
+      # 模型 http 由 ANILA_ALLOW_HTTP_ENDPOINT 放行；ANILA_ENV 目前非判準
+      # (_is_production 尚未接線)。agent endpoint 的 http 放行走
+      # ANILA_ALLOW_HTTP_AGENT_ENDPOINT（內網 MLSteam agent 用；legacy
+      # ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可放行但記 deprecation warning）。
       ANILA_ENV: "${ANILA_ENV:-}"
 
       # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────

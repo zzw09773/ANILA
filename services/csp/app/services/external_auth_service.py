@@ -243,7 +243,7 @@ async def authenticate_oidc_code(
         "redirect_uri": redirect_uri,
         "code_verifier": code_verifier,
     }
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _oidc_http_client() as client:
         token_resp = await client.post(
             metadata["token_endpoint"],
             data=token_data,
@@ -466,6 +466,30 @@ def _require_safe_idp_url(url, field: str) -> str:
     return url
 
 
+def _oidc_http_client() -> httpx.AsyncClient:
+    """Outbound IdP HTTP client.
+
+    ``follow_redirects=False`` matches launch-manifest fetch
+    (``app.modules.launch.manifest.fetch_service_manifest``). The
+    request URL already passed ``_require_safe_idp_url``; a 302
+    ``Location`` is attacker-controlled. Historical hole: https
+    issuer -> 302 -> http. If an IdP later needs redirects, set
+    True **and** re-run ``_require_safe_idp_url`` on ``response.url``.
+    """
+    return httpx.AsyncClient(timeout=15, follow_redirects=False)
+
+
+def _guard_idp_response_url(response, requested_url: str, field: str) -> None:
+    """If the client followed a redirect, the final URL must pass the same guard."""
+    final = getattr(response, "url", None)
+    if final is None:
+        return
+    final_s = str(final).rstrip("/")
+    requested_s = requested_url.rstrip("/")
+    if final_s != requested_s:
+        _require_safe_idp_url(str(final), f"{field} (redirect target)")
+
+
 async def _resolve_oidc_metadata(provider: AuthProvider) -> dict:
     """Resolve the IdP endpoint URLs.
 
@@ -498,9 +522,10 @@ async def _resolve_oidc_metadata(provider: AuthProvider) -> dict:
     # DNS／ARP 的人就能接管整條登入鏈。
     _require_safe_idp_url(issuer, "issuer")
     discovery_url = f"{issuer}/.well-known/openid-configuration"
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _oidc_http_client() as client:
         response = await client.get(discovery_url)
         response.raise_for_status()
+        _guard_idp_response_url(response, discovery_url, "issuer discovery")
         discovered = response.json()
 
     if all(explicit.values()):

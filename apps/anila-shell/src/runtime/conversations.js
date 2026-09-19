@@ -280,14 +280,10 @@ export function createShare(
     targetUserId = null,
     targetDepartmentId = null,
     targetDepartmentName = null,
-    mode = "read_only",
-    allowFork = false,
     expiresAt = null,
   } = {},
 ) {
   const body = {
-    mode,
-    allow_fork: allowFork,
     expires_at: expiresAt,
   };
   if (targetUserId != null) body.target_user_id = targetUserId;

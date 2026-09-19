@@ -21,6 +21,14 @@ stack the shared fleet secret resolves as an attributed
 anila-studio / asr-gateway all present that same secret; three of them
 are therefore indistinguishable from ``client_type='router'``.
 
+具名已接受風險（OWNER 2026-09-19）
+==================================
+
+同一把 fleet secret、三服務（router / anila-studio / asr-gateway）
+不可彼此辨識。kind gate 不隔離這三者；這不是漏修，是已接受的部署現況。
+重寫部署腳本、改成每服務一把 token 時再拆。在那之前不要把
+``client_type='router'`` 讀成「呼叫者就是 Router」。
+
 ``identity is None`` means the env-var fallback branch actually ran —
 i.e. no active ``service_clients`` / ``agent_credentials`` row matched.
 That path is effectively dead while the seeded ``router-primary`` row

@@ -24,7 +24,7 @@ function ttlToExpiresAt(ttlKey) {
 
 // ---- Share Dialog (P4.3) ----
 // Named person XOR unit. Anonymous link retired (SYSTEM-MAP §分享).
-// `onCreateShare({ targetUsername | targetDepartmentName, mode, allowFork, expiresAt })`
+// `onCreateShare({ targetUsername | targetDepartmentName, expiresAt })`
 export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, onListShares, onRevokeShare }) => {
   const { authRequest } = useAuth();
   // 「唯讀分享」= 對方看得到；「交給同事接手」= 對方接受後成為擁有者，
@@ -90,7 +90,6 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, 
     setNotice("");
     try {
       const payload = {
-        mode: "read_only",
         expiresAt: ttlToExpiresAt(ttl),
       };
       if (kind === "person") payload.targetUsername = trimmed;
