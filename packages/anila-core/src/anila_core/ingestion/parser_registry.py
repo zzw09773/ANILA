@@ -1198,7 +1198,8 @@ class DocxParser:
         images: dict[str, ImageRef] = {}
         title = path.stem
 
-        for kind, block in self._iter_body_blocks(doc):
+        skipped_with_content: Counter[str] = Counter()
+        for kind, block in self._iter_body_blocks(doc, skipped_with_content):
             if kind == "table":
                 rows = []
                 for row in block.rows:
@@ -1232,15 +1233,23 @@ class DocxParser:
             for img_id in para_images:
                 parts.append(f"[[IMAGE:{img_id}]]")
 
+        metadata = {"title": title, "embedded_images": len(images)}
+        skipped_n = int(sum(skipped_with_content.values()))
+        if skipped_n:
+            metadata["docx_wrapped_skipped"] = skipped_n
         return ParsedDocument(
             content="\n\n".join(parts),
-            metadata={"title": title, "embedded_images": len(images)},
+            metadata=metadata,
             source_path=file_path,
             format="docx",
             images=images,
         )
 
-    def _iter_body_blocks(self, doc: Any) -> Iterator[tuple[str, Any]]:
+    def _iter_body_blocks(
+        self,
+        doc: Any,
+        skipped_with_content: Counter[str] | None = None,
+    ) -> Iterator[tuple[str, Any]]:
         """Yield ``("paragraph" | "table", obj)`` in true document order.
 
         ``doc.paragraphs`` and ``doc.tables`` are two *independent*
@@ -1265,7 +1274,7 @@ class DocxParser:
         from docx.table import Table
         from docx.text.paragraph import Paragraph
 
-        skipped_with_content: Counter[str] = Counter()
+        skipped = skipped_with_content if skipped_with_content is not None else Counter()
 
         for child in doc.element.body.iterchildren():
             tag = child.tag
@@ -1279,19 +1288,19 @@ class DocxParser:
                 child.find(f".//{self._NS_W}p") is not None
                 or child.find(f".//{self._NS_W}tbl") is not None
             ):
-                skipped_with_content[tag.rpartition("}")[2]] += 1
+                skipped[tag.rpartition("}")[2]] += 1
 
-        if skipped_with_content:
+        if skipped:
             logger.warning(
                 "DOCX: skipped %d body element(s) that wrap text but are not "
                 "top-level w:p / w:tbl (%s); their content is NOT extracted. "
                 "These are usually content controls (w:sdt) or tracked "
                 "insertions (w:ins) — accept the revisions or convert the "
                 "content controls to plain text before uploading.",
-                sum(skipped_with_content.values()),
+                sum(skipped.values()),
                 ", ".join(
                     f"w:{tag}={count}"
-                    for tag, count in sorted(skipped_with_content.items())
+                    for tag, count in sorted(skipped.items())
                 ),
             )
 

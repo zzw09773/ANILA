@@ -1371,6 +1371,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         #    rule edges + reconcile the collection now. A failure must NOT fail
         #    ingest: the chunks are already indexed and relations are an
         #    additive retrieval aid, not a correctness requirement.
+        relation_failures = 0
         try:
             from ingestion_worker.relations import extract_and_resolve
 
@@ -1387,6 +1388,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                     document_id, rel["extracted"], rel["resolved"],
                 )
         except Exception as e:  # noqa: BLE001
+            relation_failures += 1
             logger.warning(
                 "Relation extraction failed for doc %s: %s — chunks are "
                 "indexed; cross-document links will be missing for this doc.",
@@ -1415,6 +1417,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                     document_id, llm_rel["extracted"],
                 )
         except Exception as e:  # noqa: BLE001
+            relation_failures += 1
             logger.warning(
                 "LLM relation extraction failed for doc %s: %s — chunks are "
                 "indexed; rule edges (if any) are unaffected.",
@@ -1440,18 +1443,26 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                     collection_id, sim["edges"], document_id,
                 )
         except Exception as e:  # noqa: BLE001
+            relation_failures += 1
             logger.warning(
                 "Similarity edge recompute failed for collection %s: %s",
                 collection_id, e,
             )
 
+        progress_message = (
+            f"{len(leaves)} leaves + {len(parents)} parents indexed · "
+            f"{format_caption_progress(caption_stats)}"
+        )
+        if relation_failures:
+            progress_message += f" · {relation_failures} 條關聯抽取失敗"
+            await _update_job(
+                pool, arq_job_id, progress_pct=95,
+                progress_message=progress_message,
+            )
         await _update_job(
             pool, arq_job_id, status="succeeded", succeeded=True,
             progress_pct=100,
-            progress_message=(
-                f"{len(leaves)} leaves + {len(parents)} parents indexed · "
-                f"{format_caption_progress(caption_stats)}"
-            ),
+            progress_message=progress_message,
         )
 
         return {

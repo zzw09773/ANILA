@@ -65,12 +65,13 @@ def _tiny_png() -> io.BytesIO:
     return buf
 
 
-def _old_order_blocks(self, doc):
+def _old_order_blocks(self, doc, skipped_with_content=None):
     """The pre-fix walk: every paragraph, then every table.
 
     Kept in the tests (not in production) so the content-equality test can
     compare against the exact behaviour the fix replaced, using the same
-    rendering code for both.
+    rendering code for both. Extra arg is unused: production now threads
+    the skipped-wrapper counter through this method.
     """
     for para in doc.paragraphs:
         yield "paragraph", para
@@ -406,13 +407,14 @@ def test_skipped_content_wrappers_are_counted_in_one_warning(
     _inject(document, _INS_PARAGRAPH)
 
     with caplog.at_level(logging.WARNING, logger=parser_registry.__name__):
-        DocxParser().parse(_save(document, tmp_path))
+        parsed = DocxParser().parse(_save(document, tmp_path))
 
     warnings = _wrapper_warnings(caplog)
     assert len(warnings) == 1, "one aggregate warning per document, not one per element"
     assert "skipped 3 body element(s)" in warnings[0]
     assert "w:sdt=2" in warnings[0]
     assert "w:ins=1" in warnings[0]
+    assert parsed.metadata["docx_wrapped_skipped"] == 3
 
 
 def test_plain_document_logs_no_wrapper_warning(tmp_path, caplog) -> None:
@@ -426,9 +428,10 @@ def test_plain_document_logs_no_wrapper_warning(tmp_path, caplog) -> None:
     document.add_table(rows=0, cols=2)
 
     with caplog.at_level(logging.WARNING, logger=parser_registry.__name__):
-        DocxParser().parse(_save(document, tmp_path))
+        parsed = DocxParser().parse(_save(document, tmp_path))
 
     assert _wrapper_warnings(caplog) == []
+    assert "docx_wrapped_skipped" not in parsed.metadata
 
 
 def test_inert_body_children_log_no_wrapper_warning(tmp_path, caplog) -> None:

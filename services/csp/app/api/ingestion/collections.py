@@ -522,8 +522,10 @@ def raise_collection_classification(
     """Raise a collection's classification level (one-way latch).
 
     Goes through ``apply_classification`` — never writes the column
-    directly — so ClassificationEvent + memory-purge side effects stay
-    on the single latch path. Lowering is refused with a pointer to the
+    directly — so ClassificationEvent stays on the single latch path.
+    Memory purge does **not** run for ``resource_type="collection"``;
+    previously extracted long-term memory from this collection is
+    unaffected. Lowering is refused with a pointer to the
     declassification flow (``apply_classification`` would no-op; we turn
     that into an explicit error instead of a misleading 200).
 

@@ -324,6 +324,7 @@ class ImageSearchResponse(BaseModel):
     embedding_model: str
     embedding_dim: int
     results: list[ImageHitOut]
+    source_model_mismatch: bool = False
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -666,11 +667,12 @@ async def _assert_index_matches_designation(
 
     Scope — do NOT read this as "the platform no longer returns a silent
     empty". It covers **chunk search on this endpoint only**. Image
-    search (``search_collection_images`` below) and memory retrieval
-    (``app/services/memory_service.py``) apply the same
-    ``embedding_source_model`` filter and still return an empty result
-    with nothing said — by decision, not oversight. A designation change
-    strands those paths exactly as it strands this one.
+    search (``search_collection_images`` below) keeps HTTP 200 + empty
+    results for studio no-context callers, but sets
+    ``source_model_mismatch=true`` and logs when the designated model
+    matches no indexed image. Memory retrieval
+    (``app/services/memory_service.py``) still returns an empty result
+    with nothing said.
 
     ``coverage`` describes a bounded sample, not the whole collection;
     ``source_model_coverage`` documents what that sampling can miss.
@@ -866,6 +868,65 @@ async def search_collection(
     )
 
 
+async def _image_source_model_mismatch(
+    conn: Any,
+    collection_id: int,
+    designated: str,
+) -> bool:
+    """True when indexed images exist but none match ``designated``.
+
+    Image search keeps HTTP 200 + empty ``results`` (studio treats empty
+    as no-context). Visibility is the ``source_model_mismatch`` flag plus
+    an operator log — chunk search is the 409 path.
+    """
+    coverage_rows = await conn.fetch(
+        """
+        SELECT
+          bool_or(lower(i.embedding_source_model) = lower($2)) AS has_matching,
+          bool_or(
+            i.embedding_source_model IS NOT NULL
+            AND lower(i.embedding_source_model) != lower($2)
+          ) AS has_other,
+          min(i.embedding_source_model) FILTER (
+            WHERE i.embedding_source_model IS NOT NULL
+              AND lower(i.embedding_source_model) != lower($2)
+          ) AS sample_other
+        FROM ingestion_images i
+        WHERE i.collection_id = $1
+          AND i.embedding IS NOT NULL
+        """,
+        collection_id,
+        designated,
+    )
+    if not coverage_rows:
+        return False
+    coverage = coverage_rows[0]
+    has_matching = bool(coverage["has_matching"])
+    has_other = bool(coverage["has_other"])
+    sample_other = coverage["sample_other"]
+    if has_other and not has_matching:
+        logger.error(
+            "collection %s has no images under the designated embedding %r — "
+            "indexed images carry %r instead. Image search returns 200 with "
+            "results=[] and source_model_mismatch=true (chunk search is the "
+            "409 path; studio image callers treat empty as no-context).",
+            collection_id,
+            designated,
+            sample_other,
+        )
+        return True
+    if has_other and has_matching:
+        logger.warning(
+            "collection %s is partially image-indexed: some images are under "
+            "the designated embedding %r and some under %r. Image search still "
+            "works over the matching half.",
+            collection_id,
+            designated,
+            sample_other,
+        )
+    return False
+
+
 # ── Image search ────────────────────────────────────────────────────────────
 
 
@@ -893,7 +954,9 @@ async def search_collection_images(
     Returns ``results=[]`` (not an error) when:
       - the collection has zero indexed images (text-only KB),
       - the embedder returned an empty vector,
-      - no rows beat the ``min_score`` threshold.
+      - no rows beat the ``min_score`` threshold,
+      - indexed images were built with another embedding model
+        (``source_model_mismatch=true``; chunk search uses 409 instead).
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
@@ -946,6 +1009,7 @@ async def search_collection_images(
     # halfvec uses cosine distance; pgvector returns 0 = identical, so
     # similarity = 1 - distance. Filter on distance < (1 - min_score).
     max_dist = 1.0 - payload.min_score
+    mismatch = False
     async with pool.acquire() as conn, conn.transaction():
         # RLS: ingestion_images is FORCE-RLS (migration 0037); scope this
         # connection to the collection so the policy returns its rows. SET LOCAL
@@ -1001,6 +1065,10 @@ async def search_collection_images(
                 """,
                 collection_id, q_value, max_dist, payload.top_k,
             )
+        if not rows and source_filter is not None:
+            mismatch = await _image_source_model_mismatch(
+                conn, collection_id, source_filter
+            )
 
     return ImageSearchResponse(
         query=payload.query,
@@ -1024,4 +1092,5 @@ async def search_collection_images(
             )
             for r in rows
         ],
+        source_model_mismatch=mismatch,
     )

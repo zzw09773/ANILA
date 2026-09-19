@@ -21,7 +21,7 @@
       v-if="collection"
       title="密等"
       pad="md"
-      hint="建立時選定；只能往上調，不能自行降級。預設無機密。"
+      hint="建立時選定；只能往上調，不能自行降級。預設無機密。先前從本庫萃取的長期記憶不受影響。"
     >
       <div class="cls-row">
         <div class="cls-current">
@@ -467,7 +467,7 @@ async function doRaiseClassification() {
       raiseTarget.value,
     )
     collection.value = data
-    raiseMsg.value = `已升密至「${data.classification_level}」`
+    raiseMsg.value = `已升密至「${data.classification_level}」。先前從本庫萃取的長期記憶不受影響`
     await loadDocs()
   } catch (e) {
     raiseError.value = extractError(e, e.message)

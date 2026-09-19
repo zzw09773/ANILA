@@ -61,3 +61,11 @@ test('建庫失敗訊息走 extractError，不放裸 detail（F-9 同族清掃�
   assert.ok(source.includes('extractError'), '建庫失敗應走 extractError 收斂')
   assert.ok(source.includes("from '../api/errors'"), 'extractError 應自 api/errors 匯入')
 })
+
+test('升密文案講明先前從本庫萃取的長期記憶不受影響', () => {
+  const source = stripComments(readSource('views/CollectionDetailView.vue'))
+  assert.ok(
+    source.includes('先前從本庫萃取的長期記憶不受影響'),
+    '升密區塊與成功訊息要講明記憶不會被 purge',
+  )
+})
