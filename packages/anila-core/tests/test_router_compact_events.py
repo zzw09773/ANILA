@@ -334,8 +334,9 @@ def test_normalize_anila_meta_passes_compact_through():
 
 
 @respx.mock
+@pytest.mark.real_router_model_resolve
 def test_manual_compact_summarizes_long_conversation(db_path):
-    respx.post(CSP_RESOLVE_URL).mock(
+    resolve_route = respx.post(CSP_RESOLVE_URL).mock(
         return_value=httpx.Response(200, json={"name": "glm-test"})
     )
     respx.post(CSP_CHAT_URL).mock(
@@ -349,14 +350,17 @@ def test_manual_compact_summarizes_long_conversation(db_path):
         json={"messages": messages, "router_model": "glm-test"},
     )
     assert resp.status_code == 200, resp.text
+    # The marker opted out of the suite-wide stub, so the real hop must fire.
+    assert resolve_route.called, "resolve hop was stubbed out despite the marker"
     body = resp.json()
     _assert_compact_payload(body, messages, keep_recent_turns=2, expect_keep_n=True)
     assert body["method"] == "summary"
 
 
 @respx.mock
+@pytest.mark.real_router_model_resolve
 def test_manual_compact_one_turn_is_none(db_path):
-    respx.post(CSP_RESOLVE_URL).mock(
+    resolve_route = respx.post(CSP_RESOLVE_URL).mock(
         return_value=httpx.Response(200, json={"name": "glm-test"})
     )
     messages = [
@@ -370,6 +374,7 @@ def test_manual_compact_one_turn_is_none(db_path):
         json={"messages": messages},
     )
     assert resp.status_code == 200, resp.text
+    assert resolve_route.called, "resolve hop was stubbed out despite the marker"
     body = resp.json()
     assert body["method"] == "none"
     assert body["summary"] is None

@@ -99,6 +99,7 @@ asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 markers = [
     "integration: tests that require a live pgvector + RLS database",
+    "real_router_model_resolve: opt out of the autouse _csp_resolve_router_model stub",
 ]
 
 [tool.ruff]

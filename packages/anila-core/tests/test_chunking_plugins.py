@@ -174,7 +174,12 @@ def test_hierarchical_pop_resets_deeper_headings() -> None:
         "y.\n"
     )
     chunks = get_chunker("hierarchical").chunk(text, {}, {})
-    b_chunks = [c for c in chunks if c.content.strip().startswith("## B")]
+    # HierarchicalChunker emits a tree: heading rows carry the bare title
+    # ("B"), leaf rows carry the section body ("y."). Select B by path,
+    # not by a markdown content prefix that the chunker never emits.
+    b_chunks = [
+        c for c in chunks if c.metadata.get("heading_path", [])[-1:] == ["B"]
+    ]
     assert b_chunks, "should have at least one section under heading B"
     # Critical: when we returned to level-2 ("B"), the level-3 ("A1") must NOT
     # appear in B's heading_path. Otherwise retrieval surfaces stale ancestors.

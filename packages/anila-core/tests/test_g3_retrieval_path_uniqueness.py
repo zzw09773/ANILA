@@ -3,9 +3,10 @@
 Per docs/ingestion/ingestion-platform-design.md §9 G3:
 
     grep -rnE "(FROM|INSERT INTO|UPDATE|DELETE FROM|...) document_chunks"
-    --include="*.py" anila-core AgenticRAG ingestion-worker
+    --include="*.py" packages/anila-core/src packages/anila-agent
+    services/ingestion-worker/src
     | grep -v "_archive|tests"
-    → exactly 1 file (the canonical SDK).
+    → only the canonical SDK + the reviewed caller allowlist.
 
 Different from G1/G2 which test runtime behaviour against a live DB.
 G3 is a *static* invariant — every retrieval and every write to the
@@ -37,14 +38,23 @@ _SQL_PATTERN = re.compile(
 
 # Where to look. Migrations are excluded — they DEFINE the table, which
 # is the schema authority, not a retrieval path. anila-core is the
-# canonical home of the SDK; AgenticRAG and ingestion-worker are the
+# canonical home of the SDK; anila-agent and ingestion-worker are the
 # two callers that historically had inline SQL.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+#
+# §17.1 laid the top-level dirs out as packages/ + services/, so the
+# repo root is now parents[3] and the old suffixes below both moved:
+#   anila-core/src      → packages/anila-core/src
+#   AgenticRAG/src +
+#   AgenticRAG/api.py   → packages/anila-agent  (the whole package; the
+#                          two AgenticRAG sub-roots no longer exist)
+#   ingestion-worker/src → services/ingestion-worker/src
+# Repo-root base (not packages/) because services/ is a sibling of
+# packages/ and the design-doc grep itself runs from the repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCAN_DIRS = [
-    _REPO_ROOT / "anila-core" / "src",
-    _REPO_ROOT / "AgenticRAG" / "src",
-    _REPO_ROOT / "AgenticRAG" / "api.py",
-    _REPO_ROOT / "ingestion-worker" / "src",
+    _REPO_ROOT / "packages" / "anila-core" / "src",
+    _REPO_ROOT / "packages" / "anila-agent",
+    _REPO_ROOT / "services" / "ingestion-worker" / "src",
 ]
 # Directory fragments anywhere in the path that mean "skip" — tests,
 # archived code, build artefacts.
@@ -67,13 +77,13 @@ def _iter_python_files() -> list[Path]:
     return files
 
 
-def test_g3_single_sql_entry_point() -> None:
-    """The only file with actual SQL on ``document_chunks`` is the
-    central ``AgentScopedPgVectorStore``.
+def test_g3_only_approved_sql_entry_points() -> None:
+    """The only files with actual SQL on ``document_chunks`` are the
+    central ``CollectionScopedPgVectorStore`` and the two reviewed callers.
 
     The test is robust against ordering / new files: it asserts
-    ``offenders`` is exactly ``{anila-core/.../pgvector_store.py}``.
-    Adding a new SQL spot anywhere else fails this test loudly.
+    ``offenders`` is exactly the reviewed allowlist below. Adding a new
+    SQL spot anywhere else fails this test loudly.
     """
     offenders: dict[Path, list[str]] = {}
     for p in _iter_python_files():
@@ -85,23 +95,20 @@ def test_g3_single_sql_entry_point() -> None:
         if hits:
             offenders[p] = hits
 
-    canonical = _REPO_ROOT / "anila-core" / "src" / "anila_core" / "storage" / "adapters" / "pgvector_store.py"
-    canonical_resolved = canonical.resolve()
-
-    extras = sorted(
-        p.relative_to(_REPO_ROOT) for p in offenders if p.resolve() != canonical_resolved
-    )
-    assert canonical_resolved in {p.resolve() for p in offenders}, (
-        f"G3 anomaly: the canonical SDK file {canonical_resolved} has no "
-        f"document_chunks SQL. The single-entry-point invariant only holds "
-        f"if that file actually IS the entry point."
-    )
-    assert not extras, (
-        f"G3 BREACH: {len(extras)} file(s) outside the central SDK now "
-        f"contain SQL touching document_chunks:\n"
-        + "\n".join(f"  - {p}" for p in extras)
-        + "\nAll retrieval / index / delete operations on the chunks table "
-          "must flow through anila_core.storage.adapters.AgentScopedPgVectorStore."
+    # Reviewed entry points. pgvector_store.py is the canonical SDK; the
+    # other two are the agent / worker callers that kept inline SQL.
+    approved = {
+        Path("packages/anila-core/src/anila_core/storage/adapters/pgvector_store.py"),
+        Path("packages/anila-agent/anila_agent/retrieval/anila_pgvector.py"),
+        Path("services/ingestion-worker/src/ingestion_worker/similarity_relations.py"),
+    }
+    actual = {p.resolve().relative_to(_REPO_ROOT) for p in offenders}
+    assert actual == approved, (
+        "G3 BREACH: document_chunks SQL entry points differ from the "
+        f"reviewed allowlist; unexpected={sorted(actual - approved)}, "
+        f"missing={sorted(approved - actual)}. All retrieval / index / "
+        "delete operations on the chunks table must flow through "
+        "anila_core.storage.adapters.CollectionScopedPgVectorStore."
     )
 
 
@@ -120,9 +127,9 @@ def test_g3_design_doc_grep_form() -> None:
         "-rn",
         "document_chunks",
         "--include=*.py",
-        "anila-core",
-        "AgenticRAG",
-        "ingestion-worker",
+        "packages/anila-core/src",
+        "packages/anila-agent",
+        "services/ingestion-worker/src",
     ]
     result = subprocess.run(
         cmd,
@@ -142,10 +149,12 @@ def test_g3_design_doc_grep_form() -> None:
             continue
         files.add(path)
 
-    # Loose ceiling: 12 files. As of Chunk F we're at 7 (mostly docstring
-    # / settings string mentions). Bumping past 12 means someone added
-    # a substantial new file referring to the table — review and either
-    # update the ceiling or refactor.
+    # Loose ceiling: 12 files. The §17.1 rescan set is narrower than the
+    # design-doc one (packages/ + services/ only) and sits at 9 files,
+    # mostly docstring / settings string mentions — still inside the
+    # original ceiling, so it is left unchanged. Bumping past 12 means
+    # someone added a substantial new file referring to the table —
+    # review and either update the ceiling or refactor.
     assert len(files) <= 12, (
         f"G3 advisory: {len(files)} files mention document_chunks "
         f"({sorted(files)}). Review whether this is justified or a "
