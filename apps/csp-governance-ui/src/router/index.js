@@ -43,7 +43,8 @@ const routes = [
         path: 'users',
         name: 'Users',
         component: () => import('../views/UsersView.vue'),
-        meta: { requiresAdmin: true },
+        // 單位管理員＝人事與用量：可進使用者頁，頁內再收掉 admin-only 入口。
+        meta: { requiresPersonnel: true },
       },
       {
         path: 'departments',
@@ -188,6 +189,8 @@ router.beforeEach(async (to, from, next) => {
 
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
     next('/login')
+  } else if (to.meta.requiresPersonnel && !authStore.isAdmin && !authStore.isUnitAdmin) {
+    next('/')
   } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
     // ``isAdmin`` is admin-OR-owner (tier check). Don't compare role
     // strings here — owner is admin's superset and must keep access.

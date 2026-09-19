@@ -260,8 +260,15 @@ def logout(
 
 
 @router.get("/me", response_model=UserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+def get_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.unit_admin_service import is_unit_admin
+
+    payload = UserResponse.model_validate(current_user)
+    payload.is_unit_admin = is_unit_admin(db, current_user)
+    return payload
 
 
 @router.put("/password")

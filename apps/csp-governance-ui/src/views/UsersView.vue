@@ -3,9 +3,9 @@
     <header class="page-head">
       <div>
         <h1 class="page-head__title">使用者</h1>
-        <p class="page-head__sub">角色 · 審核 · 模型 + Agent 允許清單 · 密碼重設</p>
+        <p class="page-head__sub">{{ canAdminUsers ? '角色 · 審核 · 模型 + Agent 允許清單 · 密碼重設' : '單位內人事：核准 · 停用 · 恢復' }}</p>
       </div>
-      <TermButton variant="primary" @click="openCreateModal" label="新增使用者" />
+      <TermButton v-if="canAdminUsers" variant="primary" @click="openCreateModal" label="新增使用者" />
     </header>
 
     <div v-if="feedback.message" class="feedback" :class="feedback.type === 'error' ? 'is-err' : 'is-ok'">
@@ -99,11 +99,11 @@
             <td>
               <RowActions>
                 <button v-if="!user.is_approved" class="term-action" @click="handleApprove(user)">核准</button>
-                <button class="term-action" @click="openEditModal(user)">編輯</button>
-                <button class="term-action" @click="openRouterModelsModal(user)">對話可用模型</button>
+                <button v-if="canAdminUsers" class="term-action" @click="openEditModal(user)">編輯</button>
+                <button v-if="canAdminUsers" class="term-action" @click="openRouterModelsModal(user)">對話可用模型</button>
                 <button v-if="user.is_active && user.is_approved" class="term-action term-action--danger" @click="handleDeactivate(user)">停用</button>
                 <button v-if="!user.is_active" class="term-action" @click="handleActivate(user)">啟用</button>
-                <template #more>
+                <template v-if="canAdminUsers" #more>
                   <button class="term-action" @click="openAllowedModelsModal(user)">API 金鑰可用模型</button>
                   <button class="term-action" @click="openAllowedAgentsModal(user)">Agent</button>
                   <button class="term-action" @click="openResetPasswordModal(user)">重設密碼</button>
@@ -191,7 +191,11 @@
           <span>只有擁有者能建立 / 提升 admin 或 owner 帳號。</span>
         </div>
         <TermField label="部門" hint="可以掛在任何一層：直屬院部就選最上層，所底下沒有分組就選所。">
-          <select v-model="form.department_id" class="term-select">
+          <p
+            v-if="departmentsStatus === LOAD_FAILED"
+            class="cell-meta cell-meta--danger"
+          >{{ departmentsNotice }}</p>
+          <select v-else v-model="form.department_id" class="term-select">
             <option :value="null">— 無 —</option>
             <option v-for="d in departmentChoices" :key="d.id" :value="d.id">{{ d.label }}</option>
           </select>
@@ -199,7 +203,13 @@
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="showModal = false" label="取消" />
-        <TermButton variant="primary" :disabled="!form.username || (!editingId && !form.password)" :label="editingId ? '更新' : '建立'" @click="handleSubmit" />
+        <TermButton
+          variant="primary"
+          :disabled="!canSubmitUser"
+          :title="!canSubmitUser ? submitUserDisabledReason : ''"
+          :label="editingId ? '更新' : '建立'"
+          @click="handleSubmit"
+        />
       </template>
     </TermModal>
 
@@ -226,11 +236,22 @@
           <span>{{ model.display_name }}</span>
           <TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge>
         </label>
-        <p v-if="allModels.length === 0" class="cell-meta">尚未註冊模型</p>
+        <p
+          v-if="allModelsNotice"
+          class="cell-meta"
+          :class="{ 'cell-meta--danger': allModelsStatus === LOAD_FAILED }"
+        >{{ allModelsNotice }}</p>
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="showAllowedModelsModal = false" label="取消" />
-        <TermButton variant="primary" :disabled="savingModels" :loading="savingModels" :label="savingModels ? '儲存中' : '儲存'" @click="handleSaveAllowedModels" />
+        <TermButton
+          variant="primary"
+          :disabled="savingModels || !loadSucceeded(allModelsStatus)"
+          :title="allModelsStatus === LOAD_FAILED ? allModelsNotice : ''"
+          :loading="savingModels"
+          :label="savingModels ? '儲存中' : '儲存'"
+          @click="handleSaveAllowedModels"
+        />
       </template>
     </TermModal>
 
@@ -245,11 +266,22 @@
           </span>
           <span class="cell-meta">{{ agent.description_for_router }}</span>
         </label>
-        <p v-if="allAgents.length === 0" class="cell-meta">無已核准的 Agent</p>
+        <p
+          v-if="allAgentsNotice"
+          class="cell-meta"
+          :class="{ 'cell-meta--danger': allAgentsStatus === LOAD_FAILED }"
+        >{{ allAgentsNotice }}</p>
       </div>
       <template #footer>
         <TermButton variant="ghost" @click="showAllowedAgentsModal = false" label="取消" />
-        <TermButton variant="primary" :disabled="savingAgents" :loading="savingAgents" :label="savingAgents ? '儲存中' : '儲存'" @click="handleSaveAllowedAgents" />
+        <TermButton
+          variant="primary"
+          :disabled="savingAgents || !loadSucceeded(allAgentsStatus)"
+          :title="allAgentsStatus === LOAD_FAILED ? allAgentsNotice : ''"
+          :loading="savingAgents"
+          :label="savingAgents ? '儲存中' : '儲存'"
+          @click="handleSaveAllowedAgents"
+        />
       </template>
     </TermModal>
 
@@ -282,6 +314,7 @@ import {
   getUserAllowedModels,
   hardDeleteUser,
   listUsers,
+  reactivateUser,
   resetUserPassword,
   updateUser,
   updateUserAllowedAgents,
@@ -290,13 +323,52 @@ import {
 } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, RowActions } from '../components/cli'
 import { useAuthStore } from '../stores/auth'
+import {
+  LOAD_FAILED,
+  loadList,
+  loadNotice,
+  loadStatus,
+  loadSucceeded,
+} from '../utils/loadResult'
 
 const authStore = useAuthStore()
 
+// 單位管理員範圍（2026-09-19 裁決）：人事與用量。
+// 人事＝列表／核准／停用／恢復／批次核准與停用。
+// 建立、編輯（角色／部門／SSO）、模型與 Agent 允許清單、重設密碼、永久刪除
+// 後端只准 admin（users.py create/update/reset/hard-delete；departments.py
+// list 亦 require_admin），本頁對單位管理員不畫那些入口。
+// 用量在 /usage；部門樹 CRUD 不在單位管理員範圍。
+const canAdminUsers = computed(() => authStore.isAdmin)
+
 const users = ref([])
-const departments = ref([])
-const allModels = ref([])
-const allAgents = ref([])
+// ⚠ 這三份目錄以前是 `try { ... } catch {}`，讀取失敗時停在 []，
+// 畫面跟「沒有部門／尚未註冊模型／無已核准 Agent」一模一樣。
+const departmentsResult = ref({ items: [], loadFailed: false, error: null })
+const allModelsResult = ref({ items: [], loadFailed: false, error: null })
+const allAgentsResult = ref({ items: [], loadFailed: false, error: null })
+const departments = computed(() => departmentsResult.value.items)
+const allModels = computed(() => allModelsResult.value.items)
+const allAgents = computed(() => allAgentsResult.value.items)
+const departmentsStatus = computed(() => loadStatus(departmentsResult.value))
+const allModelsStatus = computed(() => loadStatus(allModelsResult.value))
+const allAgentsStatus = computed(() => loadStatus(allAgentsResult.value))
+
+const DEPARTMENTS_COPY = {
+  empty: '',
+  failed: '讀不到部門清單 · 這不代表沒有部門 · 請重新整理後再試',
+}
+const ALL_MODELS_COPY = {
+  empty: '尚未註冊模型',
+  failed: '讀不到模型清單 · 這不代表尚未註冊模型 · 請重新整理後再試',
+}
+const ALL_AGENTS_COPY = {
+  empty: '無已核准的 Agent',
+  failed: '讀不到 Agent 清單 · 這不代表沒有已核准的 Agent · 請重新整理後再試',
+}
+const departmentsNotice = computed(() => loadNotice(departmentsStatus.value, DEPARTMENTS_COPY))
+const allModelsNotice = computed(() => loadNotice(allModelsStatus.value, ALL_MODELS_COPY))
+const allAgentsNotice = computed(() => loadNotice(allAgentsStatus.value, ALL_AGENTS_COPY))
 const loading = ref(false)
 const feedback = ref({ type: 'success', message: '' })
 const filters = ref({ query: '', role: 'all', status: 'all', sort: 'newest' })
@@ -388,14 +460,22 @@ async function fetchUsers() {
 
 onMounted(async () => {
   await fetchUsers()
-  try { const { data } = await listDepartments(); departments.value = data } catch {}
-  try { const { data } = await listModels(); allModels.value = data } catch {}
-  try {
-    const { data } = await client.get('/api/agents')
-    allAgents.value = data.filter(a =>
-      a.approval_status === 'approved' || a.approval_status === 'registered'
-    )
-  } catch {}
+  if (!canAdminUsers.value) return
+  const [d, m, a] = await Promise.all([
+    loadList(listDepartments),
+    loadList(listModels),
+    loadList(async () => {
+      const { data } = await client.get('/api/agents')
+      return {
+        data: (Array.isArray(data) ? data : []).filter((agent) =>
+          agent.approval_status === 'approved' || agent.approval_status === 'registered',
+        ),
+      }
+    }),
+  ])
+  departmentsResult.value = d
+  allModelsResult.value = m
+  allAgentsResult.value = a
 })
 
 function openCreateModal() {
@@ -409,7 +489,21 @@ function openEditModal(user) {
   showModal.value = true
 }
 
+const canSubmitUser = computed(() => {
+  if (!form.value.username) return false
+  if (!editingId.value && !form.value.password) return false
+  if (departmentsStatus.value === LOAD_FAILED) return false
+  return true
+})
+const submitUserDisabledReason = computed(() => {
+  if (!form.value.username) return '使用者名稱不得空白'
+  if (!editingId.value && !form.value.password) return '密碼不得空白'
+  if (departmentsStatus.value === LOAD_FAILED) return departmentsNotice.value
+  return ''
+})
+
 async function handleSubmit() {
+  if (!canSubmitUser.value) return
   try {
     if (editingId.value) {
       await updateUser(editingId.value, { email: form.value.email || null, role: form.value.role, department_id: form.value.department_id })
@@ -443,6 +537,10 @@ async function openAllowedModelsModal(user) {
   showAllowedModelsModal.value = true
 }
 async function handleSaveAllowedModels() {
+  if (!loadSucceeded(allModelsStatus.value)) {
+    setFeedback('error', allModelsNotice.value || '讀不到模型清單，先不儲存以免誤改權限。')
+    return
+  }
   savingModels.value = true
   try {
     const r = await updateUserAllowedModels(allowedModelsTarget.value.id, selectedModelIds.value)
@@ -469,6 +567,10 @@ async function openAllowedAgentsModal(user) {
   showAllowedAgentsModal.value = true
 }
 async function handleSaveAllowedAgents() {
+  if (!loadSucceeded(allAgentsStatus.value)) {
+    setFeedback('error', allAgentsNotice.value || '讀不到 Agent 清單，先不儲存以免誤改權限。')
+    return
+  }
   savingAgents.value = true
   try {
     const r = await updateUserAllowedAgents(allowedAgentsTarget.value.id, selectedAgentIds.value)
@@ -506,14 +608,13 @@ async function handleDeactivate(user) {
   } catch (e) { setFeedback('error', extractError(e, '停用失敗')) }
 }
 
-// branch SSO: 重新啟用之前被 deactivate 的使用者。
-// Backend 沒有專屬 /activate endpoint — 直接 PUT 把 is_active 設 true 就好。
+// 重新啟用走 POST /api/users/{id}/reactivate（單位管理員可用）。
 // 注意：仍維持 is_approved 原狀。若使用者在 pending_approval 狀態下被 deactivate，
 // 啟用後仍然不能登入，要再 approve；UI 已用 approve 按鈕區隔兩種狀態。
 async function handleActivate(user) {
   if (!window.confirm(`重新啟用「${user.username}」？`)) return
   try {
-    await updateUser(user.id, { is_active: true })
+    await reactivateUser(user.id)
     setFeedback('success', `已啟用「${user.username}」`)
     await fetchUsers()
   } catch (e) {
@@ -671,6 +772,7 @@ function statusLabel(u) {
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-meta--danger { color: var(--c-danger); font-weight: 500; }
 
 .row-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--t-xs); }
 .row-actions__sep { color: var(--c-border-strong); }

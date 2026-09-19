@@ -149,8 +149,11 @@
               <td class="num tnum">{{ formatNum(a.total_tokens) }}</td>
               <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
             </tr>
-            <tr v-if="topAgents.length === 0">
-              <td colspan="3"><TermEmpty message="尚無歸屬呼叫端的 Agent 用量（Phase G 前的資料顯示為未歸屬）" /></td>
+            <tr v-if="topAgentsStatus !== LOAD_READY">
+              <td colspan="3">
+                <p v-if="topAgentsStatus === LOAD_FAILED" class="cell-meta cell-meta--danger">{{ topAgentsNotice }}</p>
+                <TermEmpty v-else :message="topAgentsNotice" />
+              </td>
             </tr>
           </tbody>
         </table>
@@ -171,8 +174,11 @@
               <td class="num tnum">{{ formatNum(m.total_tokens) }}</td>
               <td class="num tnum">{{ formatNum(m.total_requests) }}</td>
             </tr>
-            <tr v-if="byBaseModel.length === 0">
-              <td colspan="3"><TermEmpty message="尚無 Agent → 基礎模型的歸屬資料" /></td>
+            <tr v-if="byBaseModelStatus !== LOAD_READY">
+              <td colspan="3">
+                <p v-if="byBaseModelStatus === LOAD_FAILED" class="cell-meta cell-meta--danger">{{ byBaseModelNotice }}</p>
+                <TermEmpty v-else :message="byBaseModelNotice" />
+              </td>
             </tr>
           </tbody>
         </table>
@@ -191,6 +197,13 @@ import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import TimeRangeSelector from '../components/charts/TimeRangeSelector.vue'
 import client from '../api/client'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermStat } from '../components/cli'
+import {
+  LOAD_FAILED,
+  LOAD_READY,
+  loadList,
+  loadNotice,
+  loadStatus,
+} from '../utils/loadResult'
 
 const usageStore = useUsageStore()
 const authStore = useAuthStore()
@@ -198,8 +211,25 @@ const authStore = useAuthStore()
 // Sprint 8 X / Phase G — Phase G stores its rollups inline rather
 // than in usageStore because they're admin-only and don't share
 // filter dimensions with the rest of the view.
-const topAgents = ref([])
-const byBaseModel = ref([])
+// ⚠ 這兩份 rollup 以前是 catch 後把陣列清空，畫面跟「尚無用量」一模一樣。
+// 現在讀取結果連同 loadFailed 一起保留，失敗有自己的狀態與自己的文案。
+const topAgentsResult = ref({ items: [], loadFailed: false, error: null })
+const byBaseModelResult = ref({ items: [], loadFailed: false, error: null })
+const topAgents = computed(() => topAgentsResult.value.items)
+const byBaseModel = computed(() => byBaseModelResult.value.items)
+const topAgentsStatus = computed(() => loadStatus(topAgentsResult.value))
+const byBaseModelStatus = computed(() => loadStatus(byBaseModelResult.value))
+
+const PHASE_G_AGENT_COPY = {
+  empty: '尚無歸屬呼叫端的 Agent 用量（Phase G 前的資料顯示為未歸屬）',
+  failed: '讀不到 Agent 用量 · 這不代表沒有資料 · 請重新整理後再試',
+}
+const PHASE_G_BASE_MODEL_COPY = {
+  empty: '尚無 Agent → 基礎模型的歸屬資料',
+  failed: '讀不到基礎模型歸屬資料 · 這不代表沒有資料 · 請重新整理後再試',
+}
+const topAgentsNotice = computed(() => loadNotice(topAgentsStatus.value, PHASE_G_AGENT_COPY))
+const byBaseModelNotice = computed(() => loadNotice(byBaseModelStatus.value, PHASE_G_BASE_MODEL_COPY))
 
 // 視窗 → 天數。Phase G 端點（top-agents／by-base-model）吃 days 不是 range 參數；
 // days=1 是 4h/12h/24h 的最小可表示天數（endpoint ge=1）。
@@ -217,17 +247,12 @@ const phaseGRangeLabel = computed(() => ({
 async function fetchPhaseGRollups() {
   if (!authStore.isAdmin) return
   const days = rangeToDays(selectedRange.value)
-  try {
-    const [{ data: a }, { data: b }] = await Promise.all([
-      client.get('/api/usage/top-agents', { params: { days, limit: 10 } }),
-      client.get('/api/usage/by-base-model', { params: { days } }),
-    ])
-    topAgents.value = Array.isArray(a) ? a : []
-    byBaseModel.value = Array.isArray(b) ? b : []
-  } catch {
-    topAgents.value = []
-    byBaseModel.value = []
-  }
+  const [agents, models] = await Promise.all([
+    loadList(() => client.get('/api/usage/top-agents', { params: { days, limit: 10 } })),
+    loadList(() => client.get('/api/usage/by-base-model', { params: { days } })),
+  ])
+  topAgentsResult.value = agents
+  byBaseModelResult.value = models
 }
 
 const selectedRange = ref('24h')
@@ -368,4 +393,6 @@ function formatNum(n) {
 .tops { display: grid; grid-template-columns: 1fr; gap: var(--gap-3); }
 .tops--admin { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 1100px) { .tops--admin { grid-template-columns: 1fr; } }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-meta--danger { color: var(--c-danger); font-weight: 500; }
 </style>

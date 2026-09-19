@@ -15,6 +15,9 @@ export const resetUserPassword = (id, data) =>
 export const deactivateUser = (id) =>
   client.delete(`/api/users/${id}`)
 
+export const reactivateUser = (id) =>
+  client.post(`/api/users/${id}/reactivate`)
+
 // branch SSO: 永久刪除使用者 (跟 deactivate 對照)。
 // 後端會 cascade 刪 api_keys、保留 audit_logs (actor 設 NULL)。
 // 擁有 agents 的 user 會被拒，admin 要先處理 agent 擁有權。

@@ -80,6 +80,15 @@ const menuGroups = computed(() => {
     })
   }
 
+  if (authStore.isUnitAdmin && !authStore.isAdmin) {
+    groups.push({
+      label: '人員與單位',
+      items: [
+        { path: '/users', label: '使用者' },
+      ],
+    })
+  }
+
   if (authStore.isAdmin) {
     groups.push({
       label: '人員與單位',
@@ -119,6 +128,7 @@ function isActive(path) {
 
 const scopeLabel = computed(() => {
   if (authStore.isAdmin) return '全部功能'
+  if (authStore.isUnitAdmin) return '人事與用量'
   if (authStore.isDeveloper) return 'Agent 與知識庫'
   return '個人金鑰與用量'
 })

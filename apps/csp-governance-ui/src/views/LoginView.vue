@@ -394,7 +394,7 @@ const showSelfRegistration = computed(() =>
 function defaultDestination() {
   const user = authStore.user
   if (!user) return '/'
-  const staysHere = authStore.isAdmin || authStore.isDeveloper
+  const staysHere = authStore.isAdmin || authStore.isDeveloper || authStore.isUnitAdmin
   return staysHere ? '/' : '/anila/'
 }
 

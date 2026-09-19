@@ -202,6 +202,9 @@ def list_departments(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    # 2026-09-19 裁決：單位管理員＝人事與用量，不含組織樹 CRUD。
+    # 本列表（含 tree / descendants / create / update / deactivate）維持
+    # admin-only。UsersView 對單位管理員不畫部門選單、也不打這個端點。
     return _serialize_departments(db)
 
 

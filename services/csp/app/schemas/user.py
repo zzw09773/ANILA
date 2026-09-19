@@ -40,6 +40,9 @@ class UserResponse(ApiResponseModel, UserBase):
     is_active: bool
     is_approved: bool = True
     local_password_disabled: bool = False
+    # Computed on GET /api/auth/me only. Default False so list/create/update
+    # UserResponse rows stay valid without an extra query.
+    is_unit_admin: bool = False
     last_login_at: datetime | None = None
     created_at: datetime
     # users.updated_at 是 nullable(models/user.py:59 只有 default/onupdate,
