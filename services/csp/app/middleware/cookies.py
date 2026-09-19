@@ -12,6 +12,28 @@ Three cookies make up the Wave 2 session:
   echoes the value back as the ``X-CSRF-Token`` header on mutating
   requests (double-submit pattern, see ``middleware/csrf.py``).
 
+Cookie ``Path`` (P2.6 medium: same-origin ``/n8n`` / ``/gitlab`` /
+``/codeserver`` must not receive the session JWT):
+
+- Access token is issued once per prefix that actually consumes it
+  (``ACCESS_COOKIE_PATHS``). nginx 443/4443 send cookie-auth traffic
+  to CSP ``/api``, ``/v1``, ``/v2`` and Router ``/router``;
+  ``/docs`` and ``/openapi.json`` are the admin-gated Swagger pair
+  (``main.py``: browser must present the session cookie, then the UI
+  fetches the schema). Two extra Set-Cookie copies is cheaper than
+  moving the URLs under ``/api`` or switching /docs to Bearer-only.
+  ``/static`` is unauthenticated (Swagger JS/CSS plus nginx workflow
+  assets) and must not get the JWT. ``/uploads`` is unauthenticated
+  static. Sibling ops paths stay outside this set.
+- Refresh stays on ``/api/auth/refresh``.
+- CSRF stays ``Path=/``. Governance Vue uses history routes at
+  ``/login``, ``/models``, ... and Shell lives at ``/anila/``; both
+  read ``document.cookie``, and those document URLs share no prefix
+  other than ``/``. This is the double-submit token, not the session
+  JWT. ``delete_cookie`` paths below must stay in lockstep with these
+  values (including the legacy access ``Path=/`` so an older cookie
+  cannot linger after logout).
+
 SameSite policy 條件式選擇 (見 ``_cookie_samesite``):
 - **card-only mode** (``ANILA_AUTH_MODE=card-only``,內網 prod):升 ``Strict``。
   這個模式下沒有 OIDC top-level callback (endpoint 已 lockdown 404),Strict 不
@@ -35,6 +57,26 @@ ACCESS_COOKIE_NAME = "anila_access_token"
 REFRESH_COOKIE_NAME = "anila_refresh_token"
 CSRF_COOKIE_NAME = "anila_csrf"
 REFRESH_COOKIE_PATH = "/api/auth/refresh"
+# Request-path prefixes that read the httpOnly JWT. Cookie Path is a
+# prefix match, so ``/api`` covers ``/api/studio`` etc. and ``/router``
+# covers ``/router/v1/...``. ``/docs`` covers ``/docs`` and
+# ``/docs/oauth2-redirect``; it does not match ``/docs-admin``.
+# ``/openapi.json`` is the schema URL Swagger fetches after /docs.
+# ``/static`` is intentionally absent: swagger-ui-bundle.js / .css are
+# public StaticFiles, and nginx ``/static/`` is unauthenticated.
+ACCESS_COOKIE_PATHS: tuple[str, ...] = (
+    "/api",
+    "/v1",
+    "/v2",
+    "/router",
+    "/docs",
+    "/openapi.json",
+)
+# Pre-P2.6 access cookies were Path=/. Logout must still expire that
+# copy or an old session JWT keeps going to /n8n until Max-Age.
+ACCESS_COOKIE_LEGACY_PATH = "/"
+# Vue history + Shell document.cookie; see module docstring.
+CSRF_COOKIE_PATH = "/"
 
 
 def _cookie_secure() -> bool:
@@ -82,15 +124,16 @@ def set_session_cookies(
     access_max_age = access_minutes * 60
     refresh_max_age = refresh_days * 86400
 
-    response.set_cookie(
-        ACCESS_COOKIE_NAME,
-        access_token,
-        max_age=access_max_age,
-        httponly=True,
-        secure=_cookie_secure(),
-        samesite=_cookie_samesite(),
-        path="/",
-    )
+    for path in ACCESS_COOKIE_PATHS:
+        response.set_cookie(
+            ACCESS_COOKIE_NAME,
+            access_token,
+            max_age=access_max_age,
+            httponly=True,
+            secure=_cookie_secure(),
+            samesite=_cookie_samesite(),
+            path=path,
+        )
     response.set_cookie(
         REFRESH_COOKIE_NAME,
         refresh_token,
@@ -109,16 +152,19 @@ def set_session_cookies(
         httponly=False,  # SPA must read this
         secure=_cookie_secure(),
         samesite=_cookie_samesite(),
-        path="/",
+        path=CSRF_COOKIE_PATH,
     )
     return csrf_token
 
 
 def clear_session_cookies(response: Response) -> None:
     """Remove all session cookies — used on logout and on refresh failure."""
+    access_paths = tuple(
+        dict.fromkeys((*ACCESS_COOKIE_PATHS, ACCESS_COOKIE_LEGACY_PATH))
+    )
     for name, path in (
-        (ACCESS_COOKIE_NAME, "/"),
+        *((ACCESS_COOKIE_NAME, path) for path in access_paths),
         (REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH),
-        (CSRF_COOKIE_NAME, "/"),
+        (CSRF_COOKIE_NAME, CSRF_COOKIE_PATH),
     ):
         response.delete_cookie(name, path=path)

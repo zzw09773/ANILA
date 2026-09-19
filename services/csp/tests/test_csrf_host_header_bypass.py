@@ -136,7 +136,7 @@ def test_login_stays_exempt_while_a_session_cookie_is_present(
     """
     make_user(db, username="csrf-relogin")
     _login(client, "csrf-relogin")
-    assert client.cookies.get(ACCESS_COOKIE_NAME)
+    assert client.cookies.get(ACCESS_COOKIE_NAME, path="/api")
 
     client.cookies.delete(CSRF_COOKIE_NAME)
     resp = client.post(

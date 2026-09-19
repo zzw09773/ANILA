@@ -19,9 +19,14 @@ from starlette.responses import Response
 
 from app.middleware import cookies as cookie_module
 from app.middleware.cookies import (
+    ACCESS_COOKIE_LEGACY_PATH,
     ACCESS_COOKIE_NAME,
+    ACCESS_COOKIE_PATHS,
     CSRF_COOKIE_NAME,
+    CSRF_COOKIE_PATH,
     REFRESH_COOKIE_NAME,
+    REFRESH_COOKIE_PATH,
+    clear_session_cookies,
     set_session_cookies,
 )
 from app.models.platform_setting import PlatformSetting
@@ -77,13 +82,14 @@ def test_session_cookies_reuse_lifetimes_resolved_for_token_issuance(db):
         for name, value in response.raw_headers
         if name == b"set-cookie"
     ]
-    access_cookie = next(
+    access_cookies = [
         cookie for cookie in set_cookies if cookie.startswith(f"{ACCESS_COOKIE_NAME}=")
-    )
+    ]
     refresh_cookie = next(
         cookie for cookie in set_cookies if cookie.startswith(f"{REFRESH_COOKIE_NAME}=")
     )
-    assert "Max-Age=420" in access_cookie
+    assert len(access_cookies) == len(ACCESS_COOKIE_PATHS)
+    assert all("Max-Age=420" in cookie for cookie in access_cookies)
     assert "Max-Age=172800" in refresh_cookie
 
 
@@ -146,7 +152,7 @@ def test_refresh_via_cookie_rotates_tokens(client: TestClient, db):
     assert new_body["refresh_token"]
 
     # New cookies should have been set too.
-    assert client.cookies.get(ACCESS_COOKIE_NAME)
+    assert client.cookies.get(ACCESS_COOKIE_NAME, path="/api")
 
 
 def test_logout_clears_cookies_and_bumps_token_version(client: TestClient, db):
@@ -207,3 +213,93 @@ def test_safe_methods_never_need_csrf(client: TestClient, db):
     # GET without X-CSRF-Token succeeds.
     resp = client.get("/api/auth/me")
     assert resp.status_code == 200
+
+
+def _set_cookie_headers(response) -> list[str]:
+    return [
+        value.decode("latin-1")
+        for name, value in response.raw_headers
+        if name == b"set-cookie"
+    ]
+
+
+def _cookie_path(header: str) -> str | None:
+    lower = header.lower()
+    idx = lower.find("; path=")
+    if idx < 0:
+        idx = lower.find("path=")
+        if idx < 0:
+            return None
+        rest = header[idx + len("path="):]
+    else:
+        rest = header[idx + len("; path="):]
+    return rest.split(";", 1)[0]
+
+
+def test_session_cookies_use_csp_paths_not_site_root(db):
+    """Access JWT is scoped off /n8n /gitlab; CSRF stays readable at /."""
+    user = make_user(db, username="path-user")
+    tokens = create_tokens(user, db, include_lifetimes=True)
+    response = Response()
+    set_session_cookies(
+        response,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        db=db,
+        token_lifetimes=tokens[TOKEN_LIFETIMES_KEY],
+    )
+    set_cookies = _set_cookie_headers(response)
+    access = [
+        c for c in set_cookies if c.startswith(f"{ACCESS_COOKIE_NAME}=")
+    ]
+    refresh = [
+        c for c in set_cookies if c.startswith(f"{REFRESH_COOKIE_NAME}=")
+    ]
+    csrf = [c for c in set_cookies if c.startswith(f"{CSRF_COOKIE_NAME}=")]
+    access_paths = {_cookie_path(c) for c in access}
+    assert access_paths == set(ACCESS_COOKIE_PATHS)
+    assert ACCESS_COOKIE_LEGACY_PATH not in access_paths
+    assert {_cookie_path(c) for c in refresh} == {REFRESH_COOKIE_PATH}
+    assert {_cookie_path(c) for c in csrf} == {CSRF_COOKIE_PATH}
+
+
+def test_clear_session_cookies_expires_legacy_root_access_path():
+    response = Response()
+    clear_session_cookies(response)
+    set_cookies = _set_cookie_headers(response)
+    access = [
+        c for c in set_cookies if c.startswith(f"{ACCESS_COOKIE_NAME}=")
+    ]
+    assert {_cookie_path(c) for c in access} == set(ACCESS_COOKIE_PATHS) | {
+        ACCESS_COOKIE_LEGACY_PATH
+    }
+
+
+def test_access_cookie_paths_cover_admin_docs_pair_not_static():
+    """/docs HTML fetches /openapi.json; both need the JWT. /static does not."""
+    assert "/docs" in ACCESS_COOKIE_PATHS
+    assert "/openapi.json" in ACCESS_COOKIE_PATHS
+    assert not any(path == "/static" or path.startswith("/static/") for path in ACCESS_COOKIE_PATHS)
+
+
+def test_admin_docs_and_openapi_accept_scoped_session_cookie(client: TestClient, db):
+    """Cookie Path 收斂後，admin 瀏覽器開 /docs 仍帶得到 access JWT。"""
+    make_user(db, username="docs-admin", role="admin")
+    _login(client, "docs-admin")
+
+    docs = client.get("/docs")
+    assert docs.status_code == 200, docs.text
+    assert "swagger" in docs.text.lower() or "openapi" in docs.text.lower()
+
+    schema = client.get("/openapi.json")
+    assert schema.status_code == 200, schema.text
+    body = schema.json()
+    assert "openapi" in body or "paths" in body
+
+
+def test_non_admin_docs_forbidden_with_scoped_session_cookie(client: TestClient, db):
+    make_user(db, username="docs-user", role="user")
+    _login(client, "docs-user")
+
+    docs = client.get("/docs")
+    assert docs.status_code == 403, docs.text
