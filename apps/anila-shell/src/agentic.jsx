@@ -74,7 +74,8 @@ export function PausedBadge({ kind = "ask_user", label }) {
  *
  * `onSubmit(answer)` receives the value the parent should pass to
  * `streamSessionAnswer`. Disabled state is handled internally while
- * the submission is in flight.
+ * the submission is in flight. After a successful resume the parent
+ * passes `answer` and the card collapses to a one-line summary.
  *
  * @param {object} props
  * @param {string} props.kind
@@ -82,8 +83,29 @@ export function PausedBadge({ kind = "ask_user", label }) {
  * @param {(answer: any) => Promise<void> | void} props.onSubmit
  * @param {boolean} [props.disabled] — set by parent once the resume
  *   is in flight; cleared when anila.resumed arrives.
+ * @param {object} [props.answer] — persisted `{selected, other_text}`
  */
-export function InterruptCard({ kind, payload = {}, onSubmit, disabled = false }) {
+export function InterruptCard({
+  kind,
+  payload = {},
+  onSubmit,
+  disabled = false,
+  answer = null,
+}) {
+  if (answer) {
+    const summary = kind === "ask_user"
+      ? formatAskUserSummary(payload, answer)
+      : kind === "plan"
+        ? (answer.decision === "accept" ? "已核准計畫" : "已拒絕計畫")
+        : kind === "tool_approval"
+          ? (answer.approved ? "已授權工具" : "已拒絕工具")
+          : "已回覆";
+    return (
+      <div style={cardWrapperStyle} data-testid="interrupt-summary">
+        {summary}
+      </div>
+    );
+  }
   if (kind === "ask_user") {
     return (
       <AskUserCard
@@ -124,39 +146,89 @@ export function InterruptCard({ kind, payload = {}, onSubmit, disabled = false }
 }
 
 
+function optionValue(opt) {
+  if (opt && typeof opt === "object") {
+    return String(opt.value ?? opt.label ?? "");
+  }
+  return String(opt ?? "");
+}
+
+function optionLabel(opt) {
+  if (opt && typeof opt === "object") {
+    return String(opt.label ?? opt.value ?? "");
+  }
+  return String(opt ?? "");
+}
+
+function optionDescription(opt) {
+  if (opt && typeof opt === "object") {
+    return String(opt.description ?? "").trim();
+  }
+  return "";
+}
+
+/**
+ * One-line recap kept on the message after a successful ask_user resume.
+ * Example: `已選擇：重點摘要；補充：主管閱讀、一頁以內`
+ */
+export function formatAskUserSummary(payload = {}, answer = {}) {
+  if (typeof answer === "string") {
+    const trimmed = answer.trim();
+    return trimmed ? `補充：${trimmed}` : "已回答";
+  }
+  const options = Array.isArray(payload.options) ? payload.options : [];
+  const selected = Array.isArray(answer.selected) ? answer.selected : [];
+  const labels = selected
+    .map((value) => {
+      const match = options.find((opt) => optionValue(opt) === String(value));
+      return match ? optionLabel(match) : String(value);
+    })
+    .filter(Boolean);
+  const other = String(answer.other_text ?? "").trim();
+  const parts = [];
+  if (labels.length) parts.push(`已選擇：${labels.join("、")}`);
+  if (other) parts.push(`補充：${other}`);
+  return parts.join("；") || "已回答";
+}
+
+export function normalizeInterrupt(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const hasAnswer = raw.answer != null && raw.answer !== "";
+  return {
+    ...raw,
+    status: raw.status || (hasAnswer ? "answered" : "pending"),
+  };
+}
+
 function AskUserCard({ payload, onSubmit, disabled }) {
   const {
     question = "(no question)",
     options = [],
     multi_select: multiSelect = false,
-    allow_other: allowOther = false,
   } = payload;
   const [selected, setSelected] = useState(multiSelect ? [] : "");
   const [other, setOther] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const toggle = (opt) => {
+  const toggle = (value) => {
     if (multiSelect) {
       setSelected((prev) =>
-        prev.includes(opt) ? prev.filter((x) => x !== opt) : [...prev, opt],
+        prev.includes(value) ? prev.filter((x) => x !== value) : [...prev, value],
       );
     } else {
-      setSelected(opt);
+      setSelected(value);
     }
   };
 
   const handleSubmit = async () => {
-    let value;
-    if (multiSelect) {
-      value = [...selected];
-      if (allowOther && other.trim()) value.push(other.trim());
-    } else {
-      value = other.trim() || selected;
-    }
-    if ((Array.isArray(value) && value.length === 0) || value === "") return;
+    const selectedValues = multiSelect
+      ? [...selected]
+      : selected ? [selected] : [];
+    const otherText = other.trim();
+    if (selectedValues.length === 0 && !otherText) return;
     setBusy(true);
     try {
-      await onSubmit?.(value);
+      await onSubmit?.({ selected: selectedValues, other_text: otherText });
     } finally {
       setBusy(false);
     }
@@ -175,52 +247,64 @@ function AskUserCard({ payload, onSubmit, disabled }) {
       </div>
       {options.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {options.map((opt) => (
-            <label
-              key={opt}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 12,
-                color: "var(--fg)",
-                cursor: isDisabled ? "not-allowed" : "pointer",
-                opacity: isDisabled ? 0.6 : 1,
-              }}
-            >
-              <input
-                type={multiSelect ? "checkbox" : "radio"}
-                name="ask_user_option"
-                checked={
-                  multiSelect ? selected.includes(opt) : selected === opt
-                }
-                onChange={() => toggle(opt)}
-                disabled={isDisabled}
-              />
-              {opt}
-            </label>
-          ))}
+          {options.map((opt, index) => {
+            const value = optionValue(opt);
+            const label = optionLabel(opt);
+            const description = optionDescription(opt);
+            const checked = multiSelect
+              ? selected.includes(value)
+              : selected === value;
+            return (
+              <label
+                key={value || index}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 8,
+                  fontSize: 12,
+                  color: "var(--fg)",
+                  cursor: isDisabled ? "not-allowed" : "pointer",
+                  opacity: isDisabled ? 0.6 : 1,
+                }}
+              >
+                <input
+                  type={multiSelect ? "checkbox" : "radio"}
+                  name="ask_user_option"
+                  checked={checked}
+                  onChange={() => toggle(value)}
+                  disabled={isDisabled}
+                  style={{ marginTop: 2 }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span>{label}</span>
+                  {description ? (
+                    <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+                      {description}
+                    </span>
+                  ) : null}
+                </span>
+              </label>
+            );
+          })}
         </div>
       )}
-      {allowOther && (
-        <input
-          type="text"
-          placeholder="或輸入其他回應…"
-          value={other}
-          onChange={(e) => setOther(e.target.value)}
-          disabled={isDisabled}
-          style={{
-            marginTop: 8,
-            width: "100%",
-            padding: "6px 8px",
-            fontSize: 12,
-            background: "var(--bg)",
-            color: "var(--fg)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-          }}
-        />
-      )}
+      <input
+        type="text"
+        placeholder="或輸入其他回應…"
+        value={other}
+        onChange={(e) => setOther(e.target.value)}
+        disabled={isDisabled}
+        style={{
+          marginTop: 8,
+          width: "100%",
+          padding: "6px 8px",
+          fontSize: 12,
+          background: "var(--bg)",
+          color: "var(--fg)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+        }}
+      />
       <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
         <Button
           variant="primary"

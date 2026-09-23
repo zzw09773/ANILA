@@ -46,12 +46,16 @@ describe("PausedBadge", () => {
 describe("InterruptCard ask_user", () => {
   const askPayload = {
     question: "Pick one",
-    options: ["A", "B", "C"],
+    options: [
+      { label: "A", value: "a", description: "Alpha choice" },
+      { label: "B", value: "b", description: "Bravo choice" },
+      { label: "C", value: "c", description: "" },
+    ],
     multi_select: false,
     allow_other: false,
   };
 
-  it("renders the question and options", () => {
+  it("renders the question and object-option labels + descriptions", () => {
     render(
       <InterruptCard
         kind="ask_user"
@@ -60,12 +64,14 @@ describe("InterruptCard ask_user", () => {
       />,
     );
     expect(screen.getByText("Pick one")).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "A" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "B" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: "C" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /A/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /B/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /C/ })).toBeTruthy();
+    expect(screen.getByText("Alpha choice")).toBeTruthy();
+    expect(screen.getByText("Bravo choice")).toBeTruthy();
   });
 
-  it("calls onSubmit with the radio selection", async () => {
+  it("submits {selected:[value], other_text} for a radio pick", async () => {
     const onSubmit = vi.fn(async () => {});
     render(
       <InterruptCard
@@ -74,12 +80,14 @@ describe("InterruptCard ask_user", () => {
         onSubmit={onSubmit}
       />,
     );
-    fireEvent.click(screen.getByRole("radio", { name: "B" }));
+    fireEvent.click(screen.getByRole("radio", { name: /B/ }));
     fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("B"));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ selected: ["b"], other_text: "" }),
+    );
   });
 
-  it("returns an array when multi_select is true", async () => {
+  it("returns selected values when multi_select is true", async () => {
     const onSubmit = vi.fn(async () => {});
     render(
       <InterruptCard
@@ -88,15 +96,51 @@ describe("InterruptCard ask_user", () => {
         onSubmit={onSubmit}
       />,
     );
-    fireEvent.click(screen.getByRole("checkbox", { name: "A" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "C" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /A/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /C/ }));
     fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith(expect.arrayContaining(["A", "C"])),
+      expect(onSubmit).toHaveBeenCalledWith({
+        selected: expect.arrayContaining(["a", "c"]),
+        other_text: "",
+      }),
     );
   });
 
-  it("includes the 'other' free-text when allow_other and field used", async () => {
+  it("keeps the free-text input even when allow_other is false", () => {
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={askPayload}
+        onSubmit={() => {}}
+      />,
+    );
+    expect(screen.getByPlaceholderText(/或輸入其他回應|補充/)).toBeTruthy();
+  });
+
+  it("sends pick + supplement as selected values and other_text", async () => {
+    const onSubmit = vi.fn(async () => {});
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={askPayload}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /A/ }));
+    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應|補充/), {
+      target: { value: "主管閱讀、一頁以內" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        selected: ["a"],
+        other_text: "主管閱讀、一頁以內",
+      }),
+    );
+  });
+
+  it("includes free-text as other_text when no option is picked", async () => {
     const onSubmit = vi.fn(async () => {});
     render(
       <InterruptCard
@@ -105,11 +149,16 @@ describe("InterruptCard ask_user", () => {
         onSubmit={onSubmit}
       />,
     );
-    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應/), {
+    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應|補充/), {
       target: { value: "custom answer" },
     });
     fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("custom answer"));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        selected: [],
+        other_text: "custom answer",
+      }),
+    );
   });
 
   it("does not submit when nothing is selected", () => {
@@ -134,8 +183,22 @@ describe("InterruptCard ask_user", () => {
         disabled
       />,
     );
-    expect(screen.getByRole("radio", { name: "A" }).disabled).toBe(true);
+    expect(screen.getByRole("radio", { name: /A/ }).disabled).toBe(true);
     expect(screen.getByRole("button", { name: "送出回答" }).disabled).toBe(true);
+  });
+
+  it("collapses to a one-line summary after a successful answer", () => {
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={askPayload}
+        answer={{ selected: ["a"], other_text: "主管閱讀、一頁以內" }}
+      />,
+    );
+    expect(screen.getByTestId("interrupt-summary").textContent).toBe(
+      "已選擇：A；補充：主管閱讀、一頁以內",
+    );
+    expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
   });
 });
 

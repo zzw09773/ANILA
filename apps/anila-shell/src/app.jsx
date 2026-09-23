@@ -17,7 +17,7 @@ import React, {
 
 import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
-import { streamChatCompletion } from "./runtime/sse.js";
+import { streamChatCompletion, streamSessionAnswer } from "./runtime/sse.js";
 import { createTaskForConversation } from "./runtime/tasks.js";
 import {
   appendClassifiedTag,
@@ -148,6 +148,10 @@ import {
   MessageBubble,
   Sidebar,
 } from "./chat.jsx";
+import {
+  formatAskUserSummary,
+  normalizeInterrupt,
+} from "./agentic.jsx";
 import {
   Button,
   IconButton,
@@ -895,6 +899,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
+  const streamInterruptRef = useRef(new Map());
   const adoptInFlightRef = useRef(false);
   async function streamWithAbort(convId, opts) {
     // ── 敏感資訊閘門・扼流點 2/2:模型呼叫 ─────────────────────────
@@ -918,20 +923,54 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const queueCompact = (payload) => {
       compactChain = compactChain.then(() => handleIncomingCompact(convId, payload, opts.payload));
     };
+    const { assistantId, ...streamOpts } = opts;
     try {
       const result = await streamChatCompletion({
         // 對話已綁 Task 時所有後續 chat 呼叫(送出/編輯/重試)自動帶上;
         // 呼叫端可用 opts.taskId 覆寫(sendMessage 首回合的 state 尚未落地)。
         taskId: taskIdForConv(convId),
-        ...opts,
+        ...streamOpts,
         signal: controller.signal,
         onCompact: (payload) => {
           queueCompact(payload);
-          opts.onCompact?.(payload);
+          streamOpts.onCompact?.(payload);
         },
         onMeta: (meta) => {
           if (meta?.compact) queueCompact(meta.compact);
-          opts.onMeta?.(meta);
+          streamOpts.onMeta?.(meta);
+        },
+        onSessionId: (sessionId) => {
+          if (assistantId) {
+            const prev = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+            updateMsg(convId, assistantId, {
+              sessionId,
+              ...(prev?.interrupt
+                ? {
+                    interrupt: {
+                      ...prev.interrupt,
+                      session_id: prev.interrupt.session_id || sessionId,
+                    },
+                  }
+                : {}),
+            });
+          }
+          streamOpts.onSessionId?.(sessionId);
+        },
+        onInterrupt: (payload) => {
+          if (assistantId) {
+            const prev = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+            const interrupt = normalizeInterrupt({
+              ...payload,
+              session_id: payload?.session_id || prev?.sessionId,
+              status: "pending",
+            });
+            streamInterruptRef.current.set(assistantId, interrupt);
+            updateMsg(convId, assistantId, { interrupt });
+          }
+          streamOpts.onInterrupt?.(payload);
+        },
+        onResumed: (payload) => {
+          streamOpts.onResumed?.(payload);
         },
       });
       return result;
@@ -1276,6 +1315,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingLocked: meta.thinking_locked === true,
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
+      interrupt: normalizeInterrupt(meta.interrupt),
+      sessionId: meta.interrupt?.session_id || meta.session_id || null,
       // OW-3: action:NAME attribution (second channel alongside metadata.action).
       agentName: msg.agent_name || null,
       // OW-3 provenance (metadata.action) — quiet action-name attribution.
@@ -1989,6 +2030,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             url: `${baseUrl}/v1/chat/completions`,
             payload,
             conversationId: convId,
+            assistantId,
             onText: (acc) => {
               finalText = acc;
               const record = inFlightStreamsRef.current.get(assistantId);
@@ -2087,6 +2129,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const persistMeta = buildPersistMeta(finalMeta, {
         trace: accumulatedTrace,
         reasoning: accumulatedReasoning,
+        interrupt: interruptFromMessage(convId, assistantId),
         ...thinkingSnap,
       });
       const persisted = await finalizeStreamedAssistant({
@@ -2108,7 +2151,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         return;
       }
       const persistPatch = persistFieldsFromSaved(persisted.saved);
-      if (persistPatch) updateMsg(convId, assistantId, persistPatch);
+      updateMsg(convId, assistantId, {
+        ...(persistPatch || {}),
+        metadata: persisted.saved?.metadata || persistMeta,
+      });
+      await reconcileAnsweredInterrupt(convId, assistantId, reserved.id, persistMeta);
       await refreshActivePath(convId);
     });
   }
@@ -2201,6 +2248,118 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     });
   }
 
+  async function reconcileAnsweredInterrupt(convId, assistantId, messageId, persistMeta) {
+    const row = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+    const latest = row?.interrupt;
+    if (!latest || latest.status !== "answered") return;
+    if (persistMeta?.interrupt?.status === "answered") return;
+    if (typeof convId !== "number" || typeof messageId !== "number") return;
+    try {
+      await apiUpdateMessage(authRequest, convId, messageId, {
+        content: row.text || "",
+        metadata: { ...(persistMeta || {}), interrupt: latest },
+      });
+    } catch {
+      /* 續答路徑自己會再寫一次；這裡只擋「pending 落庫蓋掉已回答」 */
+    }
+  }
+
+  function interruptFromMessage(convId, msgId) {
+    const row = (messagesRef.current[convId] || []).find((m) => m.id === msgId);
+    if (row?.interrupt?.status === "answered") return row.interrupt;
+    const fromStream = streamInterruptRef.current.get(msgId);
+    const interrupt = fromStream || row?.interrupt || null;
+    if (!interrupt) return null;
+    return {
+      ...interrupt,
+      session_id: interrupt.session_id || row?.sessionId || null,
+    };
+  }
+
+  async function handleInterruptAnswer(msg, answer) {
+    const convId = msg.conversationId;
+    const interrupt = msg.interrupt || msg.metadata?.interrupt;
+    const sessionId = interrupt?.session_id || msg.sessionId;
+    const interruptId = interrupt?.interrupt_id;
+    if (!sessionId || !interruptId) {
+      setRuntimeError("無法續答：缺少工作階段");
+      return;
+    }
+    updateMsg(convId, msg.id, { interruptSubmitting: true });
+    const priorText = msg.text || "";
+    let finalText = priorText;
+    try {
+      await streamSessionAnswer({
+        routerBaseUrl: config.routerBaseUrl,
+        sessionId,
+        interruptId,
+        answer,
+        callbacks: {
+          onText: (acc) => {
+            const joiner = priorText && !/\s$/.test(priorText) ? "\n" : "";
+            finalText = priorText + joiner + acc;
+            updateMsg(convId, msg.id, { text: finalText });
+          },
+          onMeta: (metaFrame) => {
+            applyMeta(convId, msg.id, msg.routedAgentId || selectedAgentId, metaFrame);
+          },
+          onInterrupt: (payload) => {
+            const prev = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
+            updateMsg(convId, msg.id, {
+              interrupt: normalizeInterrupt({
+                ...payload,
+                session_id: payload?.session_id || prev?.sessionId || sessionId,
+                status: "pending",
+              }),
+              interruptSubmitting: false,
+            });
+          },
+        },
+      });
+      const answered = normalizeInterrupt({
+        ...interrupt,
+        session_id: sessionId,
+        answer,
+        status: "answered",
+        summary:
+          interrupt.kind === "ask_user"
+            ? formatAskUserSummary(interrupt.payload || {}, answer)
+            : "已回覆",
+      });
+      streamInterruptRef.current.delete(msg.id);
+      updateMsg(convId, msg.id, {
+        interrupt: answered,
+        interruptSubmitting: false,
+      });
+      if (typeof convId === "number" && typeof msg.dbId === "number") {
+        const current = (messagesRef.current[convId] || []).find((m) => m.id === msg.id) || msg;
+        const persistMeta = {
+          ...buildPersistMeta(current.metadata, {
+            ...current,
+            interrupt: answered,
+          }),
+          interrupt: answered,
+        };
+        try {
+          const saved = await apiUpdateMessage(authRequest, convId, msg.dbId, {
+            content: finalText,
+            metadata: persistMeta,
+          });
+          updateMsg(convId, msg.id, {
+            metadata: saved?.metadata || persistMeta,
+          });
+        } catch (err) {
+          setRuntimeError(err?.message || "對話訊息儲存失敗");
+        }
+      }
+    } catch (err) {
+      updateMsg(convId, msg.id, {
+        interruptSubmitting: false,
+      });
+      setRuntimeError(err?.message || "續答失敗");
+    }
+  }
+
   function applyMeta(convId, msgId, agentId, meta) {
     // Streaming paths emit each trace step as its own SSE event, and the
     // final ``anila.meta`` intentionally ships ``trace: []`` to avoid
@@ -2216,6 +2375,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       confidence: meta.confidence,
       handoffChain: meta.handoff_chain || [],
       followUps: meta.follow_ups || [],
+      ...(meta.interrupt ? { interrupt: normalizeInterrupt(meta.interrupt) } : {}),
       // SSE 現場這一縫。同一份定義也要接在 mapServerMessage(重新載入那一縫)上。
       ...kbMetaFields(meta),
       ...agentReplyMetaFields(meta),
@@ -2636,6 +2796,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           payload,
           conversationId: persistable ? convId : undefined,
           taskId,
+          assistantId,
           onText: (acc) => {
             finalText = acc;
             const record = inFlightStreamsRef.current.get(assistantId);
@@ -2744,6 +2905,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const persistMeta = buildPersistMeta(finalMeta, {
         trace: accumulatedTrace,
         reasoning: accumulatedReasoning,
+        interrupt: interruptFromMessage(convId, assistantId),
         ...thinkingSnap,
       });
       const persisted = await finalizeStreamedAssistant({
@@ -2764,7 +2926,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         updateMsg(convId, assistantId, { persistError: persisted.notice });
       } else {
         const persistPatch = persistFieldsFromSaved(persisted.saved);
-        if (persistPatch) updateMsg(convId, assistantId, persistPatch);
+        updateMsg(convId, assistantId, {
+          ...(persistPatch || {}),
+          metadata: persisted.saved?.metadata || persistMeta,
+        });
+        await reconcileAnsweredInterrupt(convId, assistantId, reservedId, persistMeta);
       }
       await flushPendingCompact(convId);
 
@@ -2882,6 +3048,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               url: `${baseUrl}/v1/chat/completions`,
               payload,
               conversationId: convId,
+              assistantId: placeholderId,
               onText: (acc) => {
                 finalText = acc;
                 updateMsg(convId, placeholderId, { text: acc });
@@ -3143,6 +3310,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           url: `${baseUrl}/v1/chat/completions`,
           payload,
           conversationId: typeof convId === "number" ? convId : undefined,
+          assistantId: placeholderId,
           // 隨這一次呼叫走,不進 state:寫進 state 的旗標會黏在對話上,
           // 之後每一輪都強制檢索,等於前端單方面關掉 Router 的判斷。
           forceKbSearch,
@@ -3216,6 +3384,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         const persistMeta = buildPersistMeta(finalMeta, {
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
+          interrupt: interruptFromMessage(convId, placeholderId),
           ...thinkingPump.snapshot({
             hadReasoning: accumulatedReasoning.length > 0,
           }),
@@ -4079,6 +4248,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                             messageActions={customActions}
                             onAction={runMessageAction}
                             onContinue={continueMessage}
+                            onInterruptSubmit={handleInterruptAnswer}
                             conversationStreaming={currentMsgs.some((x) => x.streaming)}
                             isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
                           />

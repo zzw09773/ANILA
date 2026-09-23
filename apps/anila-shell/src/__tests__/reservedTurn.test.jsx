@@ -72,6 +72,7 @@ vi.mock("../runtime/sse.js", () => ({
     }
     await done;
   }),
+  streamSessionAnswer: vi.fn(async () => ""),
 }));
 
 vi.mock("../runtime/tasks.js", () => ({

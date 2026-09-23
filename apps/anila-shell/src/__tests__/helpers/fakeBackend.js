@@ -105,6 +105,10 @@ export function errorFrame(payload) {
   return `event: anila.error\ndata: ${JSON.stringify(payload)}\n\n`;
 }
 
+export function namedEventFrame(event, payload) {
+  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
 export function doneFrame() {
   return "data: [DONE]\n\n";
 }
@@ -372,6 +376,9 @@ export function createFakeBackend(options = {}) {
   const requests = [];
   /** 送到 `/v1/chat/completions` 的 payload(含 messages 歷史)。 */
   const chatPayloads = [];
+  /** 送到 `/v1/sessions/{id}/answer` 的 body。 */
+  const sessionAnswers = [];
+  const answerQueue = [];
   /**
    * 真的落到後端的訊息,依落庫時序。
    *
@@ -607,6 +614,27 @@ export function createFakeBackend(options = {}) {
       const script = takeStreamScript();
       if (script.status && script.status >= 400) {
         return errorResponse(script.status, script.detail || "後端錯誤");
+      }
+      const stream = createControlledStream({ signal: init?.signal });
+      lastStream = stream;
+      const sessionId = script.sessionId || null;
+      if (script.manual) return streamResponse(stream, { sessionId });
+      stream.pushAll(script.frames);
+      stream.close();
+      return streamResponse(stream, { sessionId });
+    }
+
+    const sessionAnswerMatch = path.match(/^\/v1\/sessions\/([^/]+)\/answer$/);
+    if (sessionAnswerMatch && method === "POST") {
+      sessionAnswers.push({
+        sessionId: decodeURIComponent(sessionAnswerMatch[1]),
+        body,
+      });
+      const script = answerQueue.length > 0
+        ? answerQueue.shift()
+        : { frames: scriptAnswer("已依您的選擇繼續。") };
+      if (script.status && script.status >= 400) {
+        return errorResponse(script.status, script.detail || "續答失敗");
       }
       const stream = createControlledStream({ signal: init?.signal });
       lastStream = stream;
@@ -1098,6 +1126,7 @@ export function createFakeBackend(options = {}) {
     fetch: fetchImpl,
     requests,
     chatPayloads,
+    sessionAnswers,
     appendedMessages,
     routerCompactPayloads,
 
@@ -1112,8 +1141,8 @@ export function createFakeBackend(options = {}) {
       return this;
     },
     /** 下一次對話回合直接指定 SSE frames。 */
-    enqueueFrames(frames) {
-      streamQueue.push({ frames });
+    enqueueFrames(frames, { sessionId = null } = {}) {
+      streamQueue.push({ frames, sessionId });
       return this;
     },
     /** 下一次對話回合開一條手動串流(測試自己 push / close)。 */
@@ -1124,6 +1153,18 @@ export function createFakeBackend(options = {}) {
     /** 下一次對話回合回 non-2xx。 */
     enqueueHttpError(status, detail) {
       streamQueue.push({ status, detail });
+      return this;
+    },
+    enqueueSessionAnswer(text, opts = {}) {
+      answerQueue.push({ frames: scriptAnswer(text, opts) });
+      return this;
+    },
+    enqueueSessionAnswerFrames(frames) {
+      answerQueue.push({ frames });
+      return this;
+    },
+    enqueueSessionAnswerError(status, detail) {
+      answerQueue.push({ status, detail });
       return this;
     },
     /**

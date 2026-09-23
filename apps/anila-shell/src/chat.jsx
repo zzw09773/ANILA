@@ -21,6 +21,7 @@ import {
   isMessageImage,
 } from "./runtime/messageAttachments.js";
 import { canContinueLengthReply } from "./runtime/reservedTurn.js";
+import { InterruptCard, PausedBadge, normalizeInterrupt } from "./agentic.jsx";
 
 import {
   AgentPill,
@@ -845,6 +846,7 @@ export const MessageBubble = ({
   messageActions = [],
   onAction,
   onContinue,
+  onInterruptSubmit,
   /** True when any message in this conversation is streaming — locks all pagers/deletes. */
   conversationStreaming = false,
   isLatestAssistant = false,
@@ -1244,6 +1246,16 @@ export const MessageBubble = ({
               thinkingStartedAt={msg.thinkingStartedAt}
               showThinkingOrb={isLatestAssistant}
             />
+            {(() => {
+              const interrupt = normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt);
+              const pending = interrupt && interrupt.status !== "answered";
+              if (!pending) return null;
+              return (
+                <div style={{ marginBottom: 8 }}>
+                  <PausedBadge kind={interrupt.kind} />
+                </div>
+              );
+            })()}
             <div
               className="anila-msg-body"
               style={{
@@ -1267,7 +1279,7 @@ export const MessageBubble = ({
                   finishReason={msg.finishReason ?? null}
                 />
               ) : null}
-              {msg.streaming && msg.text && (
+              {msg.streaming && msg.text && !normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt) && (
                 <span style={{
                   display: "inline-block", width: 7, height: 15,
                   background: "var(--fg)", marginLeft: 2, verticalAlign: "text-bottom",
@@ -1275,6 +1287,24 @@ export const MessageBubble = ({
                 }}/>
               )}
             </div>
+            {(() => {
+              const interrupt = normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt);
+              if (!interrupt) return null;
+              const answered = interrupt.status === "answered";
+              return (
+                <InterruptCard
+                  kind={interrupt.kind}
+                  payload={interrupt.payload || {}}
+                  disabled={Boolean(msg.interruptSubmitting)}
+                  answer={answered ? interrupt.answer : null}
+                  onSubmit={
+                    answered || typeof onInterruptSubmit !== "function"
+                      ? undefined
+                      : (answer) => onInterruptSubmit(msg, answer)
+                  }
+                />
+              );
+            })()}
             {!msg.streaming && msg.error && (
               <div
                 role="alert"

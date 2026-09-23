@@ -38,8 +38,15 @@ from ..memory.contract import (
     AGENT_REPLY_END,
     sanitize_agent_reply,
 )
-from ..memory.short_term import Session, SqliteSession, new_session_id
-from ..models.message import UserMessage
+from ..memory.short_term import (
+    InterruptRecord,
+    Session,
+    SqliteSession,
+    new_session_id,
+)
+from ..models.interrupt import InterruptItem
+from ..models.message import AssistantMessage, ToolCall, UserMessage
+from ..engine.approvals import build_resume_message, to_record
 from ..prompts import COMMON_PREAMBLE, IDENTITY
 from ..compact.auto_compact import FALLBACK_CONTEXT_WINDOW
 from ..compact.openai_history import (
@@ -327,6 +334,424 @@ _DISPATCH_EMPTY_RE = re.compile(
     _DISPATCH_LINE_START + r"DISPATCH:([^\s:`]+):\s*(?:`|$)",
     re.MULTILINE | re.UNICODE,
 )
+
+
+# ---------------------------------------------------------------------------
+# ASK:<question>[|opt1|opt2] — plain-router pause directive (mirrors DISPATCH)
+#
+# A plain Router turn (no agent dispatched) has no tool loop: the routing LLM
+# writes text and the Router ships it. So a router-side question cannot use
+# ``anila_core.tools.ask_user`` — that tool only runs inside a dispatched agent.
+# The smallest faithful mechanism is therefore an inline directive the routing
+# LLM emits *instead of* an answer, parsed at the same points DISPATCH is, so
+# the two protocols share one grammar and one set of conventions.
+#
+# Grammar: the directive is recognised only when it is the FIRST line of the
+# reply (leading spaces/tabs and up to three `` ` ``/``*``/``>`` markers, the
+# same class DISPATCH tolerates). A later line that merely quotes ``ASK:`` —
+# a tutorial, a bullet, a code sample — is prose and must pass through
+# unchanged.
+#
+# The question is the text AFTER ``ASK:`` up to the first ``|``. Only the
+# directive's own line is directive syntax; a line-wrapped question (rule 4's
+# markdown bullets stay ordinary clarify prose) is therefore NOT folded in, and
+# whatever the model put on following lines is plain prose the reader sees.
+# Emit the whole question on one line.
+# That tail after the first ``|`` is the optional option list,
+# one label per ``|`` (no values/descriptions — the wire shape needs them, so
+# value defaults to label and description to "").
+#
+# ``|`` rather than a comma because option text routinely contains prose commas
+# (and the CJK enumeration mark 、). It is one line by construction: it cannot
+# contain ``|`` or a newline. Without options the payload carries ``options: []``.
+# Anything that is not a leading directive falls through to "answer directly"
+# — the safe direction, same as a reply that never mentions ASK.
+#
+# The leading marker group is consumed but the option tail is not part of the
+# question; the trailing ``[`*]`` strip below removes the CLOSING half of a
+# ``\```ASK:...\``` `` or ``**ASK:...**`` wrapper. DISPATCH's regex excludes
+# backticks from its capture for the same reason.
+_ASK_RE = re.compile(
+    r"^[ \t]*(?:[`*>]{1,3}[ \t]*)?ASK:([^\n\r]+?)[ \t]*(?=\n|\r|$)",
+    re.UNICODE,
+)
+# Incomplete ASK mid-stream check: the buffer begins with an ASK header, so the
+# model is still emitting that directive. Used to keep buffering rather than
+# commit to "answering" on a half-written question.
+_ASK_HEAD_RE = re.compile(
+    r"^[ \t]*(?:[`*>]{1,3}[ \t]*)?ASK:",
+    re.MULTILINE | re.UNICODE,
+)
+
+
+def _parse_ask(text: str) -> dict[str, Any] | None:
+    """Return ``{"question", "options"}`` when the reply STARTS with ASK, else None.
+
+    ``_ASK_RE`` is anchored at position 0, so ``.match`` accepts only a leading
+    directive. A later ``ASK:`` line is ordinary prose and is not a pause.
+    Options are the ``|``-separated tail of that one line; a free-text-only
+    question is legal and yields ``options: []``.
+    """
+    if not text:
+        return None
+    matched = _ASK_RE.match(text)
+    if matched is None:
+        return None
+    body = matched.group(1).strip().strip("`*").strip()
+    if not body:
+        return None
+    question, _, options_raw = body.partition("|")
+    question = question.strip().strip("`*").strip()
+    if not question:
+        return None
+    options: list[dict[str, str]] = []
+    for chunk in options_raw.split("|"):
+        label = chunk.strip().strip("`*").strip()
+        if label:
+            options.append({"label": label, "value": label, "description": ""})
+    return {"question": question, "options": options}
+
+
+def _has_ask_signal(
+    text: str, route_signal: str, *, final: bool = False
+) -> dict[str, Any] | None:
+    """Return a complete ASK directive only once its line has ended.
+
+    Mirrors :func:`_has_dispatch_signal` down to the terminator rule: the regex's
+    lookahead leaves the terminator outside the match, so a match with no newline
+    in its suffix is still being emitted and yields None, keeping the streaming
+    state machine in ``detecting``. ``final=True`` is the end-of-stream form and
+    accepts a last line that never got its newline. On a forced turn ASK still
+    fires (Q40 suppresses *dispatch* only).
+
+    ``route_signal`` is accepted for call-site parity with
+    :func:`_has_dispatch_signal`.
+    """
+    del route_signal
+    parsed = _parse_ask(text)
+    if parsed is None or final:
+        return parsed
+    matched = _ASK_RE.match(text)
+    if matched is None:
+        return None
+    return parsed if any(ch in text[matched.end():] for ch in "\r\n") else None
+
+
+def _strip_ask_syntax(text: str) -> str:
+    """Remove a leading ASK directive from text the user is about to read.
+
+    Same role as :func:`_strip_dispatch_syntax`, but only the first line: a
+    later line that quotes ``ASK:`` is the answer and must survive verbatim.
+    Once the Router has turned a leading ASK into an interrupt the protocol
+    string must not ride into the bubble.
+    """
+    if not text:
+        return text
+    cleaned = _ASK_RE.sub("", text, count=1)
+    if cleaned == text:
+        return text
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+async def _persist_router_ask(
+    session: Session,
+    *,
+    ask: dict[str, Any],
+    user_message: str,
+) -> InterruptRecord:
+    """Persist an ASK directive as a normal ``ask_user`` interrupt on ``session``.
+
+    Written in the exact ``to_record`` shape (``payload.data`` +
+    ``payload.tool_call`` + ``payload.sibling_results``) so that answering it
+    goes through the *existing*, already-tested ``build_resume_message`` renderer
+    and produces a plain ``UserMessage`` — no second resume format.
+
+    Crucially the record is written to the **Router's own** Session
+    (``SqliteSession`` / ``session_factory``), which is the store
+    ``GET /v1/sessions/{id}/state`` reads. That is what makes the pause survive a
+    reload: the agent path's interrupt lives in the *agent's* DB and is
+    deliberately invisible to the Router's state endpoint (see the e2e comment in
+    ``tests/test_e2e_ask_user_resume.py``).
+
+    The synthetic ``tool_call`` exists only so the renderer can name the block it
+    appends; the Router never executes it.
+
+    The question itself is written as an assistant turn on this same Session.
+    Without it the resumed routing call sees only the original user message and
+    the answer (``user_selected: …``) and has to guess what was asked.
+    ``user_message`` is unused: the caller already persisted that user turn.
+    """
+    del user_message
+    question = str(ask.get("question") or "").strip()
+    if question:
+        await session.add_items([AssistantMessage(content=question)])
+    return to_record(
+        InterruptItem(
+            kind="ask_user",
+            payload={
+                "question": ask["question"],
+                "options": ask["options"],
+                "multi_select": False,
+                "allow_other": True,
+            },
+        ),
+        tool_call=ToolCall(
+            id=f"call-{uuid.uuid4().hex[:12]}",
+            name="ask_user",
+            input={},
+        ),
+        sibling_results=[],
+    )
+
+
+def _router_answer_resume_message(
+    record: InterruptRecord, answer: dict[str, Any] | str
+) -> UserMessage:
+    """Build the resume ``UserMessage`` for a Router-side ASK answer.
+
+    Mirrors the string contractions ``QueryEngine.resume_from_interrupt`` does: a
+    bare string is a free-form reply, and a JSON-encoded array is the shell's
+    ``other``-only multi-select. Everything else goes to the frozen renderer.
+    """
+    if isinstance(answer, str):
+        stripped = answer.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                parsed = json.loads(stripped)
+            except (ValueError, TypeError):
+                parsed = None
+            if isinstance(parsed, list):
+                answer = {"selected": [str(x) for x in parsed]}
+    return build_resume_message(record, answer)
+
+
+def _resume_content_text(message: Any) -> str:
+    """Flatten a resume message into text the routing LLM can read.
+
+    ``build_resume_message`` returns tool_result blocks, which the Router's
+    OpenAI-shaped message list has no slot for. The rendered answer text is
+    what the next turn needs.
+    """
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        piece = block.get("content")
+        if isinstance(piece, str) and piece.strip():
+            parts.append(piece)
+    return "\n".join(parts)
+
+
+def _session_item_to_openai(item: Any) -> dict[str, str] | None:
+    """One stored turn → an OpenAI chat message, or None when it has no text."""
+    role = getattr(item, "role", None)
+    if role not in ("user", "assistant"):
+        return None
+    if isinstance(item.content, str):
+        text = item.content
+    elif isinstance(item.content, list):
+        text = _resume_content_text(item) if role == "user" else ""
+    else:
+        text = ""
+    text = text.strip()
+    if not text:
+        return None
+    return {"role": role, "content": text}
+
+
+async def _resume_router_ask(
+    session_id: str,
+    session: Session,
+    body: dict[str, Any],
+    *,
+    caller_api_key: str,
+    request: Request,
+) -> StreamingResponse:
+    """Continue a plain-Router ASK with one more routing-LLM turn.
+
+    No owning agent exists for this pause, so there is nothing to proxy.
+    The pending interrupt is popped, the answer becomes a user turn, and the
+    routing LLM is called again on the same path chat uses. ``anila.resumed``
+    is the first event. A reply that is itself an ``ASK:`` pauses again.
+    """
+    interrupt_id = str(body["interrupt_id"])
+    record = await session.pop_interrupt(interrupt_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Interrupt '{interrupt_id}' is not pending on session "
+                f"'{session_id}'."
+            ),
+        )
+    resume_message = _router_answer_resume_message(record, body["answer"])
+    await session.add_items([resume_message])
+
+    history = await session.get_items()
+    prior = [m for item in history if (m := _session_item_to_openai(item)) is not None]
+    route_signal = _resolve_route_signal(request.headers)
+    system_prompt = (
+        _forced_answer_prompt()
+        if route_signal == _ROUTE_FORCED
+        else _build_system_prompt([])
+    )
+    routing_messages = _merge_routing_messages(system_prompt, prior)
+    anila_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower().startswith("x-anila-")
+        and k.lower() != _ROUTE_HEADER.lower()
+    }
+    router_llm_headers = {**anila_headers, _ROUTE_HEADER: route_signal}
+    stream = bool(body.get("stream", True))
+    started_at = time.time()
+
+    async def _events() -> AsyncIterator[str]:
+        yield _make_event("anila.resumed", {"interrupt_id": interrupt_id})
+        if stream:
+            buf = ""
+            upstream_reasoning = ""
+            async for ev in _stream_llm_sse(
+                caller_api_key,
+                routing_messages,
+                forwarded_headers=router_llm_headers,
+                apply_thinking_tier=True,
+            ):
+                kind = ev.get("type")
+                if kind == "error":
+                    err = ev.get("error", "LLM error")
+                    yield _make_event(
+                        "anila.trace",
+                        _make_trace_step("direct", "LLM 無法回應", err, status="error"),
+                    )
+                    yield _make_chunk(_visible_llm_fallback(err), "anila-router")
+                    yield _make_event("anila.meta", {"trace": [], "reasoning": None})
+                    yield _make_chunk("", "anila-router", finish="stop")
+                    yield "data: [DONE]\n\n"
+                    return
+                if kind == "reasoning":
+                    upstream_reasoning += ev["content"]
+                    yield _make_event("anila.reasoning", {"delta": ev["content"]})
+                    continue
+                if kind == "delta":
+                    buf += ev["content"]
+                    continue
+                if kind == "done":
+                    break
+            ask = _parse_ask(buf)
+            if ask is not None:
+                follow = await _persist_router_ask(
+                    session, ask=ask, user_message=_resume_content_text(resume_message)
+                )
+                await session.push_interrupt(follow)
+                payload = _ask_event_payload(follow)
+                ask_step = _make_trace_step(
+                    "direct", "Router 反問使用者", "暫停等待回答"
+                )
+                yield _make_event("anila.trace", ask_step)
+                yield _make_event("anila.interrupt_requested", payload)
+                yield _make_chunk(str(ask["question"]), "anila-router")
+                anila_meta = _merge_anila_meta(
+                    [ask_step],
+                    None,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                    route={"decision": "ask"},
+                )
+                if upstream_reasoning:
+                    anila_meta["reasoning"] = upstream_reasoning
+                yield _make_event(
+                    "anila.meta",
+                    {**anila_meta, "trace": [], "interrupt": payload},
+                )
+                yield _make_chunk("", "anila-router", finish="stop")
+                yield "data: [DONE]\n\n"
+                return
+            visible = _forced_visible_text(
+                _normalize_clarify_bullets(_strip_ask_syntax(buf)),
+                route_signal,
+            )
+            if visible:
+                yield _make_chunk(visible, "anila-router")
+            step = _make_trace_step("direct", "Router 直接回答", "無需分派 agent")
+            yield _make_event("anila.trace", step)
+            anila_meta = _merge_anila_meta(
+                [step],
+                None,
+                latency_ms=int((time.time() - started_at) * 1000),
+                route={"decision": "direct"},
+            )
+            if upstream_reasoning:
+                anila_meta["reasoning"] = upstream_reasoning
+            yield _make_event("anila.meta", {**anila_meta, "trace": []})
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+
+        llm_response = await _call_llm_non_stream(
+            caller_api_key,
+            routing_messages,
+            forwarded_headers=router_llm_headers,
+            apply_thinking_tier=True,
+        )
+        if llm_response["error"]:
+            err = llm_response["error"]
+            yield _make_event(
+                "anila.trace",
+                _make_trace_step("direct", "LLM 無法回應", err, status="error"),
+            )
+            yield _make_chunk(_visible_llm_fallback(err), "anila-router")
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+        llm_text = llm_response["content"]
+        ask = _parse_ask(llm_text)
+        if ask is not None:
+            follow = await _persist_router_ask(
+                session, ask=ask, user_message=_resume_content_text(resume_message)
+            )
+            await session.push_interrupt(follow)
+            payload = _ask_event_payload(follow)
+            yield _make_event("anila.interrupt_requested", payload)
+            yield _make_chunk(str(ask["question"]), "anila-router")
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+        visible = _forced_visible_text(
+            _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
+            route_signal,
+        )
+        if visible:
+            yield _make_chunk(visible, "anila-router")
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Anila-Session-Id": session_id,
+        },
+    )
+
+
+def _ask_event_payload(record: InterruptRecord) -> dict[str, Any]:
+    """The ``anila.interrupt_requested`` SSE payload for a Router-side ASK.
+
+    Deliberately byte-identical to what the agent path surfaces (the agent's own
+    ``interrupt_requested`` framing, renamed to the ``anila.*`` namespace by
+    ``_AGENT_PASSTHROUGH_EVENTS``), so the UI's single ``onInterrupt`` handler
+    needs no branch for "who asked".
+    """
+    return {
+        "interrupt_id": record.id,
+        "kind": record.kind,
+        "payload": record.payload.get("data", {}),
+    }
 
 
 # Matches a "thought" / "thinking" line at the very start of content. Gemma-
@@ -1466,6 +1891,7 @@ def create_router_app(
                         started_at=started_at,
                         session_id=session_id,
                         max_iterations=max_iterations,
+                        session=sess,
                         pin_owner=_pin_owner_cb,
                         compact_event=compact_event,
                     ),
@@ -1548,8 +1974,37 @@ def create_router_app(
         # model's actual answer content decides now; a missed dispatch merely
         # produces a normal answer, which is the safe failure direction.
 
-        # Non-dispatch path: Router answers directly.
+        # Non-dispatch path: Router answers directly — unless the model paused
+        # on a question (``ASK:``), which is the plain-chat twin of DISPATCH.
         if not dispatch:
+            ask = _parse_ask(llm_text)
+            if ask is not None:
+                record = await _persist_router_ask(
+                    sess, ask=ask, user_message=last_user_text
+                )
+                await sess.push_interrupt(record)
+                base_trace.append(
+                    _make_trace_step(
+                        "direct", "Router 反問使用者", "暫停等待回答"
+                    )
+                )
+                anila_meta = _merge_anila_meta(
+                    base_trace,
+                    None,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                    route={"decision": "ask"},
+                )
+                if llm_response.get("reasoning"):
+                    anila_meta["reasoning"] = llm_response["reasoning"]
+                return _respond_ask(
+                    ask,
+                    record,
+                    anila_meta,
+                    stream,
+                    session_id=session_id,
+                    compact_event=compact_event,
+                )
+
             base_trace.append(
                 _make_trace_step("direct", "Router 直接回答", "無需分派 agent")
             )
@@ -1563,7 +2018,8 @@ def create_router_app(
                 anila_meta["reasoning"] = llm_response["reasoning"]
             return _respond(
                 _forced_visible_text(
-                    _normalize_clarify_bullets(llm_text), route_signal
+                    _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
+                    route_signal,
                 ),
                 anila_meta,
                 stream,
@@ -1866,6 +2322,26 @@ def create_router_app(
                 )
                 if router_reasoning:
                     anila_meta["reasoning"] = router_reasoning
+
+                # The synthesis turn can pause too (same first-line ASK rule
+                # as every Router-authored answer).
+                ask = _parse_ask(final_text)
+                if ask is not None:
+                    record = await _persist_router_ask(
+                        sess, ask=ask, user_message=last_user_text
+                    )
+                    await sess.push_interrupt(record)
+                    payload = _ask_event_payload(record)
+                    anila_meta["route"] = {"decision": "ask"}
+                    return _respond_ask(
+                        ask,
+                        record,
+                        anila_meta,
+                        stream=False,
+                        session_id=session_id,
+                        compact_event=compact_event,
+                    )
+
                 return _respond(
                     final_text,
                     anila_meta,
@@ -1992,6 +2468,63 @@ def create_router_app(
         )
         return JSONResponse(
             _make_full_response(content, "anila-router", anila_meta=anila_meta),
+            headers=json_headers,
+        )
+
+    def _respond_ask(
+        ask: dict[str, Any],
+        record: InterruptRecord,
+        anila_meta: dict[str, Any],
+        stream: bool,
+        *,
+        session_id: str = "",
+        compact_event: dict[str, Any] | None = None,
+    ) -> StreamingResponse | JSONResponse:
+        """Router-side ASK response — same envelope as ``_respond``, no protocol leak.
+
+        The user-visible text is the question, never the raw ``ASK:`` line. The
+        interrupt rides in the same place the UI already reads agent pauses:
+        an ``anila.interrupt_requested`` event before meta/done when streaming,
+        and ``anila_meta.interrupt`` on the JSON completion otherwise.
+        """
+        anila_meta = _attach_compact_event(anila_meta, compact_event)
+        question = str(ask.get("question") or "")
+        interrupt_payload = _ask_event_payload(record)
+        if stream:
+            async def _event_stream() -> AsyncIterator[str]:
+                for step in anila_meta["trace"]:
+                    yield _make_event("anila.trace", step)
+                if compact_event:
+                    yield _make_event("anila.compact", compact_event)
+                yield _make_event("anila.interrupt_requested", interrupt_payload)
+                yield _make_chunk(question, "anila-router")
+                meta_for_event = {
+                    **anila_meta,
+                    "trace": [],
+                    "interrupt": interrupt_payload,
+                }
+                yield _make_event("anila.meta", meta_for_event)
+                yield _make_chunk("", "anila-router", finish="stop")
+                yield "data: [DONE]\n\n"
+
+            headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            if session_id:
+                headers["X-Anila-Session-Id"] = session_id
+            return StreamingResponse(
+                _event_stream(),
+                media_type="text/event-stream",
+                headers=headers,
+            )
+
+        json_headers = (
+            {"X-Anila-Session-Id": session_id} if session_id else None
+        )
+        return JSONResponse(
+            _make_full_response(
+                question,
+                "anila-router",
+                anila_meta={**anila_meta, "interrupt": interrupt_payload},
+            ),
             headers=json_headers,
         )
 
@@ -2142,7 +2675,9 @@ def create_router_app(
 
         # Resolve owning agent. session_factory paths (tests) skip the
         # production owners table and 503 — they should drive resume
-        # against the agent server directly.
+        # against the agent server directly. A Router-side ASK has no
+        # owner either, but that pause lives in the Router's own Session
+        # and is resumed below, before this proxy branch.
         if session_factory is not None:
             raise HTTPException(
                 status_code=503,
@@ -2151,6 +2686,56 @@ def create_router_app(
                     "with a custom session_factory (tests). Drive resume "
                     "against the agent's /sessions/{id}/answer directly."
                 ),
+            )
+        # A Router-side ASK has no owning agent. Look at the Router's own
+        # Session first so a pending interrupt resumes here, and so a missing
+        # interrupt still 404s without a CSP identity round-trip. The caller
+        # check is the same one ``session_state`` uses: a different ``sk-*``
+        # must not answer someone else's pause just because no agent owns it.
+        sess = _make_session(session_id)
+        pending = await sess.pending_interrupts()
+        if any(p.id == body["interrupt_id"] for p in pending):
+            owner_key_hash = await _resolve_session_owner_hash(caller_api_key)
+            try:
+                owner_record = await get_session_owner_record(
+                    resolved_db_path, session_id
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "get_session_owner failed sid=%s: %s", session_id, exc
+                )
+                owner_record = None
+            if owner_record is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No owner recorded for session '{session_id}'.",
+                )
+            if (
+                owner_record.owner_key_hash is not None
+                and owner_record.owner_key_hash != owner_key_hash
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Session belongs to a different caller.",
+                )
+            if owner_record.owner_key_hash is None:
+                owner_ok = await ensure_session_owner(
+                    resolved_db_path, session_id, owner_key_hash
+                )
+                if not owner_ok:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Session owner is not bound; start a new turn "
+                            "to re-establish ownership."
+                        ),
+                    )
+            return await _resume_router_ask(
+                session_id,
+                sess,
+                body,
+                caller_api_key=caller_api_key,
+                request=request,
             )
         owner_key_hash = await _resolve_session_owner_hash(caller_api_key)
         owner_record = await get_session_owner_record(resolved_db_path, session_id)
@@ -2496,6 +3081,7 @@ async def _router_streaming_multi_turn(
     started_at: float,
     session_id: str,
     max_iterations: int,
+    session: Session,
     pin_owner: PinOwnerFn = None,
     compact_event: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
@@ -2559,13 +3145,44 @@ async def _router_streaming_multi_turn(
     dispatch = _parse_dispatch_unless_forced(llm_text, route_signal)
 
     if not dispatch:
+        # A leading ASK owns the turn on this path too. Without this the
+        # directive leaked verbatim into the bubble and the turn never paused —
+        # max_iterations has to be >1, so a plain multi-turn chat hit it.
+        ask = _parse_ask(llm_text)
+        if ask is not None:
+            record = await _persist_router_ask(
+                session, ask=ask, user_message=_flatten_last_user_query(user_messages)
+            )
+            await session.push_interrupt(record)
+            ask_step = _make_trace_step(
+                "direct", "Router 反問使用者", "暫停等待回答"
+            )
+            yield _make_event("anila.trace", ask_step)
+            interrupt_payload = _ask_event_payload(record)
+            yield _make_event("anila.interrupt_requested", interrupt_payload)
+            async for chunk in _emit_soft_chunks(ask["question"]):
+                yield chunk
+            anila_meta = _merge_anila_meta(
+                base_trace + [ask_step], llm_response.get("anila_meta"),
+                latency_ms=int((time.time() - started_at) * 1000),
+                route={"decision": "ask"},
+            )
+            if router_reasoning:
+                anila_meta["reasoning"] = router_reasoning
+            yield _make_event(
+                "anila.meta", {**anila_meta, "trace": [], "interrupt": interrupt_payload}
+            )
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+
         # Direct router answer — no dispatch needed even with multi-turn.
         direct_step = _make_trace_step(
             "direct", "Router 直接回答", "無需分派 agent",
         )
         yield _make_event("anila.trace", direct_step)
         cleaned = _forced_visible_text(
-            _normalize_clarify_bullets(llm_text), route_signal
+            _normalize_clarify_bullets(_strip_ask_syntax(llm_text)), route_signal
         )
         async for chunk in _emit_soft_chunks(cleaned):
             yield chunk
@@ -2684,6 +3301,43 @@ async def _router_streaming_multi_turn(
     # personalized with the user's memory (CSP injects it into the recompose
     # call). Classified replies are forwarded verbatim. Fail-safe to original.
     final_content = final_text or agent_response["content"]
+
+    # The synthesis turn can pause too. ``final_text`` is Router-authored and
+    # goes through the same first-line ASK rule as every other Router answer;
+    # without this the directive rode into the bubble after a dispatch.
+    # Recompose would rewrite the directive, so it is skipped on this branch —
+    # same reason ``_router_streaming``'s ASK exit bypasses it.
+    if final_text is not None:
+        ask = _parse_ask(final_content)
+        if ask is not None:
+            record = await _persist_router_ask(
+                session, ask=ask, user_message=_flatten_last_user_query(user_messages)
+            )
+            await session.push_interrupt(record)
+            ask_step = _make_trace_step(
+                "direct", "Router 反問使用者", "暫停等待回答"
+            )
+            yield _make_event("anila.trace", ask_step)
+            interrupt_payload = _ask_event_payload(record)
+            yield _make_event("anila.interrupt_requested", interrupt_payload)
+            async for chunk in _emit_soft_chunks(ask["question"]):
+                yield chunk
+            anila_meta = _merge_anila_meta(
+                base_trace + [ask_step],
+                None,
+                agent_id=last_agent_id,
+                latency_ms=int((time.time() - started_at) * 1000),
+                route={"decision": "ask"},
+            )
+            if router_reasoning:
+                anila_meta["reasoning"] = router_reasoning
+            yield _make_event(
+                "anila.meta", {**anila_meta, "trace": [], "interrupt": interrupt_payload}
+            )
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+
     is_classified = bool(
         (last_manifest and last_manifest.requires_encryption)
         or (agent_response.get("anila_meta") or {}).get("classified")
@@ -3922,6 +4576,7 @@ async def _router_streaming(
     state = "detecting"
     answer_emitted_up_to = 0
     dispatch: tuple[str, str, int, int] | None = None
+    ask: dict[str, Any] | None = None
     # Flag + cursor for live-streaming thought to the caller's "thinking
     # fold" while the router is still in detecting state. Keeps the user
     # visually engaged during the 3-6 s before the answer boundary is
@@ -4036,6 +4691,19 @@ async def _router_streaming(
             state = "dispatching"
             break
 
+        # ASK lives on the non-dispatch branch only: a dispatched agent owns its
+        # own interrupts, and a buffer carrying a real DISPATCH line already left
+        # through the branch above.
+        if _ASK_HEAD_RE.match(buf):
+            # The directive owns the rest of the reply, so we cannot commit to
+            # "answering" until the stream ends (or a DISPATCH pre-empts it).
+            prompted_ask = _has_ask_signal(buf, route_signal)
+            if prompted_ask is not None:
+                ask = prompted_ask
+                state = "asking"
+                break
+            continue
+
         # Compliant model path: buffer looks like a pure DISPATCH attempt
         # (starts with DISPATCH:, still being emitted). Keep buffering
         # until we have the full line.
@@ -4099,6 +4767,13 @@ async def _router_streaming(
                 if agent_guess and fallback_query:
                     dispatch = (agent_guess, fallback_query, 0, 0)
                     state = "dispatching"
+        if state == "detecting" and _ASK_HEAD_RE.match(buf):
+            # Same rule as the live path: only a reply that STARTS with ASK
+            # pauses. A later ASK-shaped line is prose and stays in the answer.
+            final_ask = _has_ask_signal(buf, route_signal, final=True)
+            if final_ask is not None:
+                ask = final_ask
+                state = "asking"
         if state == "detecting":
             clean_content, merged_reasoning = _sanitize_leaked_thought(buf, upstream_reasoning)
             # Terminal exit, and the one a *compliant* stray directive lands in:
@@ -4155,6 +4830,58 @@ async def _router_streaming(
         yield _make_chunk(
             "", "anila-router", finish="length" if stream_finish == "length" else "stop"
         )
+        yield "data: [DONE]\n\n"
+        return
+
+    # ASK pause. Placed after ``answering`` and before the dispatch assert so a
+    # buffer that also carries DISPATCH still falls through to the agent path
+    # (``dispatching`` never enters this branch). Nothing of the raw ``ASK:``
+    # line is forwarded — the question text is the only content chunk.
+    if state == "asking":
+        # No Session (unit callers of ``_router_streaming``) cannot persist a
+        # pause, so the directive falls through to a plain answer — the same
+        # safe direction a false-positive ASK takes.
+        if session is None or ask is None:
+            visible = _forced_visible_text(
+                _normalize_clarify_bullets(_strip_ask_syntax(buf)),
+                route_signal,
+            )
+            if visible:
+                yield _make_chunk(visible, "anila-router")
+            anila_meta = _merge_anila_meta(
+                base_trace + [_make_trace_step("direct", "Router 直接回答", "無需分派 agent")],
+                None,
+                latency_ms=int((time.time() - started_at) * 1000),
+                route={"decision": "direct"},
+            )
+            if upstream_reasoning:
+                anila_meta["reasoning"] = upstream_reasoning
+            yield _make_event("anila.meta", {**anila_meta, "trace": []})
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+        record = await _persist_router_ask(
+            session, ask=ask, user_message=_flatten_last_user_query(user_messages)
+        )
+        await session.push_interrupt(record)
+        interrupt_payload = _ask_event_payload(record)
+        ask_step = _make_trace_step("direct", "Router 反問使用者", "暫停等待回答")
+        yield _make_event("anila.trace", ask_step)
+        yield _make_event("anila.interrupt_requested", interrupt_payload)
+        yield _make_chunk(str(ask["question"]), "anila-router")
+        anila_meta = _merge_anila_meta(
+            base_trace + [ask_step],
+            None,
+            latency_ms=int((time.time() - started_at) * 1000),
+            route={"decision": "ask"},
+        )
+        if upstream_reasoning:
+            anila_meta["reasoning"] = upstream_reasoning
+        yield _make_event(
+            "anila.meta",
+            {**anila_meta, "trace": [], "interrupt": interrupt_payload},
+        )
+        yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
         return
 
