@@ -257,14 +257,14 @@ _CASES = [
         "text": "\n\nASK:要哪一種？|晴天|雨天\n",
         "route": rs._ROUTE_DIRECT,
         "decision": ("ask", "要哪一種？", ("晴天", "雨天"), False),
-        "visible": "要哪一種？",
+        "visible": "",
     },
     {
         "id": "ask-blockquote",
         "text": "> ASK:要哪一種？|晴天|雨天\n",
         "route": rs._ROUTE_DIRECT,
         "decision": ("ask", "要哪一種？", ("晴天", "雨天"), False),
-        "visible": "要哪一種？",
+        "visible": "",
     },
     {
         # One-character cuts include the boundary between ``ASK`` and ``*``.
@@ -279,14 +279,14 @@ _CASES = [
             ("一 環境感測器", "六 電網天線", "全都要"),
             True,
         ),
-        "visible": "要挑哪幾個來拆成三種版本？",
+        "visible": "",
     },
     {
         "id": "ask-multi-wrapped",
         "text": "\n\n> ASK*:要挑哪幾個？|甲|乙\n",
         "route": rs._ROUTE_DIRECT,
         "decision": ("ask", "要挑哪幾個？", ("甲", "乙"), True),
-        "visible": "要挑哪幾個？",
+        "visible": "",
     },
     {
         "id": "thought-dispatch",

@@ -90,7 +90,7 @@ apps/anilalm/
 ```bash
 cd apps/anilalm
 npm install
-cp .env.example .env               # edit VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND / VITE_DEFAULT_CHAT_MODEL as needed
+cp .env.example .env               # edit VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND as needed
 npm run dev                        # http://localhost:5174
 ```
 
@@ -121,7 +121,7 @@ npm run build          # tsc -b && vite build (the real gate; not tsc alone)
 | `VITE_CSP_BACKEND` | `http://localhost:8000` | dev proxy: `/api`, `/v1`, `/v2` (CSP) |
 | `VITE_ANILA_STUDIO_BACKEND` | `http://localhost:8100` | dev proxy: `/api/studio/*` (anila-studio) |
 | `VITE_STUDIO_BASE_URL` | `""` | browser-visible anila-studio base (`src/api/client.ts`); empty = vite proxy / same-origin nginx |
-| `VITE_DEFAULT_CHAT_MODEL` | `gpt-4o-mini` | default chat model (must exist in CSP model_registry or be an approved Agent name) |
+| Console role `knowledge_chat` | — | default chat model, fetched at runtime. An explicit UI choice still wins. Unset → the screen names the role |
 | `BASE_PATH` | `/anilalm/` (Dockerfile ARG) | SPA URL prefix; `vite.config.ts` reads `BASE_PATH \|\| VITE_BASE_PATH \|\| '/'` |
 
 ---

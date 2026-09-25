@@ -1,6 +1,7 @@
-"""「主簡報模型」旋鈕（2026-09-02）：studio 執行期向 csp 問 GET /api/models/slides-primary，
-拿到就用那顆；沒設（404/409/連不上）退回環境變數 ANILA_STUDIO_SLIDES_MODEL。
-接在 ``call_llm_chat`` 上：呼叫端傳的是預設模型名時才替換，明確指定別的模型不動。
+"""簡報／視覺角色：向 CSP 問 GET /api/models/roles/{role}。
+
+沒設或已停用就失敗，訊息點名角色，不退回環境變數、也不把哨兵送去上游。
+明確指定別的模型名稱時不替換。
 """
 from __future__ import annotations
 
@@ -9,10 +10,13 @@ import json
 import httpx
 import pytest
 import respx
+from fastapi import HTTPException
+
+pytestmark = pytest.mark.real_model_roles
 
 from app.config import settings
 from app.services import studio_model_primary as smp
-from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_config import SLIDES_LLM_MODEL, VISION_LLM_MODEL
 from app.services.studio_llm import call_llm_chat
 
 BASE = settings.CSP_BASE_URL
@@ -26,50 +30,137 @@ def _reset():
 
 
 def _chat_ok(model):
-    return httpx.Response(200, json={"choices": [{"message": {"content": "ok", "role": "assistant"}}], "model": model})
+    return httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": "ok", "role": "assistant"}}], "model": model},
+    )
+
+
+def _role(name="gemma26-nothink"):
+    return httpx.Response(200, json={"id": 3, "name": name, "endpoint_url": "http://x/v1"})
 
 
 @respx.mock
-async def test_primary_from_csp_is_used_when_caller_passes_the_default():
-    respx.get(f"{BASE}/api/models/slides-primary").mock(return_value=httpx.Response(200, json={"id": 3, "name": "gemma26-nothink", "endpoint_url": "http://x/v1"}))
+async def test_slides_role_is_used_when_caller_passes_the_sentinel():
+    respx.get(f"{BASE}/api/models/roles/slides").mock(return_value=_role())
     route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok("gemma26-nothink"))
-    assert await smp.get_slides_primary() == "gemma26-nothink"
+    assert await smp.require_role_model("slides") == "gemma26-nothink"
     await call_llm_chat("t", SLIDES_LLM_MODEL, [{"role": "user", "content": "hi"}])
     assert json.loads(route.calls[0].request.content)["model"] == "gemma26-nothink"
+    assert SLIDES_LLM_MODEL not in route.calls[0].request.content.decode()
+
+
+@respx.mock
+async def test_vision_role_is_separate_from_slides():
+    respx.get(f"{BASE}/api/models/roles/vision").mock(return_value=_role("vision-llm"))
+    route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok("vision-llm"))
+    await call_llm_chat("t", VISION_LLM_MODEL, [{"role": "user", "content": "hi"}])
+    assert json.loads(route.calls[0].request.content)["model"] == "vision-llm"
 
 
 @respx.mock
 async def test_explicit_model_name_is_not_replaced():
-    respx.get(f"{BASE}/api/models/slides-primary").mock(return_value=httpx.Response(200, json={"id": 3, "name": "gemma26-nothink"}))
     route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok("other"))
     await call_llm_chat("t", "some-other-model", [{"role": "user", "content": "hi"}])
     assert json.loads(route.calls[0].request.content)["model"] == "some-other-model"
 
 
 @respx.mock
-async def test_falls_back_to_env_default_when_csp_has_none():
-    respx.get(f"{BASE}/api/models/slides-primary").mock(return_value=httpx.Response(404, json={"detail": "尚未指定主簡報模型"}))
-    route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok(SLIDES_LLM_MODEL))
-    assert await smp.get_slides_primary() is None
-    await call_llm_chat("t", SLIDES_LLM_MODEL, [{"role": "user", "content": "hi"}])
-    assert json.loads(route.calls[0].request.content)["model"] == SLIDES_LLM_MODEL
+async def test_unset_role_fails_with_the_csp_message_and_does_not_call_the_model():
+    respx.get(f"{BASE}/api/models/roles/slides").mock(
+        return_value=httpx.Response(404, json={"detail": "簡報模型尚未在治理中心設定"})
+    )
+    route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok("x"))
+    with pytest.raises(HTTPException) as exc:
+        await call_llm_chat("t", SLIDES_LLM_MODEL, [{"role": "user", "content": "hi"}])
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "簡報模型尚未在治理中心設定"
+    assert route.call_count == 0
 
 
 @respx.mock
 async def test_cached_within_ttl_and_survives_connection_error():
-    route = respx.get(f"{BASE}/api/models/slides-primary").mock(return_value=httpx.Response(200, json={"id": 3, "name": "gemma26-nothink"}))
-    assert await smp.get_slides_primary() == "gemma26-nothink"
-    assert await smp.get_slides_primary() == "gemma26-nothink"
+    route = respx.get(f"{BASE}/api/models/roles/slides").mock(return_value=_role())
+    assert await smp.require_role_model("slides") == "gemma26-nothink"
+    assert await smp.require_role_model("slides") == "gemma26-nothink"
     assert route.call_count == 1
     smp._expire_for_tests()
     route.mock(side_effect=httpx.ConnectError("boom"))
-    assert await smp.get_slides_primary() == "gemma26-nothink"  # last good value kept
+    assert await smp.require_role_model("slides") == "gemma26-nothink"
+
+
+@respx.mock
+async def test_connection_failure_retries_before_the_success_ttl(monkeypatch):
+    """A down CSP must not pin a 503 for the whole success cache.
+
+    With no model yet, a blip used to stamp the 60s clock. Recovery inside
+    that window never reached CSP. Backoff is only long enough to avoid a
+    hammer; it is not the success TTL.
+    """
+    clock = {"now": 1_700_000_000.0}
+    monkeypatch.setattr(smp.time, "time", lambda: clock["now"])
+    route = respx.get(f"{BASE}/api/models/roles/slides").mock(
+        side_effect=httpx.ConnectError("down")
+    )
+    with pytest.raises(HTTPException) as exc:
+        await smp.require_role_model("slides")
+    assert exc.value.status_code == 503
+    assert route.call_count == 1
+
+    clock["now"] += 1
+    with pytest.raises(HTTPException):
+        await smp.require_role_model("slides")
+    assert route.call_count == 1
+
+    route.mock(return_value=_role("back-online"))
+    clock["now"] += 10
+    assert await smp.require_role_model("slides") == "back-online"
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_upstream_http_error_retries_before_the_success_ttl(monkeypatch):
+    clock = {"now": 1_700_000_000.0}
+    monkeypatch.setattr(smp.time, "time", lambda: clock["now"])
+    route = respx.get(f"{BASE}/api/models/roles/vision").mock(
+        return_value=httpx.Response(503, text="unavailable")
+    )
+    with pytest.raises(HTTPException) as exc:
+        await smp.require_role_model("vision")
+    assert exc.value.status_code == 503
+
+    route.mock(return_value=_role("vision-back"))
+    clock["now"] += 10
+    assert await smp.require_role_model("vision") == "vision-back"
+
+
+@respx.mock
+async def test_refresh_failures_do_not_keep_a_stale_role_forever(monkeypatch):
+    """Failures may reuse the last success, but they must not move its clock.
+
+    Ten minutes of repeated refresh failures is past any bounded grace.
+    """
+    clock = {"now": 1_700_000_000.0}
+    monkeypatch.setattr(smp.time, "time", lambda: clock["now"])
+    route = respx.get(f"{BASE}/api/models/roles/slides").mock(return_value=_role("old-llm"))
+    assert await smp.require_role_model("slides") == "old-llm"
+    success_at = clock["now"]
+
+    route.mock(side_effect=httpx.ConnectError("down"))
+    clock["now"] = success_at + 90
+    assert await smp.require_role_model("slides") == "old-llm"
+    clock["now"] = success_at + 120
+    assert await smp.require_role_model("slides") == "old-llm"
+
+    clock["now"] = success_at + 600
+    with pytest.raises(HTTPException) as exc:
+        await smp.require_role_model("slides")
+    assert exc.value.status_code == 503
 
 
 @respx.mock
 async def test_studio_calls_are_tagged_as_studio_for_usage_accounting():
-    """用量頁要分得出「簡報製作」：每通 LLM 呼叫帶 X-ANILA-Request-Source: studio。"""
-    respx.get(f"{BASE}/api/models/slides-primary").mock(return_value=httpx.Response(404, json={}))
-    route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok(SLIDES_LLM_MODEL))
+    respx.get(f"{BASE}/api/models/roles/slides").mock(return_value=_role())
+    route = respx.post(f"{BASE}/v1/chat/completions").mock(return_value=_chat_ok("gemma26-nothink"))
     await call_llm_chat("t", SLIDES_LLM_MODEL, [{"role": "user", "content": "hi"}])
     assert route.calls[0].request.headers.get("X-ANILA-Request-Source") == "studio"

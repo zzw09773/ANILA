@@ -50,6 +50,7 @@ from app.models.message import Message
 from app.models.message_action import MessageAction, MessageActionBinding
 from app.models.model_access_group import ModelAccessGroup, ModelAccessGroupMember
 from app.models.model_registry import ModelRegistry
+from app.models.model_role import ModelRole
 from app.models.router_model_grant import RouterModelGrant
 from app.models.platform_link import PlatformLink
 from app.models.platform_setting import PlatformSetting
@@ -111,6 +112,7 @@ __all__ = [
     "ModelAccessGroup",
     "ModelAccessGroupMember",
     "ModelRegistry",
+    "ModelRole",
     "PlatformLink",
     "PlatformSetting",
     "PolicyDecision",

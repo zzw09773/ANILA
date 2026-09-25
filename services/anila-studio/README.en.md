@@ -34,7 +34,7 @@ Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health`
 | Slice capability | Where it lands here |
 |---|---|
 | **Artifact contract + Redis job store** | `job_store.py`: a `PersistedJob` projection is written to Redis (key prefix `anila-studio:jobs:`, 7-day TTL) so a **restarted** studio can still answer status queries for pre-restart jobs; best-effort — a Redis outage degrades to in-memory only and does NOT block startup. `job_reporting.py`: reports to CSP via `POST /v1/artifact-jobs` (create), `PATCH /v1/artifact-jobs/{id}` (terminal / progress), `POST /v1/artifacts` (artifact landed). |
-| **Full Trace spans + `/v1/traces` ingest** | `studio_trace.py`: `producer:"studio"`, one root `studio.job` span + one `studio.stage` span per pipeline step, batched to `POST {csp}/v1/traces/{trace_id}/spans` (≤256 spans/batch). No `trace_id` → the emitter is a full no-op; ship failure is drop-and-log and never breaks generation. |
+| **trace_id** | Correlation id on the artifact job sent to CSP. Studio does not POST spans. |
 | **Task spine (`task_id`)** | The create-job request payload carries `task_id` / `source_snapshot_id` / `trace_id`; `job_lifecycle.py`'s `JobReportContext` threads them through all five pipelines' `*JobUpdater` and passes them on to CSP with the artifact-job / artifact / trace spans. |
 | **Four-level classification (passthrough)** | `classification_level` (`無機密` / `營業秘密` / `密` / `機密`) is carried by `PersistedJob`, returned from `POST /v1/artifacts`, and written into trace span attributes; studio never latches/declassifies, it only inherits and forwards. |
 | **Model Gateway** | All LLM traffic goes through the CSP `POST /v1/chat/completions` proxy (keeping token billing); studio never talks to a model directly. |
@@ -77,7 +77,7 @@ services/anila-studio/
 - **Slide pipeline**: `studio_config` / `studio_retrieval` / `studio_llm` / `studio_render` / `studio_vision_qa` / `studio_layout` / `studio_job_service` / `studio_text_normalizer` (s2twp Simplified→Traditional + cleanup) / `llm_json` (lenient JSON parsing).
 - **FLUX image gen**: `flux_image_provider` / `flux_prompt_rewriter` / `flux_quality_gate` (VLM ranking + FFT striping) / `flux_style` / `diagram_renderer` (Graphviz dot→PNG) / `geometric_qa`.
 - **Other artifacts**: `report_job_service` / `report_renderer` / `report_runner`, `mindmap_job_service` / `mindmap_renderer`, `infographic_job_service` / `infographic_renderer`, `datatable_job_service` / `datatable_exporter`.
-- **Cross-cutting job coordination (new)**: `job_lifecycle` (`JobReportContext` + `*JobUpdater` coordination) / `job_store` (Redis `PersistedJob`) / `job_reporting` (CSP artifact reporting) / `studio_trace` (span emitter).
+- **Cross-cutting job coordination**: `job_lifecycle` (`JobReportContext` + `*JobUpdater` coordination) / `job_store` (Redis `PersistedJob`) / `job_reporting` (CSP artifact reporting). Spans are not posted.
 - **Auth / infra**: `jwks_client` (fetch csp JWKS + cache) / `revocation_cache` (Redis pub/sub + cold-start, fail-closed).
 
 ---
@@ -125,10 +125,9 @@ Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila
 | `POST /api/ingestion/collections/{id}/images/search` | RAG image retrieval |
 | `GET /api/ingestion/images/{id}/blob` | raw image bytes |
 | `POST /v1/chat/completions` | LLM (via csp proxy for billing; **no `/api/proxy` prefix**) |
-| `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact reporting (Slice 8b, fire-and-forget) |
-| `POST /v1/traces/{trace_id}/spans` | Full Trace span ingest (producer `studio`, fire-and-forget) |
+| `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact reporting (Slice 8b, fire-and-forget). `trace_id` on the body is a correlation id; spans are not posted |
 
-It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`) and the FLUX backend. CSP-reporting / trace auth reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics); if a legacy `CSP_SERVICE_TOKEN` is set it additionally attaches `X-CSP-Service-Token`.
+It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`) and the FLUX backend. CSP artifact reporting reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics); if a legacy `CSP_SERVICE_TOKEN` is set it additionally attaches `X-CSP-Service-Token`.
 
 ### Redis pub/sub
 

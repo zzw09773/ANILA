@@ -62,7 +62,7 @@ def _normalized_caption_model(db: Session, name: str | None) -> str | None:
     No vision-capability filter exists (model_type='vlm' is a label, not
     a guarantee). Any registered name is accepted. Unknown names 422 —
     validation lives here, not a DB CHECK, so a new model does not need
-    a migration. Empty / omitted → NULL = follow VISION_MODEL.
+    a migration. Empty / omitted → NULL = follow the vision role.
     """
     if name is None:
         return None
@@ -77,7 +77,7 @@ def _normalized_caption_model(db: Session, name: str | None) -> str | None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"caption_model「{cleaned}」不在模型清單。"
-                "請先到「模型」頁登錄，或留空以跟隨平台 VISION_MODEL。"
+                "請先到「模型」頁登錄，或留空以跟隨治理中心的視覺模型角色。"
             ),
         )
     return cleaned

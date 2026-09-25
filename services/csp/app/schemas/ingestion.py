@@ -109,7 +109,7 @@ class CollectionCreate(BaseModel):
         default=None,
         max_length=200,
         description=(
-            "Intended VLM name. NULL = follow VISION_MODEL. "
+            "Intended VLM name. NULL = follow the vision role. "
             "Validated against model_registry in the API, not a DB CHECK."
         ),
     )

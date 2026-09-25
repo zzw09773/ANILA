@@ -220,7 +220,7 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | connection pool (also caps concurrency) |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption master switch |
 | `VISION_URL` | `""` (compose `http://csp:8000/v1`) | VLM endpoint; empty string disables captioning |
-| `VISION_MODEL` / `VISION_API_KEY` | `gemma4` / `not-set` | VLM model / token |
+| `VISION_API_KEY` | `not-set` | token for CSP. Which model captions (and PDF OCR) is the Console vision role |
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | parallelism / timeout / skip caption above size |
 | `ENABLE_RELATION_LLM` | `true` | LLM relation-extraction master switch |
 | `RELATION_LLM_URL` | `""` | empty string disables LLM edges |

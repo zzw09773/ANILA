@@ -95,8 +95,7 @@ packages/anila-core/
     ├── compact/              # micro / auto / session_memory / sliding_window
     ├── context/              # AgentContext (turn-scope contextvars, incl. classified_latch)
     ├── post_turn/            # prompt_suggestion (follow-up chips)
-    ├── tracing/              # span · tracer · processor · hooks
-    │                         #   + sdk (anila_trace_sdk: TraceExporter / TraceSession / ExportingProcessor / SPAN_TYPES)
+    ├── tracing/              # local span · tracer · processor · hooks (does not POST /v1/traces)
     ├── workspace/            # capability-scoped sandbox (workspace + caps + safe_path)
     ├── registry/             # agent_registry + remote_agent_manifest (fetches from CSP /v1/agents)
     ├── runtime_config/       # snapshot · poller · apply (hot-reload)
@@ -119,7 +118,7 @@ Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; ani
 
 | Capability | What anila-core owns | Code / doc |
 |---|---|---|
-| **Full Trace** (spans + `/v1/traces` ingest) | `anila_trace_sdk` producer: batch-export spans to the CSP endpoint and mirror them into the `anila.spans` SSE event | `tracing/sdk.py`; doc `05` §6 / `09` §10 |
+| Full Trace span export | Removed. Nothing posts to `/v1/traces`. In-process `Tracer` / `Span` stay local | `tracing/` |
 | **Task spine** (`X-ANILA-Task-Id`) | the runtime reads it via `CallerContext` and threads the task-id through the turn | `api/caller_context.py` |
 | **Four-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (`無機密` / `營業秘密` / `密` / `機密`) (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
 | **Agent Registry** (OE-1 three states: registered / approved / disabled) | No `anila-core register` CLI. Registration is the governance UI or `POST /api/agents/register`. **The state machine lives in CSP** | `services/csp/app/models/agent.py` |
@@ -178,14 +177,9 @@ print(result.stop_reason, result.turn_count)
 
 > ⚠️ QueryEngine has **no** `run_stream()`; the entrypoint is `await engine.run(messages, on_stream_delta=...)` (see [`e2e_smoke.py`](./e2e_smoke.py)).
 
-### Full Trace export (opt-in)
+### Full Trace
 
-Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, authenticated with `X-CSP-Service-Token`), AND mirrored into the `anila.spans` SSE event.
-
-- `ANILA_TRACE_ENDPOINT`: a bare flag (`1`/`true`/`on`/`yes`/`default`) → reuse the router's known `CSP_BASE_URL`; any other value → an explicit trace base URL.
-- `ANILA_TRACE_TOKEN`: service token for the router's / platform-internal s2s trace export (falls back to `CSP_SERVICE_TOKEN` when unset). This is the credential for **anila-core's `TraceExporter` (used by the Router)** — not agent dispatch identity. If unset, the exporter sends **no** auth header and spans are silently drop-and-logged. Third-party agent in-task callbacks may use a dispatch JWT on the CSP side; that path is separate from this exporter.
-
-Three pieces in code: `TraceExporter` (thread-safe, batching, bounded queue, drop-and-log), `TraceSession` (per-`trace_id` span factory; `span()` / `async_span()` context managers auto-time / mark ok/error / auto-parent), `ExportingProcessor` (bridges the in-tree `Tracer`/`Span` onto the exporter, mapping `SpanKind` → doc `05` §6 span-types). All exported from `anila_core.tracing`.
+Removed. Do not set `ANILA_TRACE_ENDPOINT`. `tasks.trace_id` in CSP is still a correlation id.
 
 ### Where a new agent starts
 

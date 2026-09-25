@@ -7,9 +7,9 @@
 
 認證（P2.1，見 serving.auth）：驗 ``Authorization: Bearer <dispatch JWT>``
 （RS256、JWKS），身分取自已驗證 claims（user_id / department / agent_id）。
-相關聯標頭 ``X-ANILA-Task-Id`` / ``X-ANILA-Trace-Id`` 仍可讀。
+任務關聯用 ``X-ANILA-Task-Id``。不再讀 ``X-ANILA-Trace-Id``，也不上傳 span。
 
-RAG / Full Trace 出向（P2.1 W5）：把**同一條**入向 dispatch JWT 以
+RAG 出向（P2.1 W5）：把**同一條**入向 dispatch JWT 以
 ``Authorization: Bearer …`` 帶回 CSP（request-scoped ``dispatch_bearer_scope``，
 非 process-global、非靜態 csk-）。
 
@@ -54,13 +54,6 @@ from anila_agent.serving.auth import (
     verify_dispatch_authorization,
 )
 from anila_core.api.middleware.dispatch_jwt import DispatchTokenError
-from anila_agent.tracing import (
-    OUTPUT,
-    TraceEmitter,
-    TracingRetriever,
-    TracingRunHooks,
-    extract_citations,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -75,54 +68,6 @@ try:
     CSP_MIN_SCORE = float(os.environ.get("ANILA_CSP_MIN_SCORE", "0.25") or "0.25")
 except ValueError:
     CSP_MIN_SCORE = 0.25
-
-# Full Trace（doc-05 §6）：CSP dispatch 帶 X-ANILA-Trace-Id 時，把 run/step/model/tool/
-# retrieval/output/error spans callback POST 回端點。端點預設 = CSP_BASE_URL；
-# 當端點 origin == CSP 時憑證為當次 dispatch JWT（見 dispatch_bearer_scope），
-# 否則拒貼 JWT（須另備靜態憑證）。無 trace header → emitter 停用 → 零行為變化。
-TRACE_ENDPOINT = os.environ.get("ANILA_TRACE_ENDPOINT", "") or CSP_BASE_URL
-TRACE_ENABLED = os.environ.get("ANILA_TRACE_ENABLED", "1").lower() not in (
-    "0", "false", "no", "off"
-)
-# agent 的分類上限（doc-06 §6「classification level」必備 trace 屬性）；隨 run + output span 帶出。
-CLASSIFICATION_LEVEL = os.environ.get("ANILA_CLASSIFICATION_LEVEL", "") or None
-
-
-def _build_emitter(trace_id: str | None, task_id: str | None) -> TraceEmitter:
-    """由入向 trace header 建 emitter（缺 trace_id/endpoint 時自動停用）。
-
-    ``api_key`` 刻意不填：flush 時從 request-scoped dispatch JWT 取值。
-    ``csp_base_url`` 是 JWT 可貼上的信任錨——``TRACE_ENDPOINT`` 若指向非 CSP
-    collector，resolve 會拒絕附上使用者 JWT。
-    """
-    return TraceEmitter.from_context(
-        trace_id=trace_id,
-        task_id=task_id,
-        endpoint=TRACE_ENDPOINT,
-        api_key=None,
-        csp_base_url=CSP_BASE_URL,
-        agent_id=MODEL_NAME,
-        enabled=TRACE_ENABLED,
-        verify_ssl=SSL_VERIFY,
-        classification_level=CLASSIFICATION_LEVEL,
-    )
-
-
-# 未帶 trace header 的路徑用這顆停用 emitter，讓串流程式碼結構一致又零行為變化。
-_NULL_EMITTER = TraceEmitter(trace_id=None, endpoint=None, api_key=None, enabled=False)
-
-
-def _annotate_output(out: Any, answer: str, usage: dict[str, int] | None) -> None:
-    """把 final output span 補上 citations / 分類等級 / 長度等屬性（doc-06 §6）。"""
-    cites = extract_citations(answer)
-    if cites:
-        out.attributes["citations"] = cites
-        out.attributes["has_citations"] = True
-    if CLASSIFICATION_LEVEL:
-        out.attributes["classification_level"] = CLASSIFICATION_LEVEL
-    out.attributes["output_chars"] = len(answer)
-    if usage:
-        out.attributes["total_tokens"] = usage.get("total_tokens", 0)
 
 _CONFIG: Any = None
 _MODEL: Any = None  # 共用的 OpenAIChatCompletionsModel（避免每請求新建 httpx client）
@@ -240,7 +185,6 @@ async def _sse_stream(
     user_prompt: str,
     hooks: AuditHooks,
     *,
-    emitter: TraceEmitter | None = None,
     dispatch_bearer: str | None = None,
 ) -> AsyncIterator[str]:
     """agent 串流輸出 → OpenAI SSE：role → content deltas → finish+usage → ``[DONE]``。
@@ -248,9 +192,6 @@ async def _sse_stream(
     只轉發 ResponseTextDeltaEvent（最終可見答案）；工具呼叫 / reasoning 軌跡不外送。
     usage 在串流跑完才定案（SDK 註明 context_wrapper.usage 末包前為 stale），故收尾才讀。
     Router 端（proxy_service.proxy_stream）以 ``resp.aiter_lines()`` 逐行解析這個格式。
-
-    Full Trace 為 out-of-band callback（POST 回 CSP），不動 SSE 格式；``emitter`` 未給或
-    停用時完全 no-op。run/model/tool/retrieval/output/error spans 於此收攏 flush。
 
     ``dispatch_bearer`` 綁在**獨立 Task**（自有 Context 複本）裡——不可跨 async
     generator 的 yield 邊界 set/reset ContextVar：SSE 斷線時 ASGI 會在別的
@@ -275,7 +216,7 @@ async def _sse_stream(
             )
             with scope_cm:
                 async for chunk in _sse_stream_body(
-                    assembled, user_prompt, hooks, emitter=emitter
+                    assembled, user_prompt, hooks
                 ):
                     await queue.put(chunk)
         except asyncio.CancelledError:
@@ -309,46 +250,38 @@ async def _sse_stream_body(
     assembled: Any,
     user_prompt: str,
     hooks: AuditHooks,
-    *,
-    emitter: TraceEmitter | None = None,
 ) -> AsyncIterator[str]:
-    em = emitter if emitter is not None else _NULL_EMITTER
     cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
     yield _chunk(cid, created, delta={"role": "assistant"})
 
     parts: list[str] = []  # 累積最終答案，供 turn 結束後自動抽取記憶。
-    async with em.run_span(MODEL_NAME, attributes={"stream": True}):
-        result = run_streamed(assembled, user_prompt, hooks=hooks)
-        try:
-            async for event in result.stream_events():
-                if (
-                    event.type == "raw_response_event"
-                    and isinstance(event.data, ResponseTextDeltaEvent)
-                    and event.data.delta
-                ):
-                    parts.append(event.data.delta)
-                    yield _chunk(cid, created, delta={"content": event.data.delta})
-        except Exception as exc:
-            # 串流中途失敗：headers 已送出、status 無法再改，記錄 + error span 後乾淨收尾。
-            logger.exception("streaming run failed mid-flight")
-            em.error(repr(exc))
+    result = run_streamed(assembled, user_prompt, hooks=hooks)
+    try:
+        async for event in result.stream_events():
+            if (
+                event.type == "raw_response_event"
+                and isinstance(event.data, ResponseTextDeltaEvent)
+                and event.data.delta
+            ):
+                parts.append(event.data.delta)
+                yield _chunk(cid, created, delta={"content": event.data.delta})
+    except Exception:
+        # 串流中途失敗：headers 已送出、status 無法再改，記錄後乾淨收尾。
+        logger.exception("streaming run failed mid-flight")
 
-        usage_obj = getattr(getattr(result, "context_wrapper", None), "usage", None)
-        usage_payload: dict[str, int] | None = None
-        if usage_obj is not None:
-            usage_payload = {
-                "prompt_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
-                "completion_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
-                "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
-            }
-        yield _chunk(cid, created, delta={}, finish_reason="stop", usage=usage_payload)
-        yield "data: [DONE]\n\n"
+    usage_obj = getattr(getattr(result, "context_wrapper", None), "usage", None)
+    usage_payload: dict[str, int] | None = None
+    if usage_obj is not None:
+        usage_payload = {
+            "prompt_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
+            "completion_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
+            "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
+        }
+    yield _chunk(cid, created, delta={}, finish_reason="stop", usage=usage_payload)
+    yield "data: [DONE]\n\n"
 
-        answer_text = "".join(parts)
-        async with em.span(OUTPUT, MODEL_NAME) as out:
-            _annotate_output(out, answer_text, usage_payload)
-    await em.flush()
+    answer_text = "".join(parts)
 
     # 答案已全部串出 → 背景抽取記憶（不延後回應）。
     memory = getattr(getattr(assembled, "context", None), "memory", None)
@@ -359,8 +292,6 @@ async def _sse_stream_body(
 async def chat_completions(
     req: ChatCompletionRequest,
     authorization: str | None = Header(default=None, alias="Authorization"),
-    x_anila_trace_id: str | None = Header(default=None, alias="X-ANILA-Trace-Id"),
-    x_anila_task_id: str | None = Header(default=None, alias="X-ANILA-Task-Id"),
 ) -> Any:
     try:
         claims = await verify_dispatch_authorization(
@@ -395,9 +326,6 @@ async def chat_completions(
             ),
         )
 
-    # Full Trace：CSP dispatch 帶 X-ANILA-Trace-Id 才啟用；否則 emitter 停用、零行為變化。
-    emitter = _build_emitter(x_anila_trace_id, x_anila_task_id)
-
     # Retrieval via CSP HTTP（無 DB）；auth = request-scoped dispatch JWT（無 csk-）。
     retriever: Any = CspHttpRetriever(
         csp_base_url=CSP_BASE_URL,
@@ -407,9 +335,6 @@ async def chat_completions(
         min_score=CSP_MIN_SCORE,
         verify_ssl=SSL_VERIFY,
     )
-    if emitter.active:
-        # 包一層 → search 前後送 agent.retrieval span（掛在工具 span 下）。
-        retriever = TracingRetriever(retriever, emitter)
     # 重用 lifespan 建好的共用 model client；掛 AuditHooks 做 per-user 稽核/計量。
     # 多租戶記憶：以已驗證 JWT claim 的 user_id 當分艙 key，記憶不跨用戶。
     # memory_requires_tenant=True：此為多人共用部署，無可辨識身分一律不給記憶。
@@ -423,9 +348,7 @@ async def chat_completions(
         memory_tenant=tenant,
         memory_requires_tenant=True,
     )
-    # 追蹤啟用時把 AuditHooks 包進 TracingRunHooks（step/model/tool spans + 稽核 fan-out）。
-    audit = AuditHooks(user_id=identity.get("user_id"))
-    hooks: Any = TracingRunHooks(emitter, inner=audit) if emitter.active else audit
+    hooks: Any = AuditHooks(user_id=identity.get("user_id"))
 
     # 串流：CSP Router 對 agent 強制 stream=true 並逐行解析 OpenAI SSE
     # （proxy_service.proxy_stream）。回 text/event-stream 的 chat.completion.chunk。
@@ -436,7 +359,6 @@ async def chat_completions(
                 assembled,
                 user_prompt,
                 hooks,
-                emitter=emitter,
                 dispatch_bearer=dispatch_bearer,
             ),
             media_type="text/event-stream",
@@ -446,14 +368,8 @@ async def chat_completions(
     # 非串流：Router 對 agent 回應走 resp.json()（也容忍 SSE，但我們回 JSON）。
     try:
         with dispatch_bearer_scope(dispatch_bearer):
-            try:
-                async with emitter.run_span(MODEL_NAME, attributes={"stream": False}):
-                    result = await run_once(assembled, user_prompt, hooks=hooks)
-                    answer = result.final_output or ""
-                    async with emitter.span(OUTPUT, MODEL_NAME) as out:
-                        _annotate_output(out, answer, None)
-            finally:
-                await emitter.flush()
+            result = await run_once(assembled, user_prompt, hooks=hooks)
+            answer = result.final_output or ""
     except MissingDispatchTokenError as exc:
         # The cause can be a misconfigured outbound origin, which is a
         # deployment fault, not a bad credential — and its message names two

@@ -449,7 +449,8 @@ async def test_openai_error_object_after_delta_is_terminal_error() -> None:
     assert [e["type"] for e in events] == ["content", "error"]
     assert events[0]["content"] == "部分答案"
     err = events[1]
-    assert "weather-agent" in err["error"]
+    assert "weather-agent" not in err["error"]
+    assert err["error"] == "助手暫時無法使用，請稍後再試。"
     # User-facing field is a fixed sentence; the raw upstream text is
     # operator-only and lives in ``detail``.
     assert _LEAK not in err["error"]
@@ -722,7 +723,7 @@ def test_chat_completions_dispatch_error_is_terminal_and_redacted(
         for name, data in frames
     )
     traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
-    assert traces[-1]["detail"] == "agent「agent-a」暫時無法使用，請稍後再試。"
+    assert traces[-1]["detail"] == "助手暫時無法使用，請稍後再試。"
     assert _LEAK not in json.dumps(traces)
 
 
@@ -759,12 +760,12 @@ def test_upstream_anila_error_and_error_trace_do_not_reach_caller(monkeypatch):
     assert {
         "kind": "error",
         "label": "上游步驟失敗",
-        "detail": "agent「agent-a」暫時無法使用，請稍後再試。",
+        "detail": "助手暫時無法使用，請稍後再試。",
         "status": "error",
         "latency_ms": 15,
     } in traces
     errors = [json.loads(data) for name, data in frames if name == "anila.error"]
-    assert errors == [{"message": "agent「agent-a」暫時無法使用，請稍後再試。"}]
+    assert errors == [{"message": "助手暫時無法使用，請稍後再試。"}]
     assert frames[-1][0] == "anila.error"
     assert not any(name == "" and data == "[DONE]" for name, data in frames)
     assert not any(

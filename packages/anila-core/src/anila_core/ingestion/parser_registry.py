@@ -853,8 +853,8 @@ class PdfParser:
 
     When digital extraction yields little or mostly ``<?>`` placeholders
     (font-subsetted PDFs), an optional OCR backend is invoked. The
-    backend is constructed lazily on first need from environment
-    variables — see ``ingestion.ocr.build_ocr_backend_from_env``.
+    backend is built on each parse from ``VISION_URL`` plus the vision
+    role injected by the caller — see ``ingestion.ocr.build_ocr_backend_from_env``.
 
     ⚠ The ``[[IMAGE:<id>]]`` tokens this parser inserts are **not** text.
     ``needs_ocr_fallback`` strips them before measuring; do not hand it a
@@ -872,11 +872,12 @@ class PdfParser:
 
     @classmethod
     def _get_ocr_backend(cls):
-        if not cls._ocr_initialised:
-            from .ocr import build_ocr_backend_from_env
-            cls._ocr_backend = build_ocr_backend_from_env()
-            cls._ocr_initialised = True
-        return cls._ocr_backend
+        # 測試把 _ocr_initialised 設成 True 來注入後端。正式路徑每次重建，
+        # 視覺角色換了才不會把舊模型名留到程序結束。
+        if cls._ocr_initialised:
+            return cls._ocr_backend
+        from .ocr import build_ocr_backend_from_env
+        return build_ocr_backend_from_env()
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:

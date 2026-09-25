@@ -10,10 +10,10 @@ transitions, so it is where the three cross-cutting concerns hang:
 2. **CSP reporting** — POST /v1/artifact-jobs on create, PATCH on a
    terminal state, POST /v1/artifacts when an artifact lands (with
    task_id / source_snapshot_id passthrough + storage_ref + content_hash).
-3. **Trace spans** — a root ``studio.job`` span + a ``studio.stage`` span
-   per pipeline step, shipped to CSP when a trace_id is present.
+``trace_id`` rides on the artifact-job body as a correlation id.
+It is not posted to ``/v1/traces``.
 
-All of (2) and (3) are fire-and-forget: CSP being down must never break
+CSP reporting is fire-and-forget: CSP being down must never break
 generation. Persistence (1) is best-effort too (``put_quietly``). The
 pipeline itself is unchanged — the endpoints build a
 :class:`JobReportContext`, hand it to ``create_job``, and the updater
@@ -34,7 +34,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from app.config import settings
 from app.services import job_reporting
 from app.services.job_store import PersistedJob, get_job_store
-from app.services.studio_trace import StudioTraceEmitter
+
 
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,6 @@ class JobReportContext:
     source_snapshot_id: str | None = None
     trace_id: str | None = None
     describe: Callable[[Any], ArtifactInfo | None] | None = None
-    emitter: StudioTraceEmitter | None = None
     # Filled in once the artifact is registered on the control plane.
     classification_level: str | None = None
     artifact_id: str | None = None
@@ -151,15 +150,8 @@ def make_context(
 ) -> JobReportContext:
     """Build a :class:`JobReportContext` for a create endpoint.
 
-    Centralises the emitter wiring (endpoint = CSP base URL, producer =
-    studio) so each of the five endpoints only imports this one factory.
-    The emitter is inactive whenever ``trace_id`` is absent.
+    ``trace_id`` is a correlation id on the artifact job, not a span export.
     """
-    emitter = StudioTraceEmitter(
-        trace_id=trace_id,
-        endpoint=settings.CSP_BASE_URL,
-        bearer=bearer,
-    )
     return JobReportContext(
         artifact_type=artifact_type,
         owner_user_id=owner_user_id,
@@ -170,7 +162,6 @@ def make_context(
         source_snapshot_id=source_snapshot_id,
         trace_id=trace_id,
         describe=describe,
-        emitter=emitter,
     )
 
 
@@ -247,11 +238,6 @@ async def on_create(record: Any, ctx: JobReportContext | None) -> None:
     if not _reporting_on(ctx):
         return
     assert ctx is not None
-    if ctx.emitter is not None and ctx.emitter.active:
-        ctx.emitter.start_root(
-            f"studio.{ctx.artifact_type}",
-            attributes={"job_id": record.job_id, "collection_id": ctx.collection_id},
-        )
     _spawn(
         job_reporting.report_job_created(
             bearer=ctx.bearer,
@@ -281,16 +267,6 @@ async def on_transition(
     if not _reporting_on(ctx):
         return
     assert ctx is not None
-
-    step = getattr(record, "step", None)
-    if (
-        ctx.emitter is not None
-        and ctx.emitter.active
-        and step
-        and step != ctx._last_step
-    ):
-        ctx._last_step = step
-        ctx.emitter.stage(step)
 
     state = record.state
     if state not in _TERMINAL_STATES or ctx._terminal_reported:
@@ -343,10 +319,6 @@ async def _finalize(
         error=getattr(record, "error", None),
         artifact_id=artifact_id,
     )
-
-    if ctx.emitter is not None and ctx.emitter.active:
-        ctx.emitter.finish(status="ok" if state == "done" else "error")
-        await ctx.emitter.flush()
 
     # Write the registered artifact metadata back onto the live record so a
     # cache-hit status also carries it (and re-persists the enriched view via

@@ -17,9 +17,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 ARG BASE_PATH=/anilalm/
-ARG VITE_DEFAULT_CHAT_MODEL=gpt-4o-mini
 ENV BASE_PATH=${BASE_PATH}
-ENV VITE_DEFAULT_CHAT_MODEL=${VITE_DEFAULT_CHAT_MODEL}
 
 # Copy lockfile first for cache-friendly installs.
 # 鎖檔是必要輸入,不是可選的:原本寫 `package-lock.json*`,那個 `*` 讓「鎖檔

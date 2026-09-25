@@ -171,7 +171,7 @@ def test_non_streaming_ask_pauses_without_leaking_protocol(db_path: Path) -> Non
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["choices"][0]["message"]["content"] == "要查哪一年的規章？"
+    assert body["choices"][0]["message"]["content"] == ""
     assert "ASK:" not in body["choices"][0]["message"]["content"]
     assert body["anila_meta"]["route"]["decision"] == "ask"
     interrupt = body["anila_meta"]["interrupt"]
@@ -552,7 +552,7 @@ def test_leading_ask_still_pauses(db_path: Path, directive: str) -> None:
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["choices"][0]["message"]["content"] == "要查哪一年？"
+    assert body["choices"][0]["message"]["content"] == ""
     assert body["anila_meta"]["interrupt"]["payload"]["options"][0]["value"] == "2024"
     assert body["anila_meta"]["route"]["decision"] == "ask"
 
@@ -680,7 +680,8 @@ def test_multiline_ask_uses_first_line_and_ships_the_rest_as_prose(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["choices"][0]["message"]["content"] == "第一行是問題？"
+    assert body["choices"][0]["message"]["content"] == "第二行是補充說明。"
+    assert "第一行是問題" not in body["choices"][0]["message"]["content"]
     assert len(body["anila_meta"]["interrupt"]["payload"]["options"]) == 2
 
 
@@ -771,11 +772,11 @@ def test_synthesis_turn_can_ask_after_a_dispatch(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["anila_meta"]["route"]["decision"] == "ask"
-    assert body["choices"][0]["message"]["content"] == "合成後要問？"
+    assert body["choices"][0]["message"]["content"] == ""
     assert "ASK:" not in body["choices"][0]["message"]["content"]
 
 
-_RESUME_OUTAGE = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
+_RESUME_OUTAGE = "（暫時無法回應，請稍後再試。若一直發生，請聯絡管理員。）"
 _RESOLVED_RESUME_MODEL = "glm-resume-not-env"
 CSP_RESOLVE_URL = f"{CSP_BASE}/api/router-models/resolve"
 
@@ -1303,11 +1304,11 @@ def _ask_star_payload(body: str, *, stream: bool) -> dict:
         names = [name for name, _data in events]
         assert "anila.interrupt_requested" in names
         event = json.loads(events[names.index("anila.interrupt_requested")][1])
-        assert _visible_sse_text(body) == "要挑哪幾個來拆成三種版本？"
+        assert _visible_sse_text(body) == ""
         assert "ASK*:" not in _visible_sse_text(body)
         return event["payload"]
     parsed = json.loads(body)
-    assert parsed["choices"][0]["message"]["content"] == "要挑哪幾個來拆成三種版本？"
+    assert parsed["choices"][0]["message"]["content"] == ""
     assert "ASK*:" not in parsed["choices"][0]["message"]["content"]
     return parsed["anila_meta"]["interrupt"]["payload"]
 
@@ -1392,7 +1393,7 @@ def test_streaming_ask_star_split_between_ask_and_star(db_path: Path) -> None:
     assert payload["payload"]["question"] == "要挑哪幾個？"
     assert [item["value"] for item in payload["payload"]["options"]] == ["甲", "乙"]
     assert "ASK*:" not in _visible_sse_text(resp.text)
-    assert _visible_sse_text(resp.text) == "要挑哪幾個？"
+    assert _visible_sse_text(resp.text) == ""
 
 
 def test_router_answer_resume_message_lists_every_selection() -> None:

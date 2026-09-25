@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { searchCollection } from '../api/search'
 import { chatStream } from '../api/chat'
+import { resolveKnowledgeChatModel } from '../api/modelRole'
 import {
   appendMessage,
   createConversation,
@@ -48,6 +49,10 @@ vi.mock('../api/chat', async (importOriginal) => ({
   chatStream: vi.fn(),
 }))
 
+vi.mock('../api/modelRole', () => ({
+  resolveKnowledgeChatModel: vi.fn(async () => 'gemma4'),
+}))
+
 vi.mock('../asr/useAsrInput', () => ({
   appendTranscript: (draft: string, text: string) => `${draft}${text}`,
   useAsrInput: () => ({
@@ -62,9 +67,6 @@ vi.mock('../asr/useAsrInput', () => ({
   }),
 }))
 
-// DEFAULT_MODEL is read at module scope, so the env has to be stubbed
-// before WSChat is imported — otherwise send() bails with "模型未設定".
-vi.stubEnv('VITE_DEFAULT_CHAT_MODEL', 'gemma4')
 const { ChatBubble, WSChat } = await import('./WSChat')
 
 const mockedSearch = vi.mocked(searchCollection)
@@ -244,6 +246,28 @@ describe('WSChat after a reload', () => {
     ])
 
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('WSChat when the knowledge-chat role is unset', () => {
+  it('shows the role message and does not call the model', async () => {
+    vi.mocked(resolveKnowledgeChatModel).mockRejectedValue(
+      new Error('知識庫對話模型尚未在治理中心設定'),
+    )
+    try {
+      render(
+        <MemoryRouter>
+          <WSChat flex={1} />
+        </MemoryRouter>,
+      )
+      useWorkspaceStore.getState().setPendingAsk('這題不該送出去')
+      await waitFor(() =>
+        expect(screen.getByText('知識庫對話模型尚未在治理中心設定')).toBeTruthy(),
+      )
+      expect(mockedChatStream).not.toHaveBeenCalled()
+    } finally {
+      vi.mocked(resolveKnowledgeChatModel).mockResolvedValue('gemma4')
+    }
   })
 })
 

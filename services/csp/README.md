@@ -13,7 +13,7 @@
 CSP 是 ANILA 的「真相來源」（authoritative store）與**雙平面閘道**：Router、ingestion-worker、anila-studio、各前端都向它要身分、API Key、模型 / Agent manifest 與用量。它同時服務產品面的**治理中心**（`apps/csp-governance-ui`）、**任務中心**（Task 主脊椎）、**產出中心**（Artifact 契約）與**專案入口**（Service Registry / 啟動閘道）。
 
 - **Control Plane — `/api/*`**（RS256 JWT / cookie 認證）：治理與平台內部溝通。使用者、API Key、模型 / Agent 註冊與核准、任務、政策裁決、四級分類治理、對話 / 附件 / 分享 / 交接、審計、告警、banners、部門、Service Registry、trusted-hosts、使用者記憶、service token / service clients 等。
-- **Data Plane — `/v1/*`、`/v2/*`**（`sk-` API Key 或 cookie / service token）：OpenAI 相容代理，依 `model_type` 路由到後端 LLM / Embedding / VLM / Agent，統一寫 `token_usage` 計費；並收攏 Full Trace span（`POST /v1/traces/{trace_id}/spans`）。
+- **Data Plane — `/v1/*`、`/v2/*`**（`sk-` API Key 或 cookie / service token）：OpenAI 相容代理，依 `model_type` 路由到後端 LLM / Embedding / VLM / Agent，統一寫 `token_usage` 計費。Full Trace span 收攏已移除；`tasks.trace_id` 仍是關聯 id。
 
 CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgvector RAG + 跨文件關係，經 `arq` 推 Redis 佇列給獨立的 [`ingestion-worker`](../ingestion-worker/)），並對接已抽離的 [`anila-studio`](../anila-studio/)（簡報 / 報告 / 生圖），CSP 端只保留 contract endpoint 與**持久化的 Artifact job store**。
 
@@ -93,7 +93,7 @@ auth router 已由單檔拆成套件，各認證形態獨立成子模組，全�
 
 ## 4. API 介面：Data Plane vs Control Plane
 
-### Data Plane（`/v1/*`、`/v2/*`）— OpenAI 相容代理 + Trace 收攏
+### Data Plane（`/v1/*`、`/v2/*`）— OpenAI 相容代理
 
 `app/api/proxy.py`（不帶 APIRouter prefix，寫完整路徑，讓 nginx `/v1` 直通吃得到）：
 
@@ -103,15 +103,12 @@ auth router 已由單檔拆成套件，各認證形態獨立成子模組，全�
 - `POST /v1/agents/{agent_name}/sessions/{session_id}/answer` — Router resume passthrough。
 - `POST /v1/embeddings`、`POST /v2/embeddings`。
 
-Full Trace ingest（`app/api/traces.py`，同樣走完整路徑）：
-
-- `POST /v1/traces/{trace_id}/spans` — data-plane span 收攏（`202`，一批 1..256，`(trace_id, span_id)` 冪等 upsert-ignore，fail-safe 不外溢）。認證 = 任一 data-plane 憑證。生產端為 [`anila_trace_sdk`](../../packages/anila-core/src/anila_core/tracing/sdk.py)（`packages/anila-core` 內，fail-open、批次背景 exporter）。
-- `GET /api/traces/{trace_id}` — control-plane 讀（admin/owner 或該 trace 所屬任務之申請人）。
+Full Trace span 收攏（`POST /v1/traces`、`trace_spans`）已移除。`tasks.trace_id` 仍是任務關聯 id。
 
 ### Control Plane（`/api/*`）
 
 - **redesign 新增**：`/api/tasks`（`tasks` module：建立 / 列出 / 取單 / `/{id}/runs`）、`/api/policy-decisions`、`/api/classification/inventory`（機敏盤點）、`/api/classification/declassification-requests`（解密申請 + 主管核准）、`/api/classification-authorities`（機密審批權責）、`/api/services`（Service Registry：CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`）、`/api/artifacts`（+ data-plane `POST /v1/artifact-jobs` 等 Studio 回報面）。
-- **既有治理面**：`/api/auth`、`/api/auth-providers`、`/api/keys`、`/api/models`（含 `set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / health-check / credentials / template）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
+- **既有治理面**：`/api/auth`、`/api/auth-providers`、`/api/keys`、`/api/models`（含模型角色 `GET/PUT/DELETE /api/models/roles`、`set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / health-check / credentials / template）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
 - **其他**：`GET /.well-known/jwks.json`（RFC 7517，未認證，`max-age=3600`）、`GET /health`、`GET /docs` + `/openapi.json`（admin tier 才可）、SPA catch-all（含路徑遍歷防護）。
 
 代理使用範例：

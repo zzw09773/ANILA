@@ -38,14 +38,13 @@ fast 熱機約 0.8s、品質不輸；思考版卻可能燒 400–1300 reasoning 
 |---|---|---|
 | `ANILA_MODEL_ANALYSIS` | 跑 anila-core 路由契約的服務（接線後：`anila-core-router`／csp 內嵌呼叫端；寫在根 `.env` 並傳到該容器） | `rag_qa`／`chat` 等 analysis class |
 | `ANILA_MODEL_FAST` | 同上 | `chips`／`title`／`json_gen` 等 fast class |
-| `ANILA_STUDIO_SLIDES_MODEL` | `anila-studio` | 投影片主 LLM 的**備援**（預設 `gemma4`）。2026-09-02 起首選是模型頁的「設為主簡報」旋鈕（`is_slides_primary`，studio 每 60 秒問一次 `GET /api/models/slides-primary`），沒設旋鈕才用這個變數 |
-| `ANILA_STUDIO_VISION_MODEL` | `anila-studio` | Vision／VLM gate 的備援（預設 `gemma4`）；有旋鈕時視覺檢查也用旋鈕那顆 |
+| 治理中心「簡報模型」 | `anila-studio` | Studio 寫簡報。沒設就失敗，訊息是「簡報模型尚未在治理中心設定」 |
+| 治理中心「視覺模型」 | `anila-studio`、ingestion-worker | 簡報視覺檢查；入庫圖說。圖說沒設就略過並警告，不讓入庫失敗 |
 
 > 🔴 **`ANILA_MODEL_FAST` 與 `ANILA_MODEL_ANALYSIS` 目前沒有任何程式在讀（2026-08-05 查證）。**
 > 設下去**不會有任何效果**,不會報錯,也不會有任何訊號告訴你它沒生效。
-> **自動標題實際上用的是「回答那一輪對話的同一顆模型」**
-> (`apps/anila-shell/src/app.jsx:1210-1253` 送 `model: effectiveTarget`),
-> 也就是治理中心指定的主路由。
+> **自動標題用治理中心的「摘要模型」角色**（`apps/anila-shell` 的
+> `generateConversationTitle`），不是這一輪對話的模型，也不是環境變數。
 > **擁有者 2026-08-05 裁定不接這條線**——理由是零設定、自我維護:模型陣容換了會自動跟著
 > 治理中心走,而實質開關本來就存在。所以下面這個範例**是保留給未來的形狀,不是現在能用的設定**。
 > 詳見 `docs/FAKE-CONTROLS.md` #54 與 `docs/OWNER-QUESTIONS.md` Q35。
@@ -58,17 +57,7 @@ fast 熱機約 0.8s、品質不輸；思考版卻可能燒 400–1300 reasoning 
 ANILA_MODEL_ANALYSIS=gemma26
 ANILA_MODEL_FAST=gemma26-nothink
 
-# Studio 投影片品質優先，預設維持思考／分析級模型名
-ANILA_STUDIO_SLIDES_MODEL=gemma26
-ANILA_STUDIO_VISION_MODEL=gemma26
-```
-
-compose 側把 Studio 兩個變數加進 `anila-studio.environment`
-（`infra/compose/platform.yml`／`dev.yml`），例如：
-
-```yaml
-ANILA_STUDIO_SLIDES_MODEL: ${ANILA_STUDIO_SLIDES_MODEL:-gemma4}
-ANILA_STUDIO_VISION_MODEL: ${ANILA_STUDIO_VISION_MODEL:-gemma4}
+# 簡報與視覺不要寫在 .env。到治理中心「模型」頁的「模型角色」指定。
 ```
 
 `ANILA_MODEL_*` 則傳到實際會 `import resolve_model` 的容器（合併接線後
@@ -107,10 +96,10 @@ ANILA_STUDIO_VISION_MODEL: ${ANILA_STUDIO_VISION_MODEL:-gemma4}
 
 | 呼叫端 | 狀態 | 檔案指標 |
 |---|---|---|
-| Studio 投影片／Vision 模型 | **已接**（2026-09-02）：compose 傳遞 `ANILA_STUDIO_*_MODEL`；執行期先問 csp 的主簡報旋鈕（`studio_model_primary.py`），env 只是備援 | `services/anila-studio/app/services/studio_model_primary.py`、`studio_config.py` |
+| Studio 投影片／Vision 模型 | **已接**：治理中心角色 `slides`／`vision`，studio 每 60 秒問 `GET /api/models/roles/{role}`。沒設就失敗，不猜名稱 | `services/anila-studio/app/services/studio_model_primary.py` |
 | 任務→class 契約＋`resolve_model` | **已完成**（函式庫；呼叫端尚未全接） | `packages/anila-core/src/anila_core/prompts/model_routing.py` |
 | 追問 chips hook | **待接**（合併時） | 接線位置待定——尋找建立 QueryEngine 並呼叫 `add_post_turn_hook(...)` 的 composition root；hook 本體在 `post_turn/prompt_suggestion.py`。接線時把 `model=` 改走 `resolve_model("chips", default=...)` |
-| 對話標題產生器 | **待接**（合併時） | `apps/anila-shell/src/app.jsx`（`generateConversationTitle`，約 :1013；目前 `model: effectiveTarget`） |
+| 對話標題產生器 | **已接**：治理中心角色 `summary` | `apps/anila-shell/src/app.jsx`（`generateConversationTitle`） |
 
 `services/csp/app/services/prompt_gen_service.py` 的
 `_resolve_primary_llm` 仍走 registry primary，**本包不改**；若日後要把

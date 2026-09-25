@@ -39,6 +39,7 @@ import {
   agentReplyNotice,
 } from "./runtime/agentReplySignal.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
+import { resolveRoleModel } from "./runtime/modelRole.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { relativeLabel } from "./runtime/time.js";
 import { MemoryTab } from "./memory.jsx";
@@ -153,6 +154,8 @@ import {
   formatAskUserSummary,
   normalizeInterrupt,
 } from "./agentic.jsx";
+import { visibleAskParts } from "./runtime/askTranscript.js";
+import { visibleReasoningText } from "./runtime/thinkingSummary.js";
 import {
   Button,
   IconButton,
@@ -926,6 +929,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       compactChain = compactChain.then(() => handleIncomingCompact(convId, payload, opts.payload));
     };
     const { assistantId, ...streamOpts } = opts;
+    // 中斷事件之後才進來的正文是題目 chunk。只丟掉這一段，不比對答案裡的句子。
+    let lastStreamAcc = "";
+    let interruptAt = null;
     try {
       const result = await streamChatCompletion({
         // 對話已綁 Task 時所有後續 chat 呼叫(送出/編輯/重試)自動帶上;
@@ -933,6 +939,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         taskId: taskIdForConv(convId),
         ...streamOpts,
         signal: controller.signal,
+        onText: (acc) => {
+          lastStreamAcc = typeof acc === "string" ? acc : "";
+          const visible = interruptAt == null ? lastStreamAcc : lastStreamAcc.slice(0, interruptAt);
+          streamOpts.onText?.(visible);
+        },
         onCompact: (payload) => {
           queueCompact(payload);
           streamOpts.onCompact?.(payload);
@@ -978,7 +989,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               status: "pending",
             });
             streamInterruptRef.current.set(assistantId, interrupt);
-            updateMsg(convId, assistantId, { interrupt });
+            if (interruptAt == null) interruptAt = lastStreamAcc.length;
+            const kept = lastStreamAcc.slice(0, interruptAt);
+            updateMsg(convId, assistantId, {
+              interrupt,
+              askContentSpans: Array.isArray(prev?.askContentSpans) ? prev.askContentSpans : [],
+              ...(kept !== lastStreamAcc ? { text: kept } : {}),
+            });
           }
           streamOpts.onInterrupt?.(payload);
         },
@@ -1333,6 +1350,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       settledInterrupts: Array.isArray(meta.settled_interrupts)
         ? meta.settled_interrupts.map((item) => normalizeInterrupt(item)).filter(Boolean)
         : [],
+      askContentSpans: Array.isArray(meta.ask_content_spans) ? meta.ask_content_spans : null,
       prefaceText: typeof meta.resume_preface === "string" ? meta.resume_preface : null,
       resumeText: resumeTextFromPreface(meta.resume_preface, msg.content),
       sessionId: meta.interrupt?.session_id || meta.session_id || null,
@@ -1345,7 +1363,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 要標示出來,不能長得跟完整答案一樣。
       streamState: readStreamState(meta),
       incompleteNotice: streamStateNotice(
-        readStreamState(meta), Boolean(msg.content),
+        readStreamState(meta),
+        Boolean(msg.content)
+          || Boolean(meta.interrupt)
+          || (Array.isArray(meta.settled_interrupts) && meta.settled_interrupts.length > 0),
       ),
       streaming: false,
       attachments: mapServerAttachments(msg.attachments),
@@ -1850,20 +1871,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   // ---- title auto-generation (runs once after the first turn lands) ----
-  // Uses the same LLM pathway that answered the question, via the router's
-  // primary model, so no extra admin configuration is required.
-  async function generateConversationTitle(convId, userText, assistantText, effectiveTarget) {
+  // 用治理中心的摘要角色，不沿用這一輪的對話模型。
+  async function generateConversationTitle(convId, userText, assistantText, _effectiveTarget) {
     if (typeof convId !== "number") return;
     if (!isAuthenticated) return;
-    const baseUrl =
-      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    let summaryModel;
+    try {
+      summaryModel = await resolveRoleModel(config.cspBaseUrl, "summary");
+    } catch (err) {
+      setRuntimeError(err?.message || "摘要模型尚未在治理中心設定");
+      return;
+    }
     const systemPrompt =
       "你是對話標題產生器。閱讀以下 Q&A，回覆一個不超過 15 個繁體中文字的標題，" +
       "只能輸出標題本身，不要加引號、冒號、標點或其他說明。";
     const userPrompt = `使用者：${userText}\n助理：${assistantText}`;
     try {
       const csrf = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
-      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const res = await fetch(`${config.cspBaseUrl}/v1/chat/completions`, {
         method: "POST",
         credentials: "include",
         headers: {
@@ -1871,8 +1896,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf[1]) } : {}),
         },
         body: JSON.stringify({
-          model: effectiveTarget,
-      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
+          model: summaryModel,
           stream: false,
           messages: [
             { role: "system", content: systemPrompt },
@@ -2098,12 +2122,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ) {
         clearPendingArtifactRevision(assistantId);
       }
+      const drafted = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+      finalText = drafted?.text ?? finalText;
+      const askSlot = Boolean(drafted?.interrupt)
+        || (Array.isArray(drafted?.settledInterrupts) && drafted.settledInterrupts.length > 0);
       updateMsg(convId, assistantId, {
         streaming: false,
+        text: finalText,
         streamState,
         incompleteNotice: lengthBudget
-          ? lengthBudgetNotice(Boolean(finalText))
-          : streamStateNotice(streamState, Boolean(finalText)),
+          ? lengthBudgetNotice(Boolean(finalText.trim()) || askSlot)
+          : streamStateNotice(streamState, Boolean(finalText.trim()) || askSlot),
         error:
           !lengthBudget && streamState === STREAM_STATE.FAILED
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
@@ -2137,6 +2166,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           ...thinkingSnap,
         },
       );
+      if (askSlot && persistMeta) {
+        persistMeta.ask_content_spans = Array.isArray(drafted?.askContentSpans)
+          ? drafted.askContentSpans
+          : [];
+      }
       const persisted = await finalizeStreamedAssistant({
         updateMessage: apiUpdateMessage,
         authRequest,
@@ -2389,7 +2423,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return;
     }
     const priorText = msg.text || "";
-    const priorReasoning = typeof msg.reasoning === "string" ? msg.reasoning : "";
     const priorTrace = Array.isArray(msg.trace) ? msg.trace : [];
     const seedSummaries = Array.isArray(msg.thinkingSummaries) ? msg.thinkingSummaries : [];
     const priorThinking = {
@@ -2400,10 +2433,27 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingSummaries: seedSummaries,
       trace: priorTrace,
     };
-    const preface = msg.prefaceText != null ? msg.prefaceText : priorText;
-    const baseResume = msg.prefaceText != null ? (msg.resumeText || "") : "";
+    // 舊資料沒有邊界偏移時，先把正文最前面的題目片段拿掉，再把這則標成已記過邊界。
+    // 之後模型自己寫出的同一句標題不再比對、不再刪。
+    let preface = msg.prefaceText != null ? msg.prefaceText : priorText;
+    let baseResume = msg.prefaceText != null ? (msg.resumeText || "") : "";
+    let openingText = priorText;
+    let askContentSpans = Array.isArray(msg.askContentSpans) ? msg.askContentSpans : null;
+    if (askContentSpans == null) {
+      const opened = visibleAskParts(msg);
+      if (msg.prefaceText != null) {
+        preface = opened.preface || "";
+        baseResume = opened.continuation || "";
+        openingText = preface && baseResume ? `${preface}\n${baseResume}` : `${preface}${baseResume}`;
+      } else {
+        openingText = opened.body || "";
+        preface = openingText;
+        baseResume = "";
+      }
+      askContentSpans = [];
+    }
     const answeredInterrupt = submittedInterrupt(interrupt, answer, sessionId);
-    let finalText = priorText;
+    let finalText = openingText;
     let finalMeta = null;
     const accumulatedTrace = [];
     let accumulatedReasoning = "";
@@ -2429,9 +2479,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingStartedAt: thinkingPump.startedAt,
       thinkingStatus: null,
       thinkingSummaries: [],
+      reasoning: null,
       finishReason: null,
       prefaceText: preface,
       resumeText: baseResume,
+      text: openingText,
+      askContentSpans,
       trace: [],
     });
     const persistSnapshot = async (content) => {
@@ -2442,6 +2495,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         interrupt: row.interrupt,
         settled_interrupts: Array.isArray(row.settledInterrupts) ? row.settledInterrupts : [],
         resume_preface: row.prefaceText ?? null,
+        ask_content_spans: Array.isArray(row.askContentSpans) ? row.askContentSpans : [],
       };
       const saved = await apiUpdateMessage(authRequest, convId, msg.dbId, {
         content: content ?? row.text ?? "",
@@ -2454,6 +2508,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     } catch (err) {
       setRuntimeError(err?.message || "對話訊息儲存失敗");
     }
+    let lastResumeAcc = "";
+    let resumeInterruptAt = null;
     try {
       await streamSessionAnswer({
         routerBaseUrl: config.routerBaseUrl,
@@ -2464,8 +2520,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         signal: controller.signal,
         callbacks: {
           onText: (acc) => {
-            const resumeJoiner = baseResume && acc ? "\n" : "";
-            const nextResume = baseResume + resumeJoiner + acc;
+            lastResumeAcc = typeof acc === "string" ? acc : "";
+            const visible = resumeInterruptAt == null
+              ? lastResumeAcc
+              : lastResumeAcc.slice(0, resumeInterruptAt);
+            const resumeJoiner = baseResume && visible ? "\n" : "";
+            const nextResume = baseResume + resumeJoiner + visible;
             const between = preface && nextResume ? "\n" : "";
             finalText = preface + between + nextResume;
             updateMsg(convId, msg.id, {
@@ -2498,10 +2558,20 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             const prev = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
             const adopted = nextInterruptState(prev, payload, sessionId);
             if (!adopted) return;
+            if (resumeInterruptAt == null) resumeInterruptAt = lastResumeAcc.length;
+            const visible = lastResumeAcc.slice(0, resumeInterruptAt);
+            const resumeJoiner = baseResume && visible ? "\n" : "";
+            const resume = baseResume + resumeJoiner + visible;
+            const between = preface && resume ? "\n" : "";
+            finalText = preface + between + resume;
             streamInterruptRef.current.set(msg.id, adopted.interrupt);
             updateMsg(convId, msg.id, {
               interrupt: adopted.interrupt,
               settledInterrupts: adopted.settledInterrupts,
+              askContentSpans,
+              text: finalText,
+              prefaceText: preface,
+              resumeText: resume,
               ...(adopted.stacked ? { interruptSubmitting: false, interruptPendingAnswer: null } : {}),
             });
           },
@@ -2520,7 +2590,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         lengthBudget: finishReason === "length",
       });
       const summaries = Array.isArray(snap.thinkingSummaries) ? snap.thinkingSummaries : [];
-      const thought = accumulatedReasoning.length > 0 || summaries.length > 0;
+      const thought = visibleReasoningText(accumulatedReasoning).length > 0 || summaries.length > 0;
       const thinkingPatch = thought
         ? {
             ...(snap.thinkingStatus ? { thinkingStatus: snap.thinkingStatus } : {}),
@@ -2534,8 +2604,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const traceForPersist = metaTrace.length > 0
         ? metaTrace
         : [...priorTrace, ...accumulatedTrace];
-      const metaReasoning = typeof finalMeta?.reasoning === "string" ? finalMeta.reasoning : "";
-      const reasoningText = metaReasoning || (priorReasoning + accumulatedReasoning);
+      const metaReasoning = visibleReasoningText(
+        typeof finalMeta?.reasoning === "string" ? finalMeta.reasoning : "",
+      );
+      // 上一輪的原文已經收進那一輪；這一輪沒有新原文就不留「原始思考」。
+      const reasoningText = metaReasoning || visibleReasoningText(accumulatedReasoning);
       const rowNow = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
       const resumedIntoNewInterrupt = Boolean(
         rowNow?.interrupt?.interrupt_id && rowNow.interrupt.interrupt_id !== interrupt.interrupt_id,
@@ -2549,7 +2622,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         interruptPendingAnswer: null,
         interruptRestore: null,
         streaming: false,
-        ...(reasoningText ? { reasoning: reasoningText } : {}),
+        reasoning: reasoningText || null,
         ...((accumulatedTrace.length > 0 || metaTrace.length > 0)
           ? { trace: traceForPersist, stageLabel: traceForPersist.at(-1)?.label }
           : {}),
@@ -2569,8 +2642,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interrupt: activeInterrupt,
           settled_interrupts: Array.isArray(current.settledInterrupts) ? current.settledInterrupts : [],
           resume_preface: current.prefaceText ?? preface,
+          ask_content_spans: Array.isArray(current.askContentSpans) ? current.askContentSpans : [],
         };
         if (reasoningText) persistMeta.reasoning = reasoningText;
+        else delete persistMeta.reasoning;
         if (traceForPersist.length > 0) persistMeta.trace = traceForPersist;
         if (typeof convId === "number" && typeof msg.dbId === "number") {
           const saved = await apiUpdateMessage(authRequest, convId, msg.dbId, {
@@ -3128,9 +3203,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
       const lengthBudget = streamState === STREAM_STATE.FAILED && isLengthBudgetError(streamError);
       if (lengthBudget) streamState = STREAM_STATE.COMPLETE;
+      const drafted = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+      finalText = drafted?.text ?? finalText;
+      const askSlot = Boolean(drafted?.interrupt)
+        || (Array.isArray(drafted?.settledInterrupts) && drafted.settledInterrupts.length > 0);
       const notice = lengthBudget
-        ? lengthBudgetNotice(Boolean(finalText))
-        : streamStateNotice(streamState, Boolean(finalText));
+        ? lengthBudgetNotice(Boolean(finalText.trim()) || askSlot)
+        : streamStateNotice(streamState, Boolean(finalText.trim()) || askSlot);
       if (
         lengthBudget
         || streamState === STREAM_STATE.STOPPED
@@ -3147,6 +3226,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       });
       updateMsg(convId, assistantId, {
         streaming: false,
+        text: finalText,
         streamState,
         incompleteNotice: notice,
         ...thinkingSnap,
@@ -3181,6 +3261,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           ...thinkingSnap,
         },
       );
+      if (askSlot && persistMeta) {
+        persistMeta.ask_content_spans = Array.isArray(drafted?.askContentSpans)
+          ? drafted.askContentSpans
+          : [];
+      }
       const persisted = await finalizeStreamedAssistant({
         updateMessage: apiUpdateMessage,
         authRequest,

@@ -32,6 +32,10 @@ vi.mock('../api/chat', async (importOriginal) => ({
   chatStream: vi.fn(),
 }))
 
+vi.mock('../api/modelRole', () => ({
+  resolveKnowledgeChatModel: vi.fn(async () => 'gemma4'),
+}))
+
 vi.mock('../asr/useAsrInput', () => ({
   appendTranscript: (draft: string, text: string) => `${draft}${text}`,
   useAsrInput: () => ({
@@ -46,7 +50,6 @@ vi.mock('../asr/useAsrInput', () => ({
   }),
 }))
 
-vi.stubEnv('VITE_DEFAULT_CHAT_MODEL', 'gemma4')
 const { WSChat } = await import('./WSChat')
 
 function seedOwnedWorkspace() {

@@ -324,6 +324,11 @@ def test_illegal_thinking_tier_not_on_primary_payload(monkeypatch, bad):
 
 def test_compact_summary_payload_omits_thinking_tier(monkeypatch):
     monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def _summary_model():
+        return "summary-llm"
+
+    monkeypatch.setattr(rs, "resolve_summary_model_name", _summary_model)
     client = _Client(answers=[_reply("先前在做太陽系頁")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     token = _with_tier("deep")
@@ -341,8 +346,33 @@ def test_compact_summary_payload_omits_thinking_tier(monkeypatch):
     assert HISTORY_SUMMARY_PREFIX in compacted[1]["content"]
     assert client.posts, "summarizer never called CSP"
     summary = client.posts[0]
+    assert summary.get("model") == "summary-llm"
     assert "anila_thinking_tier" not in summary
     assert summary.get("reasoning_effort") == "none"
+
+
+def test_compact_fails_when_summary_role_unset(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def _unset():
+        raise HTTPException(status_code=404, detail="摘要模型尚未在治理中心設定")
+
+    monkeypatch.setattr(rs, "resolve_summary_model_name", _unset)
+    client = _Client(answers=[_reply("不該被叫到")])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            rs._auto_compact_routing_messages(
+                _long_messages(),
+                caller_api_key="sk",
+                forwarded_headers=None,
+            )
+        )
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "摘要模型尚未在治理中心設定"
+    assert client.posts == []
 
 
 def test_recompose_payload_omits_thinking_tier(monkeypatch):

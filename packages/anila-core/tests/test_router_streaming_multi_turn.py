@@ -316,7 +316,7 @@ def test_multi_turn_dispatch_failure_is_anila_error_not_stop(db_path: Path) -> N
     events = _parse_sse(response.text)
     errors = [e for e in events if e["event"] == "anila.error"]
     assert errors == [
-        {"event": "anila.error", "data": {"message": "agent「agent-a」暫時無法使用，請稍後再試。"}}
+        {"event": "anila.error", "data": {"message": "助手暫時無法使用，請稍後再試。"}}
     ]
     assert events[-1]["event"] == "anila.error"
     assert not any(e["event"] == "done" for e in events)
@@ -375,7 +375,7 @@ def test_multi_turn_second_dispatch_failure_is_anila_error_not_stop(
     events = _parse_sse(response.text)
     assert events[-1] == {
         "event": "anila.error",
-        "data": {"message": "agent「agent-b」暫時無法使用，請稍後再試。"},
+        "data": {"message": "助手暫時無法使用，請稍後再試。"},
     }
     metas = [e for e in events if e["event"] == "anila.meta"]
     assert metas

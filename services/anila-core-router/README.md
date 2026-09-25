@@ -103,10 +103,9 @@ SDK(`router_server`)另讀 **Full Trace opt-in** env(見 doc `09` §10 凍結線
 
 | 變數 | 說明 | 預設 |
 |---|---|---|
-| `ANILA_TRACE_ENDPOINT` | 未設 → 整條 trace 路徑 no-op(行為與未接前一致)。bare flag(`1`/`true`/`on`/`yes`/`default`)→ 用 `CSP_BASE_URL`;其他值 → 顯式 trace base URL。span 以 `POST {base}/v1/traces/{trace_id}/spans` 上傳並 mirror 進 `anila.spans` SSE | `""`(關) |
-| `ANILA_TRACE_TOKEN` | trace export 用的 service token;未設則 fallback `CSP_SERVICE_TOKEN` | `""` |
+| （已移除）`ANILA_TRACE_ENDPOINT` | 不再上傳 span。`tasks.trace_id` 仍是關聯 id | — |
 
-> `main.py` **不讀 `MODEL`**(主路由模型完全由 CSP `/api/models/router-primary` runtime 決定;compose 的 `router` 服務雖仍帶 `MODEL: ${LLM_MODEL:-gemma4}`,純屬殘留 env,不影響行為)。
+> `main.py` **不讀 `MODEL`**。主路由模型是治理中心的 `router_primary` 角色（執行期 `GET /api/models/router-primary`）。compose 不再傳 `LLM_MODEL`。
 
 ---
 
@@ -121,7 +120,7 @@ router (:9000)
    ├── GET /api/models/router-primary  ──▶ CSP   取主路由 LLM(X-CSP-Service-Token)
    ├── POST /v1/chat/completions       ──▶ CSP   呼叫主 LLM 判斷是否分派
    ├── 分派 → agent endpoint_url        ──▶ 例:image-generator → http://flux2-dev-agent:8000
-   └── (可選) POST /v1/traces/{id}/spans ──▶ CSP  Full Trace 匯出(ANILA_TRACE_ENDPOINT 開啟時)
+
 ```
 
 - **CSP(`CSP_BASE_URL`)**:Router 所有上游互動都經由 CSP — 撈 agent 清單、解析主路由模型、呼叫主 LLM。Router→CSP 內部端點以 `X-CSP-Service-Token` 認證。

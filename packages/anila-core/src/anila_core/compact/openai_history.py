@@ -10,6 +10,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from fastapi import HTTPException
+
 from .auto_compact import get_auto_compact_threshold, should_compact
 from .sliding_window import SLIDING_WINDOW_SUMMARY
 from .strip_images import estimate_openai_tokens_with_images, strip_images_openai
@@ -385,6 +387,8 @@ async def auto_compact_openai_messages(
     if summarizer is not None:
         try:
             summary = await summarizer(old)
+        except HTTPException:
+            raise
         except Exception:
             summary = None
         if isinstance(summary, str) and summary.strip():

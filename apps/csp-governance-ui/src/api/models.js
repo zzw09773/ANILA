@@ -77,6 +77,18 @@ export const unsetPlatformEmbedding = (id) =>
 export const getPlatformEmbedding = () =>
   client.get('/api/models/platform-embedding')
 
+export const listModelRoles = () =>
+  client.get('/api/models/roles')
+
+export const assignModelRole = (role, modelId) =>
+  client.put(`/api/models/roles/${role}`, { model_id: modelId })
+
+export const clearModelRole = (role) =>
+  client.delete(`/api/models/roles/${role}`)
+
+export const grantModelRoleAllUsers = (role) =>
+  client.post(`/api/models/roles/${role}/grant-all-users`)
+
 // P4.6 — 整批帶入上游 /v1/models listing（選已註冊端點的代表列）。
 export const importModelsFromEndpoint = (sourceModelId) =>
   client.post('/api/models/import', { source_model_id: sourceModelId })

@@ -87,8 +87,7 @@ packages/anila-core/
     │                         # + memdir · consolidation · relevance_selector · user
     ├── compact/              # micro / auto / session_memory / sliding_window
     ├── context/              # AgentContext(turn-scope contextvars,含 classified_latch)
-    ├── tracing/              # span · tracer · processor · hooks
-    │                         #   + sdk（anila_trace_sdk:TraceExporter / TraceSession / ExportingProcessor / SPAN_TYPES)
+    ├── tracing/              # 本機 span · tracer · processor · hooks（不上傳 /v1/traces）
     ├── workspace/            # capability-scoped sandbox(workspace + caps + safe_path)
     ├── registry/             # agent_registry + remote_agent_manifest(從 CSP /v1/agents 撈)
     ├── runtime_config/       # snapshot · poller · apply(hot-reload)
@@ -113,7 +112,7 @@ packages/anila-core/
 
 | 能力 | anila-core 承擔的面向 | 程式碼 / 文件 |
 |---|---|---|
-| **Full Trace**(spans + `/v1/traces` ingest) | `anila_trace_sdk` 生產者:批次 export span 到 CSP 端點,並 mirror 進 `anila.spans` SSE | `tracing/sdk.py`;doc `05` §6 / `09` §10 |
+| Full Trace span 匯出 | 已移除。不 POST `/v1/traces`。程序內的 `Tracer`／`Span` 仍可在行程裡用，不會外送 | `tracing/` |
 | **Task spine**(`X-ANILA-Task-Id`) | runtime 由 `CallerContext` 讀入並沿 turn 傳遞 task-id | `api/caller_context.py` |
 | **四級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `--classification-level`（無機密／營業秘密／密／機密,寫入 `default_classification_level`）。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
 | **Agent Registry**(OE-1 三態:registered / approved / disabled) | `register` / `status` CLI 送件進 CSP registry;底層模型可用名稱(`base_model`)指定,由 CSP 解析成 id。**核准態機在 CSP** | `cli/register_cmd.py`;doc `05` |
@@ -175,14 +174,9 @@ print(result.stop_reason, result.turn_count)
 
 > ⚠️ QueryEngine **沒有** `run_stream()`;入口是 `await engine.run(messages, on_stream_delta=...)`(見 [`e2e_smoke.py`](./e2e_smoke.py))。
 
-### Full Trace 匯出(opt-in)
+### Full Trace
 
-Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 trace 路徑 no-op,行為與未接前完全一致。設定後,span 由背景 `TraceExporter` POST 到 CSP `POST {base}/v1/traces/{trace_id}/spans`(body `{"spans":[…]}`,≤256/批,`X-CSP-Service-Token` 認證),同時 mirror 進 `anila.spans` SSE 事件。
-
-- `ANILA_TRACE_ENDPOINT`:bare flag(`1`/`true`/`on`/`yes`/`default`)→ 用 router 已知的 `CSP_BASE_URL`;其他值 → 當顯式 trace base URL。
-- `ANILA_TRACE_TOKEN`:router／平台內部 s2s 的 trace export service token（未設則 fallback `CSP_SERVICE_TOKEN`）。這是 **anila-core `TraceExporter`（Router 用）** 的憑證，不是 agent 派工身分——未設時 exporter 送出無 auth header，span 會被靜默 drop-and-log。第三方 agent 任務內回呼在 CSP 側可接受派工 JWT；與本 exporter 無關。
-
-程式面三件:`TraceExporter`(執行緒安全、批次、bounded queue、drop-and-log)、`TraceSession`(per-`trace_id` span factory,`span()` / `async_span()` context manager 自動計時 / 標 ok/error / auto-parent)、`ExportingProcessor`(把 in-tree `Tracer`/`Span` 橋接到 exporter,`SpanKind` → doc `05` §6 的 span-type)。皆從 `anila_core.tracing` 匯出。
+已移除。不要設 `ANILA_TRACE_ENDPOINT`。CSP 的 `tasks.trace_id` 仍是關聯 id。
 
 ### 新 agent 從哪裡開始
 

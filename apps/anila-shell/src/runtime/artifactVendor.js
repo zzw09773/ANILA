@@ -60,9 +60,174 @@ function rewriteBareScriptSrc(html, dest, names) {
   });
 }
 
+function isThreeModuleSrc(src) {
+  const trimmed = String(src || "").trim();
+  if (!trimmed || alreadyVendor(trimmed)) return false;
+  if (/^(\.\/)?three\.module\.js(?:[?#].*)?$/i.test(trimmed)) return true;
+  if (
+    /^https?:\/\/esm\.sh\/three(?:@[^/\s?#]+)?(?:\/build\/three(?:\.module)?\.js)?(?:[?#].*)?$/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+  if (/^https?:\/\/cdn\.skypack\.dev\/three(?:@[^/\s?#]+)?(?:[?#].*)?$/i.test(trimmed)) return true;
+  return /^https?:\/\/(?:cdn\.jsdelivr\.net\/npm\/three(?:@[^/\s?#]+)?|unpkg\.com\/three(?:@[^/\s?#]+)?)(?:\/build\/three(?:\.min|\.module)?\.js|\/\+esm)?(?:[?#].*)?$/i.test(
+    trimmed,
+  );
+}
+
+function isOrbitSpecifier(src) {
+  const trimmed = String(src || "").trim();
+  if (!trimmed || alreadyVendor(trimmed)) return false;
+  return /OrbitControls/i.test(trimmed);
+}
+
+function isThreeSpecifier(spec) {
+  const trimmed = String(spec || "").trim();
+  if (!trimmed || isOrbitSpecifier(trimmed)) return false;
+  if (alreadyVendor(trimmed) && /three(?:\.min|\.module)?\.js/i.test(trimmed)) return true;
+  if (trimmed === "three" || trimmed.startsWith("three/") || trimmed.startsWith("three@")) return true;
+  return isThreeModuleSrc(trimmed);
+}
+
+function rewriteImportMap(body) {
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const imports = data && data.imports && typeof data.imports === "object" ? data.imports : null;
+  if (!imports) return null;
+  let needsThree = false;
+  let needsOrbit = false;
+  let changed = false;
+  for (const key of Object.keys(imports)) {
+    const value = String(imports[key] || "");
+    if (isOrbitSpecifier(key) || isOrbitSpecifier(value)) {
+      needsOrbit = true;
+      needsThree = true;
+      delete imports[key];
+      changed = true;
+    } else if (isThreeSpecifier(key) || isThreeSpecifier(value) || isThreeModuleSrc(value)) {
+      needsThree = true;
+      delete imports[key];
+      changed = true;
+    }
+  }
+  if (!changed) return null;
+  if (!Object.keys(imports).length && !data.scopes) {
+    return { html: "", needsThree, needsOrbit };
+  }
+  return {
+    html: `<script type="importmap">\n${JSON.stringify({ ...data, imports }, null, 2)}\n</script>`,
+    needsThree,
+    needsOrbit,
+  };
+}
+
+function stripThreeImports(body) {
+  let needsThree = false;
+  let needsOrbit = false;
+  let changed = false;
+  let needThreeBinding = false;
+  const orbitAliases = [];
+  const namedFromThree = [];
+  const next = body.replace(
+    /^[ \t]*import\s+(?:([\s\S]*?)\s+from\s+)?['"]([^'"]+)['"]\s*;?[ \t]*$/gm,
+    (line, clause, spec) => {
+      const source = String(spec || "");
+      const binding = String(clause || "");
+      if (isOrbitSpecifier(source)) {
+        needsOrbit = true;
+        needsThree = true;
+        changed = true;
+        const named = binding.match(/\{\s*OrbitControls(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*\}/);
+        orbitAliases.push(named ? named[1] || "OrbitControls" : "OrbitControls");
+        return "";
+      }
+      if (!isThreeSpecifier(source) && !isThreeModuleSrc(source)) return line;
+      needsThree = true;
+      changed = true;
+      needThreeBinding = true;
+      const named = binding.match(/\{([^}]+)\}/);
+      if (named) namedFromThree.push(named[1]);
+      return "";
+    },
+  );
+  if (!changed) return { changed: false, body, needsThree, needsOrbit };
+  const lines = [];
+  if (needThreeBinding || needsOrbit) lines.push("const THREE = window.THREE;");
+  for (const fields of namedFromThree) lines.push(`const {${fields}} = THREE;`);
+  for (const alias of orbitAliases) lines.push(`const ${alias} = THREE.OrbitControls;`);
+  const prelude = lines.length ? `${lines.join("\n")}\n` : "";
+  return { changed: true, body: `${prelude}${next.replace(/^\n+/, "")}`, needsThree, needsOrbit };
+}
+
+function injectLibraryScripts(html, threeUrl, orbitUrl, needsThree, needsOrbit) {
+  const threeTag = `<script src="${threeUrl}"></script>`;
+  const orbitTag = `<script src="${orbitUrl}"></script>`;
+  let out = html;
+  if (needsOrbit && !out.includes(orbitUrl)) {
+    if (out.includes(threeTag)) {
+      out = out.replace(threeTag, `${threeTag}${orbitTag}`);
+    } else {
+      needsThree = true;
+    }
+  }
+  if (needsThree && !out.includes(threeUrl)) {
+    const tags = `${threeTag}${needsOrbit && !out.includes(orbitUrl) ? orbitTag : ""}`;
+    const moduleAt = out.search(/<script\b[^>]*\btype\s*=\s*(["'])module\1/i);
+    if (moduleAt >= 0) out = out.slice(0, moduleAt) + tags + out.slice(moduleAt);
+    else if (/<head\b[^>]*>/i.test(out)) out = out.replace(/<head\b[^>]*>/i, (open) => open + tags);
+    else out = tags + out;
+  }
+  return out;
+}
+
+/**
+ * 把 Three.js 的 ES module／importmap／three.module.js 收成傳統全域腳本。
+ * 院內副本是 UMD 的 three.min.js，不能當 module 載入。
+ */
+function localizeThreeModuleSyntax(html, threeUrl, orbitUrl) {
+  let needsThree = false;
+  let needsOrbit = false;
+  const out = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs, body) => {
+    const srcMatch = String(attrs).match(/\bsrc\s*=\s*(["'])([^"']+)\1/i);
+    const src = srcMatch ? srcMatch[2].trim() : "";
+    if (src && alreadyVendor(src)) return full;
+    if (src && isOrbitSpecifier(src) && /(?:jsm\/controls\/OrbitControls|three\.module)/i.test(src)) {
+      needsOrbit = true;
+      needsThree = true;
+      return `<script src="${orbitUrl}"></script>`;
+    }
+    if (src && isThreeModuleSrc(src)) {
+      needsThree = true;
+      return `<script src="${threeUrl}"></script>`;
+    }
+    if (/importmap/i.test(attrs)) {
+      const mapped = rewriteImportMap(body);
+      if (!mapped) return full;
+      if (mapped.needsThree) needsThree = true;
+      if (mapped.needsOrbit) needsOrbit = true;
+      return mapped.html;
+    }
+    if (/\btype\s*=\s*(["'])module\1/i.test(attrs) && /\bimport\s/.test(body)) {
+      const stripped = stripThreeImports(body);
+      if (!stripped.changed) return full;
+      if (stripped.needsThree) needsThree = true;
+      if (stripped.needsOrbit) needsOrbit = true;
+      return `<script${attrs}>${stripped.body}</script>`;
+    }
+    return full;
+  });
+  return injectLibraryScripts(out, threeUrl, orbitUrl, needsThree, needsOrbit);
+}
+
 /**
  * 把 Three.js／OrbitControls／React／Babel 的外網與相對路徑改成同源 vendor。
- * 已指向 vendor 的 URL 維持不變。
+ * 已指向 vendor 的 URL 維持不變。ES module 形式也收成同一份全域腳本。
  *
  * @param {string} html
  * @param {{ baseUrl?: string }} [opts]
@@ -96,7 +261,7 @@ export function localizeArtifactHtml(html, opts = {}) {
     "react-dom.development.js",
   ]);
   out = rewriteBareScriptSrc(out, babel, ["babel.js", "babel.min.js", "babel-standalone.js"]);
-  return out;
+  return localizeThreeModuleSyntax(out, three, orbit);
 }
 
 export function artifactStillNeedsCdn(html) {

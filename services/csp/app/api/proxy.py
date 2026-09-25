@@ -592,7 +592,7 @@ _KB_BLOCK_TITLE = "【院內規章檢索結果】"
 _KB_NO_CITATION_RULE = "不得以條號格式引用"
 # miss 與 error 的第一句必須不同——「查過，沒有」和「查不了」是兩件事，混成
 # 同一句話，兩個狀態就從使用者那邊消失了。
-_KB_MISS_NOTICE = "已查詢院內規章知識庫，門檻之上沒有相關條文"
+_KB_MISS_NOTICE = "已查詢院內規章知識庫，沒有找到相關條文"
 _KB_ERROR_NOTICE = "本次無法查詢院內規章知識庫（檢索失敗）"
 _KB_NO_BASIS_INSTRUCTION = (
     "請以一般知識的口吻作答，並明白告訴使用者這個回答沒有院內規章作為依據；"
@@ -759,7 +759,7 @@ def _kb_trace_entry(fragment: dict) -> dict | None:
     if state == KbState.SEARCHED_HIT.value:
         detail, status = f"命中 {hit_n} 段", "ok"
     elif state == KbState.SEARCHED_MISS.value:
-        detail, status = "查過，門檻之上沒有相關條文", "ok"
+        detail, status = "查過，沒有找到相關條文", "ok"
     elif state == KbState.PARTIAL_ERROR.value:
         detail = f"命中 {hit_n} 段，但有 {failed_n} 個庫查詢失敗"
         status = "partial"

@@ -4,7 +4,10 @@
 不碰路由控制流（OWNER-QUESTIONS Q7 凍結）。
 """
 
-from anila_core.api.router_prompts import INTRANET_HTML_HINT
+from anila_core.api.router_prompts import (
+    HTML_PREVIEW_HINT_EN,
+    HTML_PREVIEW_HINT_ZH,
+)
 from anila_core.api.router_server import (
     _PLAIN_ASSISTANT_TEMPLATE,
     _RECOMPOSE_SYSTEM_PROMPT,
@@ -63,6 +66,13 @@ def test_router_templates_format_safe_and_localized():
         assert "哪幾個" in text
         assert "哪些" in text
         assert "只能選一個就用 ASK:" in text
+        assert "缺的資訊會讓答案實質不同時，才問一個問題" in text
+        assert "盡快決定。一次只問一個問題。" in text
+        assert "直接回答時寫明你採用的假設" in text
+        assert "不要另用條列、Markdown 清單或其他格式來問" in text
+        assert "以 Markdown 項目清單列出候選" not in text
+        assert "你的問題可能跟這些方向有關" not in text
+        assert "<AGENT_ID_1>" not in text
 
 
 def test_direct_answer_rule_forbids_agent_scope_bleed_and_states_positive_range():
@@ -89,7 +99,8 @@ def test_router_prompt_task_text_has_no_simplified_characters():
         _ROUTER_SYSTEM_TEMPLATE,
         _PLAIN_ASSISTANT_TEMPLATE,
         _RECOMPOSE_SYSTEM_PROMPT,
-        INTRANET_HTML_HINT,
+        HTML_PREVIEW_HINT_ZH,
+        HTML_PREVIEW_HINT_EN,
     ):
         hits = sorted({ch for ch in text if ch in _SIMPLIFIED_ONLY})
         assert not hits, f"Router prompt 含簡體字：{hits}"

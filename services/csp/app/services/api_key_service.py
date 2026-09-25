@@ -141,6 +141,11 @@ def check_model_permission(
     # to this user_id.
     if getattr(user, "role", None) == "system":
         return True
+    # 角色模型用的是這位使用者自己的憑證。全院授權只放行目前指定的那一顆，
+    # 不把其他模型加進權限，也不把它變成 Router 可選模型。
+    from app.services.model_roles import caller_may_use_end_user_role_model
+    if caller_may_use_end_user_role_model(db, model):
+        return True
     if bool(getattr(model, "router_enabled", False)):
         from app.services.router_model_policy import user_can_use_router_model
         if not user_can_use_router_model(db, user, model):

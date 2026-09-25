@@ -522,7 +522,7 @@ def test_resume_upstream_failure_is_safe_terminal_error(
     assert '"finish_reason": "stop"' not in text
 
     frames = _sse_frames(text)
-    safe = "agent「agent-resume」暫時無法使用，請稍後再試。"
+    safe = "助手暫時無法使用，請稍後再試。"
     traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
     assert traces
     assert all(step.get("detail") == safe for step in traces)
@@ -624,7 +624,7 @@ def test_resume_http_200_upstream_error_frame_is_redacted(
     assert '"finish_reason": "stop"' not in text
 
     frames = _sse_frames(text)
-    safe = "agent「agent-resume」暫時無法使用，請稍後再試。"
+    safe = "助手暫時無法使用，請稍後再試。"
     metas = [
         (i, json.loads(data))
         for i, (name, data) in enumerate(frames)
@@ -731,7 +731,7 @@ def test_resume_read_error_keeps_meta_classified_and_usage(db_path: Path) -> Non
     assert failure["usage"] == usage
     assert "citations" not in failure
     assert frames[-1][0] == "anila.error"
-    safe = "agent「agent-resume」暫時無法使用，請稍後再試。"
+    safe = "助手暫時無法使用，請稍後再試。"
     assert json.loads(frames[-1][1]) == {"message": safe}
 
 

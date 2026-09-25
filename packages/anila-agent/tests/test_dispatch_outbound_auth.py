@@ -7,7 +7,7 @@ Acceptance:
   (c) outbound with no dispatch token in scope fails loudly
   (F1) SSE mid-stream disconnect: no cross-context ValueError; scope clean
   (F2) non-CSP outbound origin does NOT receive the dispatch JWT
-  (F3) service_wrapper pins api_key=None on in-task retriever + emitter
+  (F3) service_wrapper pins api_key=None on the in-task retriever
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from anila_agent.dispatch_token import (
     same_csp_origin,
 )
 from anila_agent.retrieval.csp_http import CspHttpRetriever
-from anila_agent.tracing import TraceEmitter
 
 pytestmark = pytest.mark.unit
 
@@ -145,7 +144,7 @@ async def test_service_wrapper_search_uses_inbound_bearer(record_http, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# (F3) pin api_key=None on in-task retriever + emitter
+# (F3) pin api_key=None on the in-task retriever
 # ---------------------------------------------------------------------------
 
 
@@ -161,13 +160,7 @@ async def test_service_wrapper_passes_api_key_none(monkeypatch):
     class _Result:
         final_output = "ok"
 
-    real_build_emitter = service_wrapper._build_emitter
     real_csp = service_wrapper.CspHttpRetriever
-
-    def _capture_emitter(*a, **k):
-        em = real_build_emitter(*a, **k)
-        built["emitter"] = em
-        return em
 
     class _CapturingRetriever(real_csp):
         def __init__(self, *a, **kw):
@@ -182,14 +175,12 @@ async def test_service_wrapper_passes_api_key_none(monkeypatch):
 
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
     monkeypatch.setattr(service_wrapper, "CSP_BASE_URL", "https://csp.internal")
-    monkeypatch.setattr(service_wrapper, "TRACE_ENDPOINT", "https://csp.internal")
     monkeypatch.setattr(
         service_wrapper, "verify_dispatch_authorization", _fake_claims
     )
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "run_once", _run)
-    monkeypatch.setattr(service_wrapper, "_build_emitter", _capture_emitter)
     monkeypatch.setattr(service_wrapper, "CspHttpRetriever", _CapturingRetriever)
 
     with TestClient(service_wrapper.app) as client:
@@ -206,7 +197,6 @@ async def test_service_wrapper_passes_api_key_none(monkeypatch):
         )
     assert resp.status_code == 200
     assert built["retriever_api_key"] is None
-    assert built["emitter"].api_key is None
 
 
 # ---------------------------------------------------------------------------
@@ -272,22 +262,6 @@ def test_resolve_outbound_bearer_fails_loudly_with_no_fallback():
         resolve_outbound_bearer(fallback="   ")
 
 
-async def test_trace_flush_without_creds_does_not_post(record_http, caplog):
-    em = TraceEmitter(
-        trace_id="t1",
-        endpoint="https://csp.local",
-        api_key=None,
-        csp_base_url="https://csp.local",
-        enabled=True,
-    )
-    async with em.run_span("agent"):
-        pass
-    with caplog.at_level("ERROR"):
-        await em.flush()
-    assert record_http.calls == []
-    assert any("trace ship aborted" in r.message for r in caplog.records)
-
-
 # ---------------------------------------------------------------------------
 # (F2) non-CSP outbound origin must NOT receive the dispatch JWT
 # ---------------------------------------------------------------------------
@@ -300,42 +274,6 @@ def test_same_csp_origin_helper():
     assert not same_csp_origin("http://csp.internal", "https://csp.internal")
 
 
-async def test_non_csp_trace_endpoint_does_not_receive_dispatch_jwt(
-    record_http, caplog
-):
-    """ANILA_TRACE_ENDPOINT → foreign host must not get the user JWT."""
-    em = TraceEmitter(
-        trace_id="t-foreign",
-        endpoint="https://evil.collector",
-        api_key=None,
-        csp_base_url="https://csp.internal",
-        enabled=True,
-    )
-    async with em.run_span("agent"):
-        pass
-    with dispatch_bearer_scope("eyJ.user.dispatch.jwt"):
-        with caplog.at_level("ERROR"):
-            await em.flush()
-    assert record_http.calls == [], "must not POST user JWT to foreign collector"
-    assert any("non-CSP origin" in r.message for r in caplog.records)
-
-
-async def test_non_csp_trace_falls_back_to_static_credential(record_http):
-    em = TraceEmitter(
-        trace_id="t-foreign",
-        endpoint="https://evil.collector",
-        api_key="csk-collector-only",
-        csp_base_url="https://csp.internal",
-        enabled=True,
-    )
-    async with em.run_span("agent"):
-        pass
-    with dispatch_bearer_scope("eyJ.user.dispatch.jwt"):
-        await em.flush()
-    assert len(record_http.calls) == 1
-    auth = record_http.calls[0]["headers"]["Authorization"]
-    assert auth == "Bearer csk-collector-only"
-    assert "eyJ.user.dispatch.jwt" not in auth
 
 
 async def test_non_csp_retriever_origin_does_not_receive_dispatch_jwt(record_http):

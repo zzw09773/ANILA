@@ -66,7 +66,8 @@ describe("ReasoningSummary 即時思考摘要", () => {
     expect(screen.getByText(formatThinkingComplete(31000))).toBeTruthy();
     expect(screen.queryByTestId("thinking-summary-marquee")).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.queryByText("full raw thinking")).toBeNull();
+    expect(screen.getByTestId("thinking-summary-headline").textContent).not.toContain("full raw thinking");
+    expect(document.querySelector("[data-testid='raw-reasoning']").hidden).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: /已思考/ }));
     expect(screen.getByText("規劃涵蓋暗物質等主題的簡潔回覆架構。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: THINKING_SUMMARY_RAW_LABEL }));
@@ -110,6 +111,43 @@ describe("ReasoningSummary 即時思考摘要", () => {
     expect(screen.getByText("思考程度由管理員鎖定")).toBeTruthy();
     expect(screen.getByText("思考過長，未存入對話紀錄。")).toBeTruthy();
     expect(screen.queryByRole("button", { name: THINKING_SUMMARY_RAW_LABEL })).toBeNull();
+  });
+
+  it("沒有可顯示的原始思考時不渲染標籤", () => {
+    render(
+      <ReasoningSummary
+        trace={[]}
+        reasoning={"\n  \n"}
+        streaming={false}
+        thinkingStatus="complete"
+        thinkingElapsedMs={33000}
+        thinkingSummaries={[{ text: "想過題目", at: 1 }]}
+      />,
+    );
+    expect(screen.getByText(formatThinkingComplete(33000))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: THINKING_SUMMARY_RAW_LABEL })).toBeNull();
+    expect(document.querySelector("[data-testid='raw-reasoning']")).toBeNull();
+  });
+
+  it("有原文時標籤後面跟著可收合的內容", () => {
+    render(
+      <ReasoningSummary
+        trace={[]}
+        reasoning={"撰寫時的推理"}
+        streaming={false}
+        thinkingStatus="complete"
+        thinkingElapsedMs={33000}
+        thinkingSummaries={[{ text: "整理報告架構", at: 1 }]}
+      />,
+    );
+    const label = screen.getByRole("button", { name: THINKING_SUMMARY_RAW_LABEL });
+    const body = document.querySelector("[data-testid='raw-reasoning']");
+    expect(body).toBeTruthy();
+    expect(body.textContent).toBe("撰寫時的推理");
+    expect(label.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(body.hidden).toBe(true);
+    fireEvent.click(label);
+    expect(body.hidden).toBe(false);
   });
 
   it("思考球只出現在最新一則回覆", () => {

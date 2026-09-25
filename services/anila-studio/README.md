@@ -34,7 +34,7 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 | Slice 能力 | 在本服務的落點 |
 |---|---|
 | **Artifact 合約 + Redis job store** | `job_store.py`：`PersistedJob` 投影寫 Redis（key 前綴 `anila-studio:jobs:`、TTL 7 天），studio **重啟後**仍能回答重啟前 job 的狀態查詢；best-effort，Redis 斷線只退化為 in-memory、不阻擋啟動。`job_reporting.py`：向 CSP 回報 `POST /v1/artifact-jobs`（建立）、`PATCH /v1/artifact-jobs/{id}`（終態 / 進度）、`POST /v1/artifacts`（產出落地）。 |
-| **Full Trace spans + `/v1/traces` ingest** | `studio_trace.py`：`producer:"studio"`，一個 root `studio.job` span + 每個管線步驟一個 `studio.stage` span，批次 `POST {csp}/v1/traces/{trace_id}/spans`（≤256 spans/批）。無 `trace_id` → emitter 全程 no-op；ship 失敗 drop-and-log，永不中斷生成。 |
+| **trace_id** | 只當 artifact job 的關聯 id 送給 CSP，不再 POST span。 |
 | **Task spine（`task_id`）** | 建立 job 的 request payload 帶 `task_id` / `source_snapshot_id` / `trace_id`，由 `job_lifecycle.py` 的 `JobReportContext` 貫串五條管線的 `*JobUpdater`，並隨 artifact-job / artifact / trace span 一起傳給 CSP。 |
 | **四級分類（passthrough）** | `classification_level`（無機密／營業秘密／密／機密）由 `PersistedJob` 攜帶、`POST /v1/artifacts` 回傳、並寫入 trace span attributes；studio 不自行升降級，只做繼承傳遞。 |
 | **Model Gateway** | LLM 一律走 CSP `POST /v1/chat/completions` proxy（維持 token 計費），不直連模型。 |
@@ -46,7 +46,7 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 
 ## 投影片管線要知道的事（2026-09-02 之後）
 
-- **模型從哪裡來**：模型頁「設為主簡報」旋鈕（`is_slides_primary`）→ studio 每 60 秒問 `GET /api/models/slides-primary`；沒設才用 `ANILA_STUDIO_SLIDES_MODEL`（compose 已傳遞，預設 `gemma4`）。視覺檢查用同一顆；模型不吃圖就只做幾何檢查並在 `warning` 說明。建議指到 nothink 版本：thinking 版的修正那一通會超過 300 秒上限。
+- **模型從哪裡來**：治理中心「模型角色」。簡報用 `slides`，視覺檢查用 `vision`。studio 每 60 秒問 `GET /api/models/roles/{role}`。沒設就失敗，訊息點名角色（例如「簡報模型尚未在治理中心設定」），不退回環境變數。建議簡報指到 nothink 版本：thinking 版的修正那一通會超過 300 秒上限。
 - **兩段式產生**（`ANILA_STUDIO_TWO_PASS`，預設開）：先出大綱（每張的證據型態＋檢索問句）→ 每張各查一次 → 照大綱寫。大綱壞掉就退回單段式。
 - **版型**：standard / section_break / stat_callout / quote / two_column / icon_rows / image_focus / **process**（流程步驟）/ **table**（原生表格）/ **sources**（結尾資料來源，管線自己寫）。每張內容頁底部有「資料來源：檔名」腳註，來自模型寫的 `[N]`。
 - **品質檢查**：幾何檢查（渲染器 `/qa-geometric`，會拿到每頁版型，封面／章節頁不判留白）＋視覺檢查（每頁一通 VLM）。修正失敗不會丟掉已渲染的簡報，只加 warning。
@@ -87,7 +87,7 @@ services/anila-studio/
 - **Slide 管線**：`studio_config` / `studio_retrieval` / `studio_llm` / `studio_render` / `studio_vision_qa` / `studio_layout` / `studio_job_service` / `studio_text_normalizer`（簡轉繁 s2twp + 清理）/ `llm_json`（lenient JSON 解析）。
 - **FLUX 生圖**：`flux_image_provider` / `flux_prompt_rewriter` / `flux_quality_gate`（VLM ranking + FFT striping）/ `flux_style` / `diagram_renderer`（Graphviz dot→PNG）/ `geometric_qa`。
 - **其他 artifact**：`report_job_service` / `report_renderer` / `report_runner`、`mindmap_job_service` / `mindmap_renderer`、`infographic_job_service` / `infographic_renderer`、`datatable_job_service` / `datatable_exporter`。
-- **跨切面 job 協調（新）**：`job_lifecycle`（`JobReportContext` + `*JobUpdater` 協調）/ `job_store`（Redis `PersistedJob`）/ `job_reporting`（CSP artifact 回報）/ `studio_trace`（span emitter）。
+- **跨切面 job 協調**：`job_lifecycle`（`JobReportContext` + `*JobUpdater` 協調）/ `job_store`（Redis `PersistedJob`）/ `job_reporting`（CSP artifact 回報）。不再上傳 span。
 - **Auth / infra**：`jwks_client`（拉 csp JWKS + cache）/ `revocation_cache`（Redis pub/sub + cold-start，fail-closed）。
 
 ---
@@ -136,7 +136,7 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `GET /api/ingestion/images/{id}/blob` | 原始 image bytes |
 | `POST /v1/chat/completions` | LLM（走 csp proxy 維持計費；**無 `/api/proxy` 前綴**） |
 | `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact 回報（Slice 8b，fire-and-forget） |
-| `POST /v1/traces/{trace_id}/spans` | Full Trace span ingest（producer `studio`，fire-and-forget） |
+
 
 另直連下游 `pptx-renderer`（`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`）與 FLUX 後端。CSP 回報 / trace 的認證沿用使用者 bearer JWT（CSP 以 RS256 + JWKS 重驗，維持代理語意）；若設有 legacy `CSP_SERVICE_TOKEN` 則另帶 `X-CSP-Service-Token`。
 

@@ -220,7 +220,7 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | 連線池（亦上限並行度） |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption 總開關 |
 | `VISION_URL` | `""`（compose `http://csp:8000/v1`） | VLM endpoint；空字串停用 caption |
-| `VISION_MODEL` / `VISION_API_KEY` | `gemma4` / `not-set` | VLM 模型 / token |
+| `VISION_API_KEY` | `not-set` | 呼叫 CSP 的 token。圖說與 PDF OCR 用哪顆模型由治理中心的視覺角色決定 |
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | 並行 / 逾時 / 超過跳過 caption |
 | `ENABLE_RELATION_LLM` | `true` | LLM 關係抽取總開關 |
 | `RELATION_LLM_URL` | `""` | 空字串停用 LLM 邊 |

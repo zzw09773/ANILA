@@ -98,9 +98,16 @@ export function InterruptCard({
   initialAnswer = null,
 }) {
   if (answer) {
+    const question = kind === "ask_user" ? String(payload?.question || "").trim() : "";
+    const summary = interruptSummaryText(kind, payload, answer);
     return (
-      <div style={cardWrapperStyle} data-testid="interrupt-summary">
-        {interruptSummaryText(kind, payload, answer)}
+      <div style={cardWrapperStyle} data-testid="answered-interrupt">
+        {question ? (
+          <div data-testid="interrupt-question" style={{ fontSize: 13, color: "var(--fg)", marginBottom: 6 }}>
+            {question}
+          </div>
+        ) : null}
+        <div data-testid="interrupt-summary">{summary}</div>
       </div>
     );
   }

@@ -115,7 +115,7 @@ services:
       # 不小心打到 prod CSP，或反過來。
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":["image-generator"]},
-         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","${VISION_MODEL:-gemma26-nothink}"]}]
+         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -224,7 +224,6 @@ services:
       ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
-      VISION_MODEL: "${VISION_MODEL:-gemma26-nothink}"
       VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
@@ -278,7 +277,7 @@ services:
       CSP_BASE_URL: http://csp:8000
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary.token
-      MODEL: ${LLM_MODEL:-gemma4}
+      # 主路由模型由治理中心的 router_primary 決定，不在這裡寫模型名。
     volumes:
       - anila-service-credentials-dev:/run/anila/service-clients:ro
     depends_on:
@@ -421,7 +420,6 @@ services:
       context: ../../apps/anilalm
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
-        VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
     expose:
       - "80"
     depends_on:

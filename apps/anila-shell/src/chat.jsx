@@ -101,7 +101,9 @@ import {
   formatThinkingComplete,
   formatThinkingElapsed,
   thinkingSummaryHeadline,
+  visibleReasoningText,
 } from "./runtime/thinkingSummary.js";
+import { visibleAskParts } from "./runtime/askTranscript.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -288,7 +290,8 @@ export const ReasoningSummary = ({
   const [rawOpen, setRawOpen] = useState(false);
   const hideThinking = isThinkingDisplayOff(thinkingApplied);
   const hasTrace = Array.isArray(trace) && trace.length > 0;
-  const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
+  const reasoningText = visibleReasoningText(reasoning);
+  const hasReasoning = reasoningText.length > 0;
   const tokenLabel = reasoningFoldLabel(usage, reasoning);
   const appliedLabel = hideThinking ? null : thinkingAppliedFoldSuffix(thinkingApplied);
   const hasUsageReasoning = typeof usage?.reasoning_tokens === "number" && usage.reasoning_tokens > 0;
@@ -437,22 +440,22 @@ export const ReasoningSummary = ({
                 >
                   {THINKING_SUMMARY_RAW_LABEL}
                 </button>
-                {rawOpen && (
-                  <div
-                    className="anila-reasoning__body"
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 11.5,
-                      lineHeight: 1.6,
-                      color: "var(--fg-subtle)",
-                      maxHeight: 320,
-                      overflowY: "auto",
-                    }}
-                  >
-                    {reasoning}
-                  </div>
-                )}
+                <div
+                  data-testid="raw-reasoning"
+                  hidden={!rawOpen}
+                  className="anila-reasoning__body"
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11.5,
+                    lineHeight: 1.6,
+                    color: "var(--fg-subtle)",
+                    maxHeight: 320,
+                    overflowY: "auto",
+                  }}
+                >
+                  {reasoningText}
+                </div>
               </>
             )}
           </div>
@@ -523,7 +526,7 @@ export const ReasoningSummary = ({
                 overflowY: "auto",
               }}
             >
-              {reasoning}
+              {reasoningText}
             </div>
           )}
         </div>
@@ -1219,7 +1222,7 @@ export const MessageBubble = ({
         // Combine reasoning from two channels so gpt-oss-20b (native field) and
         // models that inline <think>...</think> both fold correctly.
         const hideThinking = isThinkingDisplayOff(msg.thinkingApplied);
-        const { thinking: inlineThinking, body: cleanBody } = extractThinkTags(msg.text);
+        const { thinking: inlineThinking } = extractThinkTags(msg.text);
         const combinedReasoning = hideThinking
           ? ""
           : [msg.reasoning, inlineThinking]
@@ -1232,13 +1235,19 @@ export const MessageBubble = ({
         const resumeLayout = msg.prefaceText != null
           || settled.length > 0
           || interrupt?.status === "answered";
-        const prefaceSource = msg.prefaceText != null ? msg.prefaceText : msg.text;
+        const visibleParts = visibleAskParts({
+          ...msg,
+          interrupt,
+          settledInterrupts: settled,
+        });
+        const prefaceSource = visibleParts.preface != null ? visibleParts.preface : visibleParts.body;
         const prefaceExtract = extractThinkTags(prefaceSource || "");
         const displayPreface = prefaceExtract.thinking ? prefaceExtract.body : (prefaceSource || "");
+        const bodyExtract = extractThinkTags(visibleParts.body || "");
         const displayBody = resumeLayout
           ? displayPreface
-          : (inlineThinking ? cleanBody : msg.text);
-        const continuation = typeof msg.resumeText === "string" ? msg.resumeText : "";
+          : (bodyExtract.thinking ? bodyExtract.body : (visibleParts.body || ""));
+        const continuation = visibleParts.continuation;
         const rescueStatus = msg.streaming && msg.rescueNotice ? (
           <div
             role="status"

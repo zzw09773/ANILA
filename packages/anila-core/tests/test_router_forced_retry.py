@@ -796,7 +796,9 @@ def test_a_route_miss_non_stream_fallback_does_not_wear_the_routing_calls_kb_met
     assert seen.of("dispatch") == []
     payload = json.loads(body)
     content = payload["choices"][0]["message"]["content"]
-    assert "尚未於 CSP 註冊" in content
+    assert "目前沒有名為「這個助手」的助手" in content
+    assert "ghost-agent" not in content
+    assert "CSP" not in content
     _assert_route_miss_wears_no_badge(payload["anila_meta"])
 
 
@@ -818,7 +820,10 @@ def test_a_route_miss_streaming_fallback_does_not_wear_the_routing_calls_kb_meta
     )
 
     assert seen.of("dispatch") == []
-    assert "尚未於 CSP 註冊" in _stream_text(body)
+    visible = _stream_text(body)
+    assert "目前沒有名為「這個助手」的助手" in visible
+    assert "ghost-agent" not in visible
+    assert "CSP" not in visible
     events = _meta_events(body)
     assert events, "the Router emitted no anila.meta frame at all"
     final = events[-1]

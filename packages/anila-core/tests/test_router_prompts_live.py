@@ -71,9 +71,19 @@ async def test_refresh_adopts_csp_values():
     assert prompts[rp.KEY_PLAIN] == "custom plain"
     assert prompts[rp.KEY_FORCED] == "custom forced"
     assert rs.router_prompts_source() == "csp"
-    # and the prompt builders read the live values, not module constants
-    assert rs._build_system_prompt([]) == rp.with_intranet_html_hint("custom plain")
-    assert rs._forced_answer_prompt() == "custom forced"
+    # and the prompt builders read the live values, not module constants.
+    # 今天的日期是組裝時附上的，不在治理中心存的那三段裡。
+    plain = rs._build_system_prompt([])
+    forced = rs._forced_answer_prompt()
+    assert plain.startswith("custom plain")
+    assert rp.HTML_PREVIEW_HINT_EN in plain
+    assert rp.DISCLOSURE_RULE_EN in plain
+    assert forced.startswith("custom forced")
+    assert rp.DISCLOSURE_RULE_EN in forced
+    assert "Today is " in plain
+    assert "Today is " in forced
+    assert "Today is" not in prompts[rp.KEY_PLAIN]
+    assert "Today is" not in prompts[rp.KEY_FORCED]
 
 
 @pytest.mark.asyncio

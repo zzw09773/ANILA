@@ -159,10 +159,6 @@ class WorkerSettings(BaseSettings):
             "deployments without a configured VLM."
         ),
     )
-    vision_model: str = Field(
-        default="gemma26-nothink",
-        description="VLM identifier passed in the chat-completions body.",
-    )
     vision_api_key: str = Field(
         default="not-set",
         description=(

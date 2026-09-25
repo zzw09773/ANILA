@@ -581,6 +581,9 @@ export function createFakeBackend(options = {}) {
 
     // ---- 資料面 ----
     if (path === "/v1/agents") return jsonResponse({ data: agents });
+    if (path === "/api/models/roles/summary" && method === "GET") {
+      return jsonResponse({ name: "summary-llm", model_type: "llm" });
+    }
     if (path === "/api/router-models" && method === "GET") {
       return jsonResponse({
         models: routerModels,

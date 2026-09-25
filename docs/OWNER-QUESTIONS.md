@@ -31,7 +31,7 @@
 **① 圖片描述——`services/ingestion-worker/.../settings.py:124-190`**
 - `enable_image_captions` **預設 `True`**;compose `ENABLE_IMAGE_CAPTIONS: ${…:-true}`
   (`infra/compose/platform.yml:344`、`dev.yml:213`)。
-- `vision_model` **預設就是 `gemma4`**;`VISION_MODEL: ${VISION_MODEL:-gemma4}`(`platform.yml:346`)。
+- ~~`vision_model` 預設 `gemma4`、`VISION_MODEL`~~ **2026-09-25 改掉**：圖說與 PDF OCR 問治理中心「視覺模型」角色。沒設就略過圖說／OCR，不猜模型名。
 - `vision_url` **預設指向 CSP 自己的 `/v1`**(`http://csp:8000/v1`,`platform.yml:345`)
   ——**所以用量跟 embedding 一樣被計量,走同一條內部 API key**。
 - 機制:PDF 解析器留下 `[[IMAGE:<id>]]` 佔位,worker **在切塊之前**逐張呼叫 VLM,
@@ -220,9 +220,8 @@
   📌 **本機母集合實查**:`agents` 表唯一一顆 approved 是 `iso42001-probe`,
   **`requires_encryption=t` 會讓 `_agent_policy_level` floor 到 RESTRICTED(密)**。
   ✅ **但實際觸發條件是部署參數,目前不成立**(幕僚長 2026-08-22 實測):
-  ANILALM 的 model **烘在建置期**——`infra/compose/{dev,platform}.yml` 的
-  `VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}`,`.env` 無覆寫;
-  UI **沒有模型選單**,唯一呼叫點是 `WSChat.tsx:339 model: DEFAULT_MODEL`。
+  ANILALM 的預設 model **2026-09-25 改為執行期問治理中心 `knowledge_chat` 角色**
+  （不再烘 `VITE_DEFAULT_CHAT_MODEL`）。UI 仍沒有模型選單；角色沒設時畫面直接講尚未設定。
   🔴 **所以正確狀態是:不是「不會發生」,也不是「正在發生」,是「一個部署參數之遙」**
   ——把 `ANILALM_DEFAULT_CHAT_MODEL` 設成某顆 agent 的名字,它就會發生,**而那是外面動得到的開關**。
 - **🔴 ③ 使用者把自己的知識庫升密:擋不住。** `raise_collection_classification` 的唯一權限閘是

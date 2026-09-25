@@ -43,6 +43,7 @@ import {
   type RetrievalStatus,
 } from './retrieval'
 import { explainError } from '../api/client'
+import { resolveKnowledgeChatModel } from '../api/modelRole'
 import type { Message } from '../types'
 import { appendTranscript, useAsrInput } from '../asr/useAsrInput'
 
@@ -55,10 +56,6 @@ const FOLLOWUP_SUGGESTIONS = [
 // 檢索呼叫、三種結果的分類（命中／零命中／失敗）與 system prompt 文案
 // 都在 ./retrieval；共同前導（身分／語言／國家用語／紀年／要職／資料
 // 紀律）由 SSOT src/generated/preamble.ts 供應，勿在此複製文字。
-
-// 聊天模型一律來自部署設定；沒有可猜的預設值——內網不存在公雲模型名，
-// 缺設定要在送出時擋下並明講，不要默默打一個 404 的模型（設計文件 §4-3）。
-const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? ''
 
 interface WSChatProps {
   flex: number
@@ -104,6 +101,7 @@ export function WSChat({ flex }: WSChatProps) {
   const [composer, setComposer] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [chatModel, setChatModel] = useState('')
   const [shareOpen, setShareOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -115,6 +113,20 @@ export function WSChat({ flex }: WSChatProps) {
     appendText: (text) => setComposer((draft) => appendTranscript(draft, text)),
     busy,
   })
+
+  useEffect(() => {
+    let cancelled = false
+    void resolveKnowledgeChatModel()
+      .then((name) => {
+        if (!cancelled) setChatModel(name)
+      })
+      .catch(() => {
+        if (!cancelled) setChatModel('')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Reload messages whenever the active conversation changes.
   useEffect(() => {
@@ -228,8 +240,12 @@ export function WSChat({ flex }: WSChatProps) {
       return
     }
 
-    if (!DEFAULT_MODEL) {
-      setErr('聊天模型未設定（VITE_DEFAULT_CHAT_MODEL）——請通知管理者在部署設定指定模型名稱。')
+    let modelName = chatModel
+    try {
+      modelName = await resolveKnowledgeChatModel()
+      setChatModel(modelName)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '知識庫對話模型尚未在治理中心設定')
       return
     }
 
@@ -337,7 +353,7 @@ export function WSChat({ flex }: WSChatProps) {
         ]
         return chatStream(
           {
-            model: DEFAULT_MODEL,
+            model: modelName,
             messages: llmMessages,
             temperature: 0.4,
             conversationId: convId!,
@@ -448,7 +464,7 @@ export function WSChat({ flex }: WSChatProps) {
         role: 'assistant',
         content: finalText,
         latency_ms: latency,
-        model_name: DEFAULT_MODEL,
+        model_name: modelName,
         metadata:
           Object.keys(persistedMeta).length > 0 ? persistedMeta : undefined,
       })
@@ -772,7 +788,7 @@ export function WSChat({ flex }: WSChatProps) {
               }}
             >
               <div style={{ fontSize: 11, color: t.textSubtle }}>
-                模型 · {DEFAULT_MODEL || '未設定'}
+                模型 · {chatModel || '未設定'}
                 {asr.state === 'recording' && ' · 辨識中…'}
                 {asr.state === 'listening' && ' · 聆聽中…'}
               </div>

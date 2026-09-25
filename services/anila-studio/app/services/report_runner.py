@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 
 # Default model. The csp proxy resolves the model name against its
-# registry. Same default as slides: env ANILA_STUDIO_SLIDES_MODEL, then
+# registry. Same source as slides: the slides role, then
 # the Models page 主簡報 knob via resolve_model_name.
 from app.services.studio_config import SLIDES_LLM_MODEL
 from app.services.studio_model_primary import resolve_model_name

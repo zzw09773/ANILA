@@ -27,6 +27,7 @@ order so ``COALESCE(existing, EXCLUDED)`` cannot pass as "keeps".
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import sys
@@ -178,26 +179,77 @@ def test_clean_caption_keeps_bullets_when_thats_all_there_is():
 # ── _get_vision_provider ──────────────────────────────────────────────────────
 
 
-def test_resolve_caption_intent_null_follows_platform(reset_vision_cache):
+@pytest.mark.asyncio
+async def test_resolve_caption_intent_null_follows_vision_role(reset_vision_cache, monkeypatch):
     settings.enable_image_captions = False
-    settings.vision_model = "gemma4"
-    want, model = handlers._resolve_caption_intent(None, None)
+
+    async def _no_role(**_kwargs):
+        raise AssertionError("關閉圖說時不該去問角色")
+
+    monkeypatch.setattr(
+        "ingestion_worker.vision_role.resolve_vision_model", _no_role
+    )
+    want, model = await handlers._resolve_caption_intent(None, None)
     assert want is False
-    assert model == "gemma4"
+    assert model is None
+
     settings.enable_image_captions = True
-    want, model = handlers._resolve_caption_intent(None, None)
+
+    async def _role(**_kwargs):
+        return "see-llm", ""
+
+    monkeypatch.setattr(
+        "ingestion_worker.vision_role.resolve_vision_model", _role
+    )
+    want, model = await handlers._resolve_caption_intent(None, None)
     assert want is True
+    assert model == "see-llm"
 
 
-def test_resolve_caption_intent_collection_overrides_platform(reset_vision_cache):
+@pytest.mark.asyncio
+async def test_unset_vision_role_skips_caption_without_a_guess(
+    reset_vision_cache, monkeypatch, caplog
+):
     settings.enable_image_captions = True
-    settings.vision_model = "gemma4"
-    want, model = handlers._resolve_caption_intent(False, "other-vlm")
+
+    async def _unset(**_kwargs):
+        return None, "視覺模型尚未在治理中心設定"
+
+    monkeypatch.setattr(
+        "ingestion_worker.vision_role.resolve_vision_model", _unset
+    )
+    with caplog.at_level(logging.WARNING):
+        want, model = await handlers._resolve_caption_intent(None, None)
+    assert want is True
+    assert model is None
+    assert "視覺模型尚未在治理中心設定" in caplog.text
+    assert "gemma" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_resolve_caption_intent_collection_overrides_platform(reset_vision_cache, monkeypatch):
+    settings.enable_image_captions = True
+
+    async def _no_role(**_kwargs):
+        raise AssertionError("集合已指定模型時不該去問角色")
+
+    monkeypatch.setattr(
+        "ingestion_worker.vision_role.resolve_vision_model", _no_role
+    )
+    want, model = await handlers._resolve_caption_intent(False, "other-vlm")
     assert want is False
     assert model == "other-vlm"
     settings.enable_image_captions = False
-    want, _model = handlers._resolve_caption_intent(True, None)
+
+    async def _role(**_kwargs):
+        return "see-llm", ""
+
+    monkeypatch.setattr(
+        "ingestion_worker.vision_role.resolve_vision_model", _role
+    )
+    want, model = await handlers._resolve_caption_intent(True, None)
     assert want is True
+    assert model == "see-llm"
 
 
 def test_get_vision_provider_none_when_url_empty(reset_vision_cache):

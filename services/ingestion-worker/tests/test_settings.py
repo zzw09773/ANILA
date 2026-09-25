@@ -39,7 +39,6 @@ _ENV_VARS = [
     "PG_POOL_MAX",
     "ENABLE_IMAGE_CAPTIONS",
     "VISION_URL",
-    "VISION_MODEL",
     "VISION_API_KEY",
     "VISION_CONCURRENCY",
     "VISION_TIMEOUT_SECONDS",
@@ -127,8 +126,11 @@ def test_vision_url_default_empty(clean_env):
     assert _fresh().vision_url == ""
 
 
-def test_vision_model_default(clean_env):
-    assert _fresh().vision_model == "gemma26-nothink"
+def test_vision_model_is_not_a_setting(clean_env):
+    """圖說模型由治理中心的視覺角色決定，不再是環境變數。"""
+    assert "vision_model" not in _fresh().model_dump()
+    clean_env.setenv("VISION_MODEL", "gemma26-nothink")
+    assert "vision_model" not in _fresh().model_dump()
 
 
 def test_vision_api_key_default(clean_env):
@@ -168,7 +170,6 @@ def test_all_defaults_at_once(clean_env):
         "pg_pool_max": 5,
         "enable_image_captions": True,
         "vision_url": "",
-        "vision_model": "gemma26-nothink",
         "vision_api_key": "not-set",
         "vision_concurrency": 4,
         "vision_timeout_seconds": 60.0,

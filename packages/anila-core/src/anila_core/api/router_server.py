@@ -20,6 +20,8 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Optional
 
@@ -86,70 +88,6 @@ logger = logging.getLogger(__name__)
 PinOwnerFn = Optional[Callable[[str], Awaitable[None]]]
 
 
-# ---------------------------------------------------------------------------
-# Full Trace Protocol (doc-05 §6 / doc-09 §10) — producer wiring.
-#
-# Tracing is *opt-in* and *additive*: with ``ANILA_TRACE_ENDPOINT`` unset the
-# factory returns ``None`` and every traced code path becomes a no-op, so the
-# router behaves byte-identically to before. When set, spans are shipped to
-# the CSP callback endpoint via a shared background ``TraceExporter`` AND
-# mirrored into the ``anila.spans`` SSE event.
-#
-# ``ANILA_TRACE_ENDPOINT`` value:
-#   * a bare flag (``1``/``true``/``on``/``yes``/``default``) → use the CSP
-#     base the router already knows (``settings.csp_base_url``);
-#   * any other value → treated as an explicit trace base URL.
-# Auth reuses the router's CSP service-token mechanics (``X-CSP-Service-Token``);
-# the token is read lazily from ``ANILA_TRACE_TOKEN`` or
-# ``settings.csp_service_token``.
-# ---------------------------------------------------------------------------
-_TRACE_EXPORTER: Any = None
-_TRACE_EXPORTER_LOCK = threading.Lock()
-
-
-def _trace_endpoint_base() -> str | None:
-    raw = (os.environ.get("ANILA_TRACE_ENDPOINT") or "").strip()
-    if not raw:
-        return None
-    if raw.lower() in {"1", "true", "on", "yes", "default"}:
-        return settings.csp_base_url
-    return raw
-
-
-def _get_trace_exporter() -> Any:
-    """Return the process-wide ``TraceExporter``, or ``None`` when disabled."""
-    global _TRACE_EXPORTER
-    base = _trace_endpoint_base()
-    if base is None:
-        return None
-    if _TRACE_EXPORTER is None:
-        with _TRACE_EXPORTER_LOCK:
-            if _TRACE_EXPORTER is None:
-                from ..tracing.sdk import TraceExporter
-
-                _TRACE_EXPORTER = TraceExporter(
-                    base,
-                    token_provider=lambda: (
-                        os.environ.get("ANILA_TRACE_TOKEN")
-                        or settings.csp_service_token
-                    ),
-                    producer="anila-router",
-                )
-    return _TRACE_EXPORTER
-
-
-def _make_trace_session(trace_id: str | None) -> Any:
-    """Build a per-request ``TraceSession`` for ``trace_id`` (``None`` = off)."""
-    if not trace_id:
-        return None
-    exporter = _get_trace_exporter()
-    if exporter is None:
-        return None
-    from ..tracing.sdk import TraceSession
-
-    return TraceSession(exporter, trace_id, producer="anila-router")
-
-
 # The three system prompts are platform settings now (owner ruling 2026-08-22).
 # Shipped text lives in ``router_prompts``; ``refresh_router_prompts`` pulls the
 # governance-center values from csp on a TTL and ``current_router_prompts``
@@ -190,7 +128,11 @@ def router_prompts_source() -> str:
 
 
 def _forced_answer_prompt() -> str:
-    return current_router_prompts()[router_prompts.KEY_FORCED]
+    text = current_router_prompts()[router_prompts.KEY_FORCED]
+    # 強制作答不補 ASK：這一回合使用者要的就是直接回答。
+    return _finish_system_prompt(
+        text, text, html_hint=False, clarify=False, dispatch=False
+    )
 
 
 # Deployment entrypoint (services/anila-core-router/main.py) installs this
@@ -341,12 +283,104 @@ async def refresh_router_prompts() -> None:
 
 
 def _build_agent_list(agents: list[RemoteAgentManifest]) -> str:
+    """給模型的助手清單：名稱與一行能力說明。
+
+    不放 endpoint、capabilities 或其他維運欄位。說明裡的路徑、位址、
+    設定名稱由組裝時的清理一併拿掉。
+    """
     if not agents:
         return "Available agents: none"
     lines = ["Available agents:"]
     for m in agents:
         lines.append(f"  - {m.to_tool_description()}")
     return "\n".join(lines)
+
+
+_TAIPEI = ZoneInfo("Asia/Taipei")
+_WEEKDAY_ZH = "一二三四五六日"
+_WEEKDAY_EN = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+)
+_MONTH_EN = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _taipei_now() -> datetime:
+    """這一筆請求的台北現在。不在 import 時算死。"""
+    return datetime.now(_TAIPEI)
+
+
+def _prompt_is_chinese(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _router_today_line(language_source: str) -> str:
+    """跟可編輯提示的語言走，但字本身不放進那段可編輯文字。"""
+    current = _taipei_now().astimezone(_TAIPEI)
+    roc = current.year - 1911
+    if _prompt_is_chinese(language_source):
+        weekday = "星期" + _WEEKDAY_ZH[current.weekday()]
+        return (
+            f"今天是 {current.year} 年 {current.month} 月 {current.day} 日"
+            f"（民國 {roc} 年，{weekday}），時區 Asia/Taipei。"
+        )
+    weekday = _WEEKDAY_EN[current.weekday()]
+    month = _MONTH_EN[current.month - 1]
+    return (
+        f"Today is {weekday}, {month} {current.day}, {current.year} "
+        f"(ROC year {roc}), timezone Asia/Taipei."
+    )
+
+
+def _disclosure_rule(language_source: str) -> str:
+    if _prompt_is_chinese(language_source):
+        return router_prompts.DISCLOSURE_RULE_ZH
+    return router_prompts.DISCLOSURE_RULE_EN
+
+
+def _stamp_router_today(prompt: str, language_source: str | None = None) -> str:
+    """日期與不得外洩規則附在組好的系統提示後面。治理中心改提示刪不掉。"""
+    text = prompt if isinstance(prompt, str) else str(prompt)
+    source = language_source if language_source is not None else text
+    rule = _disclosure_rule(source)
+    line = _router_today_line(source)
+    body = text.rstrip()
+    if body.endswith(line):
+        body = body[: -len(line)].rstrip()
+    if body.endswith(rule):
+        body = body[: -len(rule)].rstrip()
+    chunks = [part for part in (body, rule, line) if part]
+    return "\n\n".join(chunks)
+
+
+def _finish_system_prompt(
+    editable: str,
+    language: str,
+    *,
+    html_hint: bool,
+    clarify: bool,
+    dispatch: bool,
+) -> str:
+    """清掉內部細節，再附上預覽提示、釐清政策、不得外洩規則與今天。"""
+    cleaned = router_prompts.redact_internal_model_context(editable)
+    # 舊出廠規則本身含 ASK:，不能拿「有沒有 ASK:」判斷政策是否已更新。
+    cleaned, legacy_policy = router_prompts.normalize_legacy_clarify(
+        cleaned, dispatch=dispatch
+    )
+    chinese = _prompt_is_chinese(language)
+    if (
+        clarify
+        and not legacy_policy
+        and "ASK:" not in cleaned
+        and "ASK*:" not in cleaned
+    ):
+        policy = router_prompts.clarify_policy(chinese=chinese, dispatch=dispatch)
+        cleaned = (cleaned.rstrip() + "\n\n" + policy) if cleaned.strip() else policy
+    if html_hint:
+        cleaned = router_prompts.with_html_preview_hint(cleaned, chinese=chinese)
+    return _stamp_router_today(cleaned, language)
 
 
 def _build_system_prompt(agents: list[RemoteAgentManifest]) -> str:
@@ -356,12 +390,19 @@ def _build_system_prompt(agents: list[RemoteAgentManifest]) -> str:
     registered while the platform is running must be routable on the very
     next message (the caller passes ``registry.list_agents(...)`` straight
     from the just-refreshed registry).
+
+    今天的日期與不得外洩規則在這裡附上，不寫進三段可編輯提示。
+    語言跟可編輯提示走，不跟後面附上的預覽提示或 agent 名稱走。
     """
     prompts = current_router_prompts()
     if not agents:
-        return router_prompts.with_intranet_html_hint(prompts[router_prompts.KEY_PLAIN])
-    return router_prompts.with_intranet_html_hint(
-        prompts[router_prompts.KEY_SYSTEM].format(agent_list=_build_agent_list(agents))
+        language = prompts[router_prompts.KEY_PLAIN]
+        editable = language
+    else:
+        language = prompts[router_prompts.KEY_SYSTEM]
+        editable = language.format(agent_list=_build_agent_list(agents))
+    return _finish_system_prompt(
+        editable, language, html_hint=True, clarify=True, dispatch=bool(agents)
     )
 
 
@@ -421,10 +462,8 @@ _DISPATCH_EMPTY_RE = re.compile(
 # ``ASK:`` is one choice. ``ASK*:`` (a star immediately before the colon) is
 # multi-select: the interrupt payload sets ``multi`` true. The question is the
 # text AFTER that colon up to the first ``|``. Only the directive's own line
-# is directive syntax; a line-wrapped question (rule 4's markdown bullets stay
-# ordinary clarify prose) is therefore NOT folded in, and whatever the model
-# put on following lines is plain prose the reader sees. Emit the whole
-# question on one line.
+# is directive syntax. 後面的文字，包括條列，都是普通正文：不會折進問題，
+# 也不會另開一條釐清通道。Shell 只把這一行畫成 ASK 卡片。問題要寫在同一行。
 # That tail after the first ``|`` is the optional option list,
 # one label per ``|`` (no values/descriptions — the wire shape needs them, so
 # value defaults to label and description to "").
@@ -940,7 +979,10 @@ async def _resume_router_ask(
                         )
                         yield _make_event("anila.trace", ask_step)
                         yield _make_event("anila.interrupt_requested", payload)
-                        yield _make_chunk(str(ask["question"]), "anila-router")
+                        # 題目只在 interrupt。這一段若再送成正文，Shell 會把它接進答案。
+                        prose = _strip_ask_syntax(buf)
+                        if prose:
+                            yield _make_chunk(prose, "anila-router")
                         anila_meta = _merge_anila_meta(
                             [ask_step],
                             None,
@@ -957,7 +999,7 @@ async def _resume_router_ask(
                         yield "data: [DONE]\n\n"
                         return
                     visible = _forced_visible_text(
-                        _normalize_clarify_bullets(_strip_ask_syntax(buf)),
+                        _strip_ask_syntax(buf),
                         route_signal,
                     )
                     if visible:
@@ -1011,12 +1053,14 @@ async def _resume_router_ask(
                 if ask is not None and follow is not None:
                     payload = _ask_event_payload(follow)
                     yield _make_event("anila.interrupt_requested", payload)
-                    yield _make_chunk(str(ask["question"]), "anila-router")
+                    prose = _strip_ask_syntax(llm_text)
+                    if prose:
+                        yield _make_chunk(prose, "anila-router")
                     yield _make_chunk("", "anila-router", finish="stop")
                     yield "data: [DONE]\n\n"
                     return
                 visible = _forced_visible_text(
-                    _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
+                    _strip_ask_syntax(llm_text),
                     route_signal,
                 )
                 if visible:
@@ -1505,73 +1549,6 @@ def _compact_client_event(
     }
 
 
-def _normalize_clarify_bullets(text: str) -> str:
-    """Defense in depth against inline-bullet clarify replies.
-
-    Our system prompt tells the LLM to render candidate-agent lists with
-    markdown hyphen bullets on their own lines. Smaller models still
-    sometimes chain items with middle-dot " · " inline ("方向有關： · A：…
-    · B：… 請問…") which the SPA's markdown renderer then displays as one
-    long paragraph. Detect that shape (two or more middle-dot separators
-    inside a non-code-fenced block) and rewrite into proper markdown
-    bullet list lines so the UI renders each candidate on its own line.
-
-    Runs only on Router-direct replies; dispatched agent replies are
-    forwarded verbatim.
-    """
-    if not text or "·" not in text:
-        return text
-    # Skip if the text already uses newline-separated bullet markers — we
-    # don't want to mangle something the model formatted correctly.
-    if re.search(r"^[ \t]*[-*][ \t]", text, flags=re.MULTILINE):
-        return text
-    # Require at least two " · " separators before rewriting to avoid
-    # false positives on legitimate text that uses a single middle dot.
-    if text.count(" · ") < 2:
-        return text
-    # Split on " · "; the first chunk ends with the lead-in (e.g. "…方向有關："
-    # or "…方向有關？"), subsequent chunks become bullets. A final chunk that
-    # starts with "請問" / "您想" / "想選哪" is the follow-up question, not a bullet.
-    parts = [p.strip() for p in text.split(" · ")]
-    if len(parts) < 3:
-        return text
-    lead = parts[0]
-    bullets = list(parts[1:-1])
-    tail = parts[-1]
-
-    # LLMs often join the final candidate bullet and the wrap-up question
-    # with just whitespace (no " · " between them):
-    #   "軍人法規助手：條件或標準 請問你想往哪個方向？"
-    # Detect common question starters and split the tail on the earliest
-    # one so the bullet and the question become separate pieces.
-    QUESTION_STARTERS = ("請問", "想請", "您想", "你想", "想選", "需要哪")
-    earliest = -1
-    for starter in QUESTION_STARTERS:
-        idx = tail.find(starter)
-        if idx > 0 and (earliest < 0 or idx < earliest):
-            earliest = idx
-    if earliest > 0:
-        head = tail[:earliest].strip(" ，。,.")
-        question = tail[earliest:].strip()
-        if head and "：" in head:
-            bullets.append(head)
-            tail = question
-        elif head:
-            tail = question
-    elif "：" in tail and not tail.rstrip().endswith(("?", "？")):
-        # No question starter and tail reads like another bullet.
-        bullets.append(tail)
-        tail = ""
-
-    lines = [lead, ""]
-    for b in bullets:
-        lines.append(f"- {b}")
-    if tail:
-        lines.append("")
-        lines.append(tail)
-    return "\n".join(lines)
-
-
 def _extract_bearer_api_key(request: Request) -> str:
     """Return the caller's bearer credential.
 
@@ -1720,6 +1697,14 @@ async def _resolve_session_owner_hash(caller_api_key: str) -> str:
 # switch require a restart nobody would remember. Falls back to the env var on
 # 404 / 409 / any error, so the worst case is exactly today's behaviour.
 _ROUTER_MODEL_TTL_S = float(os.environ.get("ANILA_ROUTER_MODEL_TTL", "60"))
+_SUMMARY_ROLE_TTL_S = 45.0
+_summary_role_state: dict[str, Any] = {
+    "name": None,
+    "message": "摘要模型尚未在治理中心設定",
+    "status": 409,
+    "at": 0.0,
+}
+_summary_role_lock = threading.Lock()
 _router_model_state: dict[str, Any] = {
     "name": None,
     "source": "env",
@@ -1734,6 +1719,19 @@ def reset_router_model_cache() -> None:
     with _router_model_lock:
         _router_model_state.update(
             {"name": None, "source": "env", "at": 0.0, "context_window": None}
+        )
+
+
+def reset_summary_role_cache() -> None:
+    """Forget the summary-role model. Test-only."""
+    with _summary_role_lock:
+        _summary_role_state.update(
+            {
+                "name": None,
+                "message": "摘要模型尚未在治理中心設定",
+                "status": 409,
+                "at": 0.0,
+            }
         )
 
 
@@ -1844,6 +1842,64 @@ def reported_router_model() -> tuple[str | None, str]:
     if not name:
         return None, "unresolved"
     return name, router_model_source()
+
+
+async def resolve_summary_model_name() -> str:
+    """摘要角色的模型名稱。沒設或已停用就丟 HTTPException，不改用主路由模型。"""
+    now = time.monotonic()
+    with _summary_role_lock:
+        fresh = _summary_role_state["at"] and now - _summary_role_state["at"] < _SUMMARY_ROLE_TTL_S
+        if fresh and _summary_role_state["name"]:
+            return _summary_role_state["name"]
+        if fresh and not _summary_role_state["name"]:
+            raise HTTPException(
+                status_code=int(_summary_role_state["status"] or 409),
+                detail=_summary_role_state["message"],
+            )
+    token = _current_service_token()
+    name: str | None = None
+    message = "無法向治理中心確認摘要模型"
+    status = 503
+    if token:
+        try:
+            response = await _csp_service_get(
+                f"{settings.csp_base_url.rstrip('/')}/api/models/roles/summary",
+                token,
+            )
+            if response.status_code == 200:
+                name = (response.json() or {}).get("name") or None
+                if name:
+                    message = ""
+                    status = 200
+            elif response.status_code in (404, 409):
+                status = response.status_code
+                try:
+                    detail = (response.json() or {}).get("detail")
+                except Exception:
+                    detail = None
+                if isinstance(detail, str) and detail.strip():
+                    message = detail.strip()
+                else:
+                    message = "摘要模型尚未在治理中心設定"
+            else:
+                logger.warning("summary role lookup failed: HTTP %s", response.status_code)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("summary role lookup errored (%s)", type(exc).__name__)
+    with _summary_role_lock:
+        if name:
+            _summary_role_state.update(
+                {"name": name, "message": "", "status": 200, "at": now}
+            )
+            return name
+        if _summary_role_state["name"] and status == 503:
+            return _summary_role_state["name"]
+        public_status = status if status in (404, 409) else 409
+        _summary_role_state.update(
+            {"name": None, "message": message, "status": public_status, "at": now}
+        )
+    raise HTTPException(status_code=public_status, detail=message)
 
 
 async def refresh_router_model() -> None:
@@ -2056,15 +2112,8 @@ def create_router_app(
         # rides along to every downstream call it must stay off.
         router_llm_headers = {**anila_headers, _ROUTE_HEADER: route_signal}
 
-        # Full Trace Protocol: pick up the inbound correlation id (CSP forwards
-        # ``X-ANILA-Trace-Id``; OpenAI-style callers may put it in
-        # ``metadata.trace_id``). ``trace_session`` is ``None`` when tracing is
-        # unconfigured (``ANILA_TRACE_ENDPOINT`` unset) → the router is a no-op.
-        _inbound_trace_id = (
-            request.headers.get("X-ANILA-Trace-Id")
-            or (body.get("metadata") or {}).get("trace_id")
-        )
-        trace_session = _make_trace_session(_inbound_trace_id)
+        # 關聯 id 仍隨 X-ANILA-* 轉給 CSP（用量、任務）。不再為它開 span session。
+        trace_session = None
 
         # Sprint 10 PR 3: Router-side Session. Accept either standard
         # ``session_id`` (so OpenAI clients can pass it as an extension
@@ -2158,7 +2207,7 @@ def create_router_app(
         # "### 使用者偏好" onto ``messages[0]`` when that message is system
         # (services/csp/app/api/proxy.py:259, :359); after the merge, index 0
         # remains our (merged) system message, so personalization still lands
-        # on the prompt whose rule 4/6 documents it.
+        # on the prompt whose 個人化 rule documents it.
         routing_messages = _merge_routing_messages(system_prompt, messages)
 
         started_at = time.time()
@@ -2345,6 +2394,7 @@ def create_router_app(
                     stream,
                     session_id=session_id,
                     compact_event=compact_event,
+                    prose=_strip_ask_syntax(llm_text),
                 )
 
             base_trace.append(
@@ -2361,7 +2411,7 @@ def create_router_app(
             _stamp_rescue_meta(anila_meta, llm_response)
             return _respond(
                 _forced_visible_text(
-                    _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
+                    _strip_ask_syntax(llm_text),
                     route_signal,
                 ),
                 anila_meta,
@@ -2389,8 +2439,8 @@ def create_router_app(
             base_trace.append(
                 _make_trace_step(
                     "route-miss",
-                    "找不到 agent",
-                    f"agent '{agent_id}' 未註冊於 CSP",
+                    "找不到助手",
+                    f"沒有名為「{_public_agent_label(agent_id)}」的助手",
                     status="error",
                 )
             )
@@ -2418,11 +2468,7 @@ def create_router_app(
             # analysis into the bubble (see UI double-display bug where the
             # fold already carried the same text). Show a deterministic
             # fallback instead.
-            fallback = (
-                f"（Router 分析後擬分派給 agent「{agent_id}」，"
-                "但該 agent 尚未於 CSP 註冊。請聯絡管理員在 CSP 後台加入此 agent，"
-                "或改問其他已註冊 agent 能處理的問題。）"
-            )
+            fallback = _unregistered_agent_notice(agent_id)
             return _respond(
                 fallback,
                 anila_meta,
@@ -2501,12 +2547,12 @@ def create_router_app(
                         yield _make_event(ev_name, ev_payload)
                     elif kind == "error":
                         had_error = True
-                        friendly_error = f"agent「{agent_id}」暫時無法使用，請稍後再試。"
+                        friendly_error = _agent_outage_message(agent_id)
                         yield _make_event(
                             "anila.trace",
                             _make_trace_step(
                                 "error",
-                                f"{agent_id} 發生錯誤",
+                                f"{_user_agent_noun(agent_id)}發生錯誤",
                                 friendly_error,
                                 status="error",
                             ),
@@ -2692,6 +2738,7 @@ def create_router_app(
                         stream=False,
                         session_id=session_id,
                         compact_event=compact_event,
+                        prose=_strip_ask_syntax(final_text),
                     )
 
                 return _respond(
@@ -2831,16 +2878,16 @@ def create_router_app(
         *,
         session_id: str = "",
         compact_event: dict[str, Any] | None = None,
+        prose: str = "",
     ) -> StreamingResponse | JSONResponse:
         """Router-side ASK response — same envelope as ``_respond``, no protocol leak.
 
-        The user-visible text is the question, never the raw ``ASK:`` line. The
-        interrupt rides in the same place the UI already reads agent pauses:
-        an ``anila.interrupt_requested`` event before meta/done when streaming,
-        and ``anila_meta.interrupt`` on the JSON completion otherwise.
+        The question lives only on the interrupt. ``prose`` is whatever followed
+        the ASK line; it is not the question, and it is the only content chunk.
         """
+        del ask
         anila_meta = _attach_compact_event(anila_meta, compact_event)
-        question = str(ask.get("question") or "")
+        shown = prose.strip() if isinstance(prose, str) else ""
         interrupt_payload = _ask_event_payload(record)
         if stream:
             async def _event_stream() -> AsyncIterator[str]:
@@ -2849,7 +2896,8 @@ def create_router_app(
                 if compact_event:
                     yield _make_event("anila.compact", compact_event)
                 yield _make_event("anila.interrupt_requested", interrupt_payload)
-                yield _make_chunk(question, "anila-router")
+                if shown:
+                    yield _make_chunk(shown, "anila-router")
                 meta_for_event = {
                     **anila_meta,
                     "trace": [],
@@ -2873,7 +2921,7 @@ def create_router_app(
         )
         return JSONResponse(
             _make_full_response(
-                question,
+                shown,
                 "anila-router",
                 anila_meta={**anila_meta, "interrupt": interrupt_payload},
             ),
@@ -3306,7 +3354,7 @@ async def _summarize_for_compact(
     if not transcript.strip():
         return None
     payload = {
-        "model": current_router_model(),
+        "model": await resolve_summary_model_name(),
         "messages": [
             {"role": "system", "content": _COMPACT_SUMMARY_PROMPT},
             {"role": "user", "content": transcript},
@@ -3575,8 +3623,10 @@ async def _router_streaming_multi_turn(
             yield _make_event("anila.trace", ask_step)
             interrupt_payload = _ask_event_payload(record)
             yield _make_event("anila.interrupt_requested", interrupt_payload)
-            async for chunk in _emit_soft_chunks(ask["question"]):
-                yield chunk
+            prose = _strip_ask_syntax(llm_text)
+            if prose:
+                async for chunk in _emit_soft_chunks(prose):
+                    yield chunk
             anila_meta = _merge_anila_meta(
                 base_trace + [ask_step], llm_response.get("anila_meta"),
                 latency_ms=int((time.time() - started_at) * 1000),
@@ -3603,7 +3653,7 @@ async def _router_streaming_multi_turn(
             yield _make_event("anila.trace", _rescue_trace_step())
         yield _make_event("anila.trace", direct_step)
         cleaned = _forced_visible_text(
-            _normalize_clarify_bullets(_strip_ask_syntax(llm_text)), route_signal
+            _strip_ask_syntax(llm_text), route_signal
         )
         async for chunk in _emit_soft_chunks(cleaned):
             yield chunk
@@ -3636,13 +3686,12 @@ async def _router_streaming_multi_turn(
     manifest = registry.get(caller_api_key, agent_id)
     if manifest is None:
         miss_step = _make_trace_step(
-            "route-miss", "找不到 agent",
-            f"agent '{agent_id}' 未註冊", status="error",
+            "route-miss", "找不到助手",
+            f"沒有名為「{_public_agent_label(agent_id)}」的助手",
+            status="error",
         )
         yield _make_event("anila.trace", miss_step)
-        fallback = (
-            f"（Router 分派 '{agent_id}' 但該 agent 未註冊。）"
-        )
+        fallback = _unregistered_agent_notice(agent_id)
         async for chunk in _emit_soft_chunks(fallback):
             yield chunk
         anila_meta = _merge_anila_meta(
@@ -3806,8 +3855,10 @@ async def _router_streaming_multi_turn(
             yield _make_event("anila.trace", ask_step)
             interrupt_payload = _ask_event_payload(record)
             yield _make_event("anila.interrupt_requested", interrupt_payload)
-            async for chunk in _emit_soft_chunks(ask["question"]):
-                yield chunk
+            prose = _strip_ask_syntax(final_content)
+            if prose:
+                async for chunk in _emit_soft_chunks(prose):
+                    yield chunk
             anila_meta = _merge_anila_meta(
                 base_trace + [ask_step],
                 None,
@@ -4057,8 +4108,8 @@ async def _multi_turn_dispatch(
             base_trace.append(
                 _make_trace_step(
                     "route-miss",
-                    f"第 {iteration} 輪找不到 agent",
-                    f"agent '{next_agent_id}' 未註冊",
+                    f"第 {iteration} 輪找不到助手",
+                    f"沒有名為「{_public_agent_label(next_agent_id)}」的助手",
                     status="error",
                 )
             )
@@ -4207,7 +4258,7 @@ REQUEST_THINKING_TIER: contextvars.ContextVar[str | None] = contextvars.ContextV
 THINKING_TIERS = frozenset({"default", "off", "standard", "deep"})
 _EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完）"
 _EMPTY_REPLY_ERROR = "LLM 回覆為空（沒有留下正文）"
-_OUTAGE_FALLBACK = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
+_OUTAGE_FALLBACK = "（暫時無法回應，請稍後再試。若一直發生，請聯絡管理員。）"
 _LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續產生」。）"
 _EMPTY_LENGTH_FALLBACK = "（輸出額度被思考用完，沒有留下正文。可把思考調低再問。）"
 _EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可把思考調低再問，或再問一次。）"
@@ -4749,7 +4800,10 @@ async def _dispatch_safe(
         err = f"agent '{agent_id}' HTTP {exc.response.status_code}"
         logger.error("Dispatch failed: %s — body=%s", err, exc.response.text[:300])
         return {
-            "content": f"（agent「{agent_id}」暫時不可用：upstream HTTP {exc.response.status_code}，請稍後再試）",
+            "content": (
+                f"（{_user_agent_noun(agent_id)}暫時無法使用："
+                f"upstream HTTP {exc.response.status_code}，請稍後再試）"
+            ),
             "anila_meta": None,
             "raw": None,
             "error": err,
@@ -4758,7 +4812,7 @@ async def _dispatch_safe(
         err = f"agent '{agent_id}' connection error: {type(exc).__name__}"
         logger.error("Dispatch failed: %s — %s", err, exc)
         return {
-            "content": f"（agent「{agent_id}」連線失敗，已自動略過，請稍後再試）",
+            "content": f"（{_user_agent_noun(agent_id)}連線失敗，已自動略過，請稍後再試）",
             "anila_meta": None,
             "raw": None,
             "error": err,
@@ -4767,7 +4821,7 @@ async def _dispatch_safe(
         err = f"agent '{agent_id}' unexpected: {type(exc).__name__}"
         logger.exception("Dispatch failed unexpectedly")
         return {
-            "content": f"（agent「{agent_id}」發生未預期錯誤，已自動略過）",
+            "content": f"（{_user_agent_noun(agent_id)}發生未預期錯誤，已自動略過）",
             "anila_meta": None,
             "raw": None,
             "error": err,
@@ -5420,9 +5474,46 @@ def _flatten_openai_content(value: Any) -> str:
     return "".join(parts)
 
 
+_ENVISH_NAME_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+# 連字號、底線、點號的內部 id（anila-studio、agent-a、csp.internal）不給使用者看。
+_INTERNAL_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _public_agent_label(agent_id: str) -> str:
+    """給使用者看的助手名稱。內部 id、路徑、網址、設定名稱一律不露出。"""
+    name = agent_id.strip() if isinstance(agent_id, str) else ""
+    if (
+        not name
+        or "/" in name
+        or "\\" in name
+        or "://" in name
+        or _ENVISH_NAME_RE.search(name)
+        or _INTERNAL_AGENT_ID_RE.fullmatch(name)
+    ):
+        return "這個助手"
+    return name
+
+
+def _user_agent_noun(agent_id: str) -> str:
+    """故障句裡的主詞。內部 id 只說「助手」。"""
+    label = _public_agent_label(agent_id)
+    if label == "這個助手":
+        return "助手"
+    return f"助手「{label}」"
+
+
+def _unregistered_agent_notice(agent_id: str) -> str:
+    """找不到助手時給使用者的句子。不提內部服務。"""
+    name = _public_agent_label(agent_id)
+    return (
+        f"（目前沒有名為「{name}」的助手。"
+        "請聯絡管理員設定，或改問其他助手能處理的問題。）"
+    )
+
+
 def _agent_outage_message(agent_id: str) -> str:
-    """Fixed sentence for a failed agent. Raw upstream text stays off the SSE stream."""
-    return f"agent「{agent_id}」暫時無法使用，請稍後再試。"
+    """使用者看得到的助手故障句。與未註冊通知共用同一套顯示名稱。"""
+    return f"{_user_agent_noun(agent_id)}暫時無法使用，請稍後再試。"
 
 
 def _upstream_frame_error(agent_id: str, detail: str) -> dict[str, Any]:
@@ -5910,8 +6001,8 @@ async def _stream_agent_sse(
                 yield {
                     "type": "error",
                     "error": (
-                        f"agent「{agent_id}」暫時無法使用（HTTP {resp.status_code}），"
-                        "請稍後再試。"
+                        f"{_user_agent_noun(agent_id)}暫時無法使用"
+                        f"（HTTP {resp.status_code}），請稍後再試。"
                     ),
                     "detail": body.decode("utf-8", errors="replace")[:300],
                 }
@@ -6438,15 +6529,15 @@ async def _router_streaming(
 
     # ASK pause. Placed after ``answering`` and before the dispatch assert so a
     # buffer that also carries DISPATCH still falls through to the agent path
-    # (``dispatching`` never enters this branch). Nothing of the raw ``ASK:``
-    # line is forwarded — the question text is the only content chunk.
+    # (``dispatching`` never enters this branch). The question is only on the
+    # interrupt. A content chunk, if any, is prose that followed the ASK line.
     if state == "asking":
         # No Session (unit callers of ``_router_streaming``) cannot persist a
         # pause, so the directive falls through to a plain answer — the same
         # safe direction a false-positive ASK takes.
         if session is None or ask is None:
             visible = _forced_visible_text(
-                _normalize_clarify_bullets(_strip_ask_syntax(buf)),
+                _strip_ask_syntax(buf),
                 route_signal,
             )
             if visible:
@@ -6471,7 +6562,9 @@ async def _router_streaming(
         ask_step = _make_trace_step("direct", "Router 反問使用者", "暫停等待回答")
         yield _make_event("anila.trace", ask_step)
         yield _make_event("anila.interrupt_requested", interrupt_payload)
-        yield _make_chunk(str(ask["question"]), "anila-router")
+        prose = _strip_ask_syntax(buf)
+        if prose:
+            yield _make_chunk(prose, "anila-router")
         anila_meta = _merge_anila_meta(
             base_trace + [ask_step],
             None,
@@ -6502,16 +6595,12 @@ async def _router_streaming(
     if manifest is None:
         trace_step = _make_trace_step(
             "route-miss",
-            "找不到 agent",
-            f"agent '{agent_id}' 未註冊於 CSP",
+            "找不到助手",
+            f"沒有名為「{_public_agent_label(agent_id)}」的助手",
             status="error",
         )
         yield _make_event("anila.trace", trace_step)
-        fallback = (
-            f"（Router 分析後擬分派給 agent「{agent_id}」，"
-            "但該 agent 尚未於 CSP 註冊。請聯絡管理員在 CSP 後台加入此 agent，"
-            "或改問其他已註冊 agent 能處理的問題。）"
-        )
+        fallback = _unregistered_agent_notice(agent_id)
         yield _make_chunk(fallback, "anila-router")
         anila_meta = _merge_anila_meta(
             base_trace + [trace_step],

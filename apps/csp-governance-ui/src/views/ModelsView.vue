@@ -69,6 +69,12 @@
       </div>
     </TermBox>
 
+    <ModelRolesPanel
+      :is-admin="authStore.isAdmin"
+      :models="modelsStore.models"
+      @changed="modelsStore.fetchModels()"
+    />
+
     <div class="kpi-row">
       <TermStat label="模型 · 總數" :value="modelsStore.models.length" />
       <TermStat label="健康" :value="healthyCount" tone="accent" />
@@ -737,6 +743,7 @@ import { extractError, getRawDetail } from '../api/errors'
 import { grantsLoadResult, canReplaceRouterGrants } from '../utils/routerGrantsLoad.js'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, PageHead, RowActions, UserSearchField } from '../components/cli'
 import ThinkingLevelsDisplay from '../components/ThinkingLevelsDisplay.vue'
+import ModelRolesPanel from '../components/ModelRolesPanel.vue'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'

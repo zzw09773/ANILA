@@ -1,9 +1,8 @@
 """OCR fallback for scanned / font-subsetted PDFs.
 
 Single backend: ``VisionApiOcrBackend`` — rasterises each PDF page and
-sends it to an OpenAI-compatible vision LLM endpoint (deployment target:
-``meta/llama-4-maverick`` already running on the internal model server),
-asking for verbatim text extraction.
+sends it to an OpenAI-compatible vision LLM, asking for verbatim text.
+The model name is the governance-center vision role, injected by the caller.
 
 Why one backend only:
 * The deployment runs on a closed internal network with 4× H100 — a
@@ -24,7 +23,7 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Protocol, runtime_checkable
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 import httpx
 
@@ -364,29 +363,47 @@ class VisionApiOcrBackend:
 # Env-driven factory
 # ──────────────────────────────────────────────────────────────────────
 
+# 視覺角色的模型名由呼叫端注入（ingestion-worker 問 CSP）。
+# 不讀 VISION_MODEL，也不在這裡猜一顆名字。
+_model_provider: Optional[Callable[[], str]] = None
+
+
+def set_ocr_model_provider(provider: Optional[Callable[[], str]]) -> None:
+    """解析前注入「現在的視覺角色叫什麼」。回空字串＝角色未設定。"""
+    global _model_provider
+    _model_provider = provider
+
+
+def reset_ocr_model_provider() -> None:
+    set_ocr_model_provider(None)
+
+
 def build_ocr_backend_from_env() -> Optional[OcrBackend]:
-    """Construct the OCR backend selected by env, or ``None`` if disabled.
+    """OCR 後端。沒開旗標，或視覺角色／VISION_URL 缺了，就回 None。
 
     Env:
       PDF_OCR_FALLBACK         = "true" | "false"   (default: false)
       PDF_OCR_CONCURRENCY      = parallel page reqs (default: 4)
-      VISION_URL               = base URL of the OpenAI-compatible
-                                 vision endpoint (re-used from the
-                                 vision provider config)
-      VISION_MODEL             = served vision model name
+      VISION_URL               = OpenAI-compatible 視覺端點（通常是 CSP /v1）
       VISION_API_KEY           = optional bearer token
-      SSL_CERT_FILE            = optional CA bundle for HTTPS verification
+    模型名只來自 ``set_ocr_model_provider``。``VISION_MODEL`` 不再讀。
     """
     if os.getenv("PDF_OCR_FALLBACK", "false").lower() != "true":
         return None
 
     base_url = os.getenv("VISION_URL", "").strip()
-    model = os.getenv("VISION_MODEL", "").strip()
-    if not base_url or not model:
-        logger.warning(
-            "PDF_OCR_FALLBACK=true but VISION_URL or VISION_MODEL is missing "
-            "— OCR disabled"
-        )
+    model = ""
+    if _model_provider is not None:
+        try:
+            model = (_model_provider() or "").strip()
+        except Exception:
+            logger.warning("PDF OCR：讀取視覺角色失敗，略過 OCR", exc_info=True)
+            model = ""
+    if not base_url:
+        logger.warning("PDF OCR：未設定 VISION_URL，略過 OCR")
+        return None
+    if not model:
+        logger.warning("PDF OCR：視覺模型尚未在治理中心設定，略過 OCR")
         return None
 
     return VisionApiOcrBackend(

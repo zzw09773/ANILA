@@ -7,7 +7,6 @@ never block the assistant body.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any, Optional
 
@@ -15,7 +14,6 @@ import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from sqlalchemy.orm import Session
 
-from app.models.model_registry import ModelRegistry
 from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
@@ -25,10 +23,6 @@ MAX_HISTORY = 24
 MAX_ADDED_CHARS = 4000
 MIN_ADDED_CHARS = 40
 _HTTP_TIMEOUT = 8.0
-
-_SUMMARY_MODEL_NAME = os.environ.get("THINKING_SUMMARY_MODEL") or os.environ.get(
-    "MEMORY_LLM_MODEL", "gemma4"
-)
 
 _ARBITRATION = re.compile(
     r"語言|正體|繁體中文|簡體|系統指令|system prompt|instruction|i should|i need|the user asked",
@@ -103,30 +97,18 @@ def build_summarize_payload(
 
 
 def _resolve_summary_target(db: Session) -> tuple[str, str] | None:
+    """思考進度那一句也走摘要角色。沒設就跳過，不改挑別的模型。"""
+    from app.services.model_roles import resolve_role
+
     try:
-        row = (
-            db.query(ModelRegistry)
-            .filter(
-                ModelRegistry.name == _SUMMARY_MODEL_NAME,
-                ModelRegistry.model_type == "llm",
-                ModelRegistry.is_active.is_(True),
-            )
-            .first()
-        )
-        if row is not None:
-            return row.name, row.endpoint_url.rstrip("/")
+        resolved = resolve_role(db, "summary")
     except Exception:
         logger.exception("thinking_summary: registry lookup failed")
         return None
-    fallback = (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.model_type == "llm", ModelRegistry.is_active.is_(True))
-        .order_by(ModelRegistry.id.asc())
-        .first()
-    )
-    if fallback is None:
+    if resolved.status != "ok" or resolved.model is None:
+        logger.warning("thinking_summary: %s", resolved.message)
         return None
-    return fallback.name, fallback.endpoint_url.rstrip("/")
+    return resolved.model.name, resolved.model.endpoint_url.rstrip("/")
 
 
 async def summarize_reasoning_batch(

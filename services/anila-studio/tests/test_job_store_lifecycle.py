@@ -28,7 +28,7 @@ from app.config import settings
 from app.services import job_lifecycle
 from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 from app.services.job_store import JobStore, PersistedJob, get_job_store
-from app.services.studio_trace import StudioTraceEmitter
+
 
 
 _CSP = settings.CSP_BASE_URL
@@ -276,7 +276,6 @@ def _make_ctx(*, trace_id: str | None = None) -> JobReportContext:
         source_snapshot_id="23",
         trace_id=trace_id,
         describe=_slides_describe,
-        emitter=StudioTraceEmitter(trace_id=trace_id, endpoint=_CSP, bearer="BEARER-XYZ"),
     )
 
 
@@ -388,50 +387,11 @@ async def test_csp_down_is_swallowed(reporting_on, respx_mock):
     assert all("artifact_id" not in c or c["artifact_id"] is None for c in updater.calls)
 
 
-# ---------------------------------------------------------------------------
-# Trace spans
-# ---------------------------------------------------------------------------
-
-
-async def test_spans_emitted_when_trace_id_present(reporting_on, respx_mock):
-    respx_mock.post(f"{_CSP}/v1/artifact-jobs").mock(return_value=httpx.Response(201))
-    respx_mock.post(f"{_CSP}/v1/artifacts").mock(
-        return_value=httpx.Response(201, json={"artifact_id": "a"})
+async def test_trace_id_does_not_post_spans(reporting_on, respx_mock):
+    """關聯 id 仍可帶在 artifact job 上，但不再 POST /v1/traces。"""
+    created = respx_mock.post(f"{_CSP}/v1/artifact-jobs").mock(
+        return_value=httpx.Response(201, json={"job_id": "js"})
     )
-    respx_mock.patch(url__regex=rf"{_CSP}/v1/artifact-jobs/.*").mock(
-        return_value=httpx.Response(200)
-    )
-    spans = respx_mock.post(f"{_CSP}/v1/traces/trace_777/spans").mock(
-        return_value=httpx.Response(202, json={})
-    )
-
-    ctx = _make_ctx(trace_id="trace_777")
-    await job_lifecycle.on_create(
-        _FakeRec(job_id="js", user_id=7, collection_id=5, state="pending", step="queued"),
-        ctx,
-    )
-    await job_lifecycle.on_transition(
-        _FakeRec(job_id="js", user_id=7, collection_id=5, state="running", step="rendering"),
-        ctx,
-        _FakeUpdater(),
-    )
-    await job_lifecycle.on_transition(
-        _FakeRec(job_id="js", user_id=7, collection_id=5, state="done", step="done", title="T"),
-        ctx,
-        _FakeUpdater(),
-    )
-    await job_lifecycle.drain()
-
-    assert spans.called
-    payload = json.loads(spans.calls.last.request.content)
-    span_types = {s["span_type"] for s in payload["spans"]}
-    assert "studio.job" in span_types  # root
-    assert "studio.stage" in span_types  # per-stage
-    assert all(s["producer"] == "studio" for s in payload["spans"])
-
-
-async def test_no_spans_without_trace_id(reporting_on, respx_mock):
-    respx_mock.post(f"{_CSP}/v1/artifact-jobs").mock(return_value=httpx.Response(201))
     respx_mock.post(f"{_CSP}/v1/artifacts").mock(
         return_value=httpx.Response(201, json={"artifact_id": "a"})
     )
@@ -441,14 +401,17 @@ async def test_no_spans_without_trace_id(reporting_on, respx_mock):
     spans = respx_mock.post(url__regex=rf"{_CSP}/v1/traces/.*/spans").mock(
         return_value=httpx.Response(202)
     )
-    ctx = _make_ctx(trace_id=None)  # emitter inactive
+    ctx = _make_ctx(trace_id="trace_777")
     await job_lifecycle.on_create(
-        _FakeRec(job_id="jn", user_id=7, collection_id=5, state="pending"), ctx
+        _FakeRec(job_id="js", user_id=7, collection_id=5, state="pending", step="queued"),
+        ctx,
     )
     await job_lifecycle.on_transition(
-        _FakeRec(job_id="jn", user_id=7, collection_id=5, state="done", title="T"),
+        _FakeRec(job_id="js", user_id=7, collection_id=5, state="done", step="done", title="T"),
         ctx,
         _FakeUpdater(),
     )
     await job_lifecycle.drain()
     assert not spans.called
+    body = json.loads(created.calls[0].request.content)
+    assert body.get("trace_id") == "trace_777"

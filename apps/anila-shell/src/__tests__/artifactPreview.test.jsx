@@ -103,6 +103,31 @@ describe("buildArtifactFrameProps", () => {
     expect(relative).toContain('src="/anila/vendor/babel/7.26.10/babel.min.js"');
   });
 
+  it("localizes Three.js ES module scripts, import maps, and esm.sh imports", () => {
+    const html = `<!DOCTYPE html><html><head>
+<script type="importmap">
+{ "imports": { "three": "https://esm.sh/three@0.128.0" } }
+</script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js"></script>
+</head><body>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+const scene = new THREE.Scene();
+</script>
+<script src="three.module.js"></script>
+</body></html>`;
+    const out = localizeArtifactHtml(html, { baseUrl: "/anila/" });
+    expect(out).toContain("/anila/vendor/three/r128/three.min.js");
+    expect(out).toContain("/anila/vendor/three/r128/OrbitControls.js");
+    expect(out).not.toMatch(/esm\.sh|three\.module\.js|cdn\.jsdelivr\.net/);
+    expect(artifactStillNeedsCdn(out)).toBe(false);
+    expect(out).toContain("const THREE = window.THREE");
+    expect(out).toContain("THREE.OrbitControls");
+    expect(out).toContain("new THREE.Scene()");
+    expect(out).not.toMatch(/type=["']module["'][^>]*three\.min\.js/);
+  });
+
   it("still flags leftover non-Three CDNs after localize", () => {
     const html = `<!DOCTYPE html><html><script src="https://cdn.jsdelivr.net/npm/chart.js"></script></html>`;
     expect(artifactStillNeedsCdn(localizeArtifactHtml(html, { baseUrl: "/anila/" }))).toBe(true);

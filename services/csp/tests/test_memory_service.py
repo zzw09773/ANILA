@@ -234,62 +234,65 @@ def test_resolve_endpoint_rejects_inactive_model(db):
         memory_service._resolve_endpoint(db, "disabled-llm", "llm")
 
 
-def test_resolve_extraction_target_prefers_configured_model(db, monkeypatch):
-    """When MEMORY_LLM_MODEL is a registered active LLM, use it verbatim."""
+def _assign_summary(db, name: str):
+    from app.models.model_role import ModelRole
+    from app.models.model_registry import ModelRegistry
+
+    row = db.query(ModelRegistry).filter(ModelRegistry.name == name).one()
+    link = db.get(ModelRole, "summary")
+    if link is None:
+        db.add(ModelRole(role="summary", model_id=row.id))
+    else:
+        link.model_id = row.id
+    db.commit()
+
+
+def test_resolve_extraction_target_uses_summary_role(db):
+    """摘要角色指到哪顆，抽取就用哪顆，旁邊另有啟用中的模型也不會被拿來代替。"""
     _add_llm(db, "gemma4", "http://gemma:8000")
     _add_llm(db, "openai/gpt-oss-20b", "http://gpt:8000")
-    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+    _assign_summary(db, "gemma4")
     assert memory_service._resolve_extraction_target(db) == (
         "gemma4",
         "http://gemma:8000",
     )
 
 
-def test_resolve_extraction_target_falls_back_to_available_llm(db, monkeypatch):
-    """Air-gap case: configured gemma4 isn't registered (only gpt-oss is) →
-    extraction falls back to the available LLM instead of disabling itself.
-    """
-    _add_llm(db, "openai/gpt-oss-20b", "http://gpt:8000/")  # note trailing slash
-    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
-    target = memory_service._resolve_extraction_target(db)
-    assert target == ("openai/gpt-oss-20b", "http://gpt:8000")  # rstripped
+def test_resolve_extraction_target_does_not_guess_another_llm(db, caplog):
+    """沒設摘要角色時，即使註冊表裡有別的 LLM，也不會默默改用它。"""
+    _add_llm(db, "openai/gpt-oss-20b", "http://gpt:8000/")
+    with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
+        assert memory_service._resolve_extraction_target(db) is None
+    assert any("摘要模型尚未在治理中心設定" in record.getMessage() for record in caplog.records)
 
 
-def test_resolve_extraction_target_falls_back_from_inactive_configured_model(
-    db, monkeypatch, caplog
-):
-    """A deactivated configured LLM is treated like a missing target."""
+def test_resolve_extraction_target_inactive_role_does_not_fall_back(db, caplog):
+    """角色指到已停用的模型時，不改挑另一顆啟用中的 LLM。"""
     _add_llm(db, "disabled-llm", "http://disabled:8000", is_active=False)
     _add_llm(db, "active-llm", "http://active:8000")
-    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "disabled-llm")
+    _assign_summary(db, "disabled-llm")
 
     with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
         target = memory_service._resolve_extraction_target(db)
 
-    assert target == ("active-llm", "http://active:8000")
-    assert any(
-        "falling back to 'active-llm'" in record.getMessage()
-        for record in caplog.records
-    )
+    assert target is None
+    assert any("摘要模型已停用" in record.getMessage() for record in caplog.records)
 
 
-def test_resolve_extraction_target_none_when_no_active_llm(db, monkeypatch):
-    """No active LLM at all → None (caller disables extraction, logs)."""
-    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+def test_resolve_extraction_target_none_when_role_unset(db):
     assert memory_service._resolve_extraction_target(db) is None
 
 
 @pytest.mark.asyncio
-async def test_extract_facts_skips_http_when_every_llm_is_inactive(
+async def test_extract_facts_skips_http_when_summary_role_unset(
     db, monkeypatch, caplog
 ):
-    """No inactive registry row may leak through to the HTTP call."""
-    _add_llm(db, "disabled-llm", "http://disabled:8000", is_active=False)
-    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "disabled-llm")
+    """沒設摘要角色時不得打到任何模型。"""
+    _add_llm(db, "active-llm", "http://active:8000")
 
     class _NoHTTPClient:
         def __init__(self, *args, **kwargs):
-            raise AssertionError("inactive model reached the HTTP client")
+            raise AssertionError("unset summary role reached the HTTP client")
 
     monkeypatch.setattr(memory_service.httpx, "AsyncClient", _NoHTTPClient)
 
@@ -297,7 +300,7 @@ async def test_extract_facts_skips_http_when_every_llm_is_inactive(
         assert await memory_service._extract_facts(db, "a sufficiently long turn") == []
 
     assert any(
-        "no active LLM registered" in record.getMessage()
+        "摘要模型尚未在治理中心設定" in record.getMessage()
         for record in caplog.records
     )
 

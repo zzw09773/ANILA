@@ -458,8 +458,8 @@ MODEL_GATEWAY_API_KEY=<在 aiagent2 平台簽發>
 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
 GEMMA4_BASE_URL=                  # 空 = 內網無 gemma4,auto_seed 跳過
-LLM_MODEL=openai/gpt-oss-20b      # Router primary
-ANILALM_DEFAULT_CHAT_MODEL=openai/gpt-oss-20b
+# 主路由、簡報、視覺、摘要、知識庫對話：部署後到治理中心「模型 → 模型角色」指定。
+# 不要在 .env 寫 LLM_MODEL / ANILALM_DEFAULT_CHAT_MODEL / VISION_MODEL。
 FLUX_AGENT_BASE_URL=              # 空 = 無 FLUX,繪圖 agent 不註冊
 FLUX_BACKEND_URL=                 # 空 = studio 圖像 pipeline 停用
 ENABLE_IMAGE_CAPTIONS=false       # 內網無 VLM,文件圖片以 [image] 處理
@@ -932,7 +932,8 @@ bash infra/deployment/intranet/model-serve.sh up flux2-dev flux2-dev-agent  # �
 #    FLUX_AGENT_BASE_URL=   → 刪除該行 (恢復 http://flux2-dev-agent:8000)
 #    FLUX_BACKEND_URL=      → 刪除該行 (恢復 http://flux2-dev:8000)
 #    GEMMA4_BASE_URL=       → 跑了 gemma4 才刪;同時可開回:
-#    ENABLE_IMAGE_CAPTIONS=true + VISION_MODEL=gemma4 (圖表進 RAG)
+#    ENABLE_IMAGE_CAPTIONS=true
+#    圖說與 PDF OCR 用治理中心的「視覺模型」角色，不設 VISION_MODEL
 
 # 4. 重建平台 csp 讓 auto_seed 重新註冊
 cd /opt/anila && docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp

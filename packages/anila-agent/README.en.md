@@ -9,8 +9,8 @@
 - **Location**: monorepo `packages/anila-agent/` (§17.1 layout: `services/` · `apps/` · `packages/` · `infra/`).
 - **Dependencies and deployment**: this advanced example depends on both `openai-agents==0.17.5` and `anila-core>=0.14,<0.15`. Standalone deployment requires compatible offline wheels, trust configuration, and a working model endpoint; this is not a zero-dependency scaffold.
 - **Role in the platform**: approved by the **Agent Registry** in `services/csp` (the CSP governance service)
-  and registered via the developer wizard in `apps/csp-governance-ui` (the governance UI). Its native Full
-  Trace directly satisfies the `pending_trace_test` gate of the 7-state approval flow.
+  and registered via the developer wizard in `apps/csp-governance-ui` (the governance UI). Approval is
+  three states. There is no trace-test gate, and this package does not post spans.
 - **Deployment-mode agnostic**: login/deploy deltas live on branches; the template is identical across them.
   It is not part of the platform compose — the CSP Router dispatches to it as an agent endpoint.
 
@@ -40,7 +40,7 @@
 | CLI | Streaming REPL + slash commands + switchable output styles |
 | Extensions | `SKILL.md` skills, event triggers, MCP client (config-gated) |
 | Serving | OpenAI-compatible service wrapper (CSP-dispatchable; verify platform dispatch JWT / JWKS) |
-| Observability | RunHooks audit + token/cost metering + **native Full Trace** (see below) |
+| Observability | RunHooks audit + token/cost metering. It does not `POST /v1/traces` |
 
 ## Quickstart
 
@@ -105,37 +105,17 @@ is the agent endpoint you register with the CSP.
 Auth is the **dispatch JWT**: the CSP Router sends `Authorization: Bearer <JWT>`
 (5 minutes, RS256); the agent verifies it against the platform JWKS
 (`/.well-known/jwks.json`). Claims include `user_id` / `department` / `agent_id`.
-Outbound RAG search and trace reuse **that same** dispatch JWT. There is no `csk-`
+Outbound RAG search reuses **that same** dispatch JWT. There is no `csk-`
 onboarding and no `CSP_SERVICE_TOKEN` credential to collect. Point `ANILA_CA_FILE` at
 the platform CA PEM — **do not** set `SSL_CERT_FILE`. The quickstart zip already
 contains `anila_verify.py` and `ca.pem`. The governance center can serve them again
 (`GET /api/agents/anila-verify/download`, `GET /api/agents/platform-ca/download`);
 a 503 means this deployment is missing the file (contact ops).
 
-## Trace spans (not an approval gate)
+## Trace spans
 
-The template includes `anila_agent/tracing.py`. When a dispatch carries
-`X-ANILA-Trace-Id`, spans can be batched outbound under the same dispatch JWT,
-not `CSP_SERVICE_TOKEN`. There is no seven-state approval and no trace-test gate.
-No trace header or no endpoint → disabled, zero egress; ship failures are
-drop-and-logged and never crash the agent.
-
-Three wiring pieces — reuse them as-is when you swap in your own tools/retriever, no core changes needed:
-
-- **`TracingRunHooks`**: wraps `AuditHooks`; openai-agents' `on_agent_*` / `on_llm_*` / `on_tool_*` events
-  auto-map to step/model_call/tool_call spans, so adding a `@function_tool` needs no extra code.
-- **`TracingRetriever`**: wraps any retriever and emits an `agent.retrieval` span around `search()` (with
-  `collection_ids` / `chunk_ids` / `document_ids` / `top_k`).
-- **`TraceEmitter`**: the buffering, batching emitter; `async with emitter.span(...)` adds custom sub-spans
-  that auto-nest under the current span (concurrency-isolated via `contextvars`).
-
-Env: `CSP_BASE_URL` and `ANILA_CA_FILE` (trust anchor). Optional trace switches:
-`ANILA_TRACE_ENDPOINT` (default = `CSP_BASE_URL`) and `ANILA_TRACE_ENABLED` (default 1).
-`ANILA_CLASSIFICATION_LEVEL` (`無機密` / `營業秘密` / `密` / `機密`) may ride on a span.
-Do not set `CSP_SERVICE_TOKEN` as an onboarding credential.
-
-> **Non-anila-agent runtimes** (LangChain / custom HTTP) can join the same pipeline via the copy-paste
-> `AnilaTraceAdapter` in [`examples/trace-adapters/`](../../examples/trace-adapters/README.md).
+Removed. This package does not `POST /v1/traces`. `tasks.trace_id` in CSP is still a correlation id.
+Do not set `ANILA_TRACE_ENDPOINT`. Do not set `CSP_SERVICE_TOKEN` as an onboarding credential.
 
 ## Registration (CSP Agent Registry)
 
@@ -160,7 +140,7 @@ Full flow: see [DOCKER.md](DOCKER.md).
 ## Status
 
 P0–P5 complete and verified end-to-end against local gpt-oss-20b / NV-embed-V2 (memdir hybrid recall,
-deny-all policy, multi-turn session, deep-research, service wrapper, Full Trace). `make test` collects
+deny-all policy, multi-turn session, deep-research, service wrapper). `make test` collects
 **198** unit tests (plus 1 `live`-marked test that needs a real endpoint, 199 total). See
 [REBUILD_PLAN.md](REBUILD_PLAN.md).
 

@@ -1,4 +1,5 @@
 import { chatComplete } from '../api/chat'
+import { resolveKnowledgeChatModel } from '../api/modelRole'
 import { searchCollection, type SearchHit } from '../api/search'
 import { COMMON_PREAMBLE } from '../generated/preamble'
 import { useArtifactStore } from '../store/artifacts'
@@ -53,8 +54,7 @@ function presetEnum(kind: keyof typeof PRESET_ENUM, label: string): string {
   return PRESET_ENUM[kind]?.[label] ?? label
 }
 
-const DEFAULT_MODEL =
-  (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? 'gpt-4o-mini'
+
 
 // Studio retrieves more chunks than chat (top-K=12) because Report and
 // Slides synthesise across the whole document set, not a single Q&A
@@ -311,7 +311,7 @@ export async function generateSlides({
     .join('\n')
 
   const raw = await chatComplete({
-    model: DEFAULT_MODEL,
+    model: await resolveKnowledgeChatModel(),
     messages: [
       { role: 'system', content: system },
       { role: 'user', content: user },

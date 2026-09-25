@@ -136,7 +136,7 @@ class IngestionCollection(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
     # Caption *intent* (r1_0036). NULL = follow platform
-    # ``enable_image_captions`` / ``VISION_MODEL``. Not a gate: no CHECK,
+    # ``enable_image_captions`` / the vision role. Not a gate: no CHECK,
     # no server_default — a NOT NULL default would freeze existing
     # collections so a later platform change would not apply.
     caption_enabled = Column(Boolean, nullable=True)

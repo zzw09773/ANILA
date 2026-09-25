@@ -4,6 +4,12 @@ export const THINKING_SUMMARY_PENDING = "正在思考";
 export const THINKING_SUMMARY_RAW_LABEL = "原始思考";
 export const MAX_THINKING_SUMMARIES = 24;
 
+/** 沒有可顯示的原文（空白、零寬字）就當這一輪沒有原始思考。 */
+export function visibleReasoningText(text) {
+  if (typeof text !== "string") return "";
+  return text.replace(/[\u200b\u200c\u200d\ufeff]/g, "").trim();
+}
+
 export function formatThinkingElapsed(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "0秒";
   return `${Math.floor(ms / 1000)}秒`;

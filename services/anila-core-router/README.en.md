@@ -99,14 +99,9 @@ Read by `main.py` (raw `os.environ`):
 | `CSP_SERVICE_TOKEN` | Last fallback, and only when the token-file path is unset: the old fleet secret. Router-only CSP endpoints reject it once `router-primary` has its own credential | `""` |
 | `ANILA_ROUTER_STATE_DIR` | Directory for `service_token.json` (mode 0600). Not read when the token-file path is set | `/var/lib/anila-router` |
 
-The SDK (`router_server`) additionally reads the **Full Trace opt-in** env (doc `09` §10 frozen contract):
+Span upload is removed. Do not set `ANILA_TRACE_ENDPOINT`. `tasks.trace_id` in CSP is still a correlation id.
 
-| Variable | Notes | Default |
-|---|---|---|
-| `ANILA_TRACE_ENDPOINT` | unset → the whole trace path is a no-op (byte-identical to before). A bare flag (`1`/`true`/`on`/`yes`/`default`) → reuse `CSP_BASE_URL`; any other value → an explicit trace base URL. Spans are POSTed to `POST {base}/v1/traces/{trace_id}/spans` and mirrored into the `anila.spans` SSE event | `""` (off) |
-| `ANILA_TRACE_TOKEN` | service token for trace export; falls back to `CSP_SERVICE_TOKEN` | `""` |
-
-> `main.py` **does NOT read `MODEL`** (the primary routing model is decided entirely by CSP `/api/models/router-primary` at runtime; the compose `router` service still carries `MODEL: ${LLM_MODEL:-gemma4}`, a vestigial env var with no effect).
+> `main.py` **does NOT read `MODEL`**. The primary routing model is the Console `router_primary` role (`GET /api/models/router-primary` at runtime). Compose does not pass `LLM_MODEL`.
 
 ---
 
@@ -120,8 +115,7 @@ router (:9000)
    ├── GET /v1/agents                  ──▶ CSP   fetch agent manifest (the only discovery source)
    ├── GET /api/models/router-primary  ──▶ CSP   fetch primary LLM (X-CSP-Service-Token)
    ├── POST /v1/chat/completions       ──▶ CSP   call primary LLM to decide dispatch
-   ├── dispatch → agent endpoint_url    ──▶ e.g. image-generator → http://flux2-dev-agent:8000
-   └── (optional) POST /v1/traces/{id}/spans ──▶ CSP  Full Trace export (when ANILA_TRACE_ENDPOINT is set)
+   └── dispatch → agent endpoint_url    ──▶ e.g. image-generator → http://flux2-dev-agent:8000
 ```
 
 - **CSP (`CSP_BASE_URL`)**: all upstream interactions go through CSP — fetch agent list, resolve primary model, call the primary LLM. Router→CSP internal endpoints authenticate with `X-CSP-Service-Token`.
@@ -133,7 +127,7 @@ router (:9000)
 ## Related docs
 
 - Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
-- Redesign design lineage (convergence record): constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/event contracts (incl. SSE + `/v1/traces`) [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Redesign design lineage (historical): constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md). Span upload is not part of the current router.
 - Multi-service integration (incl. Router role): [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
 - Agent framework architecture: [`../../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../../docs/archive/agent-framework/anila-agent-framework-architecture.md)
 - Runtime foundation (SDK): [`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP: [`../csp/README.md`](../csp/README.md) · Shell: [`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)

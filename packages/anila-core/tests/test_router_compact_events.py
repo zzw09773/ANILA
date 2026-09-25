@@ -272,6 +272,11 @@ def test_non_stream_anila_meta_compact(db_path, monkeypatch):
 
 def test_prior_summary_prepended_to_summarizer_transcript(monkeypatch):
     monkeypatch.setattr(rs, "current_router_context_window", lambda: 2_400)
+
+    async def _summary_model():
+        return "summary-llm"
+
+    monkeypatch.setattr(rs, "resolve_summary_model_name", _summary_model)
     http = _Client(answers=[_reply("新的摘要")])
     monkeypatch.setattr(rs, "get_http_client", lambda: http)
     messages = [{"role": "system", "content": "[歷史摘要]\n先前談過太陽系"}]
@@ -335,7 +340,11 @@ def test_normalize_anila_meta_passes_compact_through():
 
 @respx.mock
 @pytest.mark.real_router_model_resolve
-def test_manual_compact_summarizes_long_conversation(db_path):
+def test_manual_compact_summarizes_long_conversation(db_path, monkeypatch):
+    async def _summary_model():
+        return "summary-llm"
+
+    monkeypatch.setattr(rs, "resolve_summary_model_name", _summary_model)
     resolve_route = respx.post(CSP_RESOLVE_URL).mock(
         return_value=httpx.Response(200, json={"name": "glm-test"})
     )

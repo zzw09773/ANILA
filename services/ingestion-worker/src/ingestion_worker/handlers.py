@@ -61,22 +61,48 @@ def _empty_caption_stats(
     }
 
 
-def _resolve_caption_intent(
+async def _bind_pdf_ocr_if_enabled() -> None:
+    """掃描 PDF 的 OCR 用同一顆視覺角色。旗標沒開就不問 CSP。"""
+    if os.getenv("PDF_OCR_FALLBACK", "false").lower() != "true":
+        return
+    from ingestion_worker.vision_role import bind_pdf_ocr_model
+
+    await bind_pdf_ocr_model(
+        vision_url=settings.vision_url,
+        api_key=settings.vision_api_key,
+    )
+
+
+async def _resolve_caption_intent(
     collection_enabled: Any,
     collection_model: Any,
 ) -> tuple[bool, str | None]:
-    """Intent vs platform default.
+    """Intent vs the vision role.
 
-    NULL collection columns follow ``enable_image_captions`` / ``VISION_MODEL``.
-    A False collection flag wins over a True platform flag (plain-text KB).
-    A True collection flag still needs ``vision_url`` at runtime.
+    NULL collection columns follow ``enable_image_captions`` and the
+    vision role on CSP. An explicit collection model is kept. A False
+    collection flag wins over a True platform flag (plain-text KB).
+    Unset or inactive role: warning, no model, ingest continues.
     """
     if collection_enabled is None:
         want = bool(settings.enable_image_captions)
     else:
         want = bool(collection_enabled)
-    model = (collection_model or "").strip() or settings.vision_model
-    return want, model
+    explicit = (str(collection_model) if collection_model is not None else "").strip()
+    if explicit:
+        return want, explicit
+    if not want:
+        return False, None
+    from ingestion_worker.vision_role import resolve_vision_model
+
+    name, message = await resolve_vision_model(
+        vision_url=settings.vision_url,
+        api_key=settings.vision_api_key,
+    )
+    if not name:
+        logger.warning("ingestion-worker: 略過圖片說明 — %s", message)
+        return want, None
+    return want, name
 
 
 def _get_vision_provider(model: str | None = None) -> Any | None:
@@ -89,7 +115,12 @@ def _get_vision_provider(model: str | None = None) -> Any | None:
     global _vision_provider
     if not settings.vision_url:
         return None
-    chosen = (model or settings.vision_model or "").strip() or settings.vision_model
+    chosen = (model or "").strip()
+    if not chosen:
+        # 舊測試把單一 provider 塞在 _vision_provider。沒有模型名就不新造一顆。
+        if _vision_provider is not None and not _vision_providers:
+            return _vision_provider
+        return None
     cached = _vision_providers.get(chosen)
     if cached is not None:
         return cached
@@ -1142,6 +1173,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # and tests/test_worker_liveness.py.
         await _update_document_status(pool, document_id, "parsing")
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
+        await _bind_pdf_ocr_if_enabled()
         with open(storage_path, "rb") as f:
             blob = f.read()
         text, parse_meta, images = extract_text(
@@ -1154,7 +1186,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # searchable text instead of opaque tokens. No-op if disabled
         # or no images. See _caption_images_into for the full contract.
         image_pks: dict[str, int] = {}
-        want_captions, caption_model = _resolve_caption_intent(
+        want_captions, caption_model = await _resolve_caption_intent(
             meta.get("caption_enabled"), meta.get("caption_model"),
         )
         caption_stats = _empty_caption_stats(image_count=len(images or {}))
@@ -1535,6 +1567,7 @@ async def reresolve_collection_relations(
         )
 
     docs: list[tuple[int, str]] = []
+    await _bind_pdf_ocr_if_enabled()
     for r in rows:
         sp = r["storage_path"]
         if not sp or not os.path.exists(sp):

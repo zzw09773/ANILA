@@ -66,15 +66,11 @@ FIX_MAX_TOKENS = 8192
 # Renderer service — same docker network, same compose stack.
 RENDERER_BASE_URL = "http://pptx-renderer:7100"
 
-# Default LLM for slide generation / vision QA. Env-overridable per
-# deployment (variant names differ). These are **analysis-class** tasks
-# (deck quality depends on reasoning) — do NOT casually point them at a
-# fast／nothink variant; see docs/runbooks/model-variants.md.
-SLIDES_LLM_MODEL = (
-    (os.environ.get("ANILA_STUDIO_SLIDES_MODEL") or "").strip() or "gemma4"
-)
-VISION_LLM_MODEL = (
-    (os.environ.get("ANILA_STUDIO_VISION_MODEL") or "").strip() or "gemma4"
+# 不是模型名稱。call_llm_chat 看到這兩個值就向 CSP 解析對應角色。
+# 治理中心沒設時失敗，訊息點名角色；不要在這裡填預設模型名。
+from app.services.studio_model_primary import (  # noqa: E402
+    SLIDES_ROLE_SENTINEL as SLIDES_LLM_MODEL,
+    VISION_ROLE_SENTINEL as VISION_LLM_MODEL,
 )
 
 # ── Flux quality gate (Stage 2 / Layer C) ─────────────────────────────────

@@ -22,13 +22,6 @@ the two by deriving the flat list from the span tree.
 
 from .hooks import TracingHooks
 from .processor import InMemoryProcessor, SpanProcessor
-from .sdk import (
-    SPAN_TYPES,
-    ExportingProcessor,
-    SpanHandle,
-    TraceExporter,
-    TraceSession,
-)
 from .span import Span, SpanKind, SpanStatus
 from .tracer import Tracer
 
@@ -40,10 +33,4 @@ __all__ = [
     "SpanProcessor",
     "InMemoryProcessor",
     "TracingHooks",
-    # Full Trace Protocol producer SDK (doc-05 §6 / doc-09 §10).
-    "TraceExporter",
-    "TraceSession",
-    "SpanHandle",
-    "ExportingProcessor",
-    "SPAN_TYPES",
 ]

@@ -9,7 +9,7 @@
 - **位置**：monorepo `packages/anila-agent/`（§17.1 版圖：`services/` · `apps/` · `packages/` · `infra/`）。
 - **相依與部署**：本進階範例目前同時依賴 `openai-agents==0.17.5` 與 `anila-core>=0.14,<0.15`；要在獨立內網主機部署，必須備妥相容 wheel、平台簽章信任與模型連線。不要把它當成零平台相依的單檔骨架。
 - **對平台的角色**：由 `services/csp`（治理中心 CSP）的 **Agent Registry** 核准上架、由 `apps/csp-governance-ui`
-  （治理中心前端）的開發者精靈註冊。原生 Full Trace 直接滿足 7 態審核的 `pending_trace_test` 關卡。
+  （治理中心前端）的開發者精靈註冊。審批是三態，沒有 trace-test 關卡，也不再上傳 span。
 - **部署模式無耦合**：登入／部署 delta 落在各分支，樣板本身跨分支一致；不進平台 compose，以 agent
   endpoint 形式被 CSP Router 派工。
 
@@ -37,7 +37,7 @@
 | CLI | 串流 REPL + slash 指令 + 可切換 output style |
 | 擴充 | `SKILL.md` skills、事件 triggers、MCP client（config-gated） |
 | 服務化 | OpenAI-compatible service wrapper（CSP 可派工；驗平台派工 JWT／JWKS） |
-| 觀測 | RunHooks 稽核 + token／cost 計量 + **原生 Full Trace**（見下） |
+| 觀測 | RunHooks 稽核 + token／cost 計量。不再 `POST /v1/traces` |
 
 ## 快速開始
 
@@ -97,32 +97,14 @@ service wrapper 對外開 3 個端點：`GET /health`、`GET /v1/models`（manif
 
 認證走 **派工 JWT**：CSP Router 以 `Authorization: Bearer <JWT>`（5 分鐘、RS256）派工；
 agent 用平台公開 JWKS（`/.well-known/jwks.json`）驗簽，claims 含 `user_id`／`department`／`agent_id`。
-出向（RAG 搜尋／trace）帶回**同一張**派工 JWT，不使用 `csk-`，也不把 `CSP_SERVICE_TOKEN` 當上手憑證。
+出向（RAG 搜尋）帶回**同一張**派工 JWT，不使用 `csk-`，也不把 `CSP_SERVICE_TOKEN` 當上手憑證。
 信任錨用 `ANILA_CA_FILE` 指 PEM，**不要**設 `SSL_CERT_FILE`。
 快速起步 zip 已含 `anila_verify.py` 與 `ca.pem`；治理中心也可再下載這兩樣
 （`GET /api/agents/anila-verify/download`、`GET /api/agents/platform-ca/download`；503 表示這次部署缺檔，請聯絡維運）。
 
-## 追蹤 span（不是審批關卡）
+## 追蹤
 
-本樣板內建 `anila_agent/tracing.py`。CSP dispatch 帶 `X-ANILA-Trace-Id` 時可把 span 批次送出，
-認證是當次派工 JWT，不是 `CSP_SERVICE_TOKEN`。**沒有七態審批，也沒有 trace-test 關卡。**
-無 trace header 或無 endpoint → 停用、零外送；送失敗 drop-and-log，不讓 agent 掛掉。
-
-三個接線元件，換自己的工具／retriever 一樣沿用即可，無需改核心：
-
-- **`TracingRunHooks`**：把 `AuditHooks` 包起來，openai-agents 的 `on_agent_*` / `on_llm_*` / `on_tool_*`
-  事件自動轉成 step／model_call／tool_call span；新增 `@function_tool` 不必額外加碼。
-- **`TracingRetriever`**：包住任一 retriever，`search()` 前後自動送 `agent.retrieval` span
-  （含 `collection_ids` / `chunk_ids` / `document_ids` / `top_k`）。
-- **`TraceEmitter`**：緩衝 + 批次發送器；`async with emitter.span(...)` 可自訂子區段，自動巢狀在當前
-  span 下（併發下以 `contextvars` 分艙）。
-
-env：`CSP_BASE_URL`、`ANILA_CA_FILE`（信任錨）。trace 開關若設，用 `ANILA_TRACE_ENDPOINT`
-（預設 = `CSP_BASE_URL`）與 `ANILA_TRACE_ENABLED`（預設 1）。分類等級 `ANILA_CLASSIFICATION_LEVEL`
-（無機密／營業秘密／密／機密）可隨 span 帶出。不要設 `CSP_SERVICE_TOKEN` 當上手憑證。
-
-> **非 anila-agent runtime**（LangChain／custom HTTP）要接上同一條管線，見
-> [`examples/trace-adapters/`](../../examples/trace-adapters/README.md) 的 copy-paste `AnilaTraceAdapter`。
+Full Trace span 已移除。agent 不再 `POST /v1/traces`。任務的 `trace_id` 仍是 CSP 裡的關聯 id。不要設 `ANILA_TRACE_ENDPOINT`。
 
 ## 註冊上架（CSP Agent Registry）
 
@@ -144,7 +126,7 @@ Lab；源碼從 workspace clone。`make docker-build`／`make docker-save`（存
 ## 開發狀態
 
 P0–P5 全部完成並對本地 gpt-oss-20b / NV-embed-V2 端到端驗證（含 memdir 混合 recall、deny-all 政策、
-多輪 session、deep-research、service wrapper、Full Trace）。`make test` 收 **198** 個單元測試
+多輪 session、deep-research、service wrapper）。`make test` 收 **198** 個單元測試
 （另有 1 個 `live` 標記測試需真實端點，共 199）。詳見 [REBUILD_PLAN.md](REBUILD_PLAN.md)。
 
 ## License

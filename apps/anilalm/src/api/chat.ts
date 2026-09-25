@@ -10,6 +10,7 @@
 
 import { useAuthStore } from '../store/auth'
 import { csrfHeader } from './client'
+import { resolveKnowledgeChatModel } from './modelRole'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -26,16 +27,12 @@ export interface ChatRequest {
   traceId?: string
 }
 
-// 沒有可猜的預設模型——內網不存在公雲模型名，缺設定就顯式炸，
-// 不要默默送出一個必然 404 的模型名（設計文件 §4-3）。
-const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? ''
-
-function resolveModel(model?: string): string {
-  const resolved = model || DEFAULT_MODEL
-  if (!resolved) {
-    throw new Error('聊天模型未設定：呼叫端未指定 model，且 VITE_DEFAULT_CHAT_MODEL 為空。')
-  }
-  return resolved
+// 沒有可猜的預設模型。呼叫端帶了名稱就用那個；否則問治理中心的
+// 知識庫對話角色。沒設就顯式失敗，不送一個寫死的模型名。
+async function resolveModel(model?: string): Promise<string> {
+  const explicit = (model || '').trim()
+  if (explicit) return explicit
+  return resolveKnowledgeChatModel()
 }
 
 function authHeaders(): Record<string, string> {
@@ -244,7 +241,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
-      model: resolveModel(req.model),
+      model: await resolveModel(req.model),
       messages: req.messages,
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,
@@ -287,7 +284,7 @@ export async function chatStream(
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
-      model: resolveModel(req.model),
+      model: await resolveModel(req.model),
       messages: req.messages,
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,

@@ -119,6 +119,7 @@ def test_kb_miss_grounding_notice_is_not_a_refusal():
     """csp 在規章庫查無條文時要模型講的那句話（_KB_MISS_NOTICE 形狀）不是拒答；
     新的「僅提供…服務…無法回答」樣式不得把它算進去。"""
     from app.services.refusal_detector import looks_like_refusal
+    assert not looks_like_refusal("已查詢院內規章知識庫，沒有找到相關條文。目前段落沒有提供這項資訊，無法回答具體的申訴期限；以下為一般知識。")
     assert not looks_like_refusal("已查詢院內規章知識庫，門檻之上沒有相關條文。目前段落沒有提供這項資訊，無法回答具體的申訴期限；以下為一般知識。")
     assert not looks_like_refusal("目前提供的院內規章檢索結果中，並沒有關於「軍人請假規定」的資訊。")
     assert looks_like_refusal("本系統僅提供法律文件檢索與解釋服務，無法回答與法律無關的問題。")

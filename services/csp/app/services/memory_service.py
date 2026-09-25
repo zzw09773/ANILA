@@ -20,15 +20,12 @@ implements :class:`MemoryAdapter` against the same DTOs.
 Endpoint discovery
 ==================
 
-LLM endpoint comes from ``model_registry`` (``MEMORY_LLM_MODEL`` /
-fallback). Embedding resolves through the platform's
-``is_platform_embedding`` designation (P4.8) — never by matching a
-hardcoded name string. That exact-name path was the silent production
-defect (``nvidia/NV-embed-V2`` vs registered ``nvidia/nv-embed-v2``).
-
-Operator override via env:
-
-* ``MEMORY_LLM_MODEL`` (default ``gemma4``) — fact extraction.
+LLM endpoint comes from the summary model role. Embedding resolves
+through the platform's ``is_platform_embedding`` designation (P4.8) —
+never by matching a hardcoded name string. That exact-name path was
+the silent production defect (``nvidia/NV-embed-V2`` vs registered
+``nvidia/nv-embed-v2``). Unset summary role disables extraction; it
+does not fall back to another model.
 
 Why not anila-core's filesystem memdir?
 =======================================
@@ -44,7 +41,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from typing import Any, Optional, Iterable, Optional
 
 import httpx
@@ -103,10 +99,8 @@ def _guard_outbound(url: str) -> None:
 # ``get_setting(db, key)`` 解析（``platform_settings`` → env → 程式預設）。
 # 其餘記憶體格式/逾時限制是固定程式常數，不是治理頁控制項。
 #
-# ``MEMORY_LLM_MODEL`` 留在模組層是刻意的：它是部署事實（換模型牽動
-# per-model 授權，畫面上補不了），本輪不搬。
-
-_LLM_MODEL_NAME = os.environ.get("MEMORY_LLM_MODEL", "gemma4")
+# 事實抽取用治理中心的「摘要模型」角色，不讀 MEMORY_LLM_MODEL，
+# 也不在沒設定時改挑另一顆已註冊的模型。
 
 # Keep injected user memory within a sane share of internal model context
 # budgets.
@@ -160,35 +154,16 @@ def _resolve_endpoint(db: Session, model_name: str, model_type: str) -> str:
 def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
     """Resolve ``(model_name, base_url)`` for fact extraction.
 
-    Prefers the configured ``MEMORY_LLM_MODEL``. When that name isn't a
-    registered active LLM — e.g. an air-gapped deployment that overrode the
-    primary LLM to gpt-oss but left ``MEMORY_LLM_MODEL`` at the ``gemma4``
-    default — fall back to the first active LLM in the registry so
-    extraction follows whatever the deployment actually serves instead of
-    silently disabling itself. Returns ``None`` only when no active LLM is
-    registered at all.
+    The summary role is the only source. Unset or inactive returns
+    ``None`` — never another registered LLM and never a hard-coded name.
     """
-    try:
-        return _LLM_MODEL_NAME, _resolve_endpoint(db, _LLM_MODEL_NAME, "llm")
-    except RuntimeError:
-        pass
+    from app.services.model_roles import resolve_role
 
-    fallback: ModelRegistry | None = (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.model_type == "llm", ModelRegistry.is_active.is_(True))
-        .order_by(ModelRegistry.id)
-        .first()
-    )
-    if fallback is None:
+    resolved = resolve_role(db, "summary")
+    if resolved.status != "ok" or resolved.model is None:
+        logger.warning("memory_service: %s", resolved.message)
         return None
-    logger.warning(
-        "memory_service: MEMORY_LLM_MODEL=%r is not a registered active LLM — "
-        "falling back to %r for fact extraction. Set MEMORY_LLM_MODEL to a "
-        "registered model name to silence this.",
-        _LLM_MODEL_NAME,
-        fallback.name,
-    )
-    return fallback.name, fallback.endpoint_url.rstrip("/")
+    return resolved.model.name, resolved.model.endpoint_url.rstrip("/")
 
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
@@ -598,7 +573,7 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
     target = _resolve_extraction_target(db)
     if target is None:
         logger.warning(
-            "memory_service: no active LLM registered — fact extraction disabled"
+            "memory_service: 摘要模型尚未在治理中心設定 — fact extraction disabled"
         )
         return []
     model_name, base_url = target

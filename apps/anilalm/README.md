@@ -90,7 +90,7 @@ apps/anilalm/
 ```bash
 cd apps/anilalm
 npm install
-cp .env.example .env               # 視需要改 VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND / VITE_DEFAULT_CHAT_MODEL
+cp .env.example .env               # 視需要改 VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND
 npm run dev                        # http://localhost:5174
 ```
 
@@ -121,7 +121,7 @@ npm run build          # tsc -b && vite build（正式驗證用；非只 tsc）
 | `VITE_CSP_BACKEND` | `http://localhost:8000` | dev proxy：`/api`、`/v1`、`/v2`（CSP） |
 | `VITE_ANILA_STUDIO_BACKEND` | `http://localhost:8100` | dev proxy：`/api/studio/*`（anila-studio） |
 | `VITE_STUDIO_BASE_URL` | `""` | 瀏覽器可見的 anila-studio base（`src/api/client.ts`）；空 = 用 vite proxy / 同源 nginx |
-| `VITE_DEFAULT_CHAT_MODEL` | `gpt-4o-mini` | 預設聊天模型（須存在於 CSP model_registry 或為已核准 Agent 名） |
+| 治理中心「知識庫對話模型」 | — | 預設聊天模型。建置時不烘進映像；沒設時畫面會說明尚未設定 |
 | `BASE_PATH` | `/anilalm/`（Dockerfile ARG） | SPA URL 前綴；`vite.config.ts` 讀 `BASE_PATH \|\| VITE_BASE_PATH \|\| '/'` |
 
 ---

@@ -197,12 +197,10 @@ services:
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
-      # 事實抽取 (memory_service) 用的 LLM。預設對齊 LOCAL_LLM_MODEL
-      # (= 下方 AUTO_REGISTER 的 LLM 註冊名),內網把主 LLM 改成 gpt-oss 後
-      # 抽取自動跟著走,不會卡在預設 gemma4(內網未部署)。程式另有保險:
-      # 設定的 model 在 registry 查不到時 fallback 到任一 active LLM。
-      MEMORY_LLM_MODEL: ${MEMORY_LLM_MODEL:-${LOCAL_LLM_MODEL:-gemma4}}
-      # auto_seed 會用這條覆寫 DB 既有 row,改完 /models UI 也要同步改。
+      # 平台自己用的模型（主路由、嵌入、簡報、視覺、摘要、知識庫對話）
+      # 在治理中心「模型角色」指定，不讀這裡的模型名稱。
+      # AUTO_REGISTER_MODELS 只在第一次建立還沒有的列。已存在的列
+      # （含治理中心改過的端點）開機不會被這段蓋回去。
       AUTO_REGISTER_MODELS: >-
         [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
@@ -216,11 +214,12 @@ services:
       # 必需,讓 worker 能呼叫 csp /v1/embeddings 與 /v1/chat/completions)。
       # smoke-user 是 e2e 測試用的帳號,prod 不需要,已移除。要恢復就把舊 entry
       # 加回來 (參考 .env.dev.local 同步區段或 git history)。
-      # models 必須同時列 embedding 與 VISION_MODEL——同一把 INTERNAL_PLATFORM_API_KEY
-      # 打圖說時要 gemma4,只授權 embedding 會 403,匯入卻回「N 張圖、0 張成功」。
-      # 不要改成「全部模型」;auto_seed 對既有 key 只補列上的權限、不刪舊的。
+      # ingestion-worker 的帳號是 role=system。check_model_permission 對
+      # system 放行任何啟用中的模型，所以這把 key 不必跟著視覺／嵌入角色
+      # 改授權。models 只在第一次建立 key 時寫一筆嵌入模型，之後換角色不用改這裡。
+      # auto_seed 對既有 key 只補列上的權限、不刪舊的。
       AUTO_SEED_API_KEYS: >-
-        [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","${VISION_MODEL:-gemma26-nothink}"]}]
+        [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -242,7 +241,7 @@ services:
       # false、不吃 ${PDF_OCR_FALLBACK}**,是刻意讓預覽與 ingest 不一致:
       # OCR 是 1800 秒等級的同步工作,ingest 有佇列可以扛,HTTP request 沒有。
       # 寫成常數而不是「不設」,是為了讓這個差異是**決定**而不是漏接 —— 哪天有人
-      # 幫 csp 補上 VISION_URL/VISION_MODEL,也不會順手把 OCR 開進 request 路徑。
+      # 幫 csp 補上視覺端點,也不會順手把 OCR 開進 request 路徑。
       # 差異寫在 .env.example 與 services/ingestion-worker/README.md。
       PDF_OCR_FALLBACK: "false"
       # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────────────
@@ -367,9 +366,10 @@ services:
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # VLM image captioning: ingest 時把 [[IMAGE:id]] placeholder 換成 caption
       # 才不會 chart/diagram 變成 [image] token 消失。走 csp /v1 proxy 為了計量。
+      # 用哪一顆模型由治理中心的「視覺模型」角色決定，不在這裡寫名稱。
+      # 角色沒設時略過圖說，入庫繼續。
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
-      VISION_MODEL: "${VISION_MODEL:-gemma26-nothink}"
       # 對齊 EMBEDDING_API_KEY 的 fail-loud convention — 不留 changeme fallback。
       VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
@@ -566,10 +566,7 @@ services:
       # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
-      # Studio 投影片／Vision 模型名（docs/runbooks/model-variants.md §2 待接項）：
-      # 未設就是程式預設 gemma4；這台開發機登記的是 gemma26，要在 .env 指定。
-      ANILA_STUDIO_SLIDES_MODEL: ${ANILA_STUDIO_SLIDES_MODEL:-gemma4}
-      ANILA_STUDIO_VISION_MODEL: ${ANILA_STUDIO_VISION_MODEL:-gemma4}
+      # 簡報與視覺模型由治理中心的模型角色決定（slides／vision）。
       JWT_KID: anila-v1
       LOG_LEVEL: INFO
     depends_on:
@@ -600,7 +597,6 @@ services:
       context: ../../apps/anilalm
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
-        VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
     expose:
       - "80"
     depends_on:

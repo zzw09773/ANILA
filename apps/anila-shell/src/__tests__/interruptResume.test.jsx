@@ -707,4 +707,250 @@ describe("ask_user interrupt — 主聊天流程", () => {
     expect(screen.queryByRole("radio")).toBeNull();
     expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
   });
+
+  function askInterrupt(id, question, options, extra = {}) {
+    return {
+      interrupt_id: id,
+      kind: "ask_user",
+      payload: {
+        question,
+        options: options.map((label) => ({ label, value: label, description: "" })),
+        allow_other: true,
+        ...extra,
+      },
+    };
+  }
+
+  // 真 Router：先送 interrupt，再把題目當成一個 content chunk。
+  function routerAskFrames(interrupt) {
+    return [
+      namedEventFrame("anila.interrupt_requested", interrupt),
+      deltaFrame(interrupt.payload.question),
+      metaFrame(defaultMeta({ interrupt, trace: [], reasoning: "" })),
+      doneFrame(),
+    ];
+  }
+
+  async function submitChoice(label) {
+    fireEvent.click(screen.getByRole("radio", { name: label }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    });
+  }
+
+  async function submitFreeText(text) {
+    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應/), {
+      target: { value: text },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    });
+  }
+
+  function answerBodies() {
+    return [...document.querySelectorAll(".anila-msg-body")]
+      .map((el) => el.textContent || "")
+      .join("\n");
+  }
+
+  it("連續 ASK 的題目與回答各自成對，題目不進答案，重整後仍在", async () => {
+    const q1 = askInterrupt("int-q1", "這份報告的主題與型別是？", ["技術評估", "市場調查"]);
+    const q2 = askInterrupt("int-q2", "這份技術評估報告的主題是什麼？", ["密碼學", "通訊"]);
+    const q3 = askInterrupt("int-q3", "要附上哪些比較？", ["威脅模型", "實作成本"], { multi: true });
+    const backend = createFakeBackend()
+      .disableTitleGeneration()
+      .enqueueFrames(routerAskFrames(q1), { sessionId: "sess-chain" })
+      .enqueueSessionAnswerFrames(routerAskFrames(q2))
+      .enqueueSessionAnswerFrames(routerAskFrames(q3))
+      .enqueueSessionAnswer("報告正文在此，不重複題目。");
+    const first = await mountOrchestrator({ backend });
+
+    await sendText("幫我做一份報告");
+    expect(await screen.findByText("這份報告的主題與型別是？")).toBeTruthy();
+    await waitForIdle();
+    await submitChoice(/技術評估/);
+
+    expect(await screen.findByText("這份技術評估報告的主題是什麼？")).toBeTruthy();
+    await submitFreeText("量子計算在密碼學的應用");
+
+    expect(await screen.findByText("要附上哪些比較？")).toBeTruthy();
+    expect(screen.queryByRole("radio")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: /威脅模型/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /實作成本/ }));
+    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應/), {
+      target: { value: "含遷移步驟" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    });
+
+    expect(await screen.findByText(/報告正文在此/)).toBeTruthy();
+    expect(screen.getAllByTestId("interrupt-question").map((el) => el.textContent)).toEqual([
+      "這份報告的主題與型別是？",
+      "這份技術評估報告的主題是什麼？",
+      "要附上哪些比較？",
+    ]);
+    expect(screen.getAllByTestId("interrupt-summary").map((el) => el.textContent)).toEqual([
+      "已選擇：技術評估",
+      "補充：量子計算在密碼學的應用",
+      "已選擇：威脅模型、實作成本；補充：含遷移步驟",
+    ]);
+    const bodies = answerBodies();
+    expect(bodies).toContain("報告正文在此");
+    expect(bodies).not.toContain("這份技術評估報告的主題是什麼？");
+    expect(bodies).not.toContain("要附上哪些比較？");
+    const lastQuestion = screen.getAllByTestId("interrupt-question").at(-1);
+    const report = screen.getByText(/報告正文在此/);
+    expect(lastQuestion.compareDocumentPosition(report) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await waitFor(() => {
+      const convId = backend.conversationIds()[0];
+      const assistant = backend.storedMessages(convId).find((m) => m.role === "assistant");
+      expect(assistant?.content || "").not.toContain("這份技術評估報告的主題是什麼？");
+      expect(assistant?.content || "").toContain("報告正文在此");
+      expect(assistant?.metadata?.settled_interrupts?.map((item) => item.payload.question)).toEqual([
+        "這份報告的主題與型別是？",
+        "這份技術評估報告的主題是什麼？",
+      ]);
+      expect(assistant?.metadata?.interrupt?.payload?.question).toBe("要附上哪些比較？");
+      expect(assistant?.metadata?.interrupt?.answer).toEqual({
+        selected: ["威脅模型", "實作成本"],
+        other_text: "含遷移步驟",
+      });
+    });
+
+    first.unmount();
+    await mountOrchestrator({ backend });
+    await selectConversation("幫我做一份報告");
+    expect(await screen.findByText(/報告正文在此/)).toBeTruthy();
+    expect(screen.getAllByTestId("interrupt-question").map((el) => el.textContent)).toEqual([
+      "這份報告的主題與型別是？",
+      "這份技術評估報告的主題是什麼？",
+      "要附上哪些比較？",
+    ]);
+    expect(answerBodies()).not.toContain("這份技術評估報告的主題是什麼？");
+    expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
+  });
+
+  it("答案第一行若就是題目，串流結束與重整後都還在", async () => {
+    const heading = "這份技術評估報告的主題是什麼？";
+    const q1 = askInterrupt("int-head", heading, ["密碼學", "通訊"]);
+    const backend = createFakeBackend()
+      .disableTitleGeneration()
+      .enqueueFrames([
+        namedEventFrame("anila.interrupt_requested", q1),
+        metaFrame(defaultMeta({ interrupt: q1, trace: [], reasoning: "" })),
+        doneFrame(),
+      ], { sessionId: "sess-heading" })
+      .enqueueSessionAnswer(`${heading}\n報告正文從標題開始。`);
+    const first = await mountOrchestrator({ backend });
+
+    await sendText("幫我做一份報告");
+    expect(await screen.findByText(heading)).toBeTruthy();
+    await waitForIdle();
+    await submitChoice(/密碼學/);
+    expect(await screen.findByText(/報告正文從標題開始/)).toBeTruthy();
+    expect(answerBodies()).toContain(heading);
+    expect(answerBodies()).toContain("報告正文從標題開始");
+
+    await waitFor(() => {
+      const convId = backend.conversationIds()[0];
+      const assistant = backend.storedMessages(convId).find((m) => m.role === "assistant");
+      expect(assistant?.content || "").toContain(heading);
+      expect(assistant?.content || "").toContain("報告正文從標題開始");
+    });
+
+    first.unmount();
+    await mountOrchestrator({ backend });
+    await selectConversation("幫我做一份報告");
+    expect(await screen.findByText(/報告正文從標題開始/)).toBeTruthy();
+    expect(answerBodies()).toContain(heading);
+  });
+
+  it("上一輪 ASK 用過的原始思考，這一輪沒有新原文時不顯示標籤", async () => {
+    const q1 = askInterrupt("int-r1", "這份報告要多長？", ["重點摘要", "完整報告"]);
+    const backend = createFakeBackend()
+      .disableTitleGeneration()
+      .enqueueFrames(routerAskFrames(q1), { sessionId: "sess-raw" })
+      .enqueueSessionAnswerFrames([
+        namedEventFrame("anila.reasoning", { delta: "第一輪先想題目" }),
+        namedEventFrame("anila.interrupt_requested", askInterrupt("int-r2", "還要補充什麼？", ["附錄"])),
+        deltaFrame("還要補充什麼？"),
+        metaFrame(defaultMeta({
+          interrupt: askInterrupt("int-r2", "還要補充什麼？", ["附錄"]),
+          trace: [],
+          reasoning: "第一輪先想題目",
+        })),
+        doneFrame(),
+      ])
+      .enqueueSessionAnswerFrames([
+        deltaFrame("最後的報告。"),
+        metaFrame(defaultMeta({ trace: [], reasoning: "\n" })),
+        doneFrame(),
+      ]);
+    const first = await mountOrchestrator({ backend });
+
+    await sendText("請幫我寫報告");
+    await screen.findByText("這份報告要多長？");
+    await waitForIdle();
+    await submitChoice(/重點摘要/);
+    expect(await screen.findByText("還要補充什麼？")).toBeTruthy();
+    await submitChoice(/附錄/);
+    expect(await screen.findByText(/最後的報告/)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: "原始思考" })).toBeNull();
+    expect(screen.queryByText("第一輪先想題目")).toBeNull();
+
+    await waitFor(() => {
+      const convId = backend.conversationIds()[0];
+      const assistant = backend.storedMessages(convId).find((m) => m.role === "assistant");
+      expect(assistant?.metadata?.reasoning || "").not.toContain("第一輪先想題目");
+    });
+
+    first.unmount();
+    await mountOrchestrator({ backend });
+    await selectConversation("請幫我寫報告");
+    expect(await screen.findByText(/最後的報告/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "原始思考" })).toBeNull();
+  });
+
+  it("這一輪的原始思考跟在標籤後面，串流中不先亮空標籤，重整後還在", async () => {
+    const q1 = askInterrupt("int-k1", "這份報告要多長？", ["重點摘要", "完整報告"]);
+    const backend = createFakeBackend()
+      .disableTitleGeneration()
+      .enqueueFrames(routerAskFrames(q1), { sessionId: "sess-raw-keep" })
+      .enqueueSessionAnswerManual();
+    const mounted = await mountOrchestrator({ backend });
+    await sendText("請幫我寫報告");
+    await screen.findByText("這份報告要多長？");
+    await waitForIdle();
+    await submitChoice(/重點摘要/);
+    await waitFor(() => expect(backend.sessionAnswers).toHaveLength(1));
+    await act(async () => {
+      backend.stream.push(namedEventFrame("anila.reasoning", { delta: "撰寫時的推理" }));
+      backend.stream.push(deltaFrame("依重點摘要寫成。"));
+    });
+    expect(screen.queryByRole("button", { name: "原始思考" })).toBeNull();
+    await act(async () => {
+      backend.stream.push(metaFrame(defaultMeta({ trace: [], reasoning: "撰寫時的推理" })));
+      backend.stream.push(doneFrame());
+      backend.stream.close();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("interrupt-card").getAttribute("data-interrupt-submitting")).toBe("false");
+    });
+    const label = screen.getByRole("button", { name: "原始思考" });
+    const raw = document.querySelector("[data-testid='raw-reasoning']");
+    expect(raw?.textContent).toBe("撰寫時的推理");
+    expect(label.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    mounted.unmount();
+    await mountOrchestrator({ backend });
+    await selectConversation("請幫我寫報告");
+    expect(await screen.findByText(/依重點摘要寫成/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "原始思考" }));
+    expect(screen.getByText("撰寫時的推理")).toBeTruthy();
+  });
 });

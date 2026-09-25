@@ -13,7 +13,7 @@
 CSP is ANILA's authoritative store and **dual-plane gateway**: the Router, ingestion-worker, anila-studio and every frontend ask it for identity, API keys, model / agent manifests and usage. It backs the product-facing **Governance Center** (`apps/csp-governance-ui`), **Task Center** (Task spine), **Artifact Center** (Artifact contract) and **Project Entry** (Service Registry / launch gateway).
 
 - **Control Plane — `/api/*`** (RS256 JWT / cookie auth): governance and internal platform traffic. Users, API keys, model / agent registration + approval, tasks, policy decisions, four-level classification governance, conversations / attachments / shares / handoffs, audit, alerts, banners, departments, Service Registry, trusted-hosts, user memory, service tokens / service clients.
-- **Data Plane — `/v1/*`, `/v2/*`** (`sk-` API key or cookie / service token): OpenAI-compatible proxy that routes by `model_type` to backend LLM / Embedding / VLM / Agent and writes `token_usage` for billing; it also ingests Full Trace spans (`POST /v1/traces/{trace_id}/spans`).
+- **Data Plane — `/v1/*`, `/v2/*`** (`sk-` API key or cookie / service token): OpenAI-compatible proxy that routes by `model_type` to backend LLM / Embedding / VLM / Agent and writes `token_usage` for billing. Full Trace span ingest is gone; `tasks.trace_id` remains a correlation id.
 
 CSP also hosts the **Ingestion knowledge base** (document → chunk → embedding → pgvector RAG + cross-document relations, pushed via `arq` onto a Redis queue consumed by the standalone [`ingestion-worker`](../ingestion-worker/)) and integrates the extracted [`anila-studio`](../anila-studio/) (slides / reports / image generation); on the CSP side only the contract endpoints and the **durable Artifact job store** remain.
 
@@ -93,7 +93,7 @@ The auth router was split from a single file into a package, one submodule per a
 
 ## 4. API surface: Data Plane vs Control Plane
 
-### Data Plane (`/v1/*`, `/v2/*`) — OpenAI-compatible proxy + Trace ingest
+### Data Plane (`/v1/*`, `/v2/*`) — OpenAI-compatible proxy
 
 `app/api/proxy.py` (no APIRouter prefix — full paths, so nginx `/v1` passthrough reaches them):
 
@@ -103,10 +103,7 @@ The auth router was split from a single file into a package, one submodule per a
 - `POST /v1/agents/{agent_name}/sessions/{session_id}/answer` — Router resume passthrough.
 - `POST /v1/embeddings`, `POST /v2/embeddings`.
 
-Full Trace ingest (`app/api/traces.py`, also full-path):
-
-- `POST /v1/traces/{trace_id}/spans` — data-plane span collection (`202`, batch 1..256, `(trace_id, span_id)` idempotent upsert-ignore, fail-safe / non-propagating). Auth = any data-plane credential. The producer is [`anila_trace_sdk`](../../packages/anila-core/src/anila_core/tracing/sdk.py) (inside `packages/anila-core`, fail-open, batching background exporter).
-- `GET /api/traces/{trace_id}` — control-plane read (admin/owner or the requester of the task that owns the trace).
+Full Trace span ingest (`POST /v1/traces`, `trace_spans`) is removed. `tasks.trace_id` is still a correlation id.
 
 ### Control Plane (`/api/*`)
 

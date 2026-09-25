@@ -9,8 +9,7 @@ P2.1 契約（與 CSP ``dispatch_token`` 對齊）：
 ``anila_core.api.middleware``（package 實作）。第三方離線複製請用
 ``anila_core/contrib/anila_verify.py``（單一檔、stdlib + cryptography）。
 
-相關聯標頭（不參與身分、只做追蹤）仍可讀：
-  X-ANILA-Task-Id / X-ANILA-Trace-Id
+本模組只驗派工 JWT。``X-ANILA-Trace-Id`` 不再讀，也不上傳 span。
 """
 
 from __future__ import annotations

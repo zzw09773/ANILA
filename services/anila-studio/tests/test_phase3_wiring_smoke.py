@@ -32,6 +32,8 @@ import pytest
 import respx
 
 from app.api import studio as studio_mod
+
+pytestmark = pytest.mark.real_model_roles
 from app.config import settings
 
 
@@ -148,7 +150,13 @@ async def test_llm_wiring_calls_csp_proxy():
     direct-to-vLLM path is gone — every studio LLM call is csp-fronted
     so usage metering / billing land on the right user.
     """
+    from app.services.studio_model_primary import _reset_for_tests
+
+    _reset_for_tests()
     with respx.mock(assert_all_called=True, base_url=_CSP) as mock:
+        mock.get("/api/models/roles/slides").mock(
+            return_value=httpx.Response(200, json={"name": "deck-llm"})
+        )
         proxy_route = mock.post("/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_proxy_chat_payload()),
         )
@@ -162,11 +170,11 @@ async def test_llm_wiring_calls_csp_proxy():
 
     assert proxy_route.called, "LLM call should hit csp proxy"
     assert content == '{"ok": true}'
-    # Verify the body we sent included the model + temperature so csp's
-    # routing logic gets what it needs.
+    # 送出去的是治理中心解析到的名稱，不是角色哨兵。
     sent = proxy_route.calls[0].request
     body = sent.content.decode("utf-8")
-    assert studio_mod.SLIDES_LLM_MODEL in body
+    assert '"model":"deck-llm"' in body
+    assert studio_mod.SLIDES_LLM_MODEL not in body
     # httpx serialises JSON without spaces by default — match the wire form.
     assert '"temperature":0.3' in body
     # Bearer must have been forwarded for csp's auth + billing pipeline.
