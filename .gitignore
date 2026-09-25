@@ -155,6 +155,10 @@ share-dev/uploads/
 # code-server 的工作目錄（C3 收斂後，預設不再掛 repo root）。
 # 由 ops 自行決定要塞什麼進這個 sandbox；不 commit 內容。
 share/codeserver-sandbox/
+# 維運提供的快速起步站台 profile（csp_base_url）。目錄可空；
+# 不進版控，避免把現場 origin 當成預設值提交。
+share/quickstart/
+share-dev/quickstart/
 
 # ── Misc dev tooling ──────────────────────────────────────────────────────────
 # Observer / loop process locks

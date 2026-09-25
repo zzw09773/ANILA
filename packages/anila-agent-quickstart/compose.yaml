@@ -1,0 +1,20 @@
+# 維護者本機契約測試用，不是 MLSteam 開發者入口。
+# 開發者在 lab 裡執行 ./run.sh。模型祕密由部署者注入，不放在這個檔。
+services:
+  agent:
+    build:
+      context: .
+      network: none
+    image: anila-agent-quickstart:unverified
+    ports:
+      - "${AGENT_PORT:-8200}:8200"
+    env_file:
+      - deployment.env
+    environment:
+      LLM_API_KEY: ${LLM_API_KEY:?set the outbound model credential}
+      LLM_CA_FILE: ${LLM_CA_FILE:-}
+    read_only: true
+    user: "10001:10001"
+    stop_grace_period: 40s
+    cap_drop:
+      - ALL

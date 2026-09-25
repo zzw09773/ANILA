@@ -408,6 +408,53 @@ describe("streamChatCompletion mid-stream anila.error", () => {
   });
 });
 
+describe("streamSessionAnswer mid-stream anila.error", () => {
+  it("rejects with the safe message and does not keep reading a success trailer", async () => {
+    const { streamSessionAnswer } = await import("../runtime/sse.js");
+    const body =
+      'event: anila.resumed\ndata: {"interrupt_id":"int-1"}\n\n' +
+      'data: {"choices":[{"delta":{"content":"半截"}}]}\n\n' +
+      'event: anila.error\ndata: {"message":"agent「demo」暫時無法使用，請稍後再試。"}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+      "data: [DONE]\n\n";
+    const encoder = new TextEncoder();
+    let pulled = false;
+    const reader = {
+      read: async () => {
+        if (pulled) return { done: true, value: undefined };
+        pulled = true;
+        return { done: false, value: encoder.encode(body) };
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        headers: { get: () => null },
+        body: { getReader: () => reader },
+      })),
+    );
+    const onError = vi.fn();
+    const onFinishReason = vi.fn();
+    await expect(
+      streamSessionAnswer({
+        routerBaseUrl: "http://router.test",
+        sessionId: "sess-1",
+        interruptId: "int-1",
+        answer: "go",
+        callbacks: { onError, onFinishReason },
+      }),
+    ).rejects.toMatchObject({
+      message: "agent「demo」暫時無法使用，請稍後再試。",
+      isStreamError: true,
+      partialText: "半截",
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onFinishReason).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
+
 describe.each([
   [
     "streamChatCompletion",

@@ -4,6 +4,10 @@
 
 定位：設計提案，不是已實作功能。依 `main`／`1bee1f99` 的相關檔案核對；既有未提交的 Router／Shell 變更不在本案範圍。
 
+> **2026-09-24 修訂：執行環境改為 MLSteam lab。** 開發者在 MLSteam 開發；每個 lab 是由 Docker image tar 建立的小型虛擬機，lab 內沒有 Docker，服務以 `.py` 直接啟動並由 MLSteam 做 port forwarding（http）。因此主要交付物改為**平台端建置好的 MLSteam lab 映像 tar**，相依在建置映像時已裝好；開發者下載的 zip 只含程式碼與站台設定，**不再附 wheelhouse**。受影響的是 §1、§2、§4.5、§5、§6，完整前提與做法見 §12；其餘契約（端點、JWT、SSE、失敗語意、timeout）不變。
+
+> **2026-09-24 再修訂：下載不必先註冊。** 註冊要 agent endpoint，而那個 URL 要等服務在 lab 裡跑起來、做好 port forwarding 才存在。預設下載是**通用包**：不帶 `agent_id`、不預填模型。開發者自選獲准使用的模型，並用自己在 Console 發行的 `sk-` API key 打 CSP 的 `/v1`。站台 profile 只留 `csp_base_url` 與選填 `csp_ca_file`；舊檔裡的 `models`／`default_model_key` 若還在，下載器略過。見 §1、§6、§12。
+
 ## 0. 決策摘要
 
 新增 `packages/anila-agent-quickstart/`，目標是提供**在指定部署前提完成後可直接部署、已接好平台契約的 Python 服務**。五分鐘路徑由下載預填名稱，開發者只改 `agent.py` 的回答函式；資料來源選填。採 FastAPI＋Uvicorn＋httpx＋cryptography；不安裝 `anila-core`、OpenAI SDK 或 `openai-agents`。目前仍是設計提案，尚無可用下載包。
@@ -23,23 +27,26 @@
 
 ### 開發者負責
 
-- agent 叫什麼。
-- 它如何回答：提示詞，或自己的 Python 邏輯。
+- agent 叫什麼，以及它如何回答：提示詞，或自己的 Python 邏輯。
+- 選一個自己獲准使用的模型，填進 `deployment.env` 的 `LLM_MODEL`。平台不指定模型。
+- 在 Console 發行自己的 CSP API key（`sk-…`），在 lab 以 `export LLM_API_KEY=…` 注入。不要寫進 zip，也不要寫進 `deployment.env`。
+- 服務在 lab 啟動、MLSteam port forwarding 完成後，才到 Console 註冊。註冊需要的 endpoint URL 這時才存在。
+- 把註冊得到的數字 agent id 寫回 `ANILA_AGENT_ID`，再 `./run.sh restart`。
 - 是否使用一個已在平台建立、完成索引並獲准綁定的 collection。
 
 ### 平台／部署者預先負責
 
-- Python／容器基底、相容的離線 wheels。
-- agent 主機可達的 CSP HTTPS origin、正確公開 CA、主機時鐘同步。
-- 可用的 LLM endpoint、模型名稱、必要的**出向模型憑證**與私有 CA。
+- Python／容器基底（2026-09-24 起是 MLSteam lab 映像，見 §12）。
+- 站台 profile 的非祕密事實：`csp_base_url`（lab 連得到的 CSP HTTPS origin，例如 `https://anila.ai.ncsist.org.tw`；這個 origin 不必從 CSP 主機自己連得到）與選填 `csp_ca_file`。主機時鐘仍須同步。
+- profile **不要求**模型區段或 `default_model_key`。檔案裡若還留著，下載器略過，以便舊檔相容。
 - CSP 能連回 agent 的 endpoint、網路與 SSRF allow-list、註冊及核准。
-- 註冊得到的數字 agent ID，以及模型用量歸戶對應。
+- 發行組合完整（骨架檔、hash lock、lab 映像版本、驗證器、公開 CA）。不完整就 503，不發半成品。
 
-這些是不可消失的部署事實，但不應變成四份要新手理解的設定檔。**正常下載必須帶入已核對的非祕密部署設定；模型祕密由部署環境注入，不放 zip。** 若現場尚無可用 LLM 路徑或 Python／容器環境，產品必須說「尚未完成接入環境」，不能稱為五分鐘可用。
+這些不該變成四份要新手理解的設定檔。**正常下載帶入的是站台 origin 與 CA 路徑；模型名稱與 API key 由開發者在 lab 填，zip 永不含 key。** 預設 `LLM_BASE_URL` 是 `<csp_base_url>/v1`。CSP 的 `/v1/chat/completions` 接受 `sk-` API key，所以權限、用量與稽核留在 CSP，開發者看不到內網模型位址。
 
-建議沿用現有 register API：先建立待審註冊資料，再下載該 agent 的快速起步包。現有註冊仍要求名稱、用途描述、endpoint URL 與已啟用的底層模型；endpoint 必須通過 DNS／SSRF 檢查，但此 API 不會先呼叫 agent 的 HTTP health。因此部署者先保留可解析且允許的主機位址與模型，就能在服務尚未啟動時註冊，不需放寬既有 schema 或新增 draft 狀態。**目前 register 回應只有註冊資料，不會產生 deployment.env；組裝該檔是本案下載器需要新增的功能。** Console 的名稱、用途描述與資料庫綁定仍是業務輸入；endpoint、底層模型選擇與核准是部署／治理步驟，不是假裝不存在的第四段業務程式碼。
+開發者不能先註冊：註冊要 endpoint URL，而 URL 要等服務在 lab 裡經 port forwarding 對外才存在。預設下載因此是**通用包**，不帶 `agent_id`、也不預填模型。帶 `agent_id` 的下載只是便利：預填 `ANILA_AGENT_ID`，並照舊驗 owner 或 admin。現有註冊仍要求名稱、用途描述、endpoint URL 與已啟用的底層模型；endpoint 必須通過 DNS／SSRF 檢查。**register 回應只有註冊資料；`deployment.env` 由下載器組裝，agent id 那一欄在通用包裡留空，等開發者填。** Console 的名稱與用途描述仍是註冊時的業務輸入；核准仍是治理步驟。
 
-v1 首選由部署者提供可直接使用的院內 OpenAI-compatible 模型端點。有認證時只使用該模型專用的出向 credential。若必須走 CSP 模型 proxy，使用另外受限的正式 API key，由環境注入；不發明 `csk-`，不偷渡使用者 cookie，不轉送派工 JWT。這會增加營運憑證管理成本，必須明載，不能靠本骨架假裝解決。預設可用環境是五分鐘驗收的先決條件，不是本案順便新增一套 credential broker。
+出向呼叫用開發者自己的 CSP API key。不發明 `csk-`，不偷渡使用者 cookie，不轉送派工 JWT。派工 JWT 只用於入向與 RAG search。若現場沒有可從 lab 到達的 CSP origin，或沒有 lab 映像，產品必須說「尚未完成接入環境」，不能稱為五分鐘可用。
 
 ## 2. 目錄與大小預算
 
@@ -53,8 +60,8 @@ packages/anila-agent-quickstart/
 ├── llm.py                固定目的地的 OpenAI-compatible 呼叫
 ├── requirements.in       小份直接相依與必要安全 pin
 ├── requirements.lock     完整傳遞相依、精確版本與 wheel hashes
-├── Dockerfile            離線建置，非 root 執行
-├── compose.yaml          唯一推薦啟動入口
+├── Dockerfile            離線建置，非 root 執行（2026-09-24：改為建置 MLSteam lab 映像，見 §12）
+├── compose.yaml          唯一推薦啟動入口（2026-09-24：降為維護者本機契約測試用，見 §12）
 ├── .gitignore            排除部署祕密、cache 與個人環境
 ├── README.md             五分鐘操作卡
 └── LICENSE               原始碼授權及適用的第三方標示
@@ -80,7 +87,7 @@ anila-agent-quickstart/
 ├── deployment.env        本站與本 agent 的非祕密設定
 ├── ca.pem                該部署的公開信任鏈，不含私鑰
 ├── bundle.json           骨架版本、來源 revision、檔案雜湊、目標 ABI
-└── wheelhouse/           該目標平台的完整 wheels
+└── wheelhouse/           該目標平台的完整 wheels（2026-09-24：移出 zip，只在建置 lab 映像時使用，見 §12）
 ```
 
 所以**下載包實際是 15＋N 個檔案**，N 是 wheel 數；不把 vendored code 或離線相依藏起來冒稱「只有四個檔案」。開發者真正必讀的只有 README 與 `agent.py`。
@@ -120,7 +127,7 @@ async def respond(messages, context, llm) -> AsyncIterator[str]:
 - `respond` 只產生文字增量。純規則邏輯可以直接 `yield "答案"`，不必呼叫模型；自訂資料來源也可寫在此函式或開發者自己的模組。
 - `COLLECTION_ID` 設成正整數後，外殼先用最後一則 user 文字搜尋一次，再呼叫 `respond`。它只是「要查哪個已授權資料來源」的選擇，不授予權限。下載時若只綁定一個 collection，直接預填；未綁定則填 None。已有多個綁定時由開發者在下載畫面選一個，下載器驗其在 bound set 內；仍只查一個。後續手動改這一處也只能選已綁定的 ID，沒有第二份 env collection 設定。不是由模型自行選擇工具的 agentic RAG。
 - 模型的 `finish_reason` 與可用 usage 由 `llm` 留在 request-local 結果狀態，供 `server.py` 收尾；開發者不必 yield 協定物件。`length` 不可被重寫成 `stop`；自行產生的文字正常結束才用 `stop`。
-- 名稱是穩定的機器名稱，也是 `/v1/models` 回報的 model ID；不是上游模型 ID，也不是 JWT 裡的數字 agent ID。派工認的是註冊列的 `Agent.name`（`/v1/agents` 的 `id`／`name`，以及送到 agent 的 `model`）。`AgentUpdateRequest` 刻意不含 `name`，註解寫明註冊後不可改。因此下載必須用 Console 已填名稱預填 `AGENT_NAME`，新手在五分鐘路徑**不得改第一處**；改了只會讓 `/v1/models` 的 id 與註冊名分叉，明確選 agent 仍打到舊名。沒有先做「註冊名可更新」之前，改名不是本骨架的能力。
+- 名稱是穩定的機器名稱，也是 `/v1/models` 回報的 model ID；不是上游模型 ID，也不是 JWT 裡的數字 agent ID。派工認的是註冊列的 `Agent.name`（`/v1/agents` 的 `id`／`name`，以及送到 agent 的 `model`）。`AgentUpdateRequest` 刻意不含 `name`，註解寫明註冊後不可改。帶 `agent_id` 再下載時，用 Console 已填名稱預填 `AGENT_NAME`。通用包在註冊前下載，留著範例名稱；註冊時請用同一個名字。註冊之後**不得再改**這一處：改了只會讓 `/v1/models` 的 id 與註冊名分叉。沒有先做「註冊名可更新」之前，註冊後改名不是本骨架的能力。
 
 **上述標記是業務原始碼位置，不是宣稱全程只有三次點擊，也不是要求五分鐘內把三處都改掉。** 部署資料、Console 註冊與核准仍須完成；正常路徑由下載包與部署環境帶入，不能要求新手修改 `server.py` 才能連線。改 `AGENT_NAME` 不會更新註冊，在註冊名可更新之前視為錯誤操作。
 
@@ -131,7 +138,7 @@ async def respond(messages, context, llm) -> AsyncIterator[str]:
 - `/health` 公開；`/v1/models` 與 `/v1/chat/completions` 都驗派工 JWT，先驗證再呼叫業務邏輯或資料來源。
 - 使用發行包裡的 `anila_verify.verify_authorization(..., jwks=cache)`；RS256、issuer、audience、exp 及三個身分 claims 均不可略過。不接受明文 `X-ANILA-User-*` 作為身分。
 - 外殼補做身分欄位型別檢查，並比對 `claims.agent_id` 與部署設定的 `ANILA_AGENT_ID`。只驗共同 audience 並不足以防止另一個 agent 的合法 token 被轉用。
-- `ANILA_AGENT_ID` 由註冊回應產生的 `deployment.env` 帶入，不是第四處業務修改。不允許「第一個來的 token 自動綁定」。通用、尚未綁定的來源包可以啟動提供診斷，但 health 不得宣告 ready，受保護端點不得放行。
+- `ANILA_AGENT_ID` 不是第四處業務修改，也不允許「第一個來的 token 自動綁定」。通用包把這一欄留空；註冊後開發者寫回 `deployment.env` 再重啟。未填時服務可以啟動，`/health` 回 `not_registered`，受保護端點不得放行。
 - JWKS 限固定設定的 HTTPS origin；沿用 canonical verifier 的拒絕 redirect 與 CA 檢查。請求內容與未驗證 JWT 都不能指定 JWKS URL。
 - 快取 TTL 300 秒；啟動嘗試抓取，正常每 240 秒更新。初始抓取失敗則以 10 秒間隔重試，服務保持 unavailable。快取失效且無法更新時 fail-closed。
 - 未知 `kid` 至多觸發一次同步更新再驗；用單一鎖合併併發，強制更新有短暫冷卻，避免亂造 kid 造成抓取風暴。只讀未驗證 header 的 kid 作為選鑰提示，從不拿它作為認證結果。
@@ -158,7 +165,7 @@ async def respond(messages, context, llm) -> AsyncIterator[str]:
 - 回應 header 尚未送出：回 OpenAI 形狀 `{"error":{"message":"…","type":"…","code":"…"}}`。無效 token 用 401；agent 綁定不符用 403；格式錯誤用 400；JWKS 暫不可用用 503；上游失敗用 502；deadline 用 504。401 含 Bearer challenge。框架預設的 validation／HTTPException 也轉為同一形狀。
 - header 已送出：送同形狀的 SSE `data: {"error":...}`，再送 DONE；不送成功 stop、不把錯誤當回答文字。DONE 表示傳輸終止，不是成功。
 - 用戶端已斷線或程序被強制終止：取消上游、清理資源；不承諾仍能送出 DONE，更不能吞掉 cancellation 只為湊結尾。
-- **未關閉的平台阻斷**：`_classify_and_yield` 對一般 OpenAI frame 只抽 content；頂層 `{"error":...}` 沒有 content 時回傳 None，錯誤被丟棄。同一次派工串流的收尾仍會送 `finish="stop"` 與 `data: [DONE]`，所以中途失敗會變成「200＋成功 stop＋DONE」。這不是已通過的設計，垂直切片在修正並端到端驗證前不得驗收。修正點在 Router：辨識 OpenAI 頂層 error，轉成 Router／CSP 既有的失敗狀態，並且在 header 已送出後禁止再補成功 stop。**不要**讓第三方 agent 改發 `event: anila.error`。那個名字是 CSP `format_anila_stream_error` 與 Shell `sse.js` 的內部事件；下游原文曾被記為會進聊天泡泡，不是新的公開契約。本次只記錄，不修改正在被別人變更的 Router 檔。
+- **未關閉的平台阻斷**：`_classify_and_yield` 對一般 OpenAI frame 只抽 content；頂層 `{"error":...}` 沒有 content 時回傳 None，錯誤被丟棄。同一次派工串流的收尾仍會送 `finish="stop"` 與 `data: [DONE]`，所以中途失敗會變成「200＋成功 stop＋DONE」。這不是已通過的設計，垂直切片在修正並端到端驗證前不得驗收。修正點在 Router：辨識 OpenAI 頂層 error，轉成 Router／CSP 既有的失敗狀態，並且在 header 已送出後禁止再補成功 stop。**不要**讓第三方 agent 改發 `event: anila.error`。那個名字是 CSP `format_anila_stream_error` 與 Shell `sse.js` 的內部事件；下游原文曾被記為會進聊天泡泡，不是新的公開契約。Router 維護者須在 quickstart 標示可交付之前修正並提供通過的整鏈測試 revision；本設計稿不代表該修正已完成。
 
 ### 4.4 CORS、代理與 TLS
 
@@ -213,38 +220,41 @@ Python 3.13、Linux x86_64、glibc／Debian slim。Python patch 與容器 image 
 
 ### 兩個下載的明確對應
 
-1. **快速起步骨架（預設）**：`GET /api/agents/template/download`，可帶已註冊的 `agent_id` 產生接入設定；檔名 `anila-agent-quickstart-<version>-py313-linux-x86_64.zip`，zip root 固定 `anila-agent-quickstart/`。
-2. **進階實作範例**：新增 `GET /api/agents/examples/advanced/download`；檔名 `anila-agent-advanced-example-<version>.zip`，zip root `anila-agent-advanced-example/`；內容仍是 `packages/anila-agent`，其中 import package 仍叫 `anila_agent`。
+1. **快速起步骨架（預設）**：`GET /api/agents/template/download`。不帶 `agent_id` 就是通用包：只要發行組合完整、profile 有 `csp_base_url`，不必有模型區段。檔名 `anila-agent-quickstart-<version>-py313-linux-x86_64.zip`，zip root 固定 `anila-agent-quickstart/`。帶已註冊的 `agent_id` 是選用便利，只多預填 `ANILA_AGENT_ID`。
+2. **進階實作範例**：`GET /api/agents/examples/advanced/download`；檔名 `anila-agent-advanced-example-<version>.zip`，zip root `anila-agent-advanced-example/`；內容仍是 `packages/anila-agent`，其中 import package 仍叫 `anila_agent`。
 
-零外部使用者，所以直接重定義舊 template endpoint，不留「下載了卻不知哪一套」的相容別名。前端目前另有 `link.download = 'anila-agent.zip'`，也必須改成尊重各端點檔名。既有下載測試不能只改 expected string，必須驗內容與真正能啟動。
+零外部使用者，所以直接重定義舊 template endpoint，不留「下載了卻不知哪一套」的相容別名。前端檔名只採用回應的 `Content-Disposition`。既有下載測試不能只改 expected string，必須驗內容與真正能啟動。
 
-兩個下載仍限制 developer/admin；帶 `agent_id` 時再驗 owner 或 admin，不可利用參數下載別人的部署資料。通用骨架包可供閱讀，但 Console 必須標示「尚未綁定，不能派工」，不得當作完成版快速起步交付。
+兩個下載仍限制 developer/admin；帶 `agent_id` 時再驗 owner 或 admin，不可利用參數下載別人的部署資料。Console 的主按鈕直接下載通用包，並用兩三步寫明順序：下載 → 在 MLSteam lab 開發並啟動 → 設好 port forwarding 後註冊 → 把 agent id 填回 `deployment.env` 再重啟。列表上的「下載專屬包」保留，作為預填 id 的便利，不是必經步驟。
 
 ### deployment.env 的來源與欄位必須閉合
 
-新增下載組裝器從兩個來源取得資料：①經授權的 agent 註冊列；②維運預先提供的**非祕密站台接入 profile**。後者明確填 agent 主機可達的 CSP origin，以及按 base_model_id 對應的外部可達模型位址，不猜瀏覽器 Host，也不把 CSP 容器內網址原封不動當外部網址。首版 profile 是維運受控的發行輸入，不新增一套設定管理 UI。這是尚待實作的下載功能，不是現有 API 能力。
+下載組裝器從兩個來源取得資料：①選用的、經授權的 agent 註冊列（只為了預填 id 與名稱）；②維運預先提供的**非祕密站台 profile**。profile 只填 lab 連得到的 CSP HTTPS origin，不猜瀏覽器 Host，也不把 CSP 容器內網址原封不動當外部網址。沒有模型對照表。首版 profile 是維運受控的發行輸入，不新增一套設定管理 UI。
 
 `deployment.env` 精確包含：
 
-- `CSP_BASE_URL`：站台 profile 的 agent 可達 HTTPS origin。
-- `ANILA_CA_FILE=/app/ca.pem`：下載器加入的公開 CA；非 Docker 部署由其程序管理器對應路徑。
-- `ANILA_AGENT_ID`：註冊列的數字 id。
-- `LLM_BASE_URL`：profile 明確提供、以 `/v1` 結尾的模型 API base；固定呼叫相對 `chat/completions`，不猜路徑。
-- `LLM_MODEL`：profile 與已選 base_model_id 對應的實際模型名稱。
-- `LLM_AUTH_REQUIRED`：profile 明確標記 true／false，不因沒填 key 就默認匿名。
+- `CSP_BASE_URL`：站台 profile 的 lab 可達 HTTPS origin。
+- `ANILA_CA_FILE=/app/ca.pem`：下載器加入的公開 CA。
+- `ANILA_AGENT_ID`：通用包留空，上一行註解說明註冊後把數字 id 填回來再 `./run.sh restart`。帶 `agent_id` 的下載才預填。
+- `LLM_BASE_URL`：`<csp_base_url>/v1`。骨架固定呼叫相對 `chat/completions`。
+- `LLM_MODEL`：留空，上一行註解請開發者填自己獲准使用的模型名稱。
+- `LLM_AUTH_REQUIRED=true`：走 CSP `/v1` 必須帶 key，不因沒填 key 就默認匿名。
 
-出向 `LLM_API_KEY` 只由部署者透過程序環境或容器 secret 注入；如模型不是系統信任 CA，再由部署者提供 `LLM_CA_FILE` 與其掛載。Compose 預接上述變數傳遞，必要項缺少時清楚拒絕 ready。host port 固定預設 8200，可由部署者環境覆寫；agent 對外 endpoint 是 Console 註冊資料，不由服務猜測。
+`LLM_API_KEY` **永不寫進 zip**。README 請開發者在 lab 執行 `export LLM_API_KEY=sk-…`。如 CSP origin 不是系統信任 CA，用 profile 的 `csp_ca_file`（進 zip 的是公開 `ca.pem`）。host port 固定預設 8200；agent 對外 endpoint 是 Console 註冊資料，不由服務猜測。
 
-`AGENT_NAME` 與選填 `COLLECTION_ID` 只在生成的 `agent.py` 出現，不再放一份同義 env 設定。profile 缺模型目的地／名稱或認證模式時，不發行標示「可直接啟動」的 zip。驗證環境應預先測通出向 credential；zip 本身永遠不宣稱能建立它。
+`AGENT_NAME` 與選填 `COLLECTION_ID` 只在生成的 `agent.py` 出現。通用包不預填名稱。profile 缺 `csp_base_url`、發行組合不完整、或公開 CA 解析不了時，回 503，不發半成品 zip。zip 本身永遠不宣稱能建立 API key。
+
+服務允許空的 `ANILA_AGENT_ID`、空的 `LLM_MODEL`、以及尚未 export 的 key 啟動。`CSP_BASE_URL`、`ANILA_CA_FILE`、`LLM_BASE_URL` 缺了，`run.sh` 拒絕啟動。起來之後 `GET /health` 回 503，並給一個機器可讀的 `reason` 與一句中文 `hint`：`llm_not_configured`（模型或 key 還沒好；兩者都缺時先報這個）、`not_registered`、`jwks_unavailable`。`run.sh status` 印同一組字。
 
 ### 明確的掛載改動
 
 保留原掛載 `../../packages/anila-agent:/app/anila-template:ro`，只讓新的 advanced endpoint 使用它。新增：
 
 - `../../packages/anila-agent-quickstart:/app/anila-quickstart:ro`。
-- 發行產物的 target-specific wheelhouse 目錄 → `/app/anila-quickstart-wheels:ro`；正式與 dev 分開來源，只有正式經驗證版本能標為可用下載。
+- 站台 profile 目錄 → `/app/anila-quickstart-profile:ro`，程序讀 `/app/anila-quickstart-profile/profile.json`（`ANILA_QUICKSTART_PROFILE`）。host 路徑用 `ANILA_QUICKSTART_PROFILE_DIR`，預設是 gitignore 底下的 `share/quickstart/`（dev stack 用 `share-dev/quickstart/`，避免撞 live）。**掛目錄，不把單一 json 檔 bind 上去**：檔案不存在時 Docker 會在 host 建一個同名目錄，之後補檔也掛不進。目錄可以是空的，CSP 仍啟動，下載回清楚的 503。
+- 發行產物的 wheelhouse 不再經 CSP 下載（2026-09-24：改為建置 lab 映像的輸入，見 §12）。
 
-`infra/compose/platform.yml` 與 `infra/compose/dev.yml` 都要修改；root `compose.yaml` 是 include shim，不必另定服務。掛載或設定更新必須 recreate CSP。氣隙部署匯出清單要帶上述骨架目錄與 wheelhouse，不能只改開發機 Compose。
+`infra/compose/platform.yml` 與 `infra/compose/dev.yml` 都要修改；root `compose.yaml` 是 include shim，不必另定服務。掛載或設定更新必須 recreate CSP。氣隙部署匯出清單要帶骨架目錄；profile 是現場檔，不進 git。
 
 `anila_verify.py` 不需要另掛 repo 路徑：CSP 本來就安裝 anila-core，下載器使用目前的 `_ANILA_VERIFY_SOURCE`，也就是**該 CSP 映像安裝的** `anila_core/contrib/anila_verify.py`。CA 使用部署者確認可驗證這個 CSP origin 的公開鏈；不能僅因目前 `_PLATFORM_CA_BUNDLE` 路徑存在就認定它覆蓋所有部署憑證。
 
@@ -253,7 +263,7 @@ Python 3.13、Linux x86_64、glibc／Debian slim。Python patch 與容器 image 
 - canonical source 仍唯一：`packages/anila-core/src/anila_core/contrib/anila_verify.py`。
 - quickstart 的版控目錄不放第二份手改副本；zip 組裝加入 canonical bytes，保留授權。
 - `bundle.json` 記錄 source revision、scaffold version、verifier hash、lock hash、目標 ABI 與公開 CA 指紋；不包含 JWT 或 API key。
-- 發行時驗證 zip 裡的 verifier bytes 與同部署 `/api/agents/anila-verify/download` 完全一致，並用 zip 版本跑有效／無效 token fixtures。
+- 發行時驗證 zip 裡的 verifier bytes 與同部署 `/api/agents/anila-verify/download` 完全一致，並用 zip 版本跑有效／無效 token fixtures。此同源比對不能發現映像內的驗證器過舊；發行 pipeline 還須拿該映像內 bytes 的 SHA-256 比對**當次 repo revision** 的 `packages/anila-core/src/anila_core/contrib/anila_verify.py`，異常拒絕發行。
 - wheelhouse、lock 與 verifier 必須是一組通過驗證的發行組合；缺檔、hash 不合或相依不符時回 503，**不交付半成品 zip，不退回下載進階範例**。
 - 已下載的程式不會自動更新。安全修補必須重新發行、通知使用者、讓其更換未修改的基礎設施檔並重建。沒有自動更新器；由 Console／發行清單提示最低安全版本，不靠背景連外。
 
@@ -376,7 +386,61 @@ Python 3.13、Linux x86_64、glibc／Debian slim。Python patch 與容器 image 
 2. 真實 CSP／Router／Shell 對 OpenAI SSE error 與代理緩衝的處理。
 3. 部署站台下載的 CA 是否真的驗得過其 agent 可達 origin，且其模型認證已備妥。
 
-**本案留下的長期維護物只有：四個小 Python 模組、一個可重現離線相依集合、兩個明確下載的組裝契約，以及 zip 層級的契約測試。** 原始碼縮小不是免維護；維護責任從每位開發者重複造接線，集中到平台維護者一次做好。
+**本案長期維護物包括：四個骨架 Python 模組、可重現離線相依、CSP 下載組裝／授權、治理 UI 雙入口、zip 層級契約測試，以及 Router 的串流失敗互通修正。** 750 行預算只限骨架 runtime，不含平台與發行端。原始碼縮小不是免維護；維護責任從每位開發者重複造接線，集中到平台維護者一次做好。
+
+## 12. MLSteam lab 執行環境（2026-09-24 修訂）
+
+### 已確認的前提
+
+以下由平台擁有者於 2026-09-24 確認：
+
+- 開發者在 MLSteam 開發。每個 lab 是由 **Docker image tar** 建立的小型虛擬機，lab 映像可以自選，沒有全院統一的一份。
+- lab 內**沒有 Docker**。服務以 `.py` 直接啟動，由 MLSteam 做 port forwarding，對外是 **http**。
+- lab 映像是 Linux，並以 Jupyter notebook 作為開發介面。
+- lab **長期開著**，不是用完即丟。
+- MLSteam 與 aiagent2 在同一個內網，彼此可達。
+
+### 交付物改為兩層
+
+1. **lab 映像 tar（平台端建置，每個版本一次）**：以固定 digest 的 `python:3.13-slim`（Debian、x86_64，沿用 §5 的首版執行目標）為基底，加上 JupyterLab、快速包 runtime 相依、公開 CA 與 `run.sh`，以 `docker save` 匯出後交給 MLSteam 管理者匯入。相依在**建置時**以 `pip install --no-index --find-links=wheelhouse --require-hashes --only-binary=:all: -r requirements.lock` 安裝完成；§5 對 lock 與 wheelhouse 的要求全部保留，只是把它們從「開發者離線安裝」移到「平台建置映像」。映像 digest 與 lock hash 寫進發行 manifest。
+2. **通用 zip（CSP 下載，沿用 §6）**：只含程式碼（`agent.py` 等骨架檔）、canonical `anila_verify.py`、`deployment.env`、`ca.pem`、`bundle.json`，**不含 wheelhouse、不含 API key**。開發者把它解到 lab 的工作目錄。`deployment.env` 的 `ANILA_AGENT_ID` 與 `LLM_MODEL` 留空。帶 `agent_id` 再下載只是把 id 預填好。`bundle.json` 另外記錄相容的 lab 映像版本；zip 與映像版本不符時，`run.sh` 拒絕啟動並說明原因。
+
+wheelhouse 因此只存在於建置端，不經 CSP 掛載、也不隨每次下載傳送；§6 的 wheelhouse 掛載取消。
+
+### 開發者流程
+
+1. 在 Console 下載通用 zip（不必先註冊）。
+2. 在 MLSteam 以相容映像開一個 lab，把 zip 解到工作目錄。
+3. 在 Jupyter 裡修改 `agent.py`。在 `deployment.env` 填 `LLM_MODEL`，並在 shell `export LLM_API_KEY=sk-…`（自己在 Console 發行的 key）。
+4. 在 terminal 執行 `./run.sh start`。
+5. 在 MLSteam 設定 port forwarding 到服務埠（預設 8200）。
+6. 回到 Console 註冊，endpoint 填 forwarding 後的 http 位址。
+7. 把註冊得到的數字 id 填進 `ANILA_AGENT_ID`，執行 `./run.sh restart`。
+
+### `run.sh`：取代程序管理器
+
+lab 沒有 systemd，也沒有容器的重啟策略；而 Jupyter terminal 關掉，前景程序就會跟著結束。所以骨架提供 `run.sh`，這是新增的第 12 個版控檔案：
+
+- `start`：背景啟動 Uvicorn；程序意外結束時，以遞增等待時間自動重啟；以 pid／lock 檔保證同時只有一個實例；log 寫入工作目錄的 `anila-agent.log`，並控制大小。
+- `stop`：送 SIGTERM，依 §4.5 最多等 30 秒，逾時再強制結束。這取代原本「Compose stop grace 40 秒」的做法。
+- `status`、`logs`：給開發者自己檢查。
+- 啟動前檢查站台欄位（`CSP_BASE_URL`、`ANILA_CA_FILE`、`LLM_BASE_URL`）與 zip／映像版本相容；這幾項缺少時直接拒絕。`ANILA_AGENT_ID` 與 `LLM_MODEL` 可以是空的。`status` 打本機 `/health`，印出同一個 `reason` 與中文 hint。`restart` 等於 stop 再 start。
+
+`Dockerfile` 改為建置上述 lab 映像；`compose.yaml` 不再是開發者的啟動入口，只保留給平台維護者在本機跑契約測試。
+
+### 網路與安全
+
+- **CSP → lab**：走 MLSteam port forwarding 的 **http**。CSP 已支援這個情境：`registration.py` 以 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT`（舊名 `ANILA_ALLOW_HTTP_ENDPOINT`）允許 http agent endpoint，程式註解明載是為了內網 MLSteam http NodePort agent。部署時需把 MLSteam 的主機加入 `ANILA_TRUSTED_HOSTS`，不開整段 RFC1918。
+- **風險，須資安確認後接受**：派工 JWT 以明文 http 在內網傳送。它綁定 `agent_id`、有效期 5 分鐘、派工當下才簽，所以被竊聽後的重放範圍只限同一 agent、5 分鐘內；但這仍是明文憑證。之後若 MLSteam 能提供 https ingress，應改回 https。
+- **lab → CSP**：JWKS 仍走 HTTPS，公開 CA 放進映像（`ANILA_CA_FILE`）。
+- **lab → 模型**：走 CSP 自己的 OpenAI 相容 `/v1`（`LLM_BASE_URL=<csp_base_url>/v1`），TLS 用同一個公開 CA（`ANILA_CA_FILE`）。開發者用自己的 `sk-` API key。權限、用量與稽核留在 CSP。金鑰只在 lab 的環境裡 export，不進映像、不進 zip。
+
+### 待辦與驗收
+
+- 建置腳本：從固定 digest 的基底與 hash lock 建出映像 tar，並產生發行 manifest；在斷網環境下重建應得到相同的相依集合。
+- 在 Python 3.13 上重新解析並產生完整 hash lock（§5 的要求不變）。
+- CSP 下載器移除 wheelhouse，更新下載測試，並驗證 `bundle.json` 的映像相容欄位。
+- **實機驗收**需要在真的 MLSteam 上做：下載通用包 → 用映像開 lab → 填模型並 export key → `run.sh start` → port forwarding → Console 註冊 → 填 `ANILA_AGENT_ID` → `run.sh restart` → 從 Shell 派工成功，並確認 lab 重開後可以再次 `start`。
 
 ## 附錄：本次核對的現有依據
 

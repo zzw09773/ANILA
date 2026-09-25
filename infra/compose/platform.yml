@@ -251,10 +251,19 @@ services:
       DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
+      # 快速起步站台 profile（非祕密：csp_base_url、選填 csp_ca_file）。
+      # 讀的是掛載目錄裡的 profile.json，不是把單一檔案 bind 到
+      # /app/anila-quickstart-profile.json：檔案不存在時 Docker 會在 host
+      # 建一個同名目錄，之後補上真檔也掛不進去。目錄掛載則檔案可晚點放，
+      # CSP 照常啟動，下載在 profile 缺失時回 503。
+      ANILA_QUICKSTART_PROFILE: /app/anila-quickstart-profile/profile.json
     volumes:
-      # packages/anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
-      # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
+      # 進階範例與獨立快速骨架，由 CSP 的兩個下載端點分別讀取。
+      # wheelhouse 不掛進 CSP：相依在建置 MLSteam lab 映像時安裝（設計 §12）。
       - ../../packages/anila-agent:/app/anila-template:ro
+      - ../../packages/anila-agent-quickstart:/app/anila-quickstart:ro
+      # 預設在 gitignore 的 share/quickstart/。改 host 目錄：ANILA_QUICKSTART_PROFILE_DIR。
+      - "${ANILA_QUICKSTART_PROFILE_DIR:-../../share/quickstart}:/app/anila-quickstart-profile:ro"
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - "../../share/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       # 對話附件。刻意放在 share/uploads/ 之外,
@@ -428,6 +437,16 @@ services:
       # 多輪派工的中途狀態（/v1/sessions/{id}/state、/answer）存在這個 SQLite；
       # 2026-09-02 之前沒有 volume，recreate 一次就全部消失（harness M2）。
       ANILA_SESSION_DB_PATH: /app/.anila/sessions.db
+      # 輪替後的 service token 寫在這個 state 目錄（main.py ROUTER_STATE_FILE）。
+      # 2026-09-24 之前預設 /var/lib/anila-router 沒有 volume：9/19 輪替的 token
+      # 在 recreate 後消失，Router 退回舊式 CSP_SERVICE_TOKEN，CSP 以
+      # legacy_env_cannot_satisfy_client_type 拒絕 router-primary／router-prompts（403），
+      # 主模型因此落回 settings.model。放進 router-sessions volume 才能保留。
+      ANILA_ROUTER_STATE_DIR: /app/.anila/state
+      # 換發時才設定：Console「Service clients」對 router-primary 按輪替後顯示一次的
+      # csk- token。state 目錄沒有 token 時，Router 啟動會把它寫進 state 檔
+      # （main.py _self_bootstrap，v1 是直接沿用，不是一次性交換）；寫入後即可從 .env 移除。
+      CSP_BOOTSTRAP_TOKEN: ${CSP_BOOTSTRAP_TOKEN:-}
     volumes:
       - router-sessions:/app/.anila
       # 歸檔 2026-08-09:`MODEL: ${LLM_MODEL:-gemma4}` 曾列在這裡,但 main.py 不讀它

@@ -431,7 +431,11 @@ export async function streamSessionAnswer({
   sessionId,
   interruptId,
   answer,
+  conversationId,
   callbacks = {},
+  // Stop generation: same contract as streamChatCompletion. Abort keeps
+  // already-streamed text and returns it instead of throwing.
+  signal,
 }) {
   if (!sessionId) {
     throw new Error("streamSessionAnswer: sessionId is required");
@@ -445,6 +449,11 @@ export async function streamSessionAnswer({
     const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
     if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);
   }
+  // Same latch as streamChatCompletion. Resume is a new CSP turn; without
+  // this header classification (and the conversation's router model) no-op.
+  if (typeof conversationId === "number") {
+    headers["X-ANILA-Conversation-Id"] = String(conversationId);
+  }
 
   const url = `${(routerBaseUrl || "").replace(/\/$/, "")}/v1/sessions/${encodeURIComponent(
     sessionId,
@@ -453,6 +462,7 @@ export async function streamSessionAnswer({
     method: "POST",
     credentials: "include",
     headers,
+    signal,
     body: JSON.stringify({ interrupt_id: interruptId, answer }),
   });
   if (!response.ok) {
@@ -471,6 +481,7 @@ export async function streamSessionAnswer({
   const decoder = new TextDecoder();
   let buffer = "";
   let accumulatedText = "";
+  let terminalError = null;
   const accumulator = {
     get: () => accumulatedText,
     add: (delta) => {
@@ -479,14 +490,44 @@ export async function streamSessionAnswer({
   };
 
   while (true) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      if (err?.name === "AbortError" || signal?.aborted) break;
+      throw err;
+    }
+    const { done, value } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const parsed = parseSseBlocks(buffer);
     buffer = parsed.remainder;
     for (const event of parsed.events) {
-      dispatchSseEvent(event, { ...callbacks, accumulator });
+      dispatchSseEvent(event, {
+        ...callbacks,
+        accumulator,
+        onError: (payload) => {
+          // Same terminal contract as streamChatCompletion: anila.error
+          // ends the turn. Frames after it (finish=stop, [DONE]) are not
+          // a successful resume.
+          terminalError = payload;
+          callbacks.onError?.(payload);
+        },
+      });
+      if (terminalError) break;
     }
+    if (terminalError) break;
+  }
+
+  if (terminalError) {
+    const raw =
+      typeof terminalError.message === "string"
+        ? terminalError.message.trim()
+        : "";
+    const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
+    err.isStreamError = true;
+    err.partialText = accumulatedText;
+    throw err;
   }
 
   return accumulatedText;

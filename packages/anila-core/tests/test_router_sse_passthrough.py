@@ -17,15 +17,22 @@ typed events were invisible end-to-end. These tests pin the new parser.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import AsyncIterator
 
 import httpx
 import pytest
 import respx
+from fastapi.testclient import TestClient
 
+from anila_core.api import router_server
 from anila_core.api.router_server import _stream_agent_sse
 from anila_core.config import settings
+from anila_core.memory import MemorySession
+from anila_core.registry.remote_agent_manifest import (
+    RemoteAgentManifest,
+    RemoteAgentRegistry,
+)
 
 
 CSP_URL = f"{settings.csp_base_url}/v1/chat/completions"
@@ -394,3 +401,551 @@ async def test_stream_agent_sse_forwards_conversation_id() -> None:
     assert events == [{"type": "done"}]
     assert route.calls.last.request.headers.get("x-anila-conversation-id") == "7"
     assert route.calls.last.request.headers.get("authorization") == "Bearer k"
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed: an upstream error frame is not a successful completion.
+#
+# CSP's chat proxy forwards agent SSE verbatim (it only rewrites
+# ``anila.meta``). Two shapes therefore reach this parser unchanged:
+#
+#   * OpenAI's terminal error object on the default channel —
+#     ``data: {"error": {"message": ..., "code": ...}}`` then ``[DONE]``.
+#   * A named ``event: error`` frame (CSP's own resume passthrough uses
+#     this name, and so do several agent runtimes).
+#
+# The Shell only treats ``event: anila.error`` with ``{"message": ...}``
+# as a failed turn. Anything this parser drops is later closed by the
+# dispatch loop as ``finish_reason=stop`` + ``[DONE]``, which the UI
+# records as a successful answer. These tests pin the parser half of
+# that contract: an error frame is a terminal ``type: error``, its
+# private upstream text stays in ``detail`` (never the user-facing
+# ``error`` string), and a stream that simply ends is not success.
+# ---------------------------------------------------------------------------
+
+_LEAK = "upstream secret sk-live-DO-NOT-LEAK at http://10.1.2.3/v1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openai_error_object_after_delta_is_terminal_error() -> None:
+    """Text delta, then a top-level ``{"error": ...}`` and ``[DONE]``.
+
+    The error must surface as ``type: error`` *before* the done sentinel,
+    and the upstream message must not become the user-facing string.
+    """
+    body = (
+        'data: {"choices":[{"delta":{"content":"部分答案"}}]}\n\n'
+        "data: "
+        + json.dumps(
+            {"error": {"message": _LEAK, "type": "server_error", "code": "internal"}}
+        )
+        + "\n\n"
+        "data: [DONE]\n\n"
+    )
+    respx.post(CSP_URL).mock(return_value=_sse_response(body))
+    events = await _collect("weather-agent", "q")
+
+    assert [e["type"] for e in events] == ["content", "error"]
+    assert events[0]["content"] == "部分答案"
+    err = events[1]
+    assert "weather-agent" in err["error"]
+    # User-facing field is a fixed sentence; the raw upstream text is
+    # operator-only and lives in ``detail``.
+    assert _LEAK not in err["error"]
+    assert "sk-live" not in err["error"]
+    assert "10.1.2.3" not in err["error"]
+    assert _LEAK in err["detail"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_named_event_error_frame_is_terminal_error() -> None:
+    """``event: error`` is a real SSE name on this wire, not an OpenAI chunk."""
+    body = (
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        "event: error\ndata: "
+        + json.dumps({"status": 502, "detail": _LEAK})
+        + "\n\n"
+    )
+    respx.post(CSP_URL).mock(return_value=_sse_response(body))
+    events = await _collect("a", "q")
+
+    assert [event["type"] for event in events] == ["content", "error"]
+    assert events[0] == {"type": "content", "content": "hi"}
+    assert _LEAK not in events[1]["error"]
+    assert _LEAK in events[1]["detail"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_stream_eof_without_done_is_error_not_success() -> None:
+    """The body ending after a delta (no ``[DONE]``, no error frame) is a
+    truncated turn, not a clean completion."""
+    body = 'data: {"choices":[{"delta":{"content":"半截"}}]}\n\n'
+    respx.post(CSP_URL).mock(return_value=_sse_response(body))
+    events = await _collect("a", "q")
+
+    assert [e["type"] for e in events] == ["content", "error"]
+    # Same fixed sentence as every other failure: the fact of the
+    # truncation is recorded in ``detail``, not shown to the caller.
+    assert "暫時無法使用" in events[1]["error"]
+    assert "without data: [DONE]" in events[1]["detail"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_5xx_error_string_hides_response_body() -> None:
+    """A 5xx body can carry stack traces and internal URLs. It stays in
+    ``detail``; the user-facing ``error`` only names the status."""
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(502, content=f"traceback: {_LEAK}".encode())
+    )
+    events = await _collect("a", "q")
+    assert [e["type"] for e in events] == ["error"]
+    assert "502" in events[0]["error"]
+    assert _LEAK not in events[0]["error"]
+    assert _LEAK in events[0]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Dispatch loop: a parsed agent failure must not be closed as success.
+#
+# ``_router_streaming`` ends its dispatch branch with ``anila.meta`` +
+# ``finish_reason=stop`` + ``[DONE]`` unconditionally. The Shell reads
+# ``stop`` as a completed answer and only ``event: anila.error`` (payload
+# ``{"message"}``) as a failed turn, so an agent that streamed some text
+# and then failed is recorded as a good answer. These tests drive the
+# loop with the real parser output rather than a hand-built event.
+# ---------------------------------------------------------------------------
+
+
+class _OneAgent:
+    def __init__(self, manifest: RemoteAgentManifest) -> None:
+        self._manifest = manifest
+
+    def get(self, _api_key: str, agent_id: str):
+        return self._manifest if agent_id == self._manifest.agent_id else None
+
+
+def _drive_dispatch(
+    monkeypatch, agent_body: str, *, requires_encryption: bool = True
+) -> str:
+    """Run ``_router_streaming`` through one dispatch against a fake agent SSE."""
+
+    async def fake_stream_llm(*_args, **_kwargs):
+        yield {"type": "delta", "content": "DISPATCH:agent-a:查一下"}
+        yield {"type": "done"}
+
+    def fake_client():
+        transport = httpx.MockTransport(
+            lambda _request: _sse_response(agent_body)
+        )
+        return httpx.AsyncClient(transport=transport)
+
+    monkeypatch.setattr(router_server, "_stream_llm_sse", fake_stream_llm)
+    monkeypatch.setattr(router_server, "get_http_client", fake_client)
+
+    manifest = RemoteAgentManifest(
+        agent_id="agent-a",
+        name="Agent A",
+        description_for_router="a",
+        endpoint_url="http://agent-a",
+        requires_encryption=requires_encryption,
+    )
+
+    async def run() -> str:
+        chunks: list[str] = []
+        async for line in router_server._router_streaming(
+            "sk",
+            [{"role": "user", "content": "查一下"}],
+            [{"role": "user", "content": "查一下"}],
+            registry=_OneAgent(manifest),
+            base_trace=[],
+            started_at=0.0,
+            route_signal=router_server._ROUTE_DIRECT,
+        ):
+            chunks.append(line)
+        return "".join(chunks)
+
+    return asyncio.run(run())
+
+
+def _sse_events(body: str) -> list[tuple[str, str]]:
+    """``(event name, data)`` per frame. Unnamed frames use ``""``."""
+    out: list[tuple[str, str]] = []
+    for block in body.split("\n\n"):
+        name = ""
+        data = ""
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                name = line[6:].strip()
+            elif line.startswith("data:"):
+                data = line[5:].lstrip()
+        if data:
+            out.append((name, data))
+    return out
+
+
+def test_dispatch_openai_error_after_delta_is_anila_error_not_stop(monkeypatch):
+    body = (
+        'data: {"choices":[{"delta":{"content":"部分答案"}}]}\n\n'
+        "data: "
+        + json.dumps({"error": {"message": _LEAK, "code": "internal"}})
+        + "\n\n"
+        "data: [DONE]\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body)
+    frames = _sse_events(rendered)
+
+    assert any("部分答案" in data for _name, data in frames)
+
+    errors = [data for name, data in frames if name == "anila.error"]
+    assert len(errors) == 1
+    payload = json.loads(errors[0])
+    assert set(payload) == {"message"}
+    assert payload["message"]
+    assert _LEAK not in payload["message"]
+    assert "sk-live" not in rendered
+    assert "10.1.2.3" not in rendered
+
+    finishes = [
+        json.loads(data)["choices"][0]["finish_reason"]
+        for name, data in frames
+        if name == "" and data != "[DONE]"
+    ]
+    assert "stop" not in finishes
+    assert frames[-1] == ("anila.error", errors[0])
+
+
+def test_dispatch_eof_is_anila_error_not_stop(monkeypatch):
+    body = 'data: {"choices":[{"delta":{"content":"半截"}}]}\n\n'
+    rendered = _drive_dispatch(monkeypatch, body)
+    frames = _sse_events(rendered)
+
+    assert any(name == "anila.error" for name, _data in frames)
+    finishes = [
+        json.loads(data)["choices"][0]["finish_reason"]
+        for name, data in frames
+        if name == "" and data != "[DONE]"
+    ]
+    assert "stop" not in finishes
+    assert "[DONE]" not in rendered
+    assert _LEAK not in rendered
+
+
+@pytest.mark.parametrize(
+    "agent_body",
+    [
+        (
+            'data: {"choices":[{"delta":{"content":"部分答案"}}]}\n\n'
+            'data: {"error":{"message":"' + _LEAK + '"}}\n\n'
+            "data: [DONE]\n\n"
+        ),
+        'event: error\ndata: {"detail":"' + _LEAK + '"}\n\n',
+        (
+            'data: {"choices":[{"delta":{"content":"半截"}}]}\n\n'
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        ),
+    ],
+    ids=["in-band-error", "named-error", "stop-without-done"],
+)
+@respx.mock
+def test_chat_completions_dispatch_error_is_terminal_and_redacted(
+    monkeypatch, agent_body: str
+) -> None:
+    """The route's streaming dispatch branch has the same fail-closed contract."""
+    async def _skip_registry_refresh(self, _api_key: str) -> None:
+        return None
+
+    async def _no_compaction(messages, **_kwargs):
+        return messages, None, None
+
+    monkeypatch.setattr(RemoteAgentRegistry, "ensure_fresh", _skip_registry_refresh)
+    monkeypatch.setattr(router_server, "_auto_compact_routing_messages", _no_compaction)
+    manifest = RemoteAgentManifest(
+        agent_id="agent-a",
+        name="Agent A",
+        description_for_router="a",
+        endpoint_url="http://agent-a",
+        requires_encryption=True,
+    )
+    monkeypatch.setattr(RemoteAgentRegistry, "list_agents", lambda self, _api_key: [manifest])
+    monkeypatch.setattr(
+        RemoteAgentRegistry,
+        "get",
+        lambda self, _api_key, agent_id: manifest if agent_id == "agent-a" else None,
+    )
+
+    async def fake_stream_llm(*_args, **_kwargs):
+        yield {"type": "delta", "content": "DISPATCH:agent-a:查一下\n"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(router_server, "_stream_llm_sse", fake_stream_llm)
+    respx.post(CSP_URL).mock(return_value=_sse_response(agent_body))
+    app = router_server.create_router_app(
+        session_factory=lambda session_id: MemorySession(session_id)
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-test"},
+        json={
+            "messages": [{"role": "user", "content": "查一下"}],
+            "stream": True,
+            "session_id": "s-sse-error",
+        },
+    )
+
+    assert response.status_code == 200
+    frames = _sse_events(response.text)
+    assert any(name == "anila.error" for name, _data in frames)
+    # Failure still tells the Shell this turn is classified. The meta is
+    # only that flag (no usage on these bodies) and it precedes anila.error,
+    # which the Shell treats as the last frame it will read.
+    metas = [
+        (i, json.loads(data))
+        for i, (name, data) in enumerate(frames)
+        if name == "anila.meta"
+    ]
+    assert len(metas) == 1
+    meta_i, meta = metas[0]
+    assert meta == {"classified": True}
+    error_i = next(i for i, (name, _) in enumerate(frames) if name == "anila.error")
+    assert meta_i < error_i
+    assert frames[-1][0] == "anila.error"
+    assert _LEAK not in response.text
+    assert "sk-live" not in response.text
+    assert "10.1.2.3" not in response.text
+    assert not any(name == "" and data == "[DONE]" for name, data in frames)
+    assert not any(
+        name == "" and json.loads(data)["choices"][0]["finish_reason"] == "stop"
+        for name, data in frames
+    )
+    traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
+    assert traces[-1]["detail"] == "agent「agent-a」暫時無法使用，請稍後再試。"
+    assert _LEAK not in json.dumps(traces)
+
+
+def test_upstream_anila_error_and_error_trace_do_not_reach_caller(monkeypatch):
+    """An upstream ``anila.error`` and an error-status trace must not carry
+    their text to the caller. The trace's user-visible fields are replaced;
+    ``anila.error`` is the fixed outage sentence and ends the turn."""
+    trace = {
+        "kind": _LEAK,
+        "label": _LEAK,
+        "detail": _LEAK,
+        "status": "error",
+        "message": _LEAK,
+        "latency_ms": 15,
+    }
+    body = (
+        "event: anila.trace\ndata: "
+        + json.dumps(trace, ensure_ascii=False)
+        + "\n\n"
+        + 'data: {"choices":[{"delta":{"content":"還在"}}]}\n\n'
+        + "event: anila.error\ndata: "
+        + json.dumps({"message": _LEAK, "trace": _LEAK}, ensure_ascii=False)
+        + "\n\n"
+        + "data: [DONE]\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body)
+    assert _LEAK not in rendered
+    assert "sk-live" not in rendered
+    assert "10.1.2.3" not in rendered
+    assert "還在" in rendered
+
+    frames = _sse_events(rendered)
+    traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
+    assert {
+        "kind": "error",
+        "label": "上游步驟失敗",
+        "detail": "agent「agent-a」暫時無法使用，請稍後再試。",
+        "status": "error",
+        "latency_ms": 15,
+    } in traces
+    errors = [json.loads(data) for name, data in frames if name == "anila.error"]
+    assert errors == [{"message": "agent「agent-a」暫時無法使用，請稍後再試。"}]
+    assert frames[-1][0] == "anila.error"
+    assert not any(name == "" and data == "[DONE]" for name, data in frames)
+    assert not any(
+        name == ""
+        and data != "[DONE]"
+        and json.loads(data)["choices"][0]["finish_reason"] == "stop"
+        for name, data in frames
+    )
+
+
+def test_dispatch_failure_meta_carries_classified_and_usage_before_error(monkeypatch):
+    """A failed dispatch still tells the Shell ``classified`` and any
+    trustworthy usage, and that meta is not a success frame. ``anila.error``
+    stays last because the Shell stops reading there."""
+    usage = {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9}
+    upstream_meta = {
+        "usage": {**usage, "note": _LEAK},
+        "citations": [_LEAK],
+        "handoff_chain": [{"agent_id": "x", "output_summary": _LEAK}],
+        "route": {"decision": "dispatch"},
+        "answering_agent_id": "agent-a",
+        "confidence": 0.9,
+    }
+    body = (
+        "event: anila.meta\ndata: "
+        + json.dumps(upstream_meta, ensure_ascii=False)
+        + "\n\n"
+        + 'data: {"choices":[{"delta":{"content":"部分"}}]}\n\n'
+        + "data: "
+        + json.dumps({"error": {"message": _LEAK, "code": "internal"}})
+        + "\n\n"
+        + "data: [DONE]\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body)
+    assert _LEAK not in rendered
+    assert "部分" in rendered
+
+    frames = _sse_events(rendered)
+    metas = [
+        (i, json.loads(data))
+        for i, (name, data) in enumerate(frames)
+        if name == "anila.meta"
+    ]
+    assert len(metas) == 1
+    meta_i, meta = metas[0]
+    assert meta == {"classified": True, "usage": usage}
+    error_i = next(i for i, (name, _) in enumerate(frames) if name == "anila.error")
+    assert meta_i < error_i
+    assert frames[-1][0] == "anila.error"
+    assert not any(name == "" and data == "[DONE]" for name, data in frames)
+
+
+def test_upstream_non_error_trace_and_spans_hide_diagnostic_secrets(monkeypatch):
+    """A trace whose status is not ``error``, and an upstream span, can
+    still carry an exception or address. Those strings must not be forwarded."""
+    trace = {
+        "kind": "tool",
+        "label": _LEAK,
+        "detail": f"finished {_LEAK}",
+        "status": "ok",
+    }
+    spans = {
+        "spans": [
+            {
+                "span_id": "span-public",
+                "span_type": "agent.tool_call.finished",
+                "name": _LEAK,
+                "status": "ok",
+                "attributes": {"target": "agent-a", "error": _LEAK},
+            }
+        ]
+    }
+    body = (
+        "event: anila.trace\ndata: "
+        + json.dumps(trace, ensure_ascii=False)
+        + "\n\n"
+        + "event: anila.spans\ndata: "
+        + json.dumps(spans, ensure_ascii=False)
+        + "\n\n"
+        + 'data: {"choices":[{"delta":{"content":"答案"}}]}\n\n'
+        + "data: [DONE]\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body)
+    assert _LEAK not in rendered
+    assert "sk-live" not in rendered
+    assert "10.1.2.3" not in rendered
+    assert "答案" in rendered
+    assert "data: [DONE]" in rendered
+    assert "event: anila.error" not in rendered
+
+    frames = _sse_events(rendered)
+    traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
+    assert {
+        "kind": "tool",
+        "label": "已省略上游診斷內容",
+        "detail": "已省略上游診斷內容",
+        "status": "ok",
+    } in traces
+    span_frames = [json.loads(data) for name, data in frames if name == "anila.spans"]
+    assert span_frames
+    span = span_frames[0]["spans"][0]
+    assert span["span_id"] == "span-public"
+    assert span["attributes"]["target"] == "agent-a"
+    assert span["attributes"]["error"] == "已省略上游診斷內容"
+    assert span["name"] == "已省略上游診斷內容"
+
+
+def test_failure_meta_keeps_classified_latched_by_agent_meta(monkeypatch):
+    """Manifest unclassified, but the agent already sent ``classified: true``."""
+    body = (
+        "event: anila.meta\ndata: "
+        + json.dumps(
+            {"classified": True, "citations": [_LEAK]}, ensure_ascii=False
+        )
+        + "\n\n"
+        + 'data: {"choices":[{"delta":{"content":"部分"}}]}\n\n'
+        + "data: "
+        + json.dumps({"error": {"message": _LEAK}})
+        + "\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body, requires_encryption=False)
+    assert _LEAK not in rendered
+    frames = _sse_events(rendered)
+    metas = [json.loads(data) for name, data in frames if name == "anila.meta"]
+    assert metas == [{"classified": True}]
+    assert frames[-1][0] == "anila.error"
+    meta_i = next(i for i, (name, _) in enumerate(frames) if name == "anila.meta")
+    error_i = next(i for i, (name, _) in enumerate(frames) if name == "anila.error")
+    assert meta_i < error_i
+
+
+def test_non_string_reasoning_tokens_source_does_not_abort_the_answer(monkeypatch):
+    """``reasoning_tokens_source: []`` must not raise and end a good turn."""
+    usage = {
+        "prompt_tokens": 3,
+        "completion_tokens": 4,
+        "total_tokens": 7,
+        "reasoning_tokens_source": [_LEAK],
+    }
+    body = (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"delta": {"content": "答案"}, "finish_reason": None}],
+                "usage": usage,
+            },
+            ensure_ascii=False,
+        )
+        + "\n\n"
+        + "data: [DONE]\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body)
+    assert _LEAK not in rendered
+    assert "答案" in rendered
+    assert "data: [DONE]" in rendered
+    assert "event: anila.error" not in rendered
+    assert "TypeError" not in rendered
+    assert "unhashable" not in rendered
+
+
+def test_successful_trace_redacts_only_the_url(monkeypatch):
+    """A normal trace that mentions a URL keeps the surrounding words."""
+    detail = "參考 https://docs.example.org/help"
+    body = (
+        "event: anila.trace\ndata: "
+        + json.dumps(
+            {"kind": "tool", "label": "查詢", "detail": detail, "status": "ok"},
+            ensure_ascii=False,
+        )
+        + "\n\n"
+        + 'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+        + "data: [DONE]\n\n"
+    )
+    rendered = _drive_dispatch(monkeypatch, body)
+    assert "https://docs.example.org" not in rendered
+    assert "docs.example.org" not in rendered
+    assert "參考" in rendered
+    frames = _sse_events(rendered)
+    traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
+    assert any(
+        step.get("label") == "查詢" and str(step.get("detail", "")).startswith("參考")
+        for step in traces
+    )
+    assert "data: [DONE]" in rendered

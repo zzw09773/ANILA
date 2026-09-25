@@ -20,8 +20,33 @@ export const rejectAgent = (id, reason = '') =>
 export const setAgentClassification = (id, default_classification_level) =>
   client.post(`/api/agents/${id}/classification`, { default_classification_level })
 
-export const downloadTemplate = () =>
-  client.get('/api/agents/template/download', { responseType: 'blob' })
+// 快速起步骨架。不帶 agent_id 是預設通用包（此時還沒有 endpoint，不能先註冊）。
+// 帶數字 id 是選用：預填該 agent 的 ANILA_AGENT_ID，並由後端驗 owner/admin。
+export const downloadQuickstart = (agentId) => {
+  const config = { responseType: 'blob' }
+  if (agentId != null && agentId !== '') config.params = { agent_id: agentId }
+  return client.get('/api/agents/template/download', config)
+}
+
+// 進階實作範例。與快速骨架是兩套獨立下載，不接受 agent_id。
+export const downloadAdvancedExample = () =>
+  client.get('/api/agents/examples/advanced/download', { responseType: 'blob' })
+
+// RFC 6266 / 5987。只採用後端給的 filename，沒有就不猜。
+// AxiosHeaders 的讀法是 .get()，普通物件則直接取欄位。
+export function filenameFromContentDisposition(headers) {
+  const raw = typeof headers?.get === 'function'
+    ? headers.get('content-disposition')
+    : headers?.['content-disposition']
+  const value = String(raw || '')
+  const star = /filename\*=(?:UTF-8|utf-8)''([^;]+)/.exec(value)
+  if (star) {
+    try { return decodeURIComponent(star[1].trim()) } catch { /* 壞的編碼當沒有檔名 */ }
+  }
+  const plain = /filename="([^"]+)"/.exec(value) || /filename=([^;]+)/.exec(value)
+  if (!plain) return ''
+  return plain[1].trim().replace(/^"(.*)"$/, '$1')
+}
 
 // P2.1 — public CSPKI CA bundle for JWKS over https (agent-side trust anchor).
 // Backend route required: GET /api/agents/platform-ca/download → application/x-pem-file

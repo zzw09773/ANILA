@@ -1,12 +1,19 @@
 <template>
   <div class="page">
-    <PageHead title="助手" :subtitle="authStore.isAdmin ? '審查並治理已註冊的助手' : '管理你的助手、下載樣板，再上線到自動選路'">
+    <PageHead title="助手" :subtitle="authStore.isAdmin ? '審查並治理已註冊的助手' : '管理你的助手、下載起步包，再上線到自動選路'">
       <template #actions>
-        <TermButton @click="handleDownloadTemplate" label="下載樣板" />
+        <TermButton @click="handleDownloadQuickstart()" label="下載快速起步" />
+        <TermButton @click="handleDownloadAdvanced" label="下載進階範例" />
         <TermButton @click="handleDownloadPlatformCa" label="下載平台 CA" />
         <TermButton variant="primary" @click="openRegisterModal" label="註冊助手" />
       </template>
     </PageHead>
+    <p class="download-note">
+      1. 下載通用快速起步，在 MLSteam lab 開發並啟動。
+      2. 設好 port forwarding 後再註冊助手。
+      3. 把 agent id 填回 deployment.env，執行 ./run.sh restart。
+      進階實作範例是另一個下載，不是快速起步的下一步。
+    </p>
 
     <div v-if="feedback.message" class="feedback" :class="feedback.type === 'error' ? 'is-err' : 'is-ok'">
       <span>{{ feedback.type === 'error' ? '!' : '✓' }}</span>
@@ -15,14 +22,15 @@
 
     <TermBox title="開發者 · 指南" pad="md">
       <button type="button" class="guide-toggle" @click="showGuide = !showGuide">
-        <span>{{ showGuide ? '▾' : '▸' }} 下載 anila-agent 樣板 · 用 FastAPI 包裝 · 註冊 · 等待審核</span>
+        <span>{{ showGuide ? '▾' : '▸' }} 下載快速起步 · 在 lab 開發並啟動 · port forwarding 後註冊 · 回填 agent id</span>
         <span class="cell-meta">{{ showGuide ? '收合' : '展開' }}</span>
       </button>
       <div v-if="showGuide" class="guide">
         <p class="guide__lead">
-          下載樣板、加工具、包 FastAPI、註冊名稱與 endpoint——
+          一般路徑是快速起步：先下載通用包，在 MLSteam lab 改 <code>agent.py</code> 並啟動。
+          設好 port forwarding 後再註冊，把 agent id 填回 <code>deployment.env</code>。
           <strong>不核發、不保管任何長效祕密</strong>。
-          派工身分改為短效 JWT；驗簽接法見下方三級制（請核對樣板 zip 實際內容，勿假設已內建）。
+          需要工具迴圈或長期狀態時，才另外下載進階實作範例；它已經是可運行的服務，不是要你再包一層 FastAPI。
           完整說明見
           <router-link to="/developer/guide" class="guide__link">開發者指南 →</router-link>
         </p>
@@ -30,36 +38,19 @@
           <li>
             <span class="guide__step">01</span>
             <div>
-              <p><strong>install &amp; verify</strong> · click <em>download template</em> above, then <code>uv pip install -e '.[dev,pgvector]'</code>, copy <code>.env.example</code>, run <code>anila --prompt "ping"</code> to confirm the REPL works.</p>
+              <p><strong>下載再註冊</strong> · 頁首「下載快速起步」是通用包。服務起來、port forwarding 完成後才註冊。註冊必填名稱、至少 24 字的用途說明、endpoint、基礎模型。列表上的「下載專屬包」只預填已有的 agent id。</p>
             </div>
           </li>
           <li>
             <span class="guide__step">02</span>
             <div>
-              <p><strong>add your tool</strong> · use the <code>@anila_tool</code> decorator (auto JSON schema from type hints + docstring):</p>
-              <pre class="guide__code">from anila_agent.tools.base import anila_tool
-
-@anila_tool(is_read_only=True, category="domain")
-def employee_count(department: str) -&gt; int:
-    """Count active employees.
-
-    Args:
-        department: Department name.
-    """
-    return _query_hr_db(department)</pre>
-              <p>or list it in <code>configs/tools.yaml</code> under <code>builtin:</code>. Hook events (<code>pre_tool_use</code> / <code>post_tool_use</code> / <code>stop</code>) registered in the same yaml.</p>
-            </div>
-          </li>
-          <li>
-            <span class="guide__step">02b</span>
-            <div>
-              <p><strong>wrap in FastAPI</strong> · anila-agent is CLI/library, not a service. Add a thin wrapper exposing <code>/health</code> + <code>/v1/chat/completions</code> + <code>/v1/models</code> bridging <code>AnilaRunner</code> ↔ OpenAI-compat SSE. Boilerplate on the dev guide page.</p>
+              <p><strong>只改回答</strong> · 快速起步已接好平台契約。五分鐘路徑只改 <code>agent.py</code> 的回答，不改接線程式。通用包的 <code>AGENT_NAME</code> 是範例名稱；要改的話，改完再用同一個名字註冊。</p>
             </div>
           </li>
           <li>
             <span class="guide__step">03</span>
             <div>
-              <p>架構不限（樣板／LangChain／自建皆可）。平台只認 OpenAI 相容這三條；欄位見註冊視窗與開發者指南。</p>
+              <p>快速起步與進階實作範例都已提供這三條。自建服務也可以，平台只認 OpenAI 相容契約；欄位見註冊視窗與開發者指南。</p>
               <table class="term-table guide__table">
                 <thead><tr><th style="width: 70px">方法</th><th>路徑</th><th>平台要的欄位</th></tr></thead>
                 <tbody>
@@ -125,7 +116,7 @@ def employee_count(department: str) -&gt; int:
     <TermBox :title="`Agent · ${filteredAgents.length}/${agents.length}`" pad="none" flush>
       <div v-if="loading" class="loading">載入 Agent 中…</div>
       <div v-else-if="filteredAgents.length === 0" style="padding: var(--gap-6);">
-        <TermEmpty :message="agents.length === 0 ? '尚無 Agent · 下載樣板開始' : '無符合篩選的 Agent'" />
+        <TermEmpty :message="agents.length === 0 ? '尚無助手 · 先下載快速起步，在 lab 啟動後再註冊' : '無符合篩選的 Agent'" />
       </div>
       <table v-else class="term-table">
         <thead>
@@ -162,6 +153,8 @@ def employee_count(department: str) -&gt; int:
             <td class="cell-meta tnum">{{ formatDate(agent.created_at) }}</td>
             <td>
               <div class="row-actions">
+                <button class="term-action" @click="handleDownloadQuickstart(agent.id)">下載專屬包</button>
+                <span class="row-actions__sep">·</span>
                 <button class="term-action" @click="openDetailModal(agent)">詳情</button>
                 <span class="row-actions__sep">·</span>
                 <button v-if="canEditAgent(agent)" class="term-action" @click="openEditModal(agent)">編輯</button>
@@ -487,7 +480,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { extractError } from '../api/errors'
 import {
-  approveAgent, deleteAgent, downloadPlatformCa, downloadTemplate, getAgent, listMyAgents,
+  approveAgent, deleteAgent, downloadAdvancedExample, downloadPlatformCa,
+  downloadQuickstart, filenameFromContentDisposition, getAgent, listMyAgents,
   registerAgent, rejectAgent, setAgentClassification,
   testAgentConnection, triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
@@ -896,17 +890,51 @@ async function handleReject() {
   } catch (e) { setFeedback('error', extractError(e, '駁回失敗')) }
 }
 
-async function handleDownloadTemplate() {
+async function blobDetail(err, fallback) {
+  const data = err?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text())
+      return extractError({ response: { data: parsed } }, fallback)
+    } catch {
+      return fallback
+    }
+  }
+  return extractError(err, fallback)
+}
+
+async function saveDownload(request, label) {
   try {
-    const { data } = await downloadTemplate()
-    const url = URL.createObjectURL(new Blob([data]))
+    const { data, headers } = await request
+    const filename = filenameFromContentDisposition(headers)
+    if (!filename) {
+      setFeedback('error', `${label}回應沒有檔名，未下載`)
+      return
+    }
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]))
     const link = document.createElement('a')
     link.href = url
-    link.download = 'anila-agent.zip'
+    link.download = filename
+    document.body.appendChild(link)
     link.click()
+    link.remove()
     URL.revokeObjectURL(url)
-    setFeedback('success', '樣板已下載')
-  } catch (e) { setFeedback('error', extractError(e, '下載失敗')) }
+    setFeedback('success', `${label}已下載`)
+  } catch (e) {
+    setFeedback('error', await blobDetail(e, `${label}下載失敗`))
+  }
+}
+
+function handleDownloadQuickstart(agentId) {
+  const bound = agentId != null
+  return saveDownload(
+    downloadQuickstart(bound ? agentId : undefined),
+    bound ? '專屬快速起步' : '快速起步',
+  )
+}
+
+function handleDownloadAdvanced() {
+  return saveDownload(downloadAdvancedExample(), '進階實作範例')
 }
 
 async function handleDownloadPlatformCa() {
@@ -951,6 +979,7 @@ function buildStatusHistory(agent) {
 
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+.download-note { margin: 0; font-size: var(--t-xs); color: var(--c-fg-2); line-height: 1.5; }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }

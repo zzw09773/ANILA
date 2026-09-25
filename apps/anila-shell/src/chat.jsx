@@ -1225,86 +1225,107 @@ export const MessageBubble = ({
           : [msg.reasoning, inlineThinking]
             .filter((s) => typeof s === "string" && s.trim().length > 0)
             .join("\n\n");
-        const displayBody = inlineThinking ? cleanBody : msg.text;
-
-        return (
-          <>
-            <ReasoningSummary
-              trace={msg.trace}
-              reasoning={combinedReasoning}
-              routedAgent={routedAgent}
-              streaming={msg.streaming}
-              stageLabel={msg.stageLabel}
-              finishedAt={msg.finishedAt}
-              thinkingLocked={msg.thinkingLocked}
-              usage={msg.usage}
-              thinkingApplied={msg.thinkingApplied}
-              reasoningPersist={msg.reasoningPersist}
-              thinkingSummaries={msg.thinkingSummaries}
-              thinkingStatus={msg.thinkingStatus}
-              thinkingElapsedMs={msg.thinkingElapsedMs}
-              thinkingStartedAt={msg.thinkingStartedAt}
-              showThinkingOrb={isLatestAssistant}
-            />
-            {(() => {
-              const interrupt = normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt);
-              const pending = interrupt && interrupt.status !== "answered";
-              if (!pending) return null;
-              return (
+        const interrupt = normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt);
+        const settled = (Array.isArray(msg.settledInterrupts) ? msg.settledInterrupts : [])
+          .map((item) => normalizeInterrupt(item))
+          .filter(Boolean);
+        const resumeLayout = msg.prefaceText != null
+          || settled.length > 0
+          || interrupt?.status === "answered";
+        const prefaceSource = msg.prefaceText != null ? msg.prefaceText : msg.text;
+        const prefaceExtract = extractThinkTags(prefaceSource || "");
+        const displayPreface = prefaceExtract.thinking ? prefaceExtract.body : (prefaceSource || "");
+        const displayBody = resumeLayout
+          ? displayPreface
+          : (inlineThinking ? cleanBody : msg.text);
+        const continuation = typeof msg.resumeText === "string" ? msg.resumeText : "";
+        const thinkingSummary = (
+          <ReasoningSummary
+            trace={msg.trace}
+            reasoning={combinedReasoning}
+            routedAgent={routedAgent}
+            streaming={msg.streaming}
+            stageLabel={msg.stageLabel}
+            finishedAt={msg.finishedAt}
+            thinkingLocked={msg.thinkingLocked}
+            usage={msg.usage}
+            thinkingApplied={msg.thinkingApplied}
+            reasoningPersist={msg.reasoningPersist}
+            thinkingSummaries={msg.thinkingSummaries}
+            thinkingStatus={msg.thinkingStatus}
+            thinkingElapsedMs={msg.thinkingElapsedMs}
+            thinkingStartedAt={msg.thinkingStartedAt}
+            showThinkingOrb={isLatestAssistant}
+          />
+        );
+        const renderBody = (text, streaming) => (
+          <div
+            className="anila-msg-body"
+            style={{
+              fontSize: 15.5, lineHeight: 1.7,
+              color: "var(--fg)",
+            }}
+          >
+            {text ? (
+              <MarkdownView
+                text={text}
+                citations={msg.citations}
+                onOpenCitation={onOpenCitation}
+                messageId={msg.id}
+                conversationId={msg.conversationId ?? conversationId}
+                streaming={Boolean(streaming)}
+                streamState={msg.streamState ?? null}
+                finishReason={msg.finishReason ?? null}
+              />
+            ) : null}
+            {streaming && text ? (
+              <span style={{
+                display: "inline-block", width: 7, height: 15,
+                background: "var(--fg)", marginLeft: 2, verticalAlign: "text-bottom",
+                animation: "anila-blink 1s steps(2) infinite",
+              }}/>
+            ) : null}
+          </div>
+        );
+        const renderSummary = (item) => (
+          <InterruptCard
+            key={item.interrupt_id || item.kind}
+            kind={item.kind}
+            payload={item.payload || {}}
+            answer={item.answer}
+          />
+        );
+        const renderActiveCard = () => {
+          if (!interrupt) return null;
+          const answered = interrupt.status === "answered";
+          return (
+            <div
+              data-testid="interrupt-card"
+              data-interrupt-submitting={msg.interruptSubmitting ? "true" : "false"}
+            >
+              {!answered ? (
                 <div style={{ marginBottom: 8 }}>
                   <PausedBadge kind={interrupt.kind} />
                 </div>
-              );
-            })()}
-            <div
-              className="anila-msg-body"
-              style={{
-                fontSize: 15.5, lineHeight: 1.7,
-                color: "var(--fg)",
-              }}
-            >
-              {displayBody ? (
-                // Citations used to take the plain-text branch, so RAG
-                // answers (which always have citations) never got markdown.
-                // Markdown itself handles block newlines; [n] chips are
-                // substituted on text nodes inside MarkdownView.
-                <MarkdownView
-                  text={displayBody}
-                  citations={msg.citations}
-                  onOpenCitation={onOpenCitation}
-                  messageId={msg.id}
-                  conversationId={msg.conversationId ?? conversationId}
-                  streaming={Boolean(msg.streaming)}
-                  streamState={msg.streamState ?? null}
-                  finishReason={msg.finishReason ?? null}
-                />
               ) : null}
-              {msg.streaming && msg.text && !normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt) && (
-                <span style={{
-                  display: "inline-block", width: 7, height: 15,
-                  background: "var(--fg)", marginLeft: 2, verticalAlign: "text-bottom",
-                  animation: "anila-blink 1s steps(2) infinite",
-                }}/>
-              )}
+              <InterruptCard
+                kind={interrupt.kind}
+                payload={interrupt.payload || {}}
+                disabled={Boolean(msg.interruptSubmitting) && !answered}
+                answer={answered ? interrupt.answer : null}
+                initialAnswer={answered ? null : (msg.interruptRestore ?? null)}
+                onSubmit={
+                  answered || typeof onInterruptSubmit !== "function"
+                    ? undefined
+                    : (next) => onInterruptSubmit(msg, next)
+                }
+              />
             </div>
-            {(() => {
-              const interrupt = normalizeInterrupt(msg.interrupt || msg.metadata?.interrupt);
-              if (!interrupt) return null;
-              const answered = interrupt.status === "answered";
-              return (
-                <InterruptCard
-                  kind={interrupt.kind}
-                  payload={interrupt.payload || {}}
-                  disabled={Boolean(msg.interruptSubmitting)}
-                  answer={answered ? interrupt.answer : null}
-                  onSubmit={
-                    answered || typeof onInterruptSubmit !== "function"
-                      ? undefined
-                      : (answer) => onInterruptSubmit(msg, answer)
-                  }
-                />
-              );
-            })()}
+          );
+        };
+
+        const messageNotices = (
+          <>
             {!msg.streaming && msg.error && (
               <div
                 role="alert"
@@ -1386,6 +1407,32 @@ export const MessageBubble = ({
                 <ConfidenceChip confidence={msg.confidence} />
               </div>
             )}
+          </>
+        );
+
+        if (resumeLayout) {
+          return (
+            <>
+              {renderBody(displayBody, false)}
+              {settled.map((item) => renderSummary(item))}
+              {interrupt?.status === "answered" ? renderActiveCard() : null}
+              {thinkingSummary}
+              {continuation ? renderBody(continuation, Boolean(msg.streaming)) : null}
+              {interrupt && interrupt.status !== "answered" ? renderActiveCard() : null}
+              {messageNotices}
+            </>
+          );
+        }
+
+        return (
+          <>
+            {thinkingSummary}
+            {renderBody(
+              displayBody,
+              Boolean(msg.streaming) && !interrupt,
+            )}
+            {renderActiveCard()}
+            {messageNotices}
           </>
         );
       })()}

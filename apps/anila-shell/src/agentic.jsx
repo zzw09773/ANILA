@@ -77,6 +77,9 @@ export function PausedBadge({ kind = "ask_user", label }) {
  * the submission is in flight. After a successful resume the parent
  * passes `answer` and the card collapses to a one-line summary.
  *
+ * `initialAnswer` seeds a remounted form after a failed resume so the
+ * previous selection and free text come back.
+ *
  * @param {object} props
  * @param {string} props.kind
  * @param {object} props.payload
@@ -84,6 +87,7 @@ export function PausedBadge({ kind = "ask_user", label }) {
  * @param {boolean} [props.disabled] — set by parent once the resume
  *   is in flight; cleared when anila.resumed arrives.
  * @param {object} [props.answer] — persisted `{selected, other_text}`
+ * @param {object} [props.initialAnswer] — draft restored after a failed resume
  */
 export function InterruptCard({
   kind,
@@ -91,18 +95,12 @@ export function InterruptCard({
   onSubmit,
   disabled = false,
   answer = null,
+  initialAnswer = null,
 }) {
   if (answer) {
-    const summary = kind === "ask_user"
-      ? formatAskUserSummary(payload, answer)
-      : kind === "plan"
-        ? (answer.decision === "accept" ? "已核准計畫" : "已拒絕計畫")
-        : kind === "tool_approval"
-          ? (answer.approved ? "已授權工具" : "已拒絕工具")
-          : "已回覆";
     return (
       <div style={cardWrapperStyle} data-testid="interrupt-summary">
-        {summary}
+        {interruptSummaryText(kind, payload, answer)}
       </div>
     );
   }
@@ -112,13 +110,12 @@ export function InterruptCard({
         payload={payload}
         onSubmit={onSubmit}
         disabled={disabled}
+        initialAnswer={initialAnswer}
       />
     );
   }
   if (kind === "plan") {
-    return (
-      <PlanCard payload={payload} onSubmit={onSubmit} disabled={disabled} />
-    );
+    return <PlanCard payload={payload} onSubmit={onSubmit} disabled={disabled} />;
   }
   if (kind === "tool_approval") {
     return (
@@ -129,7 +126,6 @@ export function InterruptCard({
       />
     );
   }
-  // Unknown kind — surface raw payload so debugging is possible.
   return (
     <div style={cardWrapperStyle}>
       <div style={cardHeaderStyle}>未知中斷類型: {kind}</div>
@@ -143,6 +139,17 @@ export function InterruptCard({
       </pre>
     </div>
   );
+}
+
+function interruptSummaryText(kind, payload, answer) {
+  if (kind === "ask_user") return formatAskUserSummary(payload, answer);
+  if (kind === "plan") {
+    return answer?.approved === true || answer?.decision === "accept" ? "已核准計畫" : "已拒絕計畫";
+  }
+  if (kind === "tool_approval") {
+    return answer?.approved ? "已授權工具" : "已拒絕工具";
+  }
+  return "已回覆";
 }
 
 
@@ -200,41 +207,120 @@ export function normalizeInterrupt(raw) {
   };
 }
 
-function AskUserCard({ payload, onSubmit, disabled }) {
+function initialAskFields(payload, initialAnswer) {
+  const multi = payload?.multi === true;
+  const multiSelect = multi || Boolean(payload?.multi_select);
+  const selectedRaw = Array.isArray(initialAnswer?.selected)
+    ? initialAnswer.selected.map((value) => String(value))
+    : [];
+  const other = String(initialAnswer?.other_text ?? "");
+  if (!initialAnswer) {
+    return { selected: multiSelect ? [] : "", other: "", choice: null };
+  }
+  if (multi) return { selected: selectedRaw, other, choice: null };
+  if (multiSelect) {
+    return {
+      selected: selectedRaw,
+      other,
+      choice: selectedRaw.length ? "option" : (other.trim() ? "other" : null),
+    };
+  }
+  if (other.trim() && selectedRaw.length === 0) {
+    return { selected: "", other, choice: "other" };
+  }
+  return {
+    selected: selectedRaw[0] || "",
+    other: "",
+    choice: selectedRaw[0] ? "option" : null,
+  };
+}
+
+function AskUserCard({ payload, onSubmit, disabled, initialAnswer = null }) {
   const {
     question = "(no question)",
     options = [],
-    multi_select: multiSelect = false,
+    multi_select: multiSelectFlag = false,
   } = payload;
-  const [selected, setSelected] = useState(multiSelect ? [] : "");
-  const [other, setOther] = useState("");
+  // Router ASK*: sets ``multi``. Agent ask_user sets ``multi_select``.
+  // Either flag is checkboxes. Free text is extra only for ``multi``;
+  // the agent flag still treats the text box as the whole answer.
+  const multi = payload.multi === true;
+  const multiSelect = multi || Boolean(multiSelectFlag);
+  const seeded = initialAskFields(payload, initialAnswer);
+  const [selected, setSelected] = useState(seeded.selected);
+  const [other, setOther] = useState(seeded.other);
+  // "option" — a radio/checkbox wins, even if the text box still has text.
+  // "other" — typing is the answer; the radios are cleared.
+  // Ignored when ``multi`` is set: checks and free text submit together.
+  const [choice, setChoice] = useState(seeded.choice);
   const [busy, setBusy] = useState(false);
 
   const toggle = (value) => {
     if (multiSelect) {
-      setSelected((prev) =>
-        prev.includes(value) ? prev.filter((x) => x !== value) : [...prev, value],
-      );
-    } else {
-      setSelected(value);
+      const next = selected.includes(value)
+        ? selected.filter((x) => x !== value)
+        : [...selected, value];
+      setSelected(next);
+      if (!multi) {
+        setChoice(next.length ? "option" : (other.trim() ? "other" : null));
+      }
+      return;
     }
+    setChoice("option");
+    setSelected(value);
+  };
+
+  const handleOtherChange = (event) => {
+    const value = event.target.value;
+    setOther(value);
+    if (multi) return;
+    if (value.trim()) {
+      setChoice("other");
+      setSelected(multiSelect ? [] : "");
+      return;
+    }
+    setChoice((current) => (current === "other" ? null : current));
   };
 
   const handleSubmit = async () => {
+    const otherText = other.trim();
+    if (multi) {
+      const selectedValues = Array.isArray(selected) ? [...selected] : [];
+      if (selectedValues.length === 0 && !otherText) return;
+      setBusy(true);
+      try {
+        await onSubmit?.({ selected: selectedValues, other_text: otherText });
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (choice === "other") {
+      if (!otherText) return;
+      setBusy(true);
+      try {
+        await onSubmit?.({ selected: [], other_text: otherText });
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const selectedValues = multiSelect
       ? [...selected]
       : selected ? [selected] : [];
-    const otherText = other.trim();
-    if (selectedValues.length === 0 && !otherText) return;
+    if (selectedValues.length === 0) return;
     setBusy(true);
     try {
-      await onSubmit?.({ selected: selectedValues, other_text: otherText });
+      await onSubmit?.({ selected: selectedValues, other_text: "" });
     } finally {
       setBusy(false);
     }
   };
 
   const isDisabled = disabled || busy;
+  const needsAnswer = multi && (
+    (Array.isArray(selected) ? selected.length : 0) === 0 && !other.trim()
+  );
 
   return (
     <div style={cardWrapperStyle}>
@@ -292,7 +378,7 @@ function AskUserCard({ payload, onSubmit, disabled }) {
         type="text"
         placeholder="或輸入其他回應…"
         value={other}
-        onChange={(e) => setOther(e.target.value)}
+        onChange={handleOtherChange}
         disabled={isDisabled}
         style={{
           marginTop: 8,
@@ -310,7 +396,7 @@ function AskUserCard({ payload, onSubmit, disabled }) {
           variant="primary"
           size="sm"
           onClick={handleSubmit}
-          disabled={isDisabled}
+          disabled={isDisabled || needsAnswer}
         >
           {busy ? "送出中…" : "送出回答"}
         </Button>
@@ -324,10 +410,10 @@ function PlanCard({ payload, onSubmit, disabled }) {
   const { plan = "" } = payload;
   const [busy, setBusy] = useState(false);
 
-  const send = async (decision) => {
+  const send = async (approved) => {
     setBusy(true);
     try {
-      await onSubmit?.({ decision });
+      await onSubmit?.({ approved });
     } finally {
       setBusy(false);
     }
@@ -357,7 +443,7 @@ function PlanCard({ payload, onSubmit, disabled }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <Button
           size="sm"
-          onClick={() => send("decline")}
+          onClick={() => send(false)}
           disabled={isDisabled}
         >
           拒絕
@@ -365,7 +451,7 @@ function PlanCard({ payload, onSubmit, disabled }) {
         <Button
           variant="primary"
           size="sm"
-          onClick={() => send("accept")}
+          onClick={() => send(true)}
           disabled={isDisabled}
         >
           {busy ? "送出中…" : "核准計畫"}

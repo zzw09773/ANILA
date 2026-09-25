@@ -20,6 +20,7 @@ reader sees unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -27,12 +28,24 @@ import httpx
 import pytest_asyncio
 import respx
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import pytest
 
-from anila_core.api.router_server import create_router_app
+from anila_core.api.router_server import (
+    _resume_content_text,
+    _resume_router_ask,
+    _router_answer_resume_message,
+    _scrub_diagnostic_value,
+    create_router_app,
+)
+from anila_core.engine.approvals import to_record
+from anila_core.http_pool import reset_http_client
+from anila_core.models.interrupt import InterruptItem
+from anila_core.models.message import AssistantMessage, ToolCall, UserMessage
 from anila_core.config import settings
 from anila_core.memory import close_all_connections
+from anila_core.memory.short_term.sqlite import SqliteSession
 
 
 CSP_BASE = settings.csp_base_url
@@ -165,6 +178,7 @@ def test_non_streaming_ask_pauses_without_leaking_protocol(db_path: Path) -> Non
     assert interrupt["kind"] == "ask_user"
     assert interrupt["payload"]["question"] == "要查哪一年的規章？"
     assert [o["value"] for o in interrupt["payload"]["options"]] == ["2024", "2025"]
+    assert not interrupt["payload"].get("multi")
 
 
 @respx.mock
@@ -759,3 +773,650 @@ def test_synthesis_turn_can_ask_after_a_dispatch(
     assert body["anila_meta"]["route"]["decision"] == "ask"
     assert body["choices"][0]["message"]["content"] == "合成後要問？"
     assert "ASK:" not in body["choices"][0]["message"]["content"]
+
+
+_RESUME_OUTAGE = "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）"
+_RESOLVED_RESUME_MODEL = "glm-resume-not-env"
+CSP_RESOLVE_URL = f"{CSP_BASE}/api/router-models/resolve"
+
+
+def _choice_text(body: str) -> str:
+    """Visible assistant text carried in OpenAI chunks, ignoring named events."""
+    parts: list[str] = []
+    for name, data in _sse_events(body):
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or "choices" not in payload:
+            continue
+        if name not in ("message", ""):
+            continue
+        for choice in payload.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+            parts.append(str(delta.get("content") or message.get("content") or ""))
+    return "".join(parts)
+
+
+def _pause_router_ask(client: TestClient, session_id: str) -> str:
+    """Open a Router-side ASK and return its pending interrupt id."""
+    first = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "挑功能"}],
+            "stream": False,
+            "session_id": session_id,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert first.status_code == 200, first.text
+    state = client.get(
+        f"/v1/sessions/{session_id}/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert state.status_code == 200, state.text
+    return state.json()["pending_interrupts"][0]["id"]
+
+
+@respx.mock
+@pytest.mark.real_router_model_resolve
+@pytest.mark.parametrize("stream", [True, False])
+def test_router_ask_resume_uses_csp_resolved_model(
+    db_path: Path, stream: bool
+) -> None:
+    """Resume is its own request: the routing LLM must use CSP's model.
+
+    ``chat_completions`` resolves the model and stores it on a ContextVar.
+    The answer endpoint does not inherit that. Falling through to
+    ``settings.model`` is what made CSP answer 404 for a model it does
+    not have.
+    """
+    assert _RESOLVED_RESUME_MODEL != settings.model
+    seen: list[dict] = []
+
+    def csp_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        seen.append(body)
+        if len(seen) == 1:
+            return httpx.Response(
+                200, json=_llm_reply("ASK:要挑哪幾個？|一|全都要")
+            )
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=_llm_sse("好，全都要。").encode("utf-8"),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_llm_reply("好，全都要。"))
+
+    resolve_route = respx.post(CSP_RESOLVE_URL).mock(
+        return_value=httpx.Response(200, json={"name": _RESOLVED_RESUME_MODEL})
+    )
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.post(CSP_URL).mock(side_effect=csp_handler)
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    iid = _pause_router_ask(client, "s-resume-model")
+    resumed = client.post(
+        "/v1/sessions/s-resume-model/answer",
+        json={
+            "interrupt_id": iid,
+            "answer": {"selected": ["全都要"], "other_text": ""},
+            "stream": stream,
+            "anila_thinking_tier": "deep",
+            "temperature": 0.7,
+        },
+        headers={
+            "Authorization": "Bearer sk-test",
+            "X-ANILA-Conversation-Id": "42",
+        },
+    )
+    assert resumed.status_code == 200, resumed.text
+    # The opening turn resolves once. Resume must resolve again; the
+    # conversation id on that second hop is how CSP latches the model.
+    assert resolve_route.call_count == 2
+    resume_resolve = json.loads(resolve_route.calls[-1].request.content.decode())
+    assert resume_resolve["conversation_id"] == 42
+    resume_payload = seen[-1]
+    assert resume_payload["model"] == _RESOLVED_RESUME_MODEL
+    assert resume_payload["model"] != settings.model
+    assert resume_payload["anila_thinking_tier"] == "deep"
+    assert resume_payload["temperature"] == 0.7
+
+
+@respx.mock
+@pytest.mark.parametrize("stream", [True, False])
+def test_router_ask_resume_llm_failure_is_anila_error(
+    db_path: Path, stream: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed resume routing call is not a successful answer.
+
+    The outage sentence used to ride out as a content chunk closed with
+    ``finish=stop`` and ``[DONE]``. The Shell appends that chunk to the
+    question and stores the turn as complete. The turn now ends on
+    ``anila.error``. The same interrupt can be answered again, and the
+    upstream body does not land in the log.
+    """
+    secret = "sk-live-RESUME-ASK-DO-NOT-LEAK"
+    query_secret = "resume-query-DO-NOT-LEAK"
+    calls = {"n": 0}
+    seen: list[list] = []
+
+    def csp_handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        body = json.loads(request.content.decode())
+        seen.append(body.get("messages") or [])
+        if calls["n"] == 1:
+            return httpx.Response(
+                200, json=_llm_reply("ASK:要挑哪幾個？|一|全都要")
+            )
+        if calls["n"] == 2:
+            return httpx.Response(
+                404,
+                content=(
+                    f"model missing {secret} Bearer {secret} csk-{secret} "
+                    f"api_key={secret} password={secret} "
+                    f"at http://10.1.2.3/nope?token={query_secret}"
+                ).encode(),
+            )
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=_llm_sse("好，全都要。").encode("utf-8"),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_llm_reply("好，全都要。"))
+
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.post(CSP_URL).mock(side_effect=csp_handler)
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    iid = _pause_router_ask(client, "s-resume-fail")
+    with caplog.at_level("WARNING"):
+        resumed = client.post(
+            "/v1/sessions/s-resume-fail/answer",
+            json={
+                "interrupt_id": iid,
+                "answer": {"selected": ["全都要"], "other_text": ""},
+                "stream": stream,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+    assert resumed.status_code == 200, resumed.text
+    text = resumed.text
+    assert secret not in text
+    assert "10.1.2.3" not in text
+    assert "data: [DONE]" not in text
+    assert '"finish_reason": "stop"' not in text
+    assert "LLM HTTP" not in text
+    assert "LLM upstream" not in text
+    assert _RESUME_OUTAGE not in _choice_text(text)
+    assert secret not in caplog.text
+    assert query_secret not in caplog.text
+    assert any("404" in rec.message for rec in caplog.records)
+
+    events = _sse_events(text)
+    names = [name for name, _data in events]
+    assert names[0] == "anila.resumed"
+    assert names[-1] == "anila.error"
+    traces = [json.loads(data) for name, data in events if name == "anila.trace"]
+    assert traces
+    assert all(step.get("detail") == _RESUME_OUTAGE for step in traces)
+    assert all(step.get("status") == "error" for step in traces)
+    metas = [json.loads(data) for name, data in events if name == "anila.meta"]
+    assert metas == [{"classified": False}]
+    meta_i = names.index("anila.meta")
+    error_i = names.index("anila.error")
+    assert meta_i < error_i
+    assert json.loads(events[-1][1]) == {"message": _RESUME_OUTAGE}
+
+    failed_state = client.get(
+        "/v1/sessions/s-resume-fail/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert failed_state.status_code == 200, failed_state.text
+    failed_body = failed_state.json()
+    assert [item["id"] for item in failed_body["pending_interrupts"]] == [iid]
+    assert "已選擇" not in json.dumps(failed_body["messages"], ensure_ascii=False)
+    # The failed call still showed the answer to the model, once. It was
+    # not written to the session, so the retry does not see a second copy.
+    assert json.dumps(seen[1], ensure_ascii=False).count("已選擇：全都要") == 1
+
+    retried = client.post(
+        "/v1/sessions/s-resume-fail/answer",
+        json={
+            "interrupt_id": iid,
+            "answer": {"selected": ["全都要"], "other_text": ""},
+            "stream": stream,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert retried.status_code == 200, retried.text
+    assert "好，全都要。" in retried.text
+    assert "anila.resumed" in retried.text
+    assert "event: anila.error" not in retried.text
+    assert json.dumps(seen[2], ensure_ascii=False).count("已選擇：全都要") == 1
+    done_state = client.get(
+        "/v1/sessions/s-resume-fail/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert done_state.status_code == 200, done_state.text
+    done_body = done_state.json()
+    assert done_body["pending_interrupts"] == []
+    assert json.dumps(done_body["messages"], ensure_ascii=False).count("已選擇：全都要") == 1
+    assert secret not in caplog.text
+    assert query_secret not in caplog.text
+
+
+@respx.mock
+@pytest.mark.parametrize("stream", [True, False])
+def test_router_ask_resume_resolve_failure_keeps_interrupt(
+    db_path: Path, stream: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model-resolution failure must not consume the pending ASK.
+
+    Resolution runs before the interrupt is claimed. The Shell can post
+    the same interrupt_id again once resolution succeeds.
+    """
+    from fastapi import HTTPException
+
+    from anila_core.api import router_server
+
+    resolve_calls = {"n": 0}
+
+    async def resolve(request: object, caller_api_key: str, body: dict | None) -> None:
+        resolve_calls["n"] += 1
+        if resolve_calls["n"] == 2:
+            raise HTTPException(status_code=503, detail="無法解析對話模型")
+        return None
+
+    monkeypatch.setattr(router_server, "_csp_resolve_router_model", resolve)
+    calls = {"n": 0}
+
+    def csp_handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        body = json.loads(request.content.decode())
+        if calls["n"] == 1:
+            return httpx.Response(
+                200, json=_llm_reply("ASK:要挑哪幾個？|一|全都要")
+            )
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=_llm_sse("好，全都要。").encode("utf-8"),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_llm_reply("好，全都要。"))
+
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.post(CSP_URL).mock(side_effect=csp_handler)
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    iid = _pause_router_ask(client, "s-resume-resolve")
+    failed = client.post(
+        "/v1/sessions/s-resume-resolve/answer",
+        json={
+            "interrupt_id": iid,
+            "answer": {"selected": ["全都要"], "other_text": ""},
+            "stream": stream,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert failed.status_code == 503, failed.text
+    state = client.get(
+        "/v1/sessions/s-resume-resolve/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert state.status_code == 200, state.text
+    assert [item["id"] for item in state.json()["pending_interrupts"]] == [iid]
+    assert "已選擇" not in json.dumps(state.json()["messages"], ensure_ascii=False)
+
+    retried = client.post(
+        "/v1/sessions/s-resume-resolve/answer",
+        json={
+            "interrupt_id": iid,
+            "answer": {"selected": ["全都要"], "other_text": ""},
+            "stream": stream,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert retried.status_code == 200, retried.text
+    assert "好，全都要。" in retried.text
+    assert "event: anila.error" not in retried.text
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Bearer eyJ.resume-secret",
+        "prefix sk-live-RESUME-ASK-DO-NOT-LEAK suffix",
+        "prefix csk-RESUME-ASK-DO-NOT-LEAK suffix",
+        "api_key=RESUME-ASK-DO-NOT-LEAK",
+        '"api_key": "RESUME-ASK-DO-NOT-LEAK"',
+        "password=RESUME-ASK-DO-NOT-LEAK",
+        '"password": "RESUME-ASK-DO-NOT-LEAK"',
+        "see http://10.1.2.3/nope?token=RESUME-ASK-DO-NOT-LEAK&x=1",
+        "token=RESUME-ASK-DO-NOT-LEAK",
+        '"access_token": "RESUME-ASK-DO-NOT-LEAK"',
+        "bearer RESUME-ASK-DO-NOT-LEAK",
+    ],
+)
+def test_scrub_diagnostic_value_masks_credentials_and_query_strings(raw: str) -> None:
+    scrubbed = str(_scrub_diagnostic_value(raw))
+    assert "RESUME-ASK-DO-NOT-LEAK" not in scrubbed
+    assert "eyJ.resume-secret" not in scrubbed
+    assert "token=" not in scrubbed
+
+
+def test_scrub_diagnostic_value_keeps_benign_text() -> None:
+    assert _scrub_diagnostic_value("模型名稱不存在") == "模型名稱不存在"
+    assert _scrub_diagnostic_value("token count is 3") == "token count is 3"
+
+
+def _resume_request() -> Request:
+    return Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/v1/sessions/s/answer",
+            "raw_path": b"/v1/sessions/s/answer",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 123),
+            "server": ("test", 80),
+        }
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("fail_at", ["persist", "push"])
+def test_followup_ask_persist_failure_restores_original_interrupt(
+    db_path: Path,
+    stream: bool,
+    fail_at: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A follow-up ASK that fails to save must leave the original pause pending."""
+    calls = {"n": 0}
+
+    def csp_handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        body = json.loads(request.content.decode())
+        if calls["n"] == 1:
+            return httpx.Response(200, json=_llm_reply("ASK:要挑哪幾個？|一|全都要"))
+        text = "ASK:第二次問？|C|D" if calls["n"] == 2 else "好，第二次。"
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=_llm_sse(text).encode("utf-8"),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_llm_reply(text))
+
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.post(CSP_URL).mock(side_effect=csp_handler)
+
+    from anila_core.api import router_server
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    iid = _pause_router_ask(client, "s-follow-fail")
+    original_persist = router_server._persist_router_ask
+    if fail_at == "persist":
+        async def _boom(session, *, ask, user_message):
+            raise RuntimeError("follow-up persist failed")
+
+        monkeypatch.setattr(router_server, "_persist_router_ask", _boom)
+    else:
+        original_push = SqliteSession.push_interrupt
+
+        async def _boom_push(self, record):
+            if record.id != iid:
+                raise RuntimeError("follow-up push failed")
+            await original_push(self, record)
+
+        monkeypatch.setattr(SqliteSession, "push_interrupt", _boom_push)
+
+    try:
+        resumed = client.post(
+            "/v1/sessions/s-follow-fail/answer",
+            json={
+                "interrupt_id": iid,
+                "answer": {"selected": ["全都要"], "other_text": ""},
+                "stream": stream,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+    except Exception as exc:
+        assert "follow-up" in str(exc)
+    else:
+        assert resumed.status_code == 200, resumed.text
+        assert "event: anila.error" in resumed.text
+
+    state = client.get(
+        "/v1/sessions/s-follow-fail/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert state.status_code == 200, state.text
+    body = state.json()
+    assert [item["id"] for item in body["pending_interrupts"]] == [iid]
+    stored = json.dumps(body["messages"], ensure_ascii=False)
+    assert "已選擇" not in stored
+    assert "第二次問" not in stored
+
+    if fail_at == "persist":
+        monkeypatch.setattr(router_server, "_persist_router_ask", original_persist)
+    retried = client.post(
+        "/v1/sessions/s-follow-fail/answer",
+        json={
+            "interrupt_id": iid,
+            "answer": {"selected": ["全都要"], "other_text": ""},
+            "stream": stream,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert retried.status_code == 200, retried.text
+    assert "好，第二次。" in retried.text
+    assert "event: anila.error" not in retried.text
+
+
+@respx.mock
+async def test_cancel_during_restore_still_repends_interrupt(db_path: Path) -> None:
+    """Cancelling the request while the interrupt is being put back still restores it."""
+    record = to_record(
+        InterruptItem(
+            kind="ask_user",
+            payload={
+                "question": "要挑哪幾個？",
+                "options": ["一", "全都要"],
+                "multi_select": False,
+                "allow_other": True,
+            },
+        ),
+        tool_call=ToolCall(id="call-cancel", name="ask_user", input={}),
+        sibling_results=[],
+    )
+    session = SqliteSession(str(db_path), "s-cancel")
+    await session.add_items(
+        [
+            UserMessage(content="挑功能"),
+            AssistantMessage(content="要挑哪幾個？"),
+        ]
+    )
+    await session.push_interrupt(record)
+    iid = record.id
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_push = session.push_interrupt
+
+    async def slow_push(item):
+        if item.id == iid:
+            started.set()
+            await release.wait()
+        await original_push(item)
+
+    session.push_interrupt = slow_push  # type: ignore[method-assign]
+    reset_http_client()
+    respx.post(CSP_URL).mock(return_value=httpx.Response(404, content=b"missing"))
+
+    async def consume() -> None:
+        response = await _resume_router_ask(
+            "s-cancel",
+            session,
+            {
+                "interrupt_id": iid,
+                "answer": {"selected": ["全都要"], "other_text": ""},
+                "stream": False,
+            },
+            caller_api_key="sk-test",
+            request=_resume_request(),
+        )
+        async for _chunk in response.body_iterator:
+            pass
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), timeout=5)
+    consumer.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+    pending = await session.pending_interrupts()
+    assert [item.id for item in pending] == [iid]
+
+
+_ASK_STAR = "ASK*:要挑哪幾個來拆成三種版本？|一 環境感測器|六 電網天線|全都要"
+
+
+def _ask_star_payload(body: str, *, stream: bool) -> dict:
+    if stream:
+        events = _sse_events(body)
+        names = [name for name, _data in events]
+        assert "anila.interrupt_requested" in names
+        event = json.loads(events[names.index("anila.interrupt_requested")][1])
+        assert _visible_sse_text(body) == "要挑哪幾個來拆成三種版本？"
+        assert "ASK*:" not in _visible_sse_text(body)
+        return event["payload"]
+    parsed = json.loads(body)
+    assert parsed["choices"][0]["message"]["content"] == "要挑哪幾個來拆成三種版本？"
+    assert "ASK*:" not in parsed["choices"][0]["message"]["content"]
+    return parsed["anila_meta"]["interrupt"]["payload"]
+
+
+@respx.mock
+@pytest.mark.parametrize("stream", [False, True])
+def test_ask_star_payload_multi_true_survives_reload(
+    db_path: Path, stream: bool
+) -> None:
+    """``ASK*:`` pauses like ``ASK:`` and the stored interrupt keeps ``multi``."""
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    if stream:
+        upstream = httpx.Response(
+            200,
+            content=_llm_sse(_ASK_STAR + "\n").encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+    else:
+        upstream = httpx.Response(200, json=_bare_completion(_ASK_STAR))
+    respx.post(CSP_URL).mock(return_value=upstream)
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "挑功能"}],
+            "stream": stream,
+            "session_id": "s-ask-star",
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = _ask_star_payload(resp.text, stream=stream)
+    assert payload["multi"] is True
+    assert payload["question"] == "要挑哪幾個來拆成三種版本？"
+    assert [item["value"] for item in payload["options"]] == [
+        "一 環境感測器",
+        "六 電網天線",
+        "全都要",
+    ]
+
+    reopened = TestClient(create_router_app(session_db_path=str(db_path)))
+    state = reopened.get(
+        "/v1/sessions/s-ask-star/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert state.status_code == 200, state.text
+    pending = state.json()["pending_interrupts"]
+    assert len(pending) == 1
+    assert pending[0]["payload"]["multi"] is True
+    assert pending[0]["payload"]["question"] == "要挑哪幾個來拆成三種版本？"
+
+
+@respx.mock
+def test_streaming_ask_star_split_between_ask_and_star(db_path: Path) -> None:
+    """A delta that ends between ``ASK`` and ``*`` still pauses as multi."""
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(
+            200,
+            content=_llm_sse("ASK", "*:要挑哪幾個？|甲|乙\n").encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "挑幾個"}],
+            "stream": True,
+            "session_id": "s-ask-star-split",
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert resp.status_code == 200, resp.text
+    events = _sse_events(resp.text)
+    names = [name for name, _data in events]
+    assert "anila.interrupt_requested" in names
+    payload = json.loads(events[names.index("anila.interrupt_requested")][1])
+    assert payload["payload"]["multi"] is True
+    assert payload["payload"]["question"] == "要挑哪幾個？"
+    assert [item["value"] for item in payload["payload"]["options"]] == ["甲", "乙"]
+    assert "ASK*:" not in _visible_sse_text(resp.text)
+    assert _visible_sse_text(resp.text) == "要挑哪幾個？"
+
+
+def test_router_answer_resume_message_lists_every_selection() -> None:
+    """Single and multi answers both name every pick, plus free text."""
+    record = to_record(
+        InterruptItem(kind="ask_user", payload={"question": "要挑哪幾個？"}),
+        tool_call=ToolCall(id="c-ask", name="ask_user", input={}),
+        sibling_results=[],
+    )
+    both = _router_answer_resume_message(
+        record,
+        {
+            "selected": ["一 環境感測器", "六 電網天線"],
+            "other_text": "外加說明",
+        },
+    )
+    assert _resume_content_text(both) == (
+        "已選擇：一 環境感測器、六 電網天線；補充：外加說明"
+    )
+    one = _router_answer_resume_message(
+        record, {"selected": ["晴天"], "other_text": "備註"}
+    )
+    assert _resume_content_text(one) == "已選擇：晴天；補充：備註"
+    only = _router_answer_resume_message(
+        record, {"selected": ["2025"], "other_text": ""}
+    )
+    assert _resume_content_text(only) == "已選擇：2025"

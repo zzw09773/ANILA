@@ -107,6 +107,84 @@ describe("InterruptCard ask_user", () => {
     );
   });
 
+  it("multi:false stays a single radio group", () => {
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={{ ...askPayload, multi: false }}
+        onSubmit={() => {}}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /A/ })).toBeTruthy();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("multi:true renders checkboxes and submits every check plus free text", async () => {
+    const onSubmit = vi.fn(async () => {});
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={{ ...askPayload, multi: true, multi_select: false }}
+        onSubmit={onSubmit}
+      />,
+    );
+    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.getByRole("button", { name: "送出回答" }).disabled).toBe(true);
+    const boxA = screen.getByRole("checkbox", { name: /A/ });
+    const boxC = screen.getByRole("checkbox", { name: /C/ });
+    fireEvent.click(boxA);
+    fireEvent.click(boxC);
+    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應|補充/), {
+      target: { value: "再補一句" },
+    });
+    expect(boxA.checked).toBe(true);
+    expect(boxC.checked).toBe(true);
+    expect(screen.getByRole("button", { name: "送出回答" }).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        selected: ["a", "c"],
+        other_text: "再補一句",
+      }),
+    );
+  });
+
+  it("multi:true accepts free text alone and refuses an empty submit", async () => {
+    const onSubmit = vi.fn(async () => {});
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={{ ...askPayload, multi: true }}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應|補充/), {
+      target: { value: "只有補充" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        selected: [],
+        other_text: "只有補充",
+      }),
+    );
+  });
+
+  it("lists every selection in the answered summary", () => {
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={{ ...askPayload, multi: true }}
+        answer={{ selected: ["a", "c"], other_text: "補充一句" }}
+      />,
+    );
+    expect(screen.getByTestId("interrupt-summary").textContent).toBe(
+      "已選擇：A、C；補充：補充一句",
+    );
+  });
+
   it("keeps the free-text input even when allow_other is false", () => {
     render(
       <InterruptCard
@@ -118,7 +196,7 @@ describe("InterruptCard ask_user", () => {
     expect(screen.getByPlaceholderText(/或輸入其他回應|補充/)).toBeTruthy();
   });
 
-  it("sends pick + supplement as selected values and other_text", async () => {
+  it("typing selects other, clears the radio, and submits the free text", async () => {
     const onSubmit = vi.fn(async () => {});
     render(
       <InterruptCard
@@ -129,13 +207,37 @@ describe("InterruptCard ask_user", () => {
     );
     fireEvent.click(screen.getByRole("radio", { name: /A/ }));
     fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應|補充/), {
-      target: { value: "主管閱讀、一頁以內" },
+      target: { value: "自訂答案" },
     });
+    expect(screen.getByRole("radio", { name: /A/ }).checked).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({
-        selected: ["a"],
-        other_text: "主管閱讀、一頁以內",
+        selected: [],
+        other_text: "自訂答案",
+      }),
+    );
+  });
+
+  it("a radio picked after typing keeps the text but the radio wins", async () => {
+    const onSubmit = vi.fn(async () => {});
+    render(
+      <InterruptCard
+        kind="ask_user"
+        payload={askPayload}
+        onSubmit={onSubmit}
+      />,
+    );
+    const input = screen.getByPlaceholderText(/或輸入其他回應|補充/);
+    fireEvent.change(input, { target: { value: "先打的字" } });
+    fireEvent.click(screen.getByRole("radio", { name: /B/ }));
+    expect(input.value).toBe("先打的字");
+    expect(screen.getByRole("radio", { name: /B/ }).checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "送出回答" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        selected: ["b"],
+        other_text: "",
       }),
     );
   });
@@ -200,6 +302,30 @@ describe("InterruptCard ask_user", () => {
     );
     expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
   });
+
+  it("answered summary removes the form; initialAnswer restores the draft", () => {
+    const view = render(
+      <InterruptCard
+        kind="ask_user"
+        payload={askPayload}
+        answer={{ selected: ["a"], other_text: "還有你" }}
+      />,
+    );
+    expect(screen.getByTestId("interrupt-summary").textContent).toBe("已選擇：A；補充：還有你");
+    expect(document.querySelector("input")).toBeNull();
+    expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
+    view.rerender(
+      <InterruptCard
+        kind="ask_user"
+        payload={askPayload}
+        onSubmit={() => {}}
+        initialAnswer={{ selected: ["b"], other_text: "請保留附錄" }}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /B/ }).checked).toBe(true);
+    expect(screen.queryByTestId("interrupt-summary")).toBeNull();
+    expect(screen.getByRole("button", { name: "送出回答" }).disabled).toBe(false);
+  });
 });
 
 
@@ -221,7 +347,7 @@ describe("InterruptCard plan", () => {
     expect(screen.getByText("核准計畫")).toBeTruthy();
   });
 
-  it("submits decision=accept on the primary button", async () => {
+  it("submits approved=true on the primary button", async () => {
     const onSubmit = vi.fn(async () => {});
     render(
       <InterruptCard
@@ -232,11 +358,11 @@ describe("InterruptCard plan", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "核准計畫" }));
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith({ decision: "accept" }),
+      expect(onSubmit).toHaveBeenCalledWith({ approved: true }),
     );
   });
 
-  it("submits decision=decline on the secondary button", async () => {
+  it("submits approved=false on the secondary button", async () => {
     const onSubmit = vi.fn(async () => {});
     render(
       <InterruptCard
@@ -247,8 +373,19 @@ describe("InterruptCard plan", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "拒絕" }));
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith({ decision: "decline" }),
+      expect(onSubmit).toHaveBeenCalledWith({ approved: false }),
     );
+  });
+
+  it("renders the accepted summary from approved=true", () => {
+    render(
+      <InterruptCard
+        kind="plan"
+        payload={{ plan: "do it" }}
+        answer={{ approved: true }}
+      />,
+    );
+    expect(screen.getByTestId("interrupt-summary").textContent).toBe("已核准計畫");
   });
 });
 

@@ -1,16 +1,13 @@
-# anila-agent
+# anila-agent — advanced implementation example
 
-> ANILA's official **air-gapped Agentic RAG starter**, built on the **OpenAI Agents SDK v0.17.5** and
-> hardened for the NCSIST air-gapped intranet. Clone, plug in your retriever and prompt, and run.
-> It is the reference runtime the CSP **Agent Registry** approves, with native Full Trace built in.
+> This project illustrates how to combine OpenAI Agents SDK v0.17.5 with tools, retrieval, memory, and a serving wrapper. It is not the shortest onboarding path: use the separately downloadable quickstart scaffold for a first agent. Air-gapped deployment still requires prepared dependencies, model access, and appropriate trust configuration.
 
 [繁體中文](README.md) · English · Full rebuild blueprint: [REBUILD_PLAN.md](REBUILD_PLAN.md).
 
 ## Where it sits in the redesign
 
 - **Location**: monorepo `packages/anila-agent/` (§17.1 layout: `services/` · `apps/` · `packages/` · `infra/`).
-- **Standalone & portable**: a single dependency tree rooted at `openai-agents==0.17.5`, with **no dependency
-  on `anila-core`** by design; the whole package can be dropped onto an MLSteam Lab or any intranet host.
+- **Dependencies and deployment**: this advanced example depends on both `openai-agents==0.17.5` and `anila-core>=0.14,<0.15`. Standalone deployment requires compatible offline wheels, trust configuration, and a working model endpoint; this is not a zero-dependency scaffold.
 - **Role in the platform**: approved by the **Agent Registry** in `services/csp` (the CSP governance service)
   and registered via the developer wizard in `apps/csp-governance-ui` (the governance UI). Its native Full
   Trace directly satisfies the `pending_trace_test` gate of the 7-state approval flow.

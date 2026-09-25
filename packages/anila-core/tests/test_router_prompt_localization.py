@@ -57,6 +57,12 @@ def test_router_templates_format_safe_and_localized():
     assert "使用者明確指定語言時依其指定" in router
     assert "一律以繁體中文" not in router
     assert "一律以繁體中文" not in plain
+    for text in (router, plain):
+        assert "ASK:" in text
+        assert "ASK*:" in text
+        assert "哪幾個" in text
+        assert "哪些" in text
+        assert "只能選一個就用 ASK:" in text
 
 
 def test_direct_answer_rule_forbids_agent_scope_bleed_and_states_positive_range():

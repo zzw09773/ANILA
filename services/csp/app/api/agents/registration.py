@@ -3,17 +3,21 @@
 Split verbatim from the former single-module ``app/api/agents.py``
 (behavior-preserving refactor).
 """
-import io
-import zipfile
+# ``io`` / ``zipfile`` are unused here since the zip writing moved into
+# ``_quickstart_bundle``, but ``app.api.agents`` re-exports them from this
+# module for import/monkeypatch compatibility — so they stay.
+import io  # noqa: F401
+import zipfile  # noqa: F401
 from datetime import datetime
 from pathlib import Path
 
 import anila_core
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
+from app.api.agents import _quickstart_bundle as _bundle
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
@@ -102,8 +106,31 @@ _TEMPLATE_DIR = Path("/app/anila-template")
 if not _TEMPLATE_DIR.exists():
     _TEMPLATE_DIR = _default_template_dir()
 
-# Bundled CSPKI trust anchors (public certs only). Same file card_auth loads
-# as ``_DEFAULT_CA_BUNDLE`` — resolved relative to ``app/services/``, no env knob.
+
+def _default_quickstart_dir() -> Path:
+    """Repo-side fallback for the quickstart scaffold (compose mounts it too)."""
+    root = _repo_root()
+    return (
+        (root / "packages" / "anila-agent-quickstart")
+        if root
+        else Path("/nonexistent/anila-agent-quickstart")
+    )
+
+
+# Bundle inputs, resolved once at import (like ``_TEMPLATE_DIR``) and passed
+# explicitly to the builder. Env names live in ``_quickstart_bundle``. The
+# scaffold has a repo-checkout fallback so a bare uvicorn run works; the
+# profile stays ops-supplied with no fallback — it is a release input with
+# no in-repo default. Wheels are installed into the MLSteam lab image and
+# are not a download input (design §12).
+_QUICKSTART_DIR = _bundle.quickstart_source_dir()
+if not _QUICKSTART_DIR.is_dir():
+    _QUICKSTART_DIR = _default_quickstart_dir()
+
+_QUICKSTART_PROFILE = _bundle.profile_path()
+
+# Public trust anchors. Only their bytes are used, and they are parsed — a path
+# that exists is not proof that it holds a usable chain (design §6).
 _PLATFORM_CA_BUNDLE = (
     Path(__file__).resolve().parent.parent.parent / "services" / "cspki_ca_bundle.pem"
 )
@@ -125,15 +152,13 @@ _ANILA_VERIFY_SOURCE = _resolve_anila_verify_source()
 
 router = APIRouter()
 
-_IGNORED_TEMPLATE_PARTS = {
-    ".git",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".venv",
-    "__pycache__",
-}
-_IGNORED_TEMPLATE_SUFFIXES = {".pyc", ".pyo"}
+# Aliased to the bundle's single rule set so the two cannot drift: the advanced
+# example is the only consumer of this filter (the quickstart uses a fixed
+# 11-file allow-list). ``pem``/``key`` are dropped because the example ships
+# ``.env.example`` instead of a real ``.env``, and no private material belongs
+# in the zip.
+_IGNORED_TEMPLATE_PARTS = _bundle._ADVANCED_EXCLUDED_PARTS
+_IGNORED_TEMPLATE_SUFFIXES = _bundle._ADVANCED_EXCLUDED_SUFFIXES
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -516,38 +541,133 @@ def _validate_collection_access_for_ids(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _should_include_template_path(path: Path, root: Path) -> bool:
-    relative = path.relative_to(root)
-    if any(part in _IGNORED_TEMPLATE_PARTS for part in relative.parts):
-        return False
-    if path.suffix in _IGNORED_TEMPLATE_SUFFIXES:
-        return False
-    return path.is_file()
+    """Kept as a predicate over the bundle's single exclusion rule set."""
+    return not _bundle._skip_advanced(path.relative_to(root), path)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.get("/template/download")
-def download_template(
-    current_user: User = Depends(_require_developer_or_admin),
-) -> StreamingResponse:
-    """Serve the official anila-agent template mirroring the AgenticRAG project."""
-    buf = io.BytesIO()
-    template_dir = _TEMPLATE_DIR
-    if not template_dir.exists():
-        raise HTTPException(status_code=404, detail="Template not found on server")
+# ── Download bundles (design docs/designs/agent-quickstart-scaffold-2026-09-22) ─
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in sorted(template_dir.rglob("*")):
-            if _should_include_template_path(path, template_dir):
-                arcname = "anila-agent/" + path.relative_to(template_dir).as_posix()
-                zf.write(path, arcname)
+def _bundle_error(exc: _bundle.BundleError) -> HTTPException:
+    """Assembly gaps are 503 — never a partial zip, never a silent fallback."""
+    return HTTPException(status_code=503, detail=exc.detail)
 
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
+
+def _zip_response(bundle: _bundle.BuiltBundle, background: BackgroundTasks) -> FileResponse:
+    """Stream the assembled temp file, removing it once the response is done."""
+    background.add_task(bundle.path.unlink, missing_ok=True)
+    return FileResponse(
+        bundle.path,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=anila-agent.zip"},
+        filename=bundle.filename,
     )
+
+
+def _load_download_agent(db: Session, current_user: User, agent_id: int) -> Agent:
+    """Resolve ``agent_id`` and gate it with the standard view predicate.
+
+    Same 404 as ``GET /api/agents/{id}`` so a foreign id is not an oracle.
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    ensure_agent_view_access(agent, current_user)
+    return agent
+
+
+@router.get("/template/download")
+def download_quickstart_bundle(
+    background: BackgroundTasks,
+    agent_id: int | None = Query(
+        default=None,
+        description=(
+            "選填。不帶時下載通用包：不含 agent id、不含模型名稱。"
+            "帶已註冊 agent 的 id 時預填 ANILA_AGENT_ID，並驗 owner/admin。"
+        ),
+    ),
+    collection_id: int | None = Query(
+        default=None,
+        description="選填；必須在該 agent 已綁定的 collection 集合內，只預填這一個",
+    ),
+    current_user: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Default download: the quickstart scaffold, pre-wired and directly deployable.
+
+    Redefines the old ``/template/download`` (zero external users, so no
+    compat alias — a download that does not say which project it is was the
+    bug). The advanced example moved to ``/examples/advanced/download``.
+
+    Everything unverifiable is fail-closed: missing scaffold file, missing
+    site profile, a lock that is not a complete hash lock, or a missing lab
+    image version yields 503 rather than a zip that only looks runnable.
+    The zip does not contain a wheelhouse.
+    """
+    agent: Agent | None = None
+    if agent_id is not None:
+        agent = _load_download_agent(db, current_user, agent_id)
+    elif collection_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="collection_id 必須搭配 agent_id 使用（綁定集合存在 agent 上）",
+        )
+
+    if agent is not None and collection_id is not None:
+        bound = get_bound_collection_ids(agent)
+        if collection_id not in bound:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"collection_id={collection_id} 不在 agent「{agent.name}」"
+                    f"已綁定的集合 {bound} 內"
+                ),
+            )
+
+    try:
+        bundle = _bundle.build_quickstart_bundle(
+            agent_id=agent.id if agent else None,
+            agent_name=agent.name if agent else None,
+            base_model_id=agent.base_model_id if agent else None,
+            base_model_name=(
+                getattr(getattr(agent, "base_model", None), "name", None)
+                if agent
+                else None
+            ),
+            bound_collection_ids=get_bound_collection_ids(agent) if agent else [],
+            requested_collection_id=collection_id,
+            verifier_source=_ANILA_VERIFY_SOURCE,
+            platform_ca_default=_PLATFORM_CA_BUNDLE,
+            profile_file=_QUICKSTART_PROFILE,
+            source_dir=_QUICKSTART_DIR,
+        )
+    except _bundle.BundleError as exc:
+        raise _bundle_error(exc) from exc
+    return _zip_response(bundle, background)
+
+
+@router.get("/examples/advanced/download")
+def download_advanced_example(
+    background: BackgroundTasks,
+    current_user: User = Depends(_require_developer_or_admin),
+) -> FileResponse:
+    """Advanced example download — ``packages/anila-agent`` mirrored as-is.
+
+    Separate endpoint on purpose: the two downloads are independent
+    implementations of one platform contract, and each declares its own
+    filename/zip root. Auth gate matches the quickstart download.
+    """
+    try:
+        bundle = _bundle.build_advanced_example_bundle(source_dir=_TEMPLATE_DIR)
+    except _bundle.BundleError as exc:
+        raise _bundle_error(exc) from exc
+    return _zip_response(bundle, background)
+
+
+# The route path stays ``/template/download`` (zero external users, so no
+# alias URL), but the old function name is kept: ``app.api.agents`` re-exports
+# it for monkeypatch compatibility.
+download_template = download_quickstart_bundle
 
 
 @router.get("/platform-ca/download")

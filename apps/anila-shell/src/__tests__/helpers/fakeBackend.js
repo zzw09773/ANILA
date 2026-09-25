@@ -1163,6 +1163,11 @@ export function createFakeBackend(options = {}) {
       answerQueue.push({ frames });
       return this;
     },
+    /** 下一筆續答開一條手動串流（測試自己 push / close）。 */
+    enqueueSessionAnswerManual() {
+      answerQueue.push({ manual: true });
+      return this;
+    },
     enqueueSessionAnswerError(status, detail) {
       answerQueue.push({ status, detail });
       return this;

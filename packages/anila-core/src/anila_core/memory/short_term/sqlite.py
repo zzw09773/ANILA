@@ -294,25 +294,23 @@ class SqliteSession:
         await conn.commit()
 
     async def pop_interrupt(self, interrupt_id: str) -> InterruptRecord | None:
+        # One DELETE ... RETURNING so two concurrent resumes cannot both
+        # read the row and both claim the same pause.
         conn = await self._conn()
         sql = (
-            "SELECT kind, payload_json, created_at FROM session_interrupts "
-            "WHERE session_id = ? AND interrupt_id = ?"
+            "DELETE FROM session_interrupts "
+            "WHERE session_id = ? AND interrupt_id = ? "
+            "RETURNING kind, payload_json, created_at"
         )
         cursor = await conn.execute(sql, (self.session_id, interrupt_id))
         try:
             row = await cursor.fetchone()
         finally:
             await cursor.close()
+        await conn.commit()
         if row is None:
             return None
         kind, payload_json, created_at_iso = row
-        await conn.execute(
-            "DELETE FROM session_interrupts "
-            "WHERE session_id = ? AND interrupt_id = ?",
-            (self.session_id, interrupt_id),
-        )
-        await conn.commit()
         return InterruptRecord(
             id=interrupt_id,
             kind=kind,

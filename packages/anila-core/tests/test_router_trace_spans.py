@@ -156,6 +156,112 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
     ]
 
 
+def test_streaming_dispatch_failure_closes_spans_before_anila_error(
+    monkeypatch, db_path: Path
+) -> None:
+    """A mid-stream agent failure closes both open spans with the safe
+    sentence, emits ``anila.spans``, and only then the terminal
+    ``anila.error``. The Shell stops at that frame, so a later spans
+    event would never be applied."""
+    secret = "sk-live-SPAN-DO-NOT-LEAK"
+    manifest = RemoteAgentManifest(
+        agent_id="agent-a",
+        name="Agent A",
+        description_for_router="Specialist A",
+        endpoint_url="http://agent-a",
+        requires_encryption=True,
+    )
+
+    async def fake_ensure_fresh(self, api_key: str) -> None:
+        return None
+
+    monkeypatch.setattr(RemoteAgentRegistry, "ensure_fresh", fake_ensure_fresh)
+    monkeypatch.setattr(RemoteAgentRegistry, "list_agents", lambda self, k: [manifest])
+    monkeypatch.setattr(
+        RemoteAgentRegistry,
+        "get",
+        lambda self, k, aid: manifest if aid == "agent-a" else None,
+    )
+    exporter = _install_fake_session(monkeypatch)
+
+    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None, **_kwargs):
+        yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
+        yield {"type": "done"}
+
+    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None, forwarded_headers=None):
+        yield {"type": "content", "content": "partial answer"}
+        yield {
+            "type": "anila_event",
+            "event": "anila.trace",
+            "payload": {
+                "kind": "tool",
+                "label": secret,
+                "detail": secret,
+                "status": "error",
+                "latency_ms": 8,
+            },
+        }
+        yield {
+            "type": "error",
+            "error": "agent「agent-a」暫時無法使用，請稍後再試。",
+            "detail": secret,
+        }
+
+    monkeypatch.setattr(router_server, "_stream_llm_sse", fake_stream_llm)
+    monkeypatch.setattr(router_server, "_stream_agent_sse", fake_stream_agent)
+
+    app = router_server.create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-fail"},
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    assert resp.status_code == 200
+    assert secret not in resp.text
+    assert "partial answer" in resp.text
+    assert "data: [DONE]" not in resp.text
+    assert '"finish_reason": "stop"' not in resp.text
+
+    events = _parse_sse(resp.text)
+    names = [e["event"] for e in events]
+    span_at = names.index("anila.spans")
+    err_at = names.index("anila.error")
+    assert span_at < err_at
+    assert names[-1] == "anila.error"
+
+    spans = next(e for e in events if e["event"] == "anila.spans")["data"]["spans"]
+    assert [s["span_type"] for s in spans] == [
+        "agent.run.finished",
+        "agent.model_call.finished",
+    ]
+    safe = "agent「agent-a」暫時無法使用，請稍後再試。"
+    decision, downstream = spans
+    for span in spans:
+        assert span["status"] == "error"
+        assert span["ended_at"]
+        assert span["attributes"]["error"] == safe
+        assert secret not in json.dumps(span)
+    assert downstream["parent_span_id"] == decision["span_id"]
+
+    traces = [e["data"] for e in events if e["event"] == "anila.trace"]
+    assert {
+        "kind": "tool",
+        "label": "上游步驟失敗",
+        "detail": safe,
+        "status": "error",
+        "latency_ms": 8,
+    } in traces
+
+    assert len(exporter.spans) == 2
+    assert {t for t, _ in exporter.spans} == {"trace-fail"}
+    assert [sp["span_type"] for _, sp in exporter.spans] == [
+        "agent.model_call.finished",
+        "agent.run.finished",
+    ]
+    assert [sp["status"] for _, sp in exporter.spans] == ["error", "error"]
+
+
 def test_streaming_dispatch_emits_no_spans_when_unconfigured(
     monkeypatch, db_path: Path
 ) -> None:

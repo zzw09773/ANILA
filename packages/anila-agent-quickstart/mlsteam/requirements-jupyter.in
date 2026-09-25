@@ -1,0 +1,2 @@
+# Lab 映像才裝。不進 runtime requirements.lock，也不進開發者下載的 zip。
+jupyterlab

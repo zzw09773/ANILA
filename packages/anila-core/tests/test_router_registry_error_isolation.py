@@ -272,3 +272,35 @@ async def test_successful_refresh_clears_only_that_callers_error() -> None:
     state["fail"] = False
     await reg.refresh(GOOD_KEY)
     assert reg.refresh_error_for(GOOD_KEY) is None
+
+
+@respx.mock
+def test_registry_refresh_failure_trace_hides_internal_address(db_path: Path) -> None:
+    """A connection error while loading agents must not put the address
+    into the user-visible registry trace. The raw exception stays in the log."""
+    secret_host = "10.9.8.7"
+
+    def agents(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"dial tcp {secret_host}:8080")
+
+    respx.get(CSP_AGENTS_URL).mock(side_effect=agents)
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(200, json=_llm_reply("好的"))
+    )
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
+        headers={"Authorization": "Bearer sk-caller"},
+    )
+    assert response.status_code == 200, response.text
+    rendered = response.text
+    assert secret_host not in rendered
+    assert "8080" not in rendered
+    assert "ConnectError" not in rendered
+    assert "dial tcp" not in rendered
+    steps = _registry_steps(response)
+    assert len(steps) == 1
+    assert steps[0]["status"] == "error"
+    assert steps[0]["detail"] == "代理清單暫時無法更新，請稍後再試。"

@@ -4,14 +4,9 @@
 // 份、整個 shell 裡第四份)。改好 `streamChatCompletion` 那一份不會連帶
 // 修好它,而 `wt/shell-reserve` 的 `csrfHeaders.test.js` 明說沒收這一處。
 //
-// 為什麼不是 orchestrator 測試:`app.jsx` 目前沒有任何一條路徑呼叫它
-// (全樹 grep 只有 sse.js 自己的定義與兩處註解),所以掛起來的 shell 走
-// 不到它 —— 只能直接呼叫。這一點寫在 scripts/mutation-check.mjs 的
-// 〈無法從 harness 觸及的形狀〉裡。
-//
-// ⚠ 它是「已接線但還沒有呼叫端」的狀態,不是死碼:agentic.jsx 的中斷/
-// 續答流程就是為它準備的。等 app.jsx 真的接上去,這裡的斷言要往上升級成
-// orchestrator 級,而不是留在這個強度。
+// 函式層契約。`app.jsx` 的 `handleInterruptAnswer` 把 conversationId
+// 傳進來;那條接線另由 interruptResume 的 orchestrator 斷言看著。
+// 這裡仍直接呼叫,因為標頭組裝抄在 sse.js 裡,改呼叫端測不到「值沒掛上」。
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
@@ -121,6 +116,40 @@ describe("streamSessionAnswer — 送出去之前", () => {
       interrupt_id: "int-9",
       answer: "答案",
     });
+    vi.unstubAllGlobals();
+  });
+
+  it("帶上 X-ANILA-Conversation-Id，續答才掛得上機敏分類", async () => {
+    const { calls, fake } = captureFetch();
+    vi.stubGlobal("fetch", fake);
+
+    await streamSessionAnswer({
+      routerBaseUrl: "http://router.test",
+      sessionId: "sess-1",
+      interruptId: "int-1",
+      answer: "全都要",
+      conversationId: 12,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.headers["X-ANILA-Conversation-Id"]).toBe("12");
+    expect(JSON.parse(calls[0].options.body).conversation_id).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("暫態字串 id 不帶對話標頭", async () => {
+    const { calls, fake } = captureFetch();
+    vi.stubGlobal("fetch", fake);
+
+    await streamSessionAnswer({
+      routerBaseUrl: "http://router.test",
+      sessionId: "sess-1",
+      interruptId: "int-1",
+      answer: "全都要",
+      conversationId: "tmp-1",
+    });
+
+    expect(calls[0].options.headers["X-ANILA-Conversation-Id"]).toBeUndefined();
     vi.unstubAllGlobals();
   });
 

@@ -1,0 +1,12 @@
+deployment.env
+ca.pem
+*.pem
+*.key
+wheelhouse/
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+mlsteam/build/
+.anila-agent.*
+anila-agent.log

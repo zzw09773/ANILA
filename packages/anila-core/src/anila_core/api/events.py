@@ -149,7 +149,9 @@ class InterruptRequestedPayload(BaseModel):
     rendered ``data`` payload. Web UIs render directly from ``payload``;
     structure varies by ``kind``:
 
-    - ``ask_user``: ``{question, options, multi_select, allow_other}``
+    - ``ask_user``: ``{question, options, multi_select, allow_other, multi?}``
+      ``multi: true`` is the Router ``ASK*:`` form (several options). Absent
+      or false keeps single-select, including interrupts stored before the field.
     - ``plan``:     ``{plan}``
     - ``tool_approval`` (future): ``{tool_name, args, reason}``
     """

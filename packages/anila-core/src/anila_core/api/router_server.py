@@ -337,7 +337,8 @@ _DISPATCH_EMPTY_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# ASK:<question>[|opt1|opt2] — plain-router pause directive (mirrors DISPATCH)
+# ASK:<question>[|opt1|opt2] — plain-router pause, single choice
+# ASK*:<question>[|opt1|opt2] — the same line, but the user may pick several
 #
 # A plain Router turn (no agent dispatched) has no tool loop: the routing LLM
 # writes text and the Router ships it. So a router-side question cannot use
@@ -346,17 +347,19 @@ _DISPATCH_EMPTY_RE = re.compile(
 # LLM emits *instead of* an answer, parsed at the same points DISPATCH is, so
 # the two protocols share one grammar and one set of conventions.
 #
-# Grammar: the directive is recognised only when it is the FIRST line of the
-# reply (leading spaces/tabs and up to three `` ` ``/``*``/``>`` markers, the
-# same class DISPATCH tolerates). A later line that merely quotes ``ASK:`` —
-# a tutorial, a bullet, a code sample — is prose and must pass through
-# unchanged.
+# Grammar: the directive is recognised only when it is the first non-empty
+# line of the reply (leading blank lines, spaces/tabs, and up to three
+# `` ` ``/``*``/``>`` markers — the same class DISPATCH tolerates). A later
+# line that merely quotes ``ASK:`` or ``ASK*:`` — a tutorial, a bullet, a
+# code sample — is prose and must pass through unchanged.
 #
-# The question is the text AFTER ``ASK:`` up to the first ``|``. Only the
-# directive's own line is directive syntax; a line-wrapped question (rule 4's
-# markdown bullets stay ordinary clarify prose) is therefore NOT folded in, and
-# whatever the model put on following lines is plain prose the reader sees.
-# Emit the whole question on one line.
+# ``ASK:`` is one choice. ``ASK*:`` (a star immediately before the colon) is
+# multi-select: the interrupt payload sets ``multi`` true. The question is the
+# text AFTER that colon up to the first ``|``. Only the directive's own line
+# is directive syntax; a line-wrapped question (rule 4's markdown bullets stay
+# ordinary clarify prose) is therefore NOT folded in, and whatever the model
+# put on following lines is plain prose the reader sees. Emit the whole
+# question on one line.
 # That tail after the first ``|`` is the optional option list,
 # one label per ``|`` (no values/descriptions — the wire shape needs them, so
 # value defaults to label and description to "").
@@ -369,35 +372,42 @@ _DISPATCH_EMPTY_RE = re.compile(
 #
 # The leading marker group is consumed but the option tail is not part of the
 # question; the trailing ``[`*]`` strip below removes the CLOSING half of a
-# ``\```ASK:...\``` `` or ``**ASK:...**`` wrapper. DISPATCH's regex excludes
-# backticks from its capture for the same reason.
+# ``\```ASK:...\``` `` or ``**ASK*:...**`` wrapper. DISPATCH's regex excludes
+# backticks from its capture for the same reason. The star that marks
+# multi-select sits before the colon, so that strip does not eat it.
 _ASK_RE = re.compile(
-    r"^[ \t]*(?:[`*>]{1,3}[ \t]*)?ASK:([^\n\r]+?)[ \t]*(?=\n|\r|$)",
+    r"^[ \t\n\r]*(?:[`*>]{1,3}[ \t]*)?ASK(\*?):([^\n\r]+?)[ \t]*(?=\n|\r|$)",
     re.UNICODE,
 )
-# Incomplete ASK mid-stream check: the buffer begins with an ASK header, so the
-# model is still emitting that directive. Used to keep buffering rather than
-# commit to "answering" on a half-written question.
+# Incomplete ASK mid-stream check: the buffer begins with an ASK or ASK*
+# header, so the model is still emitting that directive. Used to keep
+# buffering rather than commit to "answering" on a half-written question.
+# Leading blank lines count as the same "first line" whitespace DISPATCH's
+# multiline anchor already accepts — otherwise ``\n\nASK:`` pauses or answers
+# depending on chunk size. The optional star is required here too: a chunk
+# that ends between ``ASK`` and ``*`` must not take the answer path.
 _ASK_HEAD_RE = re.compile(
-    r"^[ \t]*(?:[`*>]{1,3}[ \t]*)?ASK:",
-    re.MULTILINE | re.UNICODE,
+    r"^[ \t\n\r]*(?:[`*>]{1,3}[ \t]*)?ASK\*?:",
+    re.UNICODE,
 )
 
 
 def _parse_ask(text: str) -> dict[str, Any] | None:
-    """Return ``{"question", "options"}`` when the reply STARTS with ASK, else None.
+    """Return ``{"question", "options", "multi"}`` for a leading ASK, else None.
 
     ``_ASK_RE`` is anchored at position 0, so ``.match`` accepts only a leading
-    directive. A later ``ASK:`` line is ordinary prose and is not a pause.
-    Options are the ``|``-separated tail of that one line; a free-text-only
-    question is legal and yields ``options: []``.
+    directive. A later ``ASK:`` or ``ASK*:`` line is ordinary prose and is not
+    a pause. ``multi`` is true only for ``ASK*:``. Options are the
+    ``|``-separated tail of that one line; a free-text-only question is legal
+    and yields ``options: []``.
     """
     if not text:
         return None
     matched = _ASK_RE.match(text)
     if matched is None:
         return None
-    body = matched.group(1).strip().strip("`*").strip()
+    multi = matched.group(1) == "*"
+    body = matched.group(2).strip().strip("`*").strip()
     if not body:
         return None
     question, _, options_raw = body.partition("|")
@@ -409,7 +419,7 @@ def _parse_ask(text: str) -> dict[str, Any] | None:
         label = chunk.strip().strip("`*").strip()
         if label:
             options.append({"label": label, "value": label, "description": ""})
-    return {"question": question, "options": options}
+    return {"question": question, "options": options, "multi": multi}
 
 
 def _has_ask_signal(
@@ -441,7 +451,7 @@ def _strip_ask_syntax(text: str) -> str:
     """Remove a leading ASK directive from text the user is about to read.
 
     Same role as :func:`_strip_dispatch_syntax`, but only the first line: a
-    later line that quotes ``ASK:`` is the answer and must survive verbatim.
+    later line that quotes ``ASK:`` or ``ASK*:`` is the answer and must survive verbatim.
     Once the Router has turned a leading ASK into an interrupt the protocol
     string must not ride into the bubble.
     """
@@ -486,15 +496,22 @@ async def _persist_router_ask(
     question = str(ask.get("question") or "").strip()
     if question:
         await session.add_items([AssistantMessage(content=question)])
+    # ``multi`` is the Router ``ASK*:`` flag. Single-select omits it so a
+    # stored interrupt from before the field still reads as one choice.
+    # ``multi_select`` mirrors it for readers that already know the agent tool.
+    multi = bool(ask.get("multi"))
+    data: dict[str, Any] = {
+        "question": ask["question"],
+        "options": ask["options"],
+        "multi_select": multi,
+        "allow_other": True,
+    }
+    if multi:
+        data["multi"] = True
     return to_record(
         InterruptItem(
             kind="ask_user",
-            payload={
-                "question": ask["question"],
-                "options": ask["options"],
-                "multi_select": False,
-                "allow_other": True,
-            },
+            payload=data,
         ),
         tool_call=ToolCall(
             id=f"call-{uuid.uuid4().hex[:12]}",
@@ -505,14 +522,12 @@ async def _persist_router_ask(
     )
 
 
-def _router_answer_resume_message(
-    record: InterruptRecord, answer: dict[str, Any] | str
-) -> UserMessage:
-    """Build the resume ``UserMessage`` for a Router-side ASK answer.
+def _format_router_ask_answer(answer: dict[str, Any] | str) -> str:
+    """Render a Router ASK answer for the next routing turn.
 
-    Mirrors the string contractions ``QueryEngine.resume_from_interrupt`` does: a
-    bare string is a free-form reply, and a JSON-encoded array is the shell's
-    ``other``-only multi-select. Everything else goes to the frozen renderer.
+    One selection and several share one sentence: ``已選擇：A、B``, then
+    ``補充：…`` when free text is present. A bare string is passed through,
+    except a JSON array, which is the shell's selected-values encoding.
     """
     if isinstance(answer, str):
         stripped = answer.strip()
@@ -522,8 +537,38 @@ def _router_answer_resume_message(
             except (ValueError, TypeError):
                 parsed = None
             if isinstance(parsed, list):
-                answer = {"selected": [str(x) for x in parsed]}
-    return build_resume_message(record, answer)
+                answer = {"selected": [str(item) for item in parsed]}
+            else:
+                return answer
+        else:
+            return answer
+    if not isinstance(answer, dict):
+        return str(answer)
+    selected_raw = answer.get("selected") or []
+    if isinstance(selected_raw, str):
+        selected_raw = [selected_raw] if selected_raw.strip() else []
+    elif not isinstance(selected_raw, list):
+        selected_raw = []
+    selected = [str(item).strip() for item in selected_raw if str(item).strip()]
+    other_raw = answer.get("other_text")
+    other_text = other_raw.strip() if isinstance(other_raw, str) else ""
+    parts: list[str] = []
+    if selected:
+        parts.append("已選擇：" + "、".join(selected))
+    if other_text:
+        parts.append("補充：" + other_text)
+    return "；".join(parts) if parts else "(no answer provided)"
+
+
+def _router_answer_resume_message(
+    record: InterruptRecord, answer: dict[str, Any] | str
+) -> UserMessage:
+    """Build the resume ``UserMessage`` for a Router-side ASK answer.
+
+    The tool-result envelope stays the frozen renderer. The text inside it
+    lists every selection, for a single ``ASK:`` and for ``ASK*:`` alike.
+    """
+    return build_resume_message(record, _format_router_ask_answer(answer))
 
 
 def _resume_content_text(message: Any) -> str:
@@ -563,6 +608,67 @@ def _session_item_to_openai(item: Any) -> dict[str, str] | None:
     return {"role": role, "content": text}
 
 
+def _log_router_ask_resume_failure(err: object, detail: object | None = None) -> None:
+    """Log the failure status and a scrubbed excerpt, never the raw body.
+
+    ``detail`` is the upstream body from ``_stream_llm_sse``. Credentials
+    and URL query strings are removed by :func:`_scrub_diagnostic_value`.
+    """
+    if isinstance(err, str) and err.strip():
+        status = err.strip()
+    else:
+        status = type(err).__name__
+    excerpt = ""
+    if isinstance(detail, str) and detail:
+        scrubbed = _scrub_diagnostic_value(detail[:300])
+        excerpt = scrubbed if isinstance(scrubbed, str) else _REDACTED_DIAGNOSTIC
+    logger.warning(
+        "router ask resume LLM failed status=%s detail=%s",
+        status,
+        excerpt,
+    )
+
+
+async def _shield_from_cancellation(work: Awaitable[None]) -> None:
+    """Run ``work`` to completion even if this request is cancelled.
+
+    A streaming client disconnect cancels the request task. Cleanup that
+    puts a claimed interrupt back has to finish anyway; the cancellation
+    is re-raised after the shielded task returns.
+    """
+    task = asyncio.ensure_future(work)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None:
+            while current.cancelling():
+                current.uncancel()
+        try:
+            await task
+        finally:
+            if current is not None:
+                current.cancel()
+        raise
+
+
+async def _repend_router_ask(session: Session, record: InterruptRecord) -> None:
+    """Put a claimed interrupt back under the same id, if it is still absent."""
+    pending = await session.pending_interrupts()
+    if any(item.id == record.id for item in pending):
+        return
+    try:
+        await session.push_interrupt(record)
+    except Exception as exc:
+        # A concurrent restore already inserted this id.
+        if "UNIQUE" not in str(exc).upper():
+            raise
+        logger.warning(
+            "router ask resume restore found interrupt already pending id=%s",
+            record.id,
+        )
+
+
 async def _resume_router_ask(
     session_id: str,
     session: Session,
@@ -574,10 +680,28 @@ async def _resume_router_ask(
     """Continue a plain-Router ASK with one more routing-LLM turn.
 
     No owning agent exists for this pause, so there is nothing to proxy.
-    The pending interrupt is popped, the answer becomes a user turn, and the
-    routing LLM is called again on the same path chat uses. ``anila.resumed``
-    is the first event. A reply that is itself an ``ASK:`` pauses again.
+    The pending interrupt is popped as the exclusive claim, then the routing
+    LLM is called again on the same path chat uses. The answer is stored only
+    after that call succeeds; a failure puts the same interrupt back.
+    ``anila.resumed`` is the first event. A reply that is itself an ``ASK:``
+    pauses again.
     """
+    # This request is not ``chat_completions``, so it does not inherit that
+    # endpoint's ContextVars. Without them ``current_router_model()`` falls
+    # back to ``settings.model`` and CSP 404s a model it never registered.
+    # Resolve before the claim: a 4xx here must leave the pause pending.
+    # Anything that fails after the pop (LLM error, or resolution if it is
+    # ever moved below the pop) goes through ``_abandon`` and restores it.
+    REQUEST_SAMPLING.set(
+        sampling_overrides_from_body(body) if isinstance(body, dict) else {}
+    )
+    REQUEST_THINKING_TIER.set(
+        thinking_tier_from_body(body) if isinstance(body, dict) else None
+    )
+    selected_model = await _csp_resolve_router_model(
+        request, caller_api_key, body
+    )
+    REQUEST_ROUTER_MODEL.set(selected_model)
     interrupt_id = str(body["interrupt_id"])
     record = await session.pop_interrupt(interrupt_id)
     if record is None:
@@ -588,155 +712,249 @@ async def _resume_router_ask(
                 f"'{session_id}'."
             ),
         )
-    resume_message = _router_answer_resume_message(record, body["answer"])
-    await session.add_items([resume_message])
+    # Pop is the claim, so two retries cannot both accept the pause.
+    # The answer and a follow-up ASK are one commit: a failure before
+    # both writes finish rolls those rows back and puts this interrupt
+    # back. ``claimed`` stays true until that restore has finished, and
+    # the restore itself is shielded from request cancellation.
+    claimed = True
+    committed = False
+    answer_written = False
+    followup_question: str | None = None
+    resume_message: UserMessage | None = None
 
-    history = await session.get_items()
-    prior = [m for item in history if (m := _session_item_to_openai(item)) is not None]
-    route_signal = _resolve_route_signal(request.headers)
-    system_prompt = (
-        _forced_answer_prompt()
-        if route_signal == _ROUTE_FORCED
-        else _build_system_prompt([])
-    )
-    routing_messages = _merge_routing_messages(system_prompt, prior)
-    anila_headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower().startswith("x-anila-")
-        and k.lower() != _ROUTE_HEADER.lower()
-    }
-    router_llm_headers = {**anila_headers, _ROUTE_HEADER: route_signal}
-    stream = bool(body.get("stream", True))
-    started_at = time.time()
-
-    async def _events() -> AsyncIterator[str]:
-        yield _make_event("anila.resumed", {"interrupt_id": interrupt_id})
-        if stream:
-            buf = ""
-            upstream_reasoning = ""
-            async for ev in _stream_llm_sse(
-                caller_api_key,
-                routing_messages,
-                forwarded_headers=router_llm_headers,
-                apply_thinking_tier=True,
+    async def _rollback_partial_resume() -> None:
+        nonlocal answer_written, followup_question
+        question = followup_question
+        while answer_written or question:
+            tail = await session.pop_item()
+            if tail is None:
+                break
+            if (
+                answer_written
+                and resume_message is not None
+                and getattr(tail, "uuid", None) == resume_message.uuid
             ):
-                kind = ev.get("type")
-                if kind == "error":
-                    err = ev.get("error", "LLM error")
-                    yield _make_event(
-                        "anila.trace",
-                        _make_trace_step("direct", "LLM 無法回應", err, status="error"),
+                answer_written = False
+                continue
+            if (
+                question
+                and getattr(tail, "role", None) == "assistant"
+                and getattr(tail, "content", None) == question
+            ):
+                question = None
+                continue
+            await session.add_items([tail])
+            break
+        followup_question = None
+
+    async def _finish_abandon() -> None:
+        nonlocal claimed
+        if not claimed or committed:
+            return
+        await _rollback_partial_resume()
+        await _repend_router_ask(session, record)
+        claimed = False
+
+    async def _abandon() -> None:
+        if not claimed or committed:
+            return
+        await _shield_from_cancellation(_finish_abandon())
+
+    try:
+        resume_message = _router_answer_resume_message(record, body["answer"])
+        history = await session.get_items()
+        prior = [
+            m for item in history if (m := _session_item_to_openai(item)) is not None
+        ]
+        resume_turn = _session_item_to_openai(resume_message)
+        if resume_turn is not None:
+            prior.append(resume_turn)
+        route_signal = _resolve_route_signal(request.headers)
+        system_prompt = (
+            _forced_answer_prompt()
+            if route_signal == _ROUTE_FORCED
+            else _build_system_prompt([])
+        )
+        routing_messages = _merge_routing_messages(system_prompt, prior)
+        anila_headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower().startswith("x-anila-")
+            and k.lower() != _ROUTE_HEADER.lower()
+        }
+        router_llm_headers = {**anila_headers, _ROUTE_HEADER: route_signal}
+        stream = bool(body.get("stream", True))
+        started_at = time.time()
+
+        async def _store_routing_reply(
+            text: str,
+        ) -> tuple[dict[str, Any] | None, InterruptRecord | None]:
+            """Save the answer. A follow-up ASK counts only after its interrupt is pending.
+
+            On failure the answer (and a question already written) stay marked
+            so ``_abandon`` can roll them back and restore the original pause.
+            """
+            nonlocal committed, answer_written, followup_question
+            if resume_message is None:
+                raise RuntimeError("resume message was not built")
+            ask = _parse_ask(text)
+            await session.add_items([resume_message])
+            answer_written = True
+            if ask is None:
+                committed = True
+                answer_written = False
+                return None, None
+            follow = await _persist_router_ask(
+                session,
+                ask=ask,
+                user_message=_resume_content_text(resume_message),
+            )
+            question = str(ask.get("question") or "").strip()
+            followup_question = question or None
+            await session.push_interrupt(follow)
+            committed = True
+            answer_written = False
+            followup_question = None
+            return ask, follow
+
+        def _followup_save_failed(exc: Exception) -> list[str]:
+            logger.warning(
+                "router ask resume follow-up save failed error=%s",
+                type(exc).__name__,
+            )
+            return _router_llm_outage_frames("follow-up save failed")
+
+        async def _events() -> AsyncIterator[str]:
+            try:
+                yield _make_event("anila.resumed", {"interrupt_id": interrupt_id})
+                if stream:
+                    buf = ""
+                    upstream_reasoning = ""
+                    async for ev in _stream_llm_sse(
+                        caller_api_key,
+                        routing_messages,
+                        forwarded_headers=router_llm_headers,
+                        apply_thinking_tier=True,
+                    ):
+                        kind = ev.get("type")
+                        if kind == "error":
+                            err = ev.get("error", "LLM error")
+                            _log_router_ask_resume_failure(err, ev.get("detail"))
+                            for frame in _router_llm_outage_frames(err):
+                                yield frame
+                            return
+                        if kind == "reasoning":
+                            upstream_reasoning += ev["content"]
+                            yield _make_event(
+                                "anila.reasoning", {"delta": ev["content"]}
+                            )
+                            continue
+                        if kind == "delta":
+                            buf += ev["content"]
+                            continue
+                        if kind == "done":
+                            break
+                    try:
+                        ask, follow = await _store_routing_reply(buf)
+                    except Exception as exc:
+                        for frame in _followup_save_failed(exc):
+                            yield frame
+                        return
+                    if ask is not None and follow is not None:
+                        payload = _ask_event_payload(follow)
+                        ask_step = _make_trace_step(
+                            "direct", "Router 反問使用者", "暫停等待回答"
+                        )
+                        yield _make_event("anila.trace", ask_step)
+                        yield _make_event("anila.interrupt_requested", payload)
+                        yield _make_chunk(str(ask["question"]), "anila-router")
+                        anila_meta = _merge_anila_meta(
+                            [ask_step],
+                            None,
+                            latency_ms=int((time.time() - started_at) * 1000),
+                            route={"decision": "ask"},
+                        )
+                        if upstream_reasoning:
+                            anila_meta["reasoning"] = upstream_reasoning
+                        yield _make_event(
+                            "anila.meta",
+                            {**anila_meta, "trace": [], "interrupt": payload},
+                        )
+                        yield _make_chunk("", "anila-router", finish="stop")
+                        yield "data: [DONE]\n\n"
+                        return
+                    visible = _forced_visible_text(
+                        _normalize_clarify_bullets(_strip_ask_syntax(buf)),
+                        route_signal,
                     )
-                    yield _make_chunk(_visible_llm_fallback(err), "anila-router")
-                    yield _make_event("anila.meta", {"trace": [], "reasoning": None})
+                    if visible:
+                        yield _make_chunk(visible, "anila-router")
+                    step = _make_trace_step(
+                        "direct", "Router 直接回答", "無需分派 agent"
+                    )
+                    yield _make_event("anila.trace", step)
+                    anila_meta = _merge_anila_meta(
+                        [step],
+                        None,
+                        latency_ms=int((time.time() - started_at) * 1000),
+                        route={"decision": "direct"},
+                    )
+                    if upstream_reasoning:
+                        anila_meta["reasoning"] = upstream_reasoning
+                    yield _make_event("anila.meta", {**anila_meta, "trace": []})
                     yield _make_chunk("", "anila-router", finish="stop")
                     yield "data: [DONE]\n\n"
                     return
-                if kind == "reasoning":
-                    upstream_reasoning += ev["content"]
-                    yield _make_event("anila.reasoning", {"delta": ev["content"]})
-                    continue
-                if kind == "delta":
-                    buf += ev["content"]
-                    continue
-                if kind == "done":
-                    break
-            ask = _parse_ask(buf)
-            if ask is not None:
-                follow = await _persist_router_ask(
-                    session, ask=ask, user_message=_resume_content_text(resume_message)
+
+                llm_response = await _call_llm_non_stream(
+                    caller_api_key,
+                    routing_messages,
+                    forwarded_headers=router_llm_headers,
+                    apply_thinking_tier=True,
                 )
-                await session.push_interrupt(follow)
-                payload = _ask_event_payload(follow)
-                ask_step = _make_trace_step(
-                    "direct", "Router 反問使用者", "暫停等待回答"
+                if llm_response["error"]:
+                    err = llm_response["error"]
+                    _log_router_ask_resume_failure(err)
+                    for frame in _router_llm_outage_frames(err):
+                        yield frame
+                    return
+                llm_text = llm_response["content"]
+                try:
+                    ask, follow = await _store_routing_reply(llm_text)
+                except Exception as exc:
+                    for frame in _followup_save_failed(exc):
+                        yield frame
+                    return
+                if ask is not None and follow is not None:
+                    payload = _ask_event_payload(follow)
+                    yield _make_event("anila.interrupt_requested", payload)
+                    yield _make_chunk(str(ask["question"]), "anila-router")
+                    yield _make_chunk("", "anila-router", finish="stop")
+                    yield "data: [DONE]\n\n"
+                    return
+                visible = _forced_visible_text(
+                    _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
+                    route_signal,
                 )
-                yield _make_event("anila.trace", ask_step)
-                yield _make_event("anila.interrupt_requested", payload)
-                yield _make_chunk(str(ask["question"]), "anila-router")
-                anila_meta = _merge_anila_meta(
-                    [ask_step],
-                    None,
-                    latency_ms=int((time.time() - started_at) * 1000),
-                    route={"decision": "ask"},
-                )
-                if upstream_reasoning:
-                    anila_meta["reasoning"] = upstream_reasoning
-                yield _make_event(
-                    "anila.meta",
-                    {**anila_meta, "trace": [], "interrupt": payload},
-                )
+                if visible:
+                    yield _make_chunk(visible, "anila-router")
                 yield _make_chunk("", "anila-router", finish="stop")
                 yield "data: [DONE]\n\n"
-                return
-            visible = _forced_visible_text(
-                _normalize_clarify_bullets(_strip_ask_syntax(buf)),
-                route_signal,
-            )
-            if visible:
-                yield _make_chunk(visible, "anila-router")
-            step = _make_trace_step("direct", "Router 直接回答", "無需分派 agent")
-            yield _make_event("anila.trace", step)
-            anila_meta = _merge_anila_meta(
-                [step],
-                None,
-                latency_ms=int((time.time() - started_at) * 1000),
-                route={"decision": "direct"},
-            )
-            if upstream_reasoning:
-                anila_meta["reasoning"] = upstream_reasoning
-            yield _make_event("anila.meta", {**anila_meta, "trace": []})
-            yield _make_chunk("", "anila-router", finish="stop")
-            yield "data: [DONE]\n\n"
-            return
+            finally:
+                await _abandon()
 
-        llm_response = await _call_llm_non_stream(
-            caller_api_key,
-            routing_messages,
-            forwarded_headers=router_llm_headers,
-            apply_thinking_tier=True,
+        return StreamingResponse(
+            _events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Anila-Session-Id": session_id,
+            },
         )
-        if llm_response["error"]:
-            err = llm_response["error"]
-            yield _make_event(
-                "anila.trace",
-                _make_trace_step("direct", "LLM 無法回應", err, status="error"),
-            )
-            yield _make_chunk(_visible_llm_fallback(err), "anila-router")
-            yield _make_chunk("", "anila-router", finish="stop")
-            yield "data: [DONE]\n\n"
-            return
-        llm_text = llm_response["content"]
-        ask = _parse_ask(llm_text)
-        if ask is not None:
-            follow = await _persist_router_ask(
-                session, ask=ask, user_message=_resume_content_text(resume_message)
-            )
-            await session.push_interrupt(follow)
-            payload = _ask_event_payload(follow)
-            yield _make_event("anila.interrupt_requested", payload)
-            yield _make_chunk(str(ask["question"]), "anila-router")
-            yield _make_chunk("", "anila-router", finish="stop")
-            yield "data: [DONE]\n\n"
-            return
-        visible = _forced_visible_text(
-            _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
-            route_signal,
-        )
-        if visible:
-            yield _make_chunk(visible, "anila-router")
-        yield _make_chunk("", "anila-router", finish="stop")
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        _events(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "X-Anila-Session-Id": session_id,
-        },
-    )
+    except BaseException:
+        await _abandon()
+        raise
 
 
 def _ask_event_payload(record: InterruptRecord) -> dict[str, Any]:
@@ -981,6 +1199,24 @@ _FORCED_EMPTY_FALLBACK = (
 )
 
 
+def _excise_dispatch_lines(text: str) -> str:
+    """Drop DISPATCH lines without trimming the ends.
+
+    Streaming a forced answer has to append to text it already sent. The
+    final ``.strip()`` in :func:`_strip_dispatch_syntax` is applied once, at
+    the end; doing it on each slice would eat a newline one chunk kept.
+    """
+    if not text:
+        return text
+    cleaned = _DISPATCH_RE.sub("", text)
+    cleaned = _DISPATCH_EMPTY_RE.sub("", cleaned)
+    if cleaned == text:
+        return text
+    # A removed line leaves its surrounding newlines behind; collapse runs of
+    # three or more so paragraph structure survives but gaps do not.
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
 def _strip_dispatch_syntax(text: str) -> str:
     """Remove DISPATCH directives from text the user is about to read.
 
@@ -996,15 +1232,9 @@ def _strip_dispatch_syntax(text: str) -> str:
     salvage door used to act on), then blank runs left behind are collapsed so
     the excision does not show as a hole in the middle of a reply.
     """
-    if not text:
-        return text
-    cleaned = _DISPATCH_RE.sub("", text)
-    cleaned = _DISPATCH_EMPTY_RE.sub("", cleaned)
+    cleaned = _excise_dispatch_lines(text)
     if cleaned == text:
         return text
-    # A removed line leaves its surrounding newlines behind; collapse runs of
-    # three or more so paragraph structure survives but gaps do not.
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 
@@ -1023,14 +1253,21 @@ def _forced_visible_text(text: str, route_signal: str) -> str:
     return cleaned
 
 
-def _make_chunk(content: str, model: str, finish: str | None = None) -> str:
-    chunk = {
+def _make_chunk(
+    content: str,
+    model: str,
+    finish: str | None = None,
+    usage: dict[str, Any] | None = None,
+) -> str:
+    chunk: dict[str, Any] = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
         "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": finish}],
     }
+    if usage:
+        chunk["usage"] = usage
     return "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
 
 
@@ -1833,16 +2070,18 @@ def create_router_app(
         # defect, not just a cosmetic one). The process-wide
         # ``registry.last_refresh_error`` stays where it belongs: /health.
         registry_error = registry.refresh_error_for(caller_api_key)
+        if registry_error:
+            # The stored string is ``Type: str(exc)`` and may contain an
+            # internal address. The trace is user-visible; the log is not.
+            logger.warning(
+                "registry refresh failed detail=%s", str(registry_error)[:300]
+            )
 
         base_trace = [
             _make_trace_step(
                 "registry",
                 "思考中…",
-                (
-                    ""
-                    if not registry_error
-                    else f"registry refresh 失敗：{registry_error}"
-                ),
+                "" if not registry_error else _REGISTRY_REFRESH_FAILURE,
                 status="error" if registry_error else "ok",
             ),
         ]
@@ -2158,22 +2397,26 @@ def create_router_app(
                         yield _make_event(ev_name, ev_payload)
                     elif kind == "error":
                         had_error = True
-                        friendly = (
-                            f"（agent「{agent_id}」暫時不可用：{event.get('error')}。"
-                            "已自動略過，請稍後再試。）"
-                        )
+                        friendly_error = f"agent「{agent_id}」暫時無法使用，請稍後再試。"
                         yield _make_event(
                             "anila.trace",
                             _make_trace_step(
                                 "error",
                                 f"{agent_id} 發生錯誤",
-                                event.get("detail") or event.get("error", ""),
+                                friendly_error,
                                 status="error",
                             ),
                         )
-                        yield _make_chunk(friendly, "anila-router")
+                        yield _make_event(
+                            "anila.error", {"message": friendly_error}
+                        )
+                        break
                     elif kind == "done":
                         break
+
+                if had_error:
+                    logger.info("Router dispatch failed (agent=%s)", agent_id)
+                    return
 
                 final_meta = _merge_anila_meta(
                     base_trace,
@@ -2803,6 +3046,17 @@ def create_router_app(
                 "anila.resumed",
                 {"interrupt_id": body["interrupt_id"]},
             )
+            seen_classified = _known_classified(manifest)
+            known_usage: dict[str, Any] | None = None
+
+            def _note_resume_meta(payload: dict[str, Any]) -> None:
+                nonlocal seen_classified, known_usage
+                if payload.get("classified") is True:
+                    seen_classified = True
+                usage = _trustworthy_usage(payload.get("usage"))
+                if usage is not None:
+                    known_usage = usage
+
             try:
                 # OPT-1: shared client
                 client = get_http_client()
@@ -2811,49 +3065,100 @@ def create_router_app(
                 ) as resp:
                     if resp.status_code >= 400:
                         err_body = await resp.aread()
-                        yield _make_event(
-                            "anila.trace",
-                            _make_trace_step(
-                                "error",
-                                f"resume {agent_id} 失敗",
-                                f"HTTP {resp.status_code} "
-                                f"{err_body[:200].decode('utf-8', errors='replace')}",
-                                status="error",
-                            ),
+                        raw = err_body[:300].decode("utf-8", errors="replace")
+                        logger.warning(
+                            "resume upstream HTTP %s agent=%s detail=%s",
+                            resp.status_code,
+                            agent_id,
+                            raw,
                         )
-                        yield _make_chunk(
-                            f"（resume 失敗：HTTP {resp.status_code}）",
-                            "anila-router",
-                        )
-                        yield _make_chunk(
-                            "", "anila-router", finish="stop"
-                        )
-                        yield "data: [DONE]\n\n"
+                        for frame in _terminal_failure_frames(
+                            agent_id,
+                            classified=seen_classified,
+                            trace_label=f"resume {agent_id} 失敗",
+                        ):
+                            yield frame
                         return
-                    # Pass-through the agent's SSE stream verbatim.
-                    # The agent already emits in the same envelope
-                    # we want to surface (event: anila.* + data:
-                    # OpenAI chunks), so no re-parsing is needed.
-                    async for raw_line in resp.aiter_lines():
-                        if raw_line == "":
-                            yield "\n"
-                        else:
-                            yield raw_line + "\n"
+                    # CSP answers HTTP 200 even when the agent failed: the
+                    # body is ``event: error`` (agent HTTP error) or a
+                    # forwarded ``anila.error``. Parse and stop. Do not
+                    # relay the raw text or a later ``stop`` / ``[DONE]``.
+                    async for event_name, data_str in _iter_sse_frames(
+                        resp.aiter_lines()
+                    ):
+                        event = _classify_upstream_frame(
+                            event_name, data_str, agent_id
+                        )
+                        if event is None:
+                            continue
+                        kind = event.get("type")
+                        if kind == "error":
+                            detail = event.get("detail")
+                            if isinstance(detail, str) and detail:
+                                logger.warning(
+                                    "resume upstream frame agent=%s detail=%s",
+                                    agent_id,
+                                    detail[:300],
+                                )
+                            for frame in _terminal_failure_frames(
+                                agent_id,
+                                classified=seen_classified,
+                                usage=known_usage,
+                                trace_label=f"resume {agent_id} 失敗",
+                            ):
+                                yield frame
+                            return
+                        if kind == "done":
+                            yield "data: [DONE]\n\n"
+                            return
+                        if kind in ("content", "finish"):
+                            usage = event.get("usage")
+                            if isinstance(usage, dict):
+                                known_usage = usage
+                            finish = event.get("finish_reason")
+                            yield _make_chunk(
+                                str(event.get("content") or ""),
+                                "anila-router",
+                                finish=finish if isinstance(finish, str) and finish else None,
+                                usage=usage if isinstance(usage, dict) else None,
+                            )
+                            continue
+                        if kind == "usage":
+                            usage = event.get("usage")
+                            if isinstance(usage, dict):
+                                known_usage = usage
+                                yield _make_chunk("", "anila-router", usage=usage)
+                            continue
+                        if kind == "meta":
+                            meta = event.get("anila_meta")
+                            if isinstance(meta, dict):
+                                _note_resume_meta(meta)
+                                yield _make_event("anila.meta", meta)
+                            continue
+                        if kind == "anila_event":
+                            payload = event.get("payload")
+                            ev_name = str(event.get("event") or "")
+                            if ev_name == "anila.meta" and isinstance(payload, dict):
+                                _note_resume_meta(payload)
+                            if isinstance(payload, dict):
+                                yield _make_event(ev_name, payload)
+                            continue
             except httpx.RequestError as exc:
-                yield _make_event(
-                    "anila.trace",
-                    _make_trace_step(
-                        "error",
-                        f"resume {agent_id} 連線錯誤",
-                        f"{type(exc).__name__}: {exc}",
-                        status="error",
-                    ),
+                logger.warning(
+                    "resume connection error agent=%s detail=%s",
+                    agent_id,
+                    str(exc)[:300],
                 )
-                yield _make_chunk(
-                    "（resume 失敗：連線錯誤，請重試。）", "anila-router"
-                )
-                yield _make_chunk("", "anila-router", finish="stop")
-                yield "data: [DONE]\n\n"
+                # A meta frame may already have latched classification and
+                # usage before the socket dropped. The failure meta has to
+                # keep both; the manifest alone is not the whole story.
+                for frame in _terminal_failure_frames(
+                    agent_id,
+                    classified=seen_classified,
+                    usage=known_usage,
+                    trace_label=f"resume {agent_id} 連線錯誤",
+                ):
+                    yield frame
 
         return StreamingResponse(
             _stream_resume(),
@@ -3249,19 +3554,49 @@ async def _router_streaming_multi_turn(
         forwarded_headers=forwarded_headers,
     )
     if agent_response["error"]:
-        err_step = _make_trace_step(
-            "error", f"{agent_id} 發生錯誤",
-            agent_response["error"], status="error",
+        # ``_dispatch_safe`` already logged the upstream body. The trace
+        # and the terminal event carry only the fixed sentence. Do not
+        # recompose the failure text or close the turn with ``stop``.
+        safe = _agent_outage_message(agent_id)
+        logger.warning(
+            "multi-turn dispatch failed agent=%s detail=%s",
+            agent_id,
+            agent_response.get("error"),
         )
-    else:
-        err_step = _make_trace_step(
-            "call", f"呼叫 {agent_id}",
-            "POST /v1/chat/completions (經 CSP proxy)",
+        yield _make_event(
+            "anila.trace",
+            _make_trace_step(
+                "error", f"{agent_id} 發生錯誤", safe, status="error",
+            ),
         )
+        agent_meta = agent_response.get("anila_meta")
+        usage = (
+            _trustworthy_usage(agent_meta.get("usage"))
+            if isinstance(agent_meta, dict)
+            else None
+        )
+        yield _make_event(
+            "anila.meta",
+            _failure_anila_meta(
+                classified=_known_classified(manifest, agent_meta),
+                usage=usage,
+            ),
+        )
+        yield _make_event("anila.error", {"message": safe})
+        return
+
+    err_step = _make_trace_step(
+        "call", f"呼叫 {agent_id}",
+        "POST /v1/chat/completions (經 CSP proxy)",
+    )
     yield _make_event("anila.trace", err_step)
     base_trace.append(err_step)
 
-    # Multi-turn loop reuses the non-streaming helper.
+    # Multi-turn loop reuses the non-streaming helper. The first agent's
+    # meta can latch classification before a later dispatch replaces
+    # ``agent_response``.
+    classified_latch = _known_classified(manifest, agent_response.get("anila_meta"))
+    emitted_trace_len = len(base_trace)
     (
         agent_response,
         last_agent_id,
@@ -3288,6 +3623,33 @@ async def _router_streaming_multi_turn(
         pin_owner=pin_owner,
         forwarded_headers=forwarded_headers,
     )
+
+    # A later iteration can fail after the first dispatch succeeded.
+    # The loop's error trace is safe text; do not recompose the failure
+    # content or close the turn with ``stop`` / ``[DONE]``.
+    if agent_response.get("error"):
+        for step in base_trace[emitted_trace_len:]:
+            yield _make_event("anila.trace", step)
+        failed_meta = agent_response.get("anila_meta")
+        failed_usage = (
+            _trustworthy_usage(failed_meta.get("usage"))
+            if isinstance(failed_meta, dict)
+            else None
+        )
+        yield _make_event(
+            "anila.meta",
+            _failure_anila_meta(
+                classified=_known_classified(
+                    classified_latch, manifest, last_manifest, failed_meta
+                ),
+                usage=failed_usage,
+            ),
+        )
+        yield _make_event(
+            "anila.error",
+            {"message": _agent_outage_message(last_agent_id)},
+        )
+        return
 
     # Emit any new trace steps the loop appended (we already emitted
     # the ones from before the loop). Skip the prefix we already sent.
@@ -3458,6 +3820,15 @@ async def _multi_turn_dispatch(
     last_agent_id = first_agent_id
     last_manifest = first_manifest
     last_llm_text = first_llm_text
+    # One-way classification latch across dispatches. A later failure
+    # replaces ``agent_response``, so the flag has to be remembered here
+    # and written back onto that failure for the caller's meta.
+    classified_latch = _known_classified(
+        first_manifest,
+        first_agent_response.get("anila_meta")
+        if isinstance(first_agent_response, dict)
+        else None,
+    )
 
     # Conversation accumulates: each iteration appends the previous
     # router-LLM directive + the dispatched agent's reply, then asks the
@@ -3584,15 +3955,24 @@ async def _multi_turn_dispatch(
             forwarded_headers=forwarded_headers,
         )
         if agent_response["error"]:
+            logger.warning(
+                "multi-turn dispatch failed agent=%s detail=%s",
+                next_agent_id,
+                agent_response.get("error"),
+            )
+            if classified_latch:
+                _stamp_classified_latch(agent_response)
             base_trace.append(
                 _make_trace_step(
                     "error",
                     f"{next_agent_id} 發生錯誤",
-                    agent_response["error"],
+                    _agent_outage_message(next_agent_id),
                     status="error",
                 )
             )
         else:
+            if _known_classified(next_manifest, agent_response.get("anila_meta")):
+                classified_latch = True
             base_trace.append(
                 _make_trace_step(
                     "call",
@@ -3604,6 +3984,8 @@ async def _multi_turn_dispatch(
         last_manifest = next_manifest
         last_llm_text = next_text
 
+    if agent_response.get("error") and classified_latch:
+        _stamp_classified_latch(agent_response)
     return (
         agent_response,
         last_agent_id,
@@ -3951,7 +4333,8 @@ async def _call_llm_non_stream(
                 _compact_retry=stage + 1,
             )
         err = f"LLM upstream HTTP {exc.response.status_code}"
-        logger.error("%s — body=%s", err, exc.response.text[:300])
+        body_text = exc.response.text[:300] if exc.response.text else ""
+        logger.error("%s — body=%s", err, _scrub_diagnostic_value(body_text))
         return {"content": "", "reasoning": None, "anila_meta": None, "raw": None, "error": err}
     except httpx.RequestError as exc:
         err = f"LLM connection error: {type(exc).__name__}"
@@ -4242,6 +4625,180 @@ async def _stream_llm_sse(
         yield {"type": "error", "error": f"LLM unexpected: {type(exc).__name__}", "detail": str(exc)}
 
 
+# ``ASK*:`` is its own keyword. ``ASK`` is a prefix of both forms, and
+# ``ASK*`` (the star has arrived, the colon has not) is a prefix of only the
+# multi form. Without that keyword a chunk split between ``ASK`` and ``*``
+# leaves the detecting loop and the line is streamed as an answer.
+_DIRECTIVE_KEYWORDS = ("DISPATCH:", "ASK*:", "ASK:")
+
+
+def _keyword_intro_status(text: str) -> str:
+    """'open' if text begins with DISPATCH:/ASK:/ASK*:, else 'hold' or not."""
+    if not text:
+        return "hold"
+    for keyword in _DIRECTIVE_KEYWORDS:
+        if text.startswith(keyword):
+            return "open"
+        if keyword.startswith(text):
+            return "hold"
+    return "no"
+
+
+def _directive_intro_status(buf: str) -> str:
+    """Whether the start of ``buf`` can still be a leading DISPATCH or ASK line.
+
+    ``open`` — optional blank lines, an optional `` ` * > `` wrapper, then
+    ``DISPATCH:``, ``ASK:``, or ``ASK*:`` are already present.
+    ``hold`` — ``buf`` is a proper prefix of that introducer.
+    ``no`` — more bytes cannot make it one.
+
+    The wrapper is the same class ``_DISPATCH_LINE_START`` and ``_ASK_HEAD_RE``
+    accept. Holding only for a bare ``startswith("DISPATCH:")`` committed a
+    wrapped or still-growing directive as soon as the buffer hit 12 characters.
+    """
+    index = 0
+    limit = len(buf)
+    while index < limit and buf[index] in " \t\r\n":
+        index += 1
+    if index == limit:
+        return "hold"
+    rest = buf[index:]
+    best = _keyword_intro_status(rest)
+    if rest[0] not in "`*>":
+        return best
+    wrapped = 0
+    while wrapped < len(rest) and wrapped < 3 and rest[wrapped] in "`*>":
+        wrapped += 1
+    if wrapped == len(rest):
+        return "hold"
+    for width in range(1, wrapped + 1):
+        after = rest[width:]
+        spaces = 0
+        while spaces < len(after) and after[spaces] in " \t":
+            spaces += 1
+        if spaces == len(after):
+            best = "hold"
+            continue
+        status = _keyword_intro_status(after[spaces:])
+        if status == "open":
+            return "open"
+        if status == "hold":
+            best = "hold"
+    return best
+
+
+def _thought_intro_status(buf: str) -> str:
+    """'thought' when the leaked-thought header is complete, else 'hold' or 'no'.
+
+    A one-character stream of ``thought\\nDISPATCH:...`` must not commit to a
+    plain answer on the ``t``. The header is short, so the hold ends as soon
+    as the bytes cannot grow into ``thought`` / ``thinking``.
+    """
+    if _THOUGHT_PREFIX_RE.match(buf):
+        return "thought"
+    index = 0
+    limit = len(buf)
+    while index < limit and buf[index].isspace():
+        index += 1
+    if index == limit:
+        return "hold"
+    if buf[index] == "`":
+        index += 1
+    elif buf[index] == "*":
+        stars = 0
+        while index < limit and buf[index] == "*" and stars < 2:
+            index += 1
+            stars += 1
+        if index == limit:
+            return "hold"
+        if buf[index] == "*":
+            return "no"
+    if index == limit:
+        return "hold"
+    tail = buf[index:].lower()
+    for word in ("thought", "thinking"):
+        if word.startswith(tail):
+            return "hold"
+        if tail.startswith(word):
+            # The word is complete but the regex did not match, so the bytes
+            # after it are not a legal header tail. More input cannot repair it.
+            return "no"
+    return "no"
+
+
+def _leading_directive_line_rejected(buf: str) -> bool:
+    """True when a leading introducer line has ended and no parser accepts it.
+
+    ``DISPATCH:`` alone keeps the buffer in ``directive`` until the line
+    ends, because a second colon could still make it real. Once the newline
+    is in and the line is not a dispatch, an ASK, or a query-less header,
+    it is prose (``DISPATCH: is a syntax label…``) and must start streaming.
+    Only that first line is inspected: a later real directive is part of the
+    answer, matching one-character streaming that committed at the newline.
+    """
+    if _directive_intro_status(buf) != "open":
+        return False
+    index = 0
+    limit = len(buf)
+    while index < limit and buf[index] in " \t\r\n":
+        index += 1
+    if index >= limit:
+        return False
+    line_end = limit
+    for sep in ("\n", "\r"):
+        pos = buf.find(sep, index)
+        if pos >= 0:
+            line_end = min(line_end, pos + 1)
+    if line_end == limit and not buf.endswith(("\n", "\r")):
+        return False
+    head = buf[:line_end]
+    if _parse_dispatch(head) is not None or _parse_ask(head) is not None:
+        return False
+    if _DISPATCH_EMPTY_RE.search(head):
+        return False
+    return True
+
+
+def _stream_head_kind(buf: str) -> str:
+    """Classify the detecting buffer independently of how it was chunked.
+
+    ``hold`` — whitespace, an allowed wrapper, or a proper prefix of
+    ``DISPATCH:`` / ``ASK:`` / ``ASK*:`` or of a thought header. Emit nothing yet.
+    ``directive`` — a leading introducer is in hand; wait for the line to end.
+    ``thought`` — the header is complete. A later DISPATCH line can still route.
+    ``answer`` — a normal reply. Stream it now.
+    """
+    thought = _thought_intro_status(buf)
+    if thought == "thought":
+        return "thought"
+    if _leading_directive_line_rejected(buf):
+        return "answer"
+    directive = _directive_intro_status(buf)
+    if directive == "open":
+        return "directive"
+    if thought == "hold" or directive == "hold":
+        return "hold"
+    return "answer"
+
+
+def _current_line_bounds(buf: str) -> tuple[int, str]:
+    """Start index and text of the line still being emitted.
+
+    A trailing break means that line is empty: the next line has not started.
+    """
+    if not buf:
+        return 0, ""
+    if buf.endswith(("\n", "\r")):
+        return len(buf), ""
+    start = max(buf.rfind("\n"), buf.rfind("\r")) + 1
+    return start, buf[start:]
+
+
+# Same width ``_find_answer_split`` demands before it will commit. A split
+# whose window runs into a directive has not actually been decided yet.
+_ANSWER_WINDOW = 80
+
+
 def _find_answer_split(buf: str) -> int:
     """Return the index where the sustained CJK answer begins, or -1.
 
@@ -4249,13 +4806,20 @@ def _find_answer_split(buf: str) -> int:
     whose 80-char lookahead contains ≥ 50 % CJK *and* ≥ 20 absolute CJK
     chars is treated as the start of the user-visible answer. Pulls
     leading markdown markers back so `**首先**` keeps its bold intact.
+
+    The lookahead must already be a full 80 characters. A shorter tail is
+    denser than the same window will be once the rest arrives, so committing
+    on it made the visible answer depend on the chunk size. Short replies
+    fall through to the end-of-stream sanitizer, which sees the whole text.
     """
-    window = 80
+    window = _ANSWER_WINDOW
     for m in _CJK_RE.finditer(buf):
         i = m.start()
         if i < 10:
             continue
         lookahead = buf[i : i + window]
+        if len(lookahead) < window:
+            break
         cjk_count = len(_CJK_RE.findall(lookahead))
         if cjk_count >= 20 and cjk_count * 2 >= len(lookahead):
             j = i
@@ -4265,6 +4829,135 @@ def _find_answer_split(buf: str) -> int:
                 j -= 2
             return j
     return -1
+
+
+def _answer_split_precedes_dispatch(buf: str, dispatch_start: int) -> bool:
+    """True when one-character streaming would already have committed the answer.
+
+    The thought path streams the CJK block once its window is full and the
+    line is ordinary prose. A DISPATCH line that shows up only after that
+    is part of the answer. The one-chunk path sees both at once and has to
+    make the same call, or the route flips with the chunk size.
+    """
+    if _stream_head_kind(buf) != "thought":
+        return False
+    prior = buf[:dispatch_start].rstrip("\r\n")
+    if not prior:
+        return False
+    _start, line = _current_line_bounds(prior)
+    if _directive_intro_status(line) != "no":
+        return False
+    return _find_answer_split(prior) > 0
+
+
+def _split_window_overlaps_directive(buf: str, split_at: int) -> bool:
+    """True when the 80-character density window touches a directive line.
+
+    The split index can sit in ordinary text while its lookahead reaches
+    into ``DISPATCH:``. Committing there answers a buffer that, once the
+    line's terminator arrives, still dispatches — or, for a query-less
+    header, is salvaged at end of stream. One character at a time hits the
+    commit; one chunk hits the directive.
+    """
+    window_end = split_at + _ANSWER_WINDOW
+    line_start, line = _current_line_bounds(buf)
+    if _directive_intro_status(line) != "no" and (
+        split_at >= line_start or split_at < line_start < window_end
+    ):
+        return True
+    for match in _DISPATCH_EMPTY_RE.finditer(buf):
+        if match.start() < window_end and match.end() > split_at:
+            return True
+    parsed = _parse_dispatch(buf)
+    if parsed is not None:
+        start, end = parsed[2], parsed[3]
+        if start < window_end and end > split_at:
+            return True
+    return False
+
+
+def _earliest_answer_mark(buf: str) -> int:
+    """Index where a CJK answer could still start, or ``len(buf)``.
+
+    Reasoning emitted past this point on a short chunk would include answer
+    text that a one-chunk buffer, which already knows the split, never puts
+    in the fold.
+    """
+    for match in _CJK_RE.finditer(buf):
+        index = match.start()
+        if index < 10:
+            continue
+        while index > 0 and buf[index - 1] in "*#":
+            index -= 1
+        if index >= 2 and buf[index - 2 : index] in ("- ", "+ "):
+            index -= 2
+        return index
+    return len(buf)
+
+
+def _thought_reasoning_cap(buf: str) -> int:
+    """How much of a thought-prefixed buffer is stable reasoning.
+
+    Once the density window commits, reasoning stops at that split. Until
+    then it stops at the first CJK that could become the split, so character
+    deltas and one chunk describe the same fold.
+    """
+    split_at = _find_answer_split(buf)
+    if split_at > 0 and not _split_window_overlaps_directive(buf, split_at):
+        return split_at
+    return _earliest_answer_mark(buf)
+
+
+def _thought_split_blocked_by_open_directive(buf: str) -> bool:
+    """Keep buffering while the answer boundary still depends on a directive.
+
+    The query is often the dense CJK block the answer splitter looks for.
+    A window that merely *reaches* an unfinished or query-less DISPATCH line
+    is the same trap: the split index is before the line, so checking only
+    that index commits the directive as the answer.
+    """
+    line_start, line = _current_line_bounds(buf)
+    split_at = _find_answer_split(buf)
+    if _directive_intro_status(line) != "no" and split_at < 0:
+        return True
+    if split_at < 0:
+        return False
+    return _split_window_overlaps_directive(buf, split_at)
+
+
+def _forced_hold_from(buf: str) -> int:
+    """Index before which a forced answer can no longer change its ends.
+
+    The current line is held while it might still be a DISPATCH directive,
+    and so is the break before it. A trailing break is held too: the next
+    line has not started, and a removed directive makes ``.strip()`` drop a
+    newline that an earlier chunk would already have sent.
+    """
+    if not buf:
+        return 0
+    if buf.endswith(("\n", "\r")):
+        return len(buf) - 1
+    line_start, line = _current_line_bounds(buf)
+    if _directive_intro_status(line) in ("hold", "open"):
+        return line_start - 1 if line_start else 0
+    return len(buf)
+
+
+def _forced_stable_visible(buf: str) -> str:
+    """Prefix of a forced answer that later bytes cannot rewrite.
+
+    ``_strip_dispatch_syntax`` strips the ends once a directive is removed.
+    Leading or trailing whitespace is therefore not safe to send while a
+    later line might still be a directive; the words in between are.
+    """
+    body = buf[: _forced_hold_from(buf)]
+    excised = _excise_dispatch_lines(body)
+    if excised != body:
+        return excised.strip()
+    stripped = body.strip()
+    if body.startswith(stripped):
+        return stripped
+    return ""
 
 
 # Sprint 13 PR A1: agent-side typed SSE events that the Router should
@@ -4319,6 +5012,320 @@ def _flatten_openai_content(value: Any) -> str:
     return "".join(parts)
 
 
+def _agent_outage_message(agent_id: str) -> str:
+    """Fixed sentence for a failed agent. Raw upstream text stays off the SSE stream."""
+    return f"agent「{agent_id}」暫時無法使用，請稍後再試。"
+
+
+def _upstream_frame_error(agent_id: str, detail: str) -> dict[str, Any]:
+    """Terminal parse result. ``detail`` is operator-only."""
+    return {
+        "type": "error",
+        "error": _agent_outage_message(agent_id),
+        "detail": detail[:300],
+    }
+
+
+# Kinds the Router itself emits. Anything else on an error trace is replaced
+# so an upstream step cannot hide a secret in ``kind``.
+_UPSTREAM_ERROR_TRACE_KINDS = frozenset({
+    "error",
+    "call",
+    "tool",
+    "dispatch",
+    "direct",
+    "recompose",
+    "registry",
+    "compact",
+    "route-miss",
+    "agent",
+    "attachment",
+})
+_USAGE_COUNT_KEYS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+)
+_USAGE_SOURCE_VALUES = frozenset({"reported", "estimated", "unavailable"})
+
+
+def _public_upstream_error_trace(
+    payload: Mapping[str, Any], agent_id: str
+) -> dict[str, Any]:
+    """User-visible form of an upstream ``anila.trace`` whose ``status`` is ``error``.
+
+    The Shell renders ``label`` and ``detail`` and stores every other field
+    on the message (``chat.jsx`` StepTimeline / TraceRow, ``sse.js``
+    ``onTrace``). Both strings are fixed. ``kind`` passes through only from
+    a small allow-list; ``latency_ms`` only when it is a non-negative int.
+    Callers log the original payload — it is not returned.
+    """
+    kind = payload.get("kind")
+    if not isinstance(kind, str) or kind not in _UPSTREAM_ERROR_TRACE_KINDS:
+        kind = "error"
+    step: dict[str, Any] = {
+        "kind": kind,
+        "label": "上游步驟失敗",
+        "detail": _agent_outage_message(agent_id),
+        "status": "error",
+    }
+    latency = payload.get("latency_ms")
+    if isinstance(latency, int) and not isinstance(latency, bool) and latency >= 0:
+        step["latency_ms"] = latency
+    return step
+
+
+def _trustworthy_usage(value: Any) -> dict[str, Any] | None:
+    """Numeric token counts safe to show after a failed turn.
+
+    Accepts an OpenAI ``usage`` object or an engine ``usage_update``
+    (``input_tokens`` / ``output_tokens``). A non-integer count, a negative
+    count, or an unknown ``reasoning_tokens_source`` rejects the object.
+    Extra keys are ignored so a secret beside the counts cannot ride along.
+    """
+    if not isinstance(value, dict):
+        return None
+    source: Mapping[str, Any] = value
+    if "prompt_tokens" not in value and (
+        "input_tokens" in value or "output_tokens" in value
+    ):
+        in_tok = value.get("input_tokens")
+        out_tok = value.get("output_tokens")
+        mapped: dict[str, Any] = {}
+        if in_tok is not None:
+            mapped["prompt_tokens"] = in_tok
+        if out_tok is not None:
+            mapped["completion_tokens"] = out_tok
+        if (
+            isinstance(in_tok, int)
+            and not isinstance(in_tok, bool)
+            and isinstance(out_tok, int)
+            and not isinstance(out_tok, bool)
+        ):
+            mapped["total_tokens"] = in_tok + out_tok
+        if "reasoning_tokens" in value:
+            mapped["reasoning_tokens"] = value["reasoning_tokens"]
+        if "reasoning_tokens_source" in value:
+            mapped["reasoning_tokens_source"] = value["reasoning_tokens_source"]
+        source = mapped
+    out: dict[str, Any] = {}
+    for key in _USAGE_COUNT_KEYS:
+        if key not in source or source[key] is None:
+            continue
+        item = source[key]
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            return None
+        out[key] = item
+    if "reasoning_tokens_source" in source and source["reasoning_tokens_source"] is not None:
+        src = source["reasoning_tokens_source"]
+        # A list or object is unhashable and would raise TypeError here,
+        # turning a successful chunk into a terminal failure. Reject the
+        # usage object instead of aborting the answer.
+        if not isinstance(src, str) or src not in _USAGE_SOURCE_VALUES:
+            return None
+        out["reasoning_tokens_source"] = src
+    if not any(key in out for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+        return None
+    return out
+
+
+def _failure_anila_meta(
+    *, classified: bool, usage: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Failure-only ``anila.meta``: classification latch and known usage.
+
+    No citations, handoff, route, or other success fields. Emit this before
+    ``anila.error``; the Shell stops reading at that frame (``sse.js``).
+    """
+    meta: dict[str, Any] = {"classified": bool(classified)}
+    if usage:
+        meta["usage"] = usage
+    return meta
+
+
+def _router_llm_outage_frames(err: object) -> list[str]:
+    """Trace, failure meta, then ``anila.error``. The error frame is last.
+
+    ``err`` stays off the wire. Callers log the status and a scrubbed
+    excerpt, not the raw upstream body. The sentence here is the fixed
+    outage, or the length / empty-reply sentence when that is the failure.
+    """
+    safe = _visible_llm_fallback(err)
+    return [
+        _make_event(
+            "anila.trace",
+            _make_trace_step("error", "LLM 無法回應", safe, status="error"),
+        ),
+        _make_event(
+            "anila.meta",
+            _failure_anila_meta(classified=False, usage=None),
+        ),
+        _make_event("anila.error", {"message": safe}),
+    ]
+
+
+def _stamp_classified_latch(response: dict[str, Any]) -> None:
+    """Remember a prior ``classified: true`` on a later failure payload."""
+    meta = response.get("anila_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        response["anila_meta"] = meta
+    meta["classified"] = True
+
+
+def _known_classified(*sources: Any) -> bool:
+    """True when a manifest or an already-received meta latched classification.
+
+    Only a boolean ``True`` counts. Other truthy values are not the flag.
+    """
+    for source in sources:
+        if source is True:
+            return True
+        if isinstance(source, dict) and source.get("classified") is True:
+            return True
+        if getattr(source, "requires_encryption", None) is True:
+            return True
+    return False
+
+
+# Shown in place of an upstream diagnostic string that carries an address,
+# a credential, or an exception. Not an outage sentence: the step may
+# still have succeeded.
+_REDACTED_DIAGNOSTIC = "已省略上游診斷內容"
+_REDACTED_URL = "［連結已省略］"
+_REGISTRY_REFRESH_FAILURE = "代理清單暫時無法更新，請稍後再試。"
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_UNSAFE_DIAGNOSTIC_RE = re.compile(
+    r"\bsk-[A-Za-z0-9]|"
+    r"\bcsk-[A-Za-z0-9]|"
+    r"(?i:\bapi[_-]?key\b\s*[\"']?\s*[=:])|"
+    r"(?i:\b(?:password|passwd|pwd)\b\s*[\"']?\s*[=:])|"
+    r"(?i:\b[a-z0-9_]*token\b\s*[\"']?\s*[=:])|"
+    r"Traceback\b|"
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b|"
+    r"\b[A-Za-z_]+(?:Error|Exception)\b|"
+    r"(?i:\bbearer\s+)"
+)
+
+
+def _redact_diagnostic_text(text: str) -> str:
+    """Hide a URL, including its query string. Other diagnostics replace the field.
+
+    ``參考 https://docs.example.org/help`` keeps 「參考」. A credential
+    (bearer token, any case, ``sk-`` / ``csk-`` key, ``api_key=``,
+    ``token=`` / ``access_token``, password), traceback, address, or
+    exception name still replaces the whole field.
+    """
+    without_urls = _URL_RE.sub(_REDACTED_URL, text)
+    if _UNSAFE_DIAGNOSTIC_RE.search(without_urls):
+        return _REDACTED_DIAGNOSTIC
+    return without_urls
+
+
+def _diagnostic_text_is_public(text: str) -> bool:
+    """User-visible diagnostic text with no address, credential, or exception."""
+    return _redact_diagnostic_text(text) == text
+
+
+def _scrub_diagnostic_value(value: Any) -> Any:
+    """Replace unsafe strings anywhere in an upstream diagnostic payload."""
+    if isinstance(value, str):
+        return _redact_diagnostic_text(value)
+    if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+        return value
+    if isinstance(value, list):
+        return [_scrub_diagnostic_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _scrub_diagnostic_value(item) for key, item in value.items()
+        }
+    return _REDACTED_DIAGNOSTIC
+
+
+def _present_upstream_trace(payload: Mapping[str, Any], agent_id: str) -> dict[str, Any]:
+    """Trace safe to forward. ``status == error`` uses the fixed outage shape.
+
+    Any other status keeps its public fields. ``label`` / ``detail`` and
+    every other string are scrubbed when they look like an exception,
+    an address, or a credential — a non-error status is not a promise
+    that those fields are safe.
+    """
+    if payload.get("status") == "error":
+        return _public_upstream_error_trace(payload, agent_id)
+    scrubbed = _scrub_diagnostic_value(dict(payload))
+    return scrubbed if isinstance(scrubbed, dict) else {}
+
+
+def _present_upstream_spans(payload: Any, agent_id: str) -> Any:
+    """Upstream ``anila.spans`` with diagnostic strings scrubbed.
+
+    The Router's own spans are produced later and cannot retract a
+    secret that was already forwarded. ``agent_id`` is unused; the
+    scrubber does not invent an outage sentence for a span that may
+    have succeeded.
+    """
+    del agent_id
+    return _scrub_diagnostic_value(payload)
+
+
+async def _iter_sse_frames(
+    lines: AsyncIterator[str],
+) -> AsyncIterator[tuple[str | None, str]]:
+    """Yield ``(event name, data)`` for each SSE message in ``lines``."""
+    event_name: str | None = None
+    data_lines: list[str] = []
+    async for raw_line in lines:
+        if raw_line == "":
+            if data_lines:
+                data_str = "\n".join(data_lines)
+                data_lines = []
+                dispatched = event_name
+                event_name = None
+                yield dispatched, data_str
+            else:
+                event_name = None
+            continue
+        if raw_line.startswith(":"):
+            continue
+        if raw_line.startswith("event:"):
+            value = raw_line[6:]
+            if value.startswith(" "):
+                value = value[1:]
+            event_name = value
+            continue
+        if raw_line.startswith("data:"):
+            value = raw_line[5:]
+            if value.startswith(" "):
+                value = value[1:]
+            data_lines.append(value)
+            continue
+    if data_lines:
+        yield event_name, "\n".join(data_lines)
+
+
+def _terminal_failure_frames(
+    agent_id: str,
+    *,
+    classified: bool,
+    usage: dict[str, Any] | None = None,
+    trace_label: str,
+) -> list[str]:
+    """Trace, failure meta, then ``anila.error``. The error frame is last."""
+    safe = _agent_outage_message(agent_id)
+    return [
+        _make_event(
+            "anila.trace",
+            _make_trace_step("error", trace_label, safe, status="error"),
+        ),
+        _make_event(
+            "anila.meta",
+            _failure_anila_meta(classified=classified, usage=usage),
+        ),
+        _make_event("anila.error", {"message": safe}),
+    ]
+
+
 def _extract_openai_stream_content(chunk: dict[str, Any]) -> str:
     for choice in _openai_choices(chunk):
         if not isinstance(choice, dict):
@@ -4335,6 +5342,88 @@ def _extract_openai_stream_content(chunk: dict[str, Any]) -> str:
         if content:
             return content
     return ""
+
+
+def _classify_upstream_frame(
+    event_name: str | None, data_str: str, agent_id: str
+) -> dict[str, Any] | None:
+    """Turn one upstream SSE message into a router event dict.
+
+    ``anila.error``, named ``event: error``, and an OpenAI error object
+    are terminal: ``error`` is the fixed outage sentence and ``detail``
+    keeps the raw body for logs. Trace and span payloads are scrubbed
+    before they can be forwarded.
+    """
+
+    if data_str == "[DONE]":
+        return {"type": "done"}
+    if event_name == "error" or event_name == "anila.error":
+        return _upstream_frame_error(agent_id, data_str)
+    if event_name and event_name.startswith("anila."):
+        try:
+            parsed = json.loads(data_str)
+        except json.JSONDecodeError:
+            return None
+        if event_name == "anila.trace" and isinstance(parsed, dict):
+            presented = _present_upstream_trace(parsed, agent_id)
+            if presented != parsed:
+                logger.warning(
+                    "upstream trace redacted agent=%s detail=%s",
+                    agent_id,
+                    data_str[:300],
+                )
+            parsed = presented
+        elif event_name == "anila.spans":
+            presented = _present_upstream_spans(parsed, agent_id)
+            if presented != parsed:
+                logger.warning(
+                    "upstream spans redacted agent=%s detail=%s",
+                    agent_id,
+                    data_str[:300],
+                )
+            parsed = presented
+        return {"type": "anila_event", "event": event_name, "payload": parsed}
+    if event_name in _AGENT_PASSTHROUGH_EVENTS:
+        try:
+            parsed = json.loads(data_str)
+        except json.JSONDecodeError:
+            return None
+        return {
+            "type": "anila_event",
+            "event": f"anila.{event_name}",
+            "payload": parsed,
+        }
+    try:
+        chunk = json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(chunk, dict) and chunk.get("anila_meta"):
+        return {"type": "meta", "anila_meta": chunk["anila_meta"]}
+    if not isinstance(chunk, dict):
+        return None
+    error_obj = chunk.get("error")
+    if isinstance(error_obj, dict) and error_obj:
+        return _upstream_frame_error(agent_id, data_str)
+    content_piece = _extract_openai_stream_content(chunk)
+    usage = _trustworthy_usage(chunk.get("usage"))
+    finish_reason = ""
+    for choice in _openai_choices(chunk):
+        if isinstance(choice, dict) and choice.get("finish_reason"):
+            finish_reason = str(choice["finish_reason"])
+            break
+    if content_piece or finish_reason:
+        event_out: dict[str, Any] = {
+            "type": "content" if content_piece else "finish",
+            "content": content_piece,
+        }
+        if finish_reason:
+            event_out["finish_reason"] = finish_reason
+        if usage:
+            event_out["usage"] = usage
+        return event_out
+    if usage:
+        return {"type": "usage", "usage": usage}
+    return None
 
 
 async def _stream_agent_sse(
@@ -4358,8 +5447,14 @@ async def _stream_agent_sse(
       9-12 typed event (``interrupt_requested`` / ``todos_updated`` /
       ``follow_ups`` / …) renamed to ``anila.<event>`` so the caller-
       facing stream is namespaced consistently.
-    - ``{"type": "error", "error": str, "detail": str}``
-    - ``{"type": "done"}`` — terminal ``data: [DONE]``
+    - ``{"type": "error", "error": str, "detail": str}`` — terminal
+      failure. ``error`` is the only user-facing string (a fixed
+      sentence naming the agent); ``detail`` keeps the raw upstream
+      text for the trace and must never be rendered to the caller.
+    - ``{"type": "done"}`` — terminal ``data: [DONE]`` *after a clean
+      stream*. An error frame before ``[DONE]``, or the body ending
+      with no ``[DONE]`` at all, yields ``error`` instead: ``[DONE]``
+      only marks the end of the byte stream, not a successful turn.
 
     Sprint 13 PR A1 rewrites this to be a proper SSE parser: it tracks
     the ``event:`` header per message instead of treating every line
@@ -4393,56 +5488,7 @@ async def _stream_agent_sse(
     def _classify_and_yield(
         event_name: str | None, data_str: str
     ) -> dict[str, Any] | None:
-        """Turn a single dispatched SSE message into a yield dict.
-
-        Returns None to skip (parse failures, empty deltas) or a sentinel
-        ``{"type": "done"}`` for ``[DONE]``. Caller is responsible for
-        terminating iteration on that sentinel.
-        """
-        if data_str == "[DONE]":
-            return {"type": "done"}
-
-        # Named anila.* event from the agent template (anila.trace,
-        # anila.meta, anila.reasoning). Pass-through unchanged.
-        if event_name and event_name.startswith("anila."):
-            try:
-                parsed = json.loads(data_str)
-            except json.JSONDecodeError:
-                return None
-            return {
-                "type": "anila_event",
-                "event": event_name,
-                "payload": parsed,
-            }
-
-        # Sprint 9-12 typed event from the agent's QueryEngine path
-        # (interrupt_requested, todos_updated, follow_ups, …). Rename
-        # to anila.<event> so the user-facing stream is namespaced.
-        if event_name in _AGENT_PASSTHROUGH_EVENTS:
-            try:
-                parsed = json.loads(data_str)
-            except json.JSONDecodeError:
-                return None
-            return {
-                "type": "anila_event",
-                "event": f"anila.{event_name}",
-                "payload": parsed,
-            }
-
-        # Default channel — OpenAI chunk envelope OR legacy ``anila_meta``
-        # key embedded in an OpenAI chunk.
-        try:
-            chunk = json.loads(data_str)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(chunk, dict) and chunk.get("anila_meta"):
-            return {"type": "meta", "anila_meta": chunk["anila_meta"]}
-        if not isinstance(chunk, dict):
-            return None
-        content_piece = _extract_openai_stream_content(chunk)
-        if content_piece:
-            return {"type": "content", "content": content_piece}
-        return None
+        return _classify_upstream_frame(event_name, data_str, agent_id)
 
     try:
         # OPT-1: shared client
@@ -4450,9 +5496,15 @@ async def _stream_agent_sse(
         async with client.stream("POST", url, json=payload, headers=headers) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
+                # Status only in the user-facing string. The body is
+                # untrusted upstream text (traces, internal URLs) and
+                # belongs in ``detail``, same as an in-band error frame.
                 yield {
                     "type": "error",
-                    "error": f"agent '{agent_id}' HTTP {resp.status_code}",
+                    "error": (
+                        f"agent「{agent_id}」暫時無法使用（HTTP {resp.status_code}），"
+                        "請稍後再試。"
+                    ),
                     "detail": body.decode("utf-8", errors="replace")[:300],
                 }
                 return
@@ -4480,7 +5532,7 @@ async def _stream_agent_sse(
                         )
                         if result is not None:
                             yield result
-                            if result.get("type") == "done":
+                            if result.get("type") in ("done", "error"):
                                 return
                     else:
                         event_name = None
@@ -4511,6 +5563,15 @@ async def _stream_agent_sse(
                 result = _classify_and_yield(event_name, data_str)
                 if result is not None:
                     yield result
+                    if result.get("type") in ("done", "error"):
+                        return
+
+            # EOF with neither ``[DONE]`` nor an error frame. The
+            # connection closing is not a completed turn — the dispatch
+            # loop treats a bare end as success, so say so explicitly.
+            yield _upstream_frame_error(
+                agent_id, "upstream stream ended without data: [DONE]"
+            )
 
     except httpx.RequestError as exc:
         yield {
@@ -4551,10 +5612,14 @@ async def _router_streaming(
 
     Consumes the primary LLM via SSE and runs a three-state machine:
 
-      * **detecting** — initial window. Look for ``DISPATCH:`` at the head
-        of the buffer (model complied with routing rule) or for a dense
-        CJK answer boundary (model leaked ``thought`` and started the
-        real answer). Nothing is forwarded to the caller yet.
+      * **detecting** — initial window. Look for ``DISPATCH:`` / ``ASK:`` /
+        ``ASK*:`` at the head of the buffer (optional blank lines and the same
+        `` ` * > `` wrapper the offline parsers accept) or for a dense CJK answer
+        boundary (model leaked ``thought`` and started the real answer).
+        Text is held only while that head could still become a directive or
+        a thought header, so a normal answer starts streaming as soon as it
+        cannot, and the decision does not depend on how the upstream split
+        its deltas.
       * **answering** — commit to direct answer. Every subsequent LLM
         delta is forwarded verbatim as a router chunk, so the caller
         sees the same token-by-token stream OpenWebUI gives.
@@ -4585,6 +5650,58 @@ async def _router_streaming(
     thought_confirmed = False
     reasoning_emitted_up_to = 0
     stream_finish = "stop"
+    # Forced plain answers are cleaned with ``_strip_dispatch_syntax``, whose
+    # final ``.strip()`` can rewrite bytes already sent if each delta is
+    # forwarded raw. ``forced_sent`` is the visible prefix already emitted;
+    # only a suffix that later bytes cannot change is appended.
+    forced_plain = False
+    forced_sent = ""
+    # Thought-path forced answers remember where the CJK answer began and
+    # emit only a prefix of ``_strip_dispatch_syntax`` of that region. Excising
+    # a directive out of a later slice leaves the newline on each side of it;
+    # the final cleaner drops those, and one chunk already ran that cleaner
+    # on the whole answer.
+    forced_answer_origin: int | None = None
+    forced_answer_sent = ""
+
+    def _forced_suffix(text: str, *, final: bool) -> str:
+        nonlocal forced_sent
+        target = (
+            _forced_visible_text(text, _ROUTE_FORCED)
+            if final
+            else _forced_stable_visible(text)
+        )
+        if not target.startswith(forced_sent):
+            return ""
+        suffix = target[len(forced_sent) :]
+        forced_sent = target
+        return suffix
+
+    def _forced_answer_suffix(*, final: bool) -> str:
+        nonlocal forced_answer_sent
+        if forced_answer_origin is None:
+            return ""
+        if final:
+            target = _strip_dispatch_syntax(buf[forced_answer_origin:])
+        else:
+            hold = _forced_hold_from(buf)
+            if hold <= forced_answer_origin:
+                target = ""
+            else:
+                partial = buf[forced_answer_origin:hold]
+                excised = _excise_dispatch_lines(partial)
+                if excised != partial:
+                    target = excised.strip()
+                elif partial.endswith(("\n", "\r")):
+                    target = partial[:-1]
+                else:
+                    target = partial
+        if not target.startswith(forced_answer_sent):
+            return ""
+        suffix = target[len(forced_answer_sent) :]
+        forced_answer_sent = target
+        return suffix
+
     # CSP's own ``anila_meta`` for this call — where ``kb_state`` / ``kb_hits``
     # / ``citations`` arrive when institutional-regulation retrieval ran. Held
     # until the direct-answer exits below, which are the only places it belongs
@@ -4611,7 +5728,13 @@ async def _router_streaming(
                 yield _make_chunk(buf, "anila-router")
                 answer_emitted_up_to = len(buf)
                 state = "answering"
-            already = answer_emitted_up_to > 0
+            # Forced plain answers are tracked in ``forced_sent`` and do not
+            # advance ``answer_emitted_up_to``. Without this, a ReadTimeout
+            # after "A partial forced answer" looks unsent and the outage
+            # sentence is appended onto text the caller already has.
+            already = (
+                answer_emitted_up_to > 0 or bool(forced_sent) or bool(forced_answer_sent)
+            )
             if already or length_budget or empty_reply:
                 # Token budget / empty answer / mid-stream drop: keep whatever
                 # already reached the caller. Never append the outage sentence
@@ -4668,6 +5791,20 @@ async def _router_streaming(
         buf += ev["content"]
 
         if state == "answering":
+            if forced_plain:
+                # Same cleaner the one-chunk path applies to the whole buffer,
+                # grown only by a suffix later deltas cannot rewrite.
+                suffix = _forced_suffix(buf, final=False)
+                if suffix:
+                    yield _make_chunk(suffix, "anila-router")
+                continue
+            if forced_answer_origin is not None:
+                # Same full-region strip a one-chunk commit applies, grown
+                # only by a suffix the final cleaner will keep.
+                suffix = _forced_answer_suffix(final=False)
+                if suffix:
+                    yield _make_chunk(suffix, "anila-router")
+                continue
             # Tail pass-through: forward anything new.
             new_chunk = buf[answer_emitted_up_to:]
             if new_chunk:
@@ -4682,65 +5819,83 @@ async def _router_streaming(
         if not thought_confirmed and _THOUGHT_PREFIX_RE.match(buf):
             thought_confirmed = True
         if thought_confirmed and len(buf) > reasoning_emitted_up_to:
-            piece = buf[reasoning_emitted_up_to:]
-            yield _make_event("anila.reasoning", {"delta": piece})
-            reasoning_emitted_up_to = len(buf)
+            # Cap before the answer boundary. Flushing the whole buffer here
+            # put the DISPATCH line into the fold on a one-chunk reply and
+            # left it out when the boundary committed on an earlier chunk.
+            cap = _thought_reasoning_cap(buf)
+            if cap > reasoning_emitted_up_to:
+                piece = buf[reasoning_emitted_up_to:cap]
+                yield _make_event("anila.reasoning", {"delta": piece})
+                reasoning_emitted_up_to = cap
 
-        dispatch = _has_dispatch_signal(buf, route_signal)
-        if dispatch is not None:
-            state = "dispatching"
-            break
+        head = _stream_head_kind(buf)
 
-        # ASK lives on the non-dispatch branch only: a dispatched agent owns its
-        # own interrupts, and a buffer carrying a real DISPATCH line already left
-        # through the branch above.
-        if _ASK_HEAD_RE.match(buf):
-            # The directive owns the rest of the reply, so we cannot commit to
-            # "answering" until the stream ends (or a DISPATCH pre-empts it).
+        # A finished leading ASK owns the turn, including when a later
+        # DISPATCH line is already in this same buffer. One-character
+        # streaming pauses at the ASK line's newline and never reads the
+        # rest; waiting here for the DISPATCH would route the glued chunk
+        # the other way.
+        if head != "answer":
             prompted_ask = _has_ask_signal(buf, route_signal)
             if prompted_ask is not None:
                 ask = prompted_ask
                 state = "asking"
                 break
+            dispatch = _has_dispatch_signal(buf, route_signal)
+            if dispatch is not None and not _answer_split_precedes_dispatch(
+                buf, dispatch[2]
+            ):
+                state = "dispatching"
+                break
+
+        if head in ("hold", "directive"):
+            # Whitespace, a wrapper, or a proper prefix of DISPATCH:/ASK:/ASK*:.
+            # ``startswith("DISPATCH:")`` missed ``**`` / ``>`` / backticks,
+            # and ``len(buf) >= 12`` then committed the fragment as an answer.
             continue
 
-        # Compliant model path: buffer looks like a pure DISPATCH attempt
-        # (starts with DISPATCH:, still being emitted). Keep buffering
-        # until we have the full line.
-        stripped = buf.lstrip()
-        if stripped.startswith("DISPATCH:"):
+        if head == "thought":
+            if _thought_split_blocked_by_open_directive(buf):
+                continue
+            # Thought-prefixed path: wait until the density boundary shows.
+            split_at = _find_answer_split(buf)
+            if split_at > 0:
+                # Sixth presentation exit, and the easiest one to miss: a model that
+                # leaks its thought *and* emits a directive reaches the reader only
+                # through here. The plain-answer commit is guarded by the head
+                # not being a thought, so on exactly this shape it is skipped —
+                # and its cleaning with it. The forced cleaner runs on the whole
+                # answer region so a later slice cannot leave a different number
+                # of newlines around the removed line.
+                if route_signal == _ROUTE_FORCED:
+                    forced_answer_origin = split_at
+                    state = "answering"
+                    suffix = _forced_answer_suffix(final=False)
+                    if suffix:
+                        yield _make_chunk(suffix, "anila-router")
+                else:
+                    prefix = buf[split_at:]
+                    if prefix.strip():
+                        yield _make_chunk(prefix, "anila-router")
+                        answer_emitted_up_to = len(buf)
+                        state = "answering"
             continue
 
-        # Non-thought leading, non-DISPATCH → Gemma went straight to a
-        # direct answer. Forward the buffer and switch to answering.
-        if not _THOUGHT_PREFIX_RE.match(buf) and len(buf) >= 12:
-            # On a forced turn the whole buffer is in hand at this instant, so
-            # a directive trailing the answer is excised before it is sent
-            # rather than chased afterwards. Not a terminal exit — no empty
-            # fallback here, the stream may still have content coming.
-            first = buf if route_signal != _ROUTE_FORCED else _strip_dispatch_syntax(buf)
-            if first:
-                yield _make_chunk(first, "anila-router")
-            answer_emitted_up_to = len(buf)
+        # Ordinary answer. The head can no longer grow into a directive or a
+        # thought header, so the bytes so far are safe to show. Forced turns
+        # still have to hide a DISPATCH line that arrives later; that cleaner
+        # is prefix-sensitive, so it goes through ``_forced_suffix``.
+        if route_signal == _ROUTE_FORCED:
+            forced_plain = True
             state = "answering"
+            suffix = _forced_suffix(buf, final=False)
+            if suffix:
+                yield _make_chunk(suffix, "anila-router")
             continue
-
-        # Thought-prefixed path: wait until the density boundary shows.
-        split_at = _find_answer_split(buf)
-        if split_at > 0:
-            prefix = buf[split_at:]
-            # Sixth presentation exit, and the easiest one to miss: a model that
-            # leaks its thought *and* emits a directive reaches the reader only
-            # through here. The cleaned commit above is guarded by
-            # ``not _THOUGHT_PREFIX_RE.match(buf)``, so on exactly this shape it
-            # is skipped — and its cleaning with it. Same buffer-in-hand
-            # situation as that commit, so the same call at the same cost.
-            if route_signal == _ROUTE_FORCED:
-                prefix = _strip_dispatch_syntax(prefix)
-            if prefix.strip():
-                yield _make_chunk(prefix, "anila-router")
-                answer_emitted_up_to = len(buf)
-                state = "answering"
+        if buf:
+            yield _make_chunk(buf, "anila-router")
+        answer_emitted_up_to = len(buf)
+        state = "answering"
 
     # --- stream ended ---
     if state == "dispatching":
@@ -4751,7 +5906,11 @@ async def _router_streaming(
         # sanitizer one last time — covers short answers that never hit
         # the density threshold mid-stream.
         final_dispatch = _has_dispatch_signal(buf, route_signal, final=True)
-        if final_dispatch is not None:
+        if (
+            final_dispatch is not None
+            and _stream_head_kind(buf) != "answer"
+            and not _answer_split_precedes_dispatch(buf, final_dispatch[2])
+        ):
             dispatch = final_dispatch
             state = "dispatching"
         elif route_signal != _ROUTE_FORCED:
@@ -4760,12 +5919,29 @@ async def _router_streaming(
             # ``_parse_dispatch``, so the forced guard has to be spelled out
             # here too — a query-less header would otherwise dispatch the user's
             # own question, on the very turn they asked not to be routed.
+            # A quote that sits after an answer the thought splitter would
+            # already have committed is prose, same as a terminated directive
+            # in that position — salvaging it only on the one-chunk path made
+            # the route depend on the delta size.
             empty = list(_DISPATCH_EMPTY_RE.finditer(buf))
             if empty:
                 agent_guess = empty[-1].group(1).strip()
                 fallback_query = _flatten_last_user_query(user_messages)
-                if agent_guess and fallback_query:
-                    dispatch = (agent_guess, fallback_query, 0, 0)
+                if (
+                    agent_guess
+                    and fallback_query
+                    and _stream_head_kind(buf) != "answer"
+                    and not _answer_split_precedes_dispatch(buf, empty[-1].start())
+                ):
+                    # Start at the header, not 0, so preamble before a query-less
+                    # line is reasoning — the same slice a parsed DISPATCH uses.
+                    # A hard-coded 0 dropped that thought from meta.reasoning.
+                    dispatch = (
+                        agent_guess,
+                        fallback_query,
+                        empty[-1].start(),
+                        empty[-1].end(),
+                    )
                     state = "dispatching"
         if state == "detecting" and _ASK_HEAD_RE.match(buf):
             # Same rule as the live path: only a reply that STARTS with ASK
@@ -4802,9 +5978,14 @@ async def _router_streaming(
     # Direct-answer stream completed the normal way.
     if state == "answering":
         # Flush any residue not yet forwarded (shouldn't happen but be safe).
-        tail = buf[answer_emitted_up_to:]
-        if route_signal == _ROUTE_FORCED:
-            tail = _strip_dispatch_syntax(tail)
+        if forced_plain:
+            tail = _forced_suffix(buf, final=True)
+        elif forced_answer_origin is not None:
+            tail = _forced_answer_suffix(final=True)
+        else:
+            tail = buf[answer_emitted_up_to:]
+            if route_signal == _ROUTE_FORCED:
+                tail = _strip_dispatch_syntax(tail)
         if tail:
             yield _make_chunk(tail, "anila-router")
         # Reasoning is only meaningful when thought was actually detected
@@ -4967,6 +6148,25 @@ async def _router_streaming(
     buffer_for_recompose = not bool(manifest.requires_encryption)
     aggregated_parts: list[str] = []
     agent_stream_completed = False
+    # Set once the agent reports a failure. A failed turn must not be
+    # closed with the success trailer (``finish=stop`` + ``[DONE]``):
+    # the Shell records ``stop`` as a completed answer and only
+    # ``event: anila.error`` as a failed one. That frame is last — the
+    # Shell stops reading there — so spans and the failure meta go out
+    # before it.
+    agent_failed = False
+    agent_error_message = ""
+    known_usage: dict[str, Any] | None = None
+    # Manifest classification, or ``classified: true`` on an upstream meta
+    # already received. A later failure meta must not drop that latch.
+    seen_classified = _known_classified(manifest)
+
+    def _remember_usage(value: Any) -> None:
+        nonlocal known_usage
+        coerced = _trustworthy_usage(value)
+        if coerced is not None:
+            known_usage = coerced
+
     async for event in _stream_agent_sse(
         agent_id,
         query,
@@ -4976,12 +6176,20 @@ async def _router_streaming(
     ):
         kind = event.get("type")
         if kind == "content":
+            _remember_usage(event.get("usage"))
             if buffer_for_recompose:
                 aggregated_parts.append(event["content"])  # emit after recompose
             else:
                 yield _make_chunk(event["content"], "anila-router")
+        elif kind == "usage":
+            _remember_usage(event.get("usage"))
         elif kind == "meta":
             downstream_meta = event["anila_meta"]
+            if isinstance(downstream_meta, dict):
+                _remember_usage(downstream_meta.get("usage"))
+                if downstream_meta.get("classified") is True:
+                    seen_classified = True
+                    buffer_for_recompose = False
         elif kind == "anila_event":
             # Sprint 13 PR A1: pass-through agent's named SSE events.
             # ``anila.meta`` is captured for the final merge instead of
@@ -4991,27 +6199,106 @@ async def _router_streaming(
             ev_payload = event["payload"]
             if ev_name == "anila.meta" and isinstance(ev_payload, dict):
                 downstream_meta = ev_payload
+                _remember_usage(ev_payload.get("usage"))
+                if ev_payload.get("classified") is True:
+                    seen_classified = True
+                    buffer_for_recompose = False
                 continue
+            if ev_name == "anila.usage_update" and isinstance(ev_payload, dict):
+                _remember_usage(ev_payload)
+            if ev_name == "anila.trace" and isinstance(ev_payload, dict):
+                public = _present_upstream_trace(ev_payload, agent_id)
+                if public != ev_payload:
+                    logger.warning(
+                        "redacted upstream trace agent=%s detail=%s",
+                        agent_id,
+                        json.dumps(ev_payload, ensure_ascii=False)[:300],
+                    )
+                ev_payload = public
+            elif ev_name == "anila.spans":
+                public = _present_upstream_spans(ev_payload, agent_id)
+                if public != ev_payload:
+                    logger.warning(
+                        "redacted upstream spans agent=%s detail=%s",
+                        agent_id,
+                        json.dumps(ev_payload, ensure_ascii=False)[:300],
+                    )
+                ev_payload = public
+            if ev_name == "anila.error":
+                # The parser turns this into ``type: error``. If a payload
+                # still arrives, do not forward it: the Shell renders
+                # ``message``.
+                agent_failed = True
+                agent_error_message = _agent_outage_message(agent_id)
+                logger.warning(
+                    "upstream anila.error agent=%s detail=%s",
+                    agent_id,
+                    json.dumps(ev_payload, ensure_ascii=False)[:300],
+                )
+                break
             yield _make_event(ev_name, ev_payload)
         elif kind == "error":
-            if _downstream_span is not None:
-                _downstream_span.set_error(event.get("error") or event.get("detail"))
-            yield _make_event(
-                "anila.trace",
-                _make_trace_step(
-                    "error",
-                    f"{agent_id} 發生錯誤",
-                    event.get("detail") or event.get("error", ""),
-                    status="error",
-                ),
+            agent_failed = True
+            raw_error = event.get("error")
+            agent_error_message = (
+                raw_error
+                if isinstance(raw_error, str) and raw_error
+                else _agent_outage_message(agent_id)
             )
-            yield _make_chunk(
-                f"（agent「{agent_id}」暫時不可用：{event.get('error')}）",
-                "anila-router",
-            )
+            detail = event.get("detail")
+            if isinstance(detail, str) and detail:
+                logger.warning(
+                    "agent stream failed agent=%s detail=%s",
+                    agent_id,
+                    detail[:300],
+                )
+            break
         elif kind == "done":
             agent_stream_completed = True
             break
+
+    # A failed turn stops here. Recomposing or trailing ``finish=stop``
+    # would report the half-written reply as a successful answer.
+    # Spans close with the safe sentence only — ``detail`` is the raw
+    # upstream body and is already in the operator log.
+    if agent_failed:
+        safe = agent_error_message or _agent_outage_message(agent_id)
+        if _downstream_span is not None:
+            _downstream_span.set_error(safe)
+        if _decision_span is not None:
+            _decision_span.set_error(safe)
+        yield _make_event(
+            "anila.trace",
+            _make_trace_step(
+                "error",
+                f"{agent_id} 發生錯誤",
+                safe,
+                status="error",
+            ),
+        )
+        if (
+            trace_session is not None
+            and _downstream_span is not None
+            and _decision_span is not None
+        ):
+            downstream_dict = trace_session.close(_downstream_span)
+            decision_dict = trace_session.close(_decision_span)
+            yield _make_event(
+                "anila.spans", {"spans": [decision_dict, downstream_dict]}
+            )
+        if known_usage is None and isinstance(downstream_meta, dict):
+            known_usage = _trustworthy_usage(downstream_meta.get("usage"))
+        yield _make_event(
+            "anila.meta",
+            _failure_anila_meta(
+                classified=seen_classified,
+                usage=known_usage,
+            ),
+        )
+        # Terminal for the caller. Already-streamed text stays.
+        # No chunk: the Shell's ``onError`` paints the message itself.
+        yield _make_event("anila.error", {"message": safe})
+        return
 
     # Emit the buffered reply: personalize it with the user's memory (CSP injects
     # it into the recompose call), unless the agent self-declared classified via

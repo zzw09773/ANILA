@@ -7,6 +7,7 @@ across instances, in-memory mode, AssistantMessage round-trip).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,24 @@ async def test_pop_interrupt_returns_record_and_removes(db_path: Path) -> None:
 async def test_pop_interrupt_unknown_returns_none(db_path: Path) -> None:
     sess = SqliteSession(db_path, "s1")
     assert await sess.pop_interrupt("ghost") is None
+
+
+@pytest.mark.asyncio
+async def test_pop_interrupt_is_exclusive_under_concurrency(db_path: Path) -> None:
+    """Two resumes of one id: only one pop returns the record."""
+    sess = SqliteSession(db_path, "s1")
+    await sess.push_interrupt(
+        InterruptRecord(id="int-a", kind="ask_user", payload={"q": "x"})
+    )
+    other = SqliteSession(db_path, "s1")
+    first, second = await asyncio.gather(
+        sess.pop_interrupt("int-a"),
+        other.pop_interrupt("int-a"),
+    )
+    winners = [item for item in (first, second) if item is not None]
+    assert len(winners) == 1
+    assert winners[0].id == "int-a"
+    assert await sess.pending_interrupts() == []
 
 
 @pytest.mark.asyncio

@@ -437,3 +437,396 @@ def test_answer_accepts_refreshed_jwt_for_same_user(db_path: Path) -> None:
 
     assert resume_resp.status_code == 200, resume_resp.text
     assert resume_route.call_count == 1
+
+
+def _sse_frames(body: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for block in body.split("\n\n"):
+        name = ""
+        data = ""
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                name = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data = line.split(":", 1)[1].strip()
+        if data:
+            out.append((name, data))
+    return out
+
+
+@pytest.mark.parametrize("mode", ["http", "connect"])
+@respx.mock
+def test_resume_upstream_failure_is_safe_terminal_error(
+    db_path: Path, mode: str
+) -> None:
+    """Resume HTTP bodies and connection errors stay in the operator log.
+
+    The caller sees a fixed ``anila.error`` and a trace that repeats that
+    sentence. The turn does not end with ``finish=stop`` or ``[DONE]``.
+    """
+    secret = "sk-live-RESUME-DO-NOT-LEAK"
+
+    def csp_chat_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("model") == "agent-resume":
+            return httpx.Response(200, json=_llm_router_response("ok"))
+        return httpx.Response(
+            200, json=_llm_router_response("DISPATCH:agent-resume:hi")
+        )
+
+    respx.post(CSP_URL).mock(side_effect=csp_chat_handler)
+    agents = _agent_registry_response("agent-resume")
+    agents["data"][0]["requires_encryption"] = True
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json=agents))
+    csp_resume_url = (
+        f"{CSP_BASE}/v1/agents/agent-resume/sessions/s-resume-fail/answer"
+    )
+
+    def resume_handler(request: httpx.Request) -> httpx.Response:
+        if mode == "connect":
+            raise httpx.ConnectError(
+                f"dial tcp {secret} at http://10.9.9.9/internal"
+            )
+        return httpx.Response(
+            502,
+            content=f"traceback {secret} at http://10.9.9.9/internal".encode(),
+        )
+
+    respx.post(csp_resume_url).mock(side_effect=resume_handler)
+
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    pinned = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": "s-resume-fail",
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert pinned.status_code == 200, pinned.text
+
+    resume_resp = client.post(
+        "/v1/sessions/s-resume-fail/answer",
+        json={"interrupt_id": "i-fail", "answer": "go ahead"},
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert resume_resp.status_code == 200, resume_resp.text
+    text = resume_resp.text
+    assert secret not in text
+    assert "10.9.9.9" not in text
+    assert "traceback" not in text
+    assert "dial tcp" not in text
+    assert "data: [DONE]" not in text
+    assert '"finish_reason": "stop"' not in text
+
+    frames = _sse_frames(text)
+    safe = "agent「agent-resume」暫時無法使用，請稍後再試。"
+    traces = [json.loads(data) for name, data in frames if name == "anila.trace"]
+    assert traces
+    assert all(step.get("detail") == safe for step in traces)
+    assert secret not in json.dumps(traces)
+    errors = [json.loads(data) for name, data in frames if name == "anila.error"]
+    assert errors == [{"message": safe}]
+    metas = [
+        (i, json.loads(data))
+        for i, (name, data) in enumerate(frames)
+        if name == "anila.meta"
+    ]
+    assert len(metas) == 1
+    meta_i, meta = metas[0]
+    assert meta == {"classified": True}
+    error_i = next(i for i, (name, _) in enumerate(frames) if name == "anila.error")
+    assert meta_i < error_i
+    assert frames[-1] == ("anila.error", json.dumps({"message": safe}, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("frame", ["error", "anila.error"])
+@respx.mock
+def test_resume_http_200_upstream_error_frame_is_redacted(
+    db_path: Path, frame: str
+) -> None:
+    """CSP resume stays HTTP 200 when the agent fails. The body is
+    ``event: error`` (agent 500) or a raw ``anila.error``. Neither the
+    secret nor a following success trailer may reach the caller."""
+    secret = "sk-live-INLINE-DO-NOT-LEAK"
+
+    def csp_chat_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("model") == "agent-resume":
+            return httpx.Response(200, json=_llm_router_response("ok"))
+        return httpx.Response(
+            200, json=_llm_router_response("DISPATCH:agent-resume:hi")
+        )
+
+    respx.post(CSP_URL).mock(side_effect=csp_chat_handler)
+    agents = _agent_registry_response("agent-resume")
+    agents["data"][0]["requires_encryption"] = True
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json=agents))
+    session_id = "s-resume-inline"
+    csp_resume_url = (
+        f"{CSP_BASE}/v1/agents/agent-resume/sessions/{session_id}/answer"
+    )
+    if frame == "error":
+        bad = (
+            "event: error\ndata: "
+            + json.dumps(
+                {"status": 500, "detail": f"traceback {secret} at http://10.8.8.8/x"},
+                ensure_ascii=False,
+            )
+            + "\n\n"
+        )
+    else:
+        bad = (
+            "event: anila.error\ndata: "
+            + json.dumps({"message": f"{secret} at http://10.8.8.8/x"}, ensure_ascii=False)
+            + "\n\n"
+        )
+    sse_body = (
+        'data: {"choices":[{"delta":{"content":"半截"}}]}\n\n'
+        + bad
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + "data: [DONE]\n\n"
+    )
+    respx.post(csp_resume_url).mock(
+        return_value=httpx.Response(
+            200,
+            content=sse_body.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    pinned = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": session_id,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert pinned.status_code == 200, pinned.text
+    resume_resp = client.post(
+        f"/v1/sessions/{session_id}/answer",
+        json={"interrupt_id": "i-inline", "answer": "go ahead"},
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert resume_resp.status_code == 200, resume_resp.text
+    text = resume_resp.text
+    assert "半截" in text
+    assert secret not in text
+    assert "10.8.8.8" not in text
+    assert "traceback" not in text
+    assert "data: [DONE]" not in text
+    assert '"finish_reason": "stop"' not in text
+
+    frames = _sse_frames(text)
+    safe = "agent「agent-resume」暫時無法使用，請稍後再試。"
+    metas = [
+        (i, json.loads(data))
+        for i, (name, data) in enumerate(frames)
+        if name == "anila.meta"
+    ]
+    assert len(metas) == 1
+    meta_i, meta = metas[0]
+    assert meta["classified"] is True
+    assert "citations" not in meta
+    error_i = next(i for i, (name, _) in enumerate(frames) if name == "anila.error")
+    assert meta_i < error_i
+    assert frames[-1][0] == "anila.error"
+    assert json.loads(frames[-1][1]) == {"message": safe}
+
+
+class _MetaThenReadError(httpx.AsyncByteStream):
+    """Deliver one SSE payload, then fail the next read."""
+
+    def __init__(self, payload: bytes, message: str) -> None:
+        self._payload = payload
+        self._message = message
+        self._sent = False
+
+    async def __aiter__(self):
+        if not self._sent:
+            self._sent = True
+            yield self._payload
+        raise httpx.ReadError(self._message)
+
+    async def aclose(self) -> None:
+        return None
+
+
+@respx.mock
+def test_resume_read_error_keeps_meta_classified_and_usage(db_path: Path) -> None:
+    """Meta already on the wire must survive a later ``RequestError``.
+
+    The failure meta used to look only at the manifest, so a classified
+    flag and usage received before the drop were lost.
+    """
+    secret = "http://10.7.7.7/dropped"
+    usage = {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+
+    def csp_chat_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("model") == "agent-resume":
+            return httpx.Response(200, json=_llm_router_response("ok"))
+        return httpx.Response(
+            200, json=_llm_router_response("DISPATCH:agent-resume:hi")
+        )
+
+    respx.post(CSP_URL).mock(side_effect=csp_chat_handler)
+    agents = _agent_registry_response("agent-resume")
+    agents["data"][0]["requires_encryption"] = False
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json=agents))
+    session_id = "s-resume-drop"
+    meta = {
+        "classified": True,
+        "usage": usage,
+        "citations": ["do-not-copy"],
+    }
+    payload = (
+        "event: anila.meta\ndata: "
+        + json.dumps(meta, ensure_ascii=False)
+        + "\n\n"
+    ).encode()
+    respx.post(
+        f"{CSP_BASE}/v1/agents/agent-resume/sessions/{session_id}/answer"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            stream=_MetaThenReadError(payload, f"reset at {secret}"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    pinned = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": session_id,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert pinned.status_code == 200, pinned.text
+    resume_resp = client.post(
+        f"/v1/sessions/{session_id}/answer",
+        json={"interrupt_id": "i-drop", "answer": "go"},
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert resume_resp.status_code == 200, resume_resp.text
+    text = resume_resp.text
+    assert secret not in text
+    assert "10.7.7.7" not in text
+    assert "data: [DONE]" not in text
+    frames = _sse_frames(text)
+    metas = [json.loads(data) for name, data in frames if name == "anila.meta"]
+    assert metas
+    failure = metas[-1]
+    assert failure["classified"] is True
+    assert failure["usage"] == usage
+    assert "citations" not in failure
+    assert frames[-1][0] == "anila.error"
+    safe = "agent「agent-resume」暫時無法使用，請稍後再試。"
+    assert json.loads(frames[-1][1]) == {"message": safe}
+
+
+@respx.mock
+def test_resume_success_forwards_finish_reason_and_usage(db_path: Path) -> None:
+    """A finished resume chunk keeps ``finish_reason`` and ``usage``.
+
+    Rebuilding it as text-only dropped ``length`` (so the Shell never
+    calls ``onFinishReason``) and left usage off the wire.
+    """
+    usage = {"prompt_tokens": 8, "completion_tokens": 9, "total_tokens": 17}
+
+    def csp_chat_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("model") == "agent-resume":
+            return httpx.Response(200, json=_llm_router_response("ok"))
+        return httpx.Response(
+            200, json=_llm_router_response("DISPATCH:agent-resume:hi")
+        )
+
+    respx.post(CSP_URL).mock(side_effect=csp_chat_handler)
+    respx.get(CSP_AGENTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_agent_registry_response("agent-resume")
+        )
+    )
+    session_id = "s-resume-length"
+    sse_body = (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": "續答"}, "finish_reason": None}
+                ],
+                "usage": usage,
+            },
+            ensure_ascii=False,
+        )
+        + "\n\n"
+        + "data: "
+        + json.dumps(
+            {
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "length"}
+                ]
+            }
+        )
+        + "\n\n"
+        + "data: [DONE]\n\n"
+    )
+    respx.post(
+        f"{CSP_BASE}/v1/agents/agent-resume/sessions/{session_id}/answer"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=sse_body.encode("utf-8"),
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    pinned = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": session_id,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert pinned.status_code == 200, pinned.text
+    resume_resp = client.post(
+        f"/v1/sessions/{session_id}/answer",
+        json={"interrupt_id": "i-len", "answer": "go"},
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert resume_resp.status_code == 200, resume_resp.text
+    text = resume_resp.text
+    assert "續答" in text
+    assert "data: [DONE]" in text
+    assert "event: anila.error" not in text
+    frames = _sse_frames(text)
+    finishes = []
+    saw_usage = False
+    for name, data in frames:
+        if name:
+            continue
+        if data == "[DONE]":
+            continue
+        chunk = json.loads(data)
+        if chunk.get("usage") == usage:
+            saw_usage = True
+        choice = (chunk.get("choices") or [{}])[0]
+        reason = choice.get("finish_reason")
+        if reason:
+            finishes.append(reason)
+    assert finishes == ["length"]
+    assert saw_usage

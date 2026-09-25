@@ -1,16 +1,13 @@
-# anila-agent
+# anila-agent — 進階實作範例
 
-> ANILA 官方 **air-gapped Agentic RAG 起手樣板**：以 **OpenAI Agents SDK v0.17.5** 為 runtime 基座，
-> 為中科院內網（air-gapped）部署強化。clone 下來、填上 retriever 與 prompt 即可跑。
-> 這是 CSP **Agent Registry** 核准上架的參考 runtime，原生內建 Full Trace。
+> 本專案展示 OpenAI Agents SDK v0.17.5 的工具、檢索、記憶與服務化整合，供需要自訂 harness 的開發者參考。它不是一般開發者的最短起步路徑；一般快速實作請使用治理中心另行提供的「快速起步骨架」。是否可在氣隙環境執行，取決於模型端點、相依套件與部署憑證是否已備妥。
 
 **繁體中文** · [English](README.en.md) · 完整重建藍圖見 [REBUILD_PLAN.md](REBUILD_PLAN.md)。
 
 ## 在 redesign 版圖中的定位
 
 - **位置**：monorepo `packages/anila-agent/`（§17.1 版圖：`services/` · `apps/` · `packages/` · `infra/`）。
-- **獨立可攜**：只長一棵以 `openai-agents==0.17.5` 為根的相依樹，**刻意不依賴 `anila-core`**；整包可搬到
-  MLSteam Lab 或任一內網主機獨立起服務。
+- **相依與部署**：本進階範例目前同時依賴 `openai-agents==0.17.5` 與 `anila-core>=0.14,<0.15`；要在獨立內網主機部署，必須備妥相容 wheel、平台簽章信任與模型連線。不要把它當成零平台相依的單檔骨架。
 - **對平台的角色**：由 `services/csp`（治理中心 CSP）的 **Agent Registry** 核准上架、由 `apps/csp-governance-ui`
   （治理中心前端）的開發者精靈註冊。原生 Full Trace 直接滿足 7 態審核的 `pending_trace_test` 關卡。
 - **部署模式無耦合**：登入／部署 delta 落在各分支，樣板本身跨分支一致；不進平台 compose，以 agent

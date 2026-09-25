@@ -900,6 +900,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
   const streamInterruptRef = useRef(new Map());
+  const streamSessionIdRef = useRef(new Map());
   const adoptInFlightRef = useRef(false);
   async function streamWithAbort(convId, opts) {
     // ── 敏感資訊閘門・扼流點 2/2:模型呼叫 ─────────────────────────
@@ -941,6 +942,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         },
         onSessionId: (sessionId) => {
           if (assistantId) {
+            streamSessionIdRef.current.set(assistantId, sessionId);
             const prev = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
             updateMsg(convId, assistantId, {
               sessionId,
@@ -961,7 +963,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             const prev = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
             const interrupt = normalizeInterrupt({
               ...payload,
-              session_id: payload?.session_id || prev?.sessionId,
+              session_id:
+                payload?.session_id ||
+                prev?.sessionId ||
+                streamSessionIdRef.current.get(assistantId),
               status: "pending",
             });
             streamInterruptRef.current.set(assistantId, interrupt);
@@ -980,6 +985,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         await compactChain;
       } finally {
         streamAbortRef.current.delete(convId);
+        if (assistantId) streamSessionIdRef.current.delete(assistantId);
       }
     }
   }
@@ -1316,6 +1322,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
       interrupt: normalizeInterrupt(meta.interrupt),
+      settledInterrupts: Array.isArray(meta.settled_interrupts)
+        ? meta.settled_interrupts.map((item) => normalizeInterrupt(item)).filter(Boolean)
+        : [],
+      prefaceText: typeof meta.resume_preface === "string" ? meta.resume_preface : null,
+      resumeText: resumeTextFromPreface(meta.resume_preface, msg.content),
       sessionId: meta.interrupt?.session_id || meta.session_id || null,
       // OW-3: action:NAME attribution (second channel alongside metadata.action).
       agentName: msg.agent_name || null,
@@ -2042,19 +2053,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             },
             onTrace: (step) => {
               accumulatedTrace.push(step);
-              setMessagesByConv((prev) => ({
-                ...prev,
-                [convId]: (prev[convId] || []).map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        trace: [...(m.trace || []), step],
-                        stageLabel: step.label,
-                        stage: (m.trace?.length ?? 0),
-                      }
-                    : m,
-                ),
-              }));
+              applyLiveTraceStep(convId, assistantId, step);
             },
             onMeta: (metaFrame) => {
               finalMeta = metaFrame;
@@ -2062,15 +2061,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             },
             onReasoning: (delta) => {
               accumulatedReasoning += delta;
-              thinkingPump.feed(delta);
-              setMessagesByConv((prev) => ({
-                ...prev,
-                [convId]: (prev[convId] || []).map((m) =>
-                  m.id === assistantId
-                    ? { ...m, reasoning: (m.reasoning || "") + delta }
-                    : m,
-                ),
-              }));
+              applyLiveReasoningDelta(convId, assistantId, delta, thinkingPump);
             },
           });
           // 按停止時 streamChatCompletion 是正常返回而不是拋出(sse.js:153),
@@ -2126,12 +2117,18 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         hadReasoning: accumulatedReasoning.length > 0,
       });
       updateMsg(convId, assistantId, thinkingSnap);
-      const persistMeta = buildPersistMeta(finalMeta, {
-        trace: accumulatedTrace,
-        reasoning: accumulatedReasoning,
-        interrupt: interruptFromMessage(convId, assistantId),
-        ...thinkingSnap,
-      });
+      const persistedInterrupt = interruptFromMessage(convId, assistantId);
+      const persistMeta = buildPersistMeta(
+        finalMeta && persistedInterrupt
+          ? { ...finalMeta, interrupt: persistedInterrupt }
+          : finalMeta,
+        {
+          trace: accumulatedTrace,
+          reasoning: accumulatedReasoning,
+          interrupt: persistedInterrupt,
+          ...thinkingSnap,
+        },
+      );
       const persisted = await finalizeStreamedAssistant({
         updateMessage: apiUpdateMessage,
         authRequest,
@@ -2186,8 +2183,40 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     );
   }
 
-  function makeThinkingSummaryPump(convId, assistantId, hideThinking) {
-    const previous = [];
+  function applyLiveTraceStep(convId, msgId, step) {
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: (prev[convId] || []).map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              trace: [...(m.trace || []), step],
+              stageLabel: step.label,
+              stage: (m.trace?.length ?? 0),
+            }
+          : m,
+      ),
+    }));
+  }
+
+  function applyLiveReasoningDelta(convId, msgId, delta, thinkingPump) {
+    thinkingPump?.feed(delta);
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: (prev[convId] || []).map((m) =>
+        m.id === msgId
+          ? { ...m, reasoning: (m.reasoning || "") + delta }
+          : m,
+      ),
+    }));
+  }
+
+  function makeThinkingSummaryPump(convId, assistantId, hideThinking, seedSummaries) {
+    const previous = Array.isArray(seedSummaries)
+      ? seedSummaries
+          .filter((row) => row && typeof row.text === "string" && row.text.trim())
+          .map((row) => ({ text: row.text, at: row.at }))
+      : [];
     const startedAt = Date.now();
     if (hideThinking) {
       return {
@@ -2264,6 +2293,72 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
   }
 
+  function resumeTextFromPreface(preface, content) {
+    if (typeof preface !== "string") return null;
+    const text = content || "";
+    if (!text.startsWith(preface)) return null;
+    return text.slice(preface.length).replace(/^\n/, "");
+  }
+
+  function submittedInterrupt(interrupt, answer, sessionId) {
+    const summary = interrupt?.kind === "ask_user"
+      ? formatAskUserSummary(interrupt.payload || {}, answer)
+      : interrupt?.kind === "plan"
+        ? (answer?.approved === true || answer?.decision === "accept" ? "已核准計畫" : "已拒絕計畫")
+        : interrupt?.kind === "tool_approval"
+          ? (answer?.approved ? "已授權工具" : "已拒絕工具")
+          : "已回覆";
+    return normalizeInterrupt({
+      ...interrupt,
+      session_id: sessionId || interrupt?.session_id,
+      answer,
+      status: "answered",
+      summary,
+    });
+  }
+
+  function pendingInterrupt(interrupt, sessionId) {
+    return normalizeInterrupt({
+      interrupt_id: interrupt?.interrupt_id,
+      kind: interrupt?.kind,
+      payload: interrupt?.payload,
+      session_id: sessionId || interrupt?.session_id,
+      status: "pending",
+    });
+  }
+
+  // A resume that already recorded an answer must not be reopened by a
+  // later echo of the same interrupt. A different id is a new ASK and
+  // stays below the summary.
+  function nextInterruptState(row, incomingRaw, sessionFallback) {
+    if (!incomingRaw || typeof incomingRaw !== "object") return null;
+    const current = row?.interrupt || null;
+    const settled = Array.isArray(row?.settledInterrupts) ? row.settledInterrupts : [];
+    const incoming = normalizeInterrupt({
+      ...incomingRaw,
+      session_id:
+        incomingRaw.session_id ||
+        current?.session_id ||
+        row?.sessionId ||
+        sessionFallback ||
+        null,
+      status: incomingRaw.status
+        || ((incomingRaw.answer != null && incomingRaw.answer !== "") ? "answered" : "pending"),
+    });
+    if (current?.status === "answered" && current.interrupt_id === incoming.interrupt_id) {
+      return { interrupt: current, settledInterrupts: settled, stacked: false };
+    }
+    if (current?.status === "answered" && incoming.interrupt_id !== current.interrupt_id) {
+      const already = settled.some((item) => item?.interrupt_id === current.interrupt_id);
+      return {
+        interrupt: incoming,
+        settledInterrupts: already ? settled : [...settled, current],
+        stacked: true,
+      };
+    }
+    return { interrupt: incoming, settledInterrupts: settled, stacked: false };
+  }
+
   function interruptFromMessage(convId, msgId) {
     const row = (messagesRef.current[convId] || []).find((m) => m.id === msgId);
     if (row?.interrupt?.status === "answered") return row.interrupt;
@@ -2285,62 +2380,185 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       setRuntimeError("無法續答：缺少工作階段");
       return;
     }
-    updateMsg(convId, msg.id, { interruptSubmitting: true });
     const priorText = msg.text || "";
+    const priorReasoning = typeof msg.reasoning === "string" ? msg.reasoning : "";
+    const priorTrace = Array.isArray(msg.trace) ? msg.trace : [];
+    const seedSummaries = Array.isArray(msg.thinkingSummaries) ? msg.thinkingSummaries : [];
+    const priorThinking = {
+      thinkingStatus: msg.thinkingStatus ?? null,
+      thinkingElapsedMs: msg.thinkingElapsedMs ?? null,
+      thinkingStartedAt: msg.thinkingStartedAt ?? null,
+      finishReason: msg.finishReason ?? null,
+      thinkingSummaries: seedSummaries,
+      trace: priorTrace,
+    };
+    const preface = msg.prefaceText != null ? msg.prefaceText : priorText;
+    const baseResume = msg.prefaceText != null ? (msg.resumeText || "") : "";
+    const answeredInterrupt = submittedInterrupt(interrupt, answer, sessionId);
     let finalText = priorText;
+    let finalMeta = null;
+    const accumulatedTrace = [];
+    let accumulatedReasoning = "";
+    let finishReason = null;
+    const thinkingPump = makeThinkingSummaryPump(
+      convId,
+      msg.id,
+      isThinkingDisplayOff(msg.thinkingApplied),
+      [],
+    );
+    const controller = new AbortController();
+    streamAbortRef.current.set(convId, controller);
+    streamInterruptRef.current.set(msg.id, answeredInterrupt);
+    updateMsg(convId, msg.id, {
+      interrupt: answeredInterrupt,
+      interruptSubmitting: true,
+      interruptPendingAnswer: null,
+      interruptRestore: null,
+      error: null,
+      streaming: true,
+      thinkingStartedAt: thinkingPump.startedAt,
+      thinkingStatus: null,
+      thinkingSummaries: [],
+      finishReason: null,
+      prefaceText: preface,
+      resumeText: baseResume,
+      trace: [],
+    });
+    const persistSnapshot = async (content) => {
+      if (typeof convId !== "number" || typeof msg.dbId !== "number") return;
+      const row = (messagesRef.current[convId] || []).find((m) => m.id === msg.id) || msg;
+      const metadata = {
+        ...(row.metadata || {}),
+        interrupt: row.interrupt,
+        settled_interrupts: Array.isArray(row.settledInterrupts) ? row.settledInterrupts : [],
+        resume_preface: row.prefaceText ?? null,
+      };
+      const saved = await apiUpdateMessage(authRequest, convId, msg.dbId, {
+        content: content ?? row.text ?? "",
+        metadata,
+      });
+      updateMsg(convId, msg.id, { metadata: saved?.metadata || metadata });
+    };
+    try {
+      await persistSnapshot(preface + (baseResume ? `\n${baseResume}` : ""));
+    } catch (err) {
+      setRuntimeError(err?.message || "對話訊息儲存失敗");
+    }
     try {
       await streamSessionAnswer({
         routerBaseUrl: config.routerBaseUrl,
         sessionId,
         interruptId,
         answer,
+        conversationId: convId,
+        signal: controller.signal,
         callbacks: {
           onText: (acc) => {
-            const joiner = priorText && !/\s$/.test(priorText) ? "\n" : "";
-            finalText = priorText + joiner + acc;
-            updateMsg(convId, msg.id, { text: finalText });
+            const resumeJoiner = baseResume && acc ? "\n" : "";
+            const nextResume = baseResume + resumeJoiner + acc;
+            const between = preface && nextResume ? "\n" : "";
+            finalText = preface + between + nextResume;
+            updateMsg(convId, msg.id, {
+              text: finalText,
+              prefaceText: preface,
+              resumeText: nextResume,
+            });
+          },
+          onFinishReason: (reason) => {
+            finishReason = reason;
+            updateMsg(convId, msg.id, { finishReason: reason, finishedAt: Date.now() });
+          },
+          onTrace: (step) => {
+            accumulatedTrace.push(step);
+            applyLiveTraceStep(convId, msg.id, step);
+          },
+          onReasoning: (delta) => {
+            accumulatedReasoning += delta;
+            applyLiveReasoningDelta(convId, msg.id, delta, thinkingPump);
           },
           onMeta: (metaFrame) => {
+            finalMeta = metaFrame;
             applyMeta(convId, msg.id, msg.routedAgentId || selectedAgentId, metaFrame);
           },
           onInterrupt: (payload) => {
             const prev = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
+            const adopted = nextInterruptState(prev, payload, sessionId);
+            if (!adopted) return;
+            streamInterruptRef.current.set(msg.id, adopted.interrupt);
             updateMsg(convId, msg.id, {
-              interrupt: normalizeInterrupt({
-                ...payload,
-                session_id: payload?.session_id || prev?.sessionId || sessionId,
-                status: "pending",
-              }),
-              interruptSubmitting: false,
+              interrupt: adopted.interrupt,
+              settledInterrupts: adopted.settledInterrupts,
+              ...(adopted.stacked ? { interruptSubmitting: false, interruptPendingAnswer: null } : {}),
             });
           },
         },
       });
-      const answered = normalizeInterrupt({
-        ...interrupt,
-        session_id: sessionId,
-        answer,
-        status: "answered",
-        summary:
-          interrupt.kind === "ask_user"
-            ? formatAskUserSummary(interrupt.payload || {}, answer)
-            : "已回覆",
+      const aborted = controller.signal.aborted || userStoppedRef.current.has(convId);
+      if (aborted) {
+        thinkingPump.close();
+        throw Object.assign(new Error("已停止"), { name: "AbortError" });
+      }
+      thinkingPump.close();
+      await thinkingPump.flush();
+      const snap = thinkingPump.snapshot({
+        hadReasoning: accumulatedReasoning.length > 0,
+        finishReason,
+        lengthBudget: finishReason === "length",
       });
-      streamInterruptRef.current.delete(msg.id);
+      const summaries = Array.isArray(snap.thinkingSummaries) ? snap.thinkingSummaries : [];
+      const thought = accumulatedReasoning.length > 0 || summaries.length > 0;
+      const thinkingPatch = thought
+        ? {
+            ...(snap.thinkingStatus ? { thinkingStatus: snap.thinkingStatus } : {}),
+            ...(typeof snap.thinkingElapsedMs === "number"
+              ? { thinkingElapsedMs: snap.thinkingElapsedMs }
+              : {}),
+            ...(summaries.length > 0 ? { thinkingSummaries: summaries } : {}),
+          }
+        : {};
+      const metaTrace = Array.isArray(finalMeta?.trace) ? finalMeta.trace : [];
+      const traceForPersist = metaTrace.length > 0
+        ? metaTrace
+        : [...priorTrace, ...accumulatedTrace];
+      const metaReasoning = typeof finalMeta?.reasoning === "string" ? finalMeta.reasoning : "";
+      const reasoningText = metaReasoning || (priorReasoning + accumulatedReasoning);
+      const rowNow = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
+      const resumedIntoNewInterrupt = Boolean(
+        rowNow?.interrupt?.interrupt_id && rowNow.interrupt.interrupt_id !== interrupt.interrupt_id,
+      );
+      if (!resumedIntoNewInterrupt) {
+        streamInterruptRef.current.delete(msg.id);
+      }
       updateMsg(convId, msg.id, {
-        interrupt: answered,
+        ...(resumedIntoNewInterrupt ? {} : { interrupt: answeredInterrupt }),
         interruptSubmitting: false,
+        interruptPendingAnswer: null,
+        interruptRestore: null,
+        streaming: false,
+        ...(reasoningText ? { reasoning: reasoningText } : {}),
+        ...((accumulatedTrace.length > 0 || metaTrace.length > 0)
+          ? { trace: traceForPersist, stageLabel: traceForPersist.at(-1)?.label }
+          : {}),
+        ...thinkingPatch,
       });
-      if (typeof convId === "number" && typeof msg.dbId === "number") {
+      try {
         const current = (messagesRef.current[convId] || []).find((m) => m.id === msg.id) || msg;
+        const activeInterrupt = resumedIntoNewInterrupt ? current.interrupt : answeredInterrupt;
         const persistMeta = {
           ...buildPersistMeta(current.metadata, {
             ...current,
-            interrupt: answered,
+            interrupt: activeInterrupt,
+            ...(reasoningText ? { reasoning: reasoningText } : {}),
+            ...(traceForPersist.length > 0 ? { trace: traceForPersist } : {}),
+            ...thinkingPatch,
           }),
-          interrupt: answered,
+          interrupt: activeInterrupt,
+          settled_interrupts: Array.isArray(current.settledInterrupts) ? current.settledInterrupts : [],
+          resume_preface: current.prefaceText ?? preface,
         };
-        try {
+        if (reasoningText) persistMeta.reasoning = reasoningText;
+        if (traceForPersist.length > 0) persistMeta.trace = traceForPersist;
+        if (typeof convId === "number" && typeof msg.dbId === "number") {
           const saved = await apiUpdateMessage(authRequest, convId, msg.dbId, {
             content: finalText,
             metadata: persistMeta,
@@ -2348,19 +2566,66 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           updateMsg(convId, msg.id, {
             metadata: saved?.metadata || persistMeta,
           });
-        } catch (err) {
-          setRuntimeError(err?.message || "對話訊息儲存失敗");
         }
+      } catch (err) {
+        setRuntimeError(err?.message || "對話訊息儲存失敗");
       }
     } catch (err) {
-      updateMsg(convId, msg.id, {
-        interruptSubmitting: false,
-      });
-      setRuntimeError(err?.message || "續答失敗");
+      thinkingPump.close();
+      const stopped = err?.name === "AbortError" || controller.signal.aborted || userStoppedRef.current.has(convId);
+      const row = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
+      const movedOn = Boolean(row?.interrupt?.interrupt_id && row.interrupt.interrupt_id !== interrupt.interrupt_id);
+      if (!movedOn) {
+        const pending = pendingInterrupt(interrupt, sessionId);
+        const keepSplit = (row?.settledInterrupts || []).length > 0;
+        updateMsg(convId, msg.id, {
+          interrupt: pending,
+          interruptRestore: answer,
+          interruptSubmitting: false,
+          interruptPendingAnswer: null,
+          streaming: false,
+          error: stopped ? null : (err?.message || "續答失敗"),
+          prefaceText: keepSplit ? preface : null,
+          resumeText: keepSplit ? baseResume : null,
+          text: keepSplit ? `${preface}${baseResume ? `\n${baseResume}` : ""}` : priorText,
+          thinkingStatus: priorThinking.thinkingStatus,
+          thinkingElapsedMs: priorThinking.thinkingElapsedMs,
+          thinkingStartedAt: priorThinking.thinkingStartedAt,
+          finishReason: priorThinking.finishReason,
+          thinkingSummaries: priorThinking.thinkingSummaries,
+          trace: priorThinking.trace,
+        });
+        try {
+          await persistSnapshot(keepSplit ? `${preface}${baseResume ? `\n${baseResume}` : ""}` : priorText);
+        } catch (persistErr) {
+          setRuntimeError(persistErr?.message || "對話訊息儲存失敗");
+        }
+      } else if (!stopped) {
+        updateMsg(convId, msg.id, {
+          streaming: false,
+          interruptSubmitting: false,
+          error: err?.message || "續答失敗",
+        });
+      } else {
+        updateMsg(convId, msg.id, { streaming: false, interruptSubmitting: false });
+      }
+    } finally {
+      userStoppedRef.current.delete(convId);
+      if (streamAbortRef.current.get(convId) === controller) {
+        streamAbortRef.current.delete(convId);
+      }
     }
   }
 
   function applyMeta(convId, msgId, agentId, meta) {
+    const current = (messagesRef.current[convId] || []).find((m) => m.id === msgId);
+    const adopted = meta.interrupt
+      ? nextInterruptState(current, meta.interrupt, streamSessionIdRef.current.get(msgId))
+      : null;
+    if (adopted?.interrupt) {
+      streamInterruptRef.current.set(msgId, adopted.interrupt);
+    }
+
     // Streaming paths emit each trace step as its own SSE event, and the
     // final ``anila.meta`` intentionally ships ``trace: []`` to avoid
     // duplicating them. Keep the accumulated trace in that case; only
@@ -2368,6 +2633,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // paths bundle everything into one frame).
     const metaTrace = Array.isArray(meta.trace) ? meta.trace : [];
     const tracePatch = metaTrace.length > 0 ? { trace: metaTrace } : {};
+    // Same rule as trace: anila.reasoning deltas are the body. Final meta
+    // usually omits them; an empty value must not wipe what already streamed.
+    const incomingReasoning = typeof meta.reasoning === "string" ? meta.reasoning : "";
+    const reasoningPatch = incomingReasoning ? { reasoning: incomingReasoning } : {};
     updateMsg(convId, msgId, {
       traceId: meta.trace_id,
       ...tracePatch,
@@ -2375,14 +2644,18 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       confidence: meta.confidence,
       handoffChain: meta.handoff_chain || [],
       followUps: meta.follow_ups || [],
-      ...(meta.interrupt ? { interrupt: normalizeInterrupt(meta.interrupt) } : {}),
+      ...(adopted ? {
+        interrupt: adopted.interrupt,
+        settledInterrupts: adopted.settledInterrupts,
+        ...(adopted.stacked ? { interruptSubmitting: false, interruptPendingAnswer: null } : {}),
+      } : {}),
       // SSE 現場這一縫。同一份定義也要接在 mapServerMessage(重新載入那一縫)上。
       ...kbMetaFields(meta),
       ...agentReplyMetaFields(meta),
       latencyMs: meta.latency_ms,
       usage: meta.usage || null,
       classified: meta.classified,
-      reasoning: meta.reasoning || null,
+      ...reasoningPatch,
       thinkingLocked: meta.thinking_locked === true,
       ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
       // Display-only, but it was showing the wrong agent name on every
@@ -2808,19 +3081,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onTrace: (step) => {
             accumulatedTrace.push(step);
-            setMessagesByConv((prev) => ({
-              ...prev,
-              [convId]: (prev[convId] || []).map((m) =>
-                m.id === assistantId
-                  ? {
-                      ...m,
-                      trace: [...(m.trace || []), step],
-                      stageLabel: step.label,
-                      stage: (m.trace?.length ?? 0),
-                    }
-                  : m,
-              ),
-            }));
+            applyLiveTraceStep(convId, assistantId, step);
           },
           onMeta: (metaFrame) => {
             finalMeta = metaFrame;
@@ -2828,15 +3089,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
-            thinkingPump.feed(delta);
-            setMessagesByConv((prev) => ({
-              ...prev,
-              [convId]: (prev[convId] || []).map((m) =>
-                m.id === assistantId
-                  ? { ...m, reasoning: (m.reasoning || "") + delta }
-                  : m,
-              ),
-            }));
+            applyLiveReasoningDelta(convId, assistantId, delta, thinkingPump);
           },
         });
         // ⚠ 使用者按停止時 streamChatCompletion 是「正常返回」而不是拋出
@@ -2902,12 +3155,18 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         effectiveTarget,
         agents,
       );
-      const persistMeta = buildPersistMeta(finalMeta, {
-        trace: accumulatedTrace,
-        reasoning: accumulatedReasoning,
-        interrupt: interruptFromMessage(convId, assistantId),
-        ...thinkingSnap,
-      });
+      const persistedInterrupt = interruptFromMessage(convId, assistantId);
+      const persistMeta = buildPersistMeta(
+        finalMeta && persistedInterrupt
+          ? { ...finalMeta, interrupt: persistedInterrupt }
+          : finalMeta,
+        {
+          trace: accumulatedTrace,
+          reasoning: accumulatedReasoning,
+          interrupt: persistedInterrupt,
+          ...thinkingSnap,
+        },
+      );
       const persisted = await finalizeStreamedAssistant({
         updateMessage: apiUpdateMessage,
         authRequest,
@@ -3055,19 +3314,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               },
               onTrace: (step) => {
                 accumulatedTrace.push(step);
-                setMessagesByConv((prev) => ({
-                  ...prev,
-                  [convId]: (prev[convId] || []).map((m) =>
-                    m.id === placeholderId
-                      ? {
-                          ...m,
-                          trace: [...(m.trace || []), step],
-                          stageLabel: step.label,
-                          stage: (m.trace?.length ?? 0),
-                        }
-                      : m,
-                  ),
-                }));
+                applyLiveTraceStep(convId, placeholderId, step);
               },
               onMeta: (meta) => {
                 finalMeta = meta;
@@ -3075,15 +3322,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               },
               onReasoning: (delta) => {
                 accumulatedReasoning += delta;
-                thinkingPump.feed(delta);
-                setMessagesByConv((prev) => ({
-                  ...prev,
-                  [convId]: (prev[convId] || []).map((m) =>
-                    m.id === placeholderId
-                      ? { ...m, reasoning: (m.reasoning || "") + delta }
-                      : m,
-                  ),
-                }));
+                applyLiveReasoningDelta(convId, placeholderId, delta, thinkingPump);
               },
             });
             thinkingPump.close();
@@ -3320,19 +3559,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onTrace: (step) => {
             accumulatedTrace.push(step);
-            setMessagesByConv((prev) => ({
-              ...prev,
-              [convId]: (prev[convId] || []).map((m) =>
-                m.id === placeholderId
-                  ? {
-                      ...m,
-                      trace: [...(m.trace || []), step],
-                      stageLabel: step.label,
-                      stage: (m.trace?.length ?? 0),
-                    }
-                  : m,
-              ),
-            }));
+            applyLiveTraceStep(convId, placeholderId, step);
           },
           onMeta: (meta) => {
             finalMeta = meta;
@@ -3340,15 +3567,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
-            thinkingPump.feed(delta);
-            setMessagesByConv((prev) => ({
-              ...prev,
-              [convId]: (prev[convId] || []).map((m) =>
-                m.id === placeholderId
-                  ? { ...m, reasoning: (m.reasoning || "") + delta }
-                  : m,
-              ),
-            }));
+            applyLiveReasoningDelta(convId, placeholderId, delta, thinkingPump);
           },
         });
         thinkingPump.close();

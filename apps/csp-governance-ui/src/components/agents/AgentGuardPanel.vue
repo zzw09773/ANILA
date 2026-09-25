@@ -11,15 +11,15 @@
   >
     <section class="guard__section">
       <header class="guard__head">
-        <span class="guard__label">① 新 agent — 下載樣板（零驗證碼）</span>
+        <span class="guard__label">① 新 agent — 快速起步（先下載，在 lab 啟動後再註冊）</span>
       </header>
       <p class="guard__prose">
-        按頁面上方「下載樣板」。設計目標：樣板內建驗簽與 CA，並附離線 wheel
-        （有網機先建 wheelhouse，氣隙再 <code>pip install --no-index --find-links=…</code>）。
-        <strong>今日請先打開 zip 核對內容</strong>——若尚無驗簽程式、*.pem 或 *.whl，
-        代表樣板套件尚未落地；請改走②下載 <code>anila_verify.py</code>，
-        並用「下載平台 CA」取 PEM（端點未上線時按鈕會提示，不會假裝成功）。
-        註冊只需名稱與 endpoint，不核發長效祕密。
+        一般路徑先下載通用快速起步，在 MLSteam lab 改 <code>agent.py</code> 並啟動。
+        設好 port forwarding 後再註冊，把 agent id 填回 deployment.env 後重啟。
+        快速起步已是可運行的服務，不用再包一層 FastAPI。
+        需要工具迴圈或長期狀態時，改下載進階實作範例；那是另一個下載，不是這包的下一章。
+        發行包若尚未備妥，下載會顯示失敗，不會假裝已下載。
+        註冊要填名稱、至少 24 字的用途說明、endpoint，以及基礎模型。不核發長效祕密。
       </p>
     </section>
 
@@ -44,7 +44,7 @@
       <p class="guard__prose">
         按「下載 anila_verify.py」取得單檔（stdlib＋cryptography），放到你的服務旁，
         再接上下列幾行。無需向平台申請任何憑證。
-        此檔由<strong>治理中心發行</strong>，不是樣板 zip 的內容。
+        此檔由<strong>治理中心發行</strong>，給既有服務自行接驗簽；不是快速起步 zip 的替代品。
         <strong>若下載端點尚未上線會顯示提示</strong>——在那之前則此級暫時無法在氣隙內取得該檔。
       </p>
       <p v-if="dlMsg" class="guard__notice" :class="dlOk ? 'is-ok' : 'is-err'">{{ dlMsg }}</p>
@@ -58,7 +58,7 @@
       <p class="guard__prose">
         規劃中的選項：在 agent 前方放驗證 sidecar（驗完再轉發，本體不動），
         映像走內網既有搬運通道。
-        <strong>今日尚無公開映像與部署說明</strong>——若你無法改碼，請先走①樣板，
+        <strong>今日尚無公開映像與部署說明</strong>——若你無法改碼，請先走①快速起步，
         或等候 sidecar 套件釋出；此處不捏造操作步驟。
       </p>
     </section>

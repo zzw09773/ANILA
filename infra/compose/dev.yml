@@ -130,8 +130,13 @@ services:
       DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-dev-docling-token}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
+      # 與 platform.yml 相同：掛目錄，不把缺席的 profile.json 做成目錄。
+      # dev 用 share-dev，不撞 live stack 的 share/quickstart。
+      ANILA_QUICKSTART_PROFILE: /app/anila-quickstart-profile/profile.json
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
+      - ../../packages/anila-agent-quickstart:/app/anila-quickstart:ro
+      - "${ANILA_QUICKSTART_PROFILE_DIR:-../../share-dev/quickstart}:/app/anila-quickstart-profile:ro"
       # ⚠️ dev 用獨立 share 目錄，不撞 live stack 的 ./share/
       #
       # ⚠️ csp 自 2026-08-06 起以 uid 10001 跑（FAKE-CONTROLS #50）。這兩個目錄

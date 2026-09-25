@@ -1,0 +1,8 @@
+Copyright 2026 ANILA contributors
+
+本目錄原始碼依專案根目錄 GNU GPL v3 授權（見 ../../LICENSE）。
+發行 zip 另含 CSP 原樣複製的 anila_verify.py，授權隨該檔，不在此改寫。
+
+第三方執行期（尚未鎖版、尚未附 wheel）：
+FastAPI、Uvicorn、httpx、cryptography、Pydantic、Starlette
+及其傳遞相依，各依該套件自己的授權。本包不附二進位、不宣稱已審查。

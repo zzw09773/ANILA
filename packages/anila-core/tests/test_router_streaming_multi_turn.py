@@ -277,3 +277,164 @@ def test_multi_turn_stream_emits_session_header(db_path: Path) -> None:
         headers={"Authorization": "Bearer sk-test"},
     )
     assert response.headers["X-Anila-Session-Id"] == "s-pinned"
+
+
+@respx.mock
+def test_multi_turn_dispatch_failure_is_anila_error_not_stop(db_path: Path) -> None:
+    """A failed ``_dispatch_safe`` ends the multi-turn stream. It must not
+    recompose the outage text or close the turn with ``finish=stop`` / ``[DONE]``."""
+    secret = "sk-live-TURN-DO-NOT-LEAK"
+    agents = _agent_list_response()
+    agents["data"][0]["requires_encryption"] = True
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json=agents))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("model") == "agent-a":
+            return httpx.Response(500, content=f"traceback {secret}".encode())
+        return httpx.Response(200, json=_completion("DISPATCH:agent-a:查一下"))
+
+    respx.post(CSP_URL).mock(side_effect=handler)
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "查一下"}],
+            "stream": True,
+            "anila_multi_turn": 2,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    assert "upstream HTTP" not in response.text
+    assert "暫時不可用" not in response.text
+    assert "data: [DONE]" not in response.text
+    assert '"finish_reason": "stop"' not in response.text
+
+    events = _parse_sse(response.text)
+    errors = [e for e in events if e["event"] == "anila.error"]
+    assert errors == [
+        {"event": "anila.error", "data": {"message": "agent「agent-a」暫時無法使用，請稍後再試。"}}
+    ]
+    assert events[-1]["event"] == "anila.error"
+    assert not any(e["event"] == "done" for e in events)
+
+
+@respx.mock
+def test_multi_turn_second_dispatch_failure_is_anila_error_not_stop(
+    db_path: Path,
+) -> None:
+    """The first agent answers; the second dispatch fails.
+
+    The loop used to return that failure and the caller still recomposed
+    it and closed with ``finish=stop`` and ``[DONE]``.
+    """
+    secret = "sk-live-SECOND-DO-NOT-LEAK"
+    agents = _agent_list_response()
+    agents["data"][1]["requires_encryption"] = True
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json=agents))
+    router_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode() or "{}")
+        model = body.get("model")
+        if model == "agent-a":
+            return httpx.Response(200, json=_completion("第一段答案", model="agent-a"))
+        if model == "agent-b":
+            return httpx.Response(
+                500,
+                content=f"traceback {secret} at http://10.4.4.4/secret".encode(),
+            )
+        router_calls["n"] += 1
+        if router_calls["n"] == 1:
+            return httpx.Response(200, json=_completion("DISPATCH:agent-a:查一下"))
+        return httpx.Response(200, json=_completion("DISPATCH:agent-b:再查"))
+
+    respx.post(CSP_URL).mock(side_effect=handler)
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "查一下"}],
+            "stream": True,
+            "anila_multi_turn": 2,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    assert "10.4.4.4" not in response.text
+    assert "HTTP 500" not in response.text
+    assert "暫時不可用" not in response.text
+    assert "data: [DONE]" not in response.text
+    assert '"finish_reason": "stop"' not in response.text
+
+    events = _parse_sse(response.text)
+    assert events[-1] == {
+        "event": "anila.error",
+        "data": {"message": "agent「agent-b」暫時無法使用，請稍後再試。"},
+    }
+    metas = [e for e in events if e["event"] == "anila.meta"]
+    assert metas
+    assert metas[-1]["data"].get("classified") is True
+    assert "citations" not in metas[-1]["data"]
+    assert "handoff_chain" not in metas[-1]["data"]
+    error_at = next(i for i, e in enumerate(events) if e["event"] == "anila.error")
+    meta_at = next(i for i, e in enumerate(events) if e["event"] == "anila.meta")
+    assert meta_at < error_at
+
+
+@respx.mock
+def test_multi_turn_keeps_classified_latched_by_earlier_agent_meta(
+    db_path: Path,
+) -> None:
+    """Agent 1's meta says classified; agent 2's dispatch then fails.
+
+    Both manifests are unclassified. The failure used to look only at
+    those manifests and the failed reply, and sent ``classified: false``.
+    """
+    agents = _agent_list_response()
+    for row in agents["data"]:
+        row["requires_encryption"] = False
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json=agents))
+    router_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode() or "{}")
+        model = body.get("model")
+        if model == "agent-a":
+            payload = _completion("第一段答案", model="agent-a")
+            payload["anila_meta"] = {"classified": True, "citations": ["secret-cite"]}
+            return httpx.Response(200, json=payload)
+        if model == "agent-b":
+            return httpx.Response(500, content=b"agent-b exploded")
+        router_calls["n"] += 1
+        if router_calls["n"] == 1:
+            return httpx.Response(200, json=_completion("DISPATCH:agent-a:查一下"))
+        return httpx.Response(200, json=_completion("DISPATCH:agent-b:再查"))
+
+    respx.post(CSP_URL).mock(side_effect=handler)
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "查一下"}],
+            "stream": True,
+            "anila_multi_turn": 2,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert response.status_code == 200, response.text
+    assert "secret-cite" not in response.text
+    assert "data: [DONE]" not in response.text
+    events = _parse_sse(response.text)
+    assert events[-1]["event"] == "anila.error"
+    metas = [e["data"] for e in events if e["event"] == "anila.meta"]
+    assert metas
+    assert metas[-1]["classified"] is True
+    assert "citations" not in metas[-1]
+    assert "handoff_chain" not in metas[-1]
