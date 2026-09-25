@@ -45,13 +45,11 @@ test('reload with cleared localStorage still auths via cookie; no token stored',
     join(mockDir, 'client.ts'),
     `
 export function bindAuthAdapter(_a) {}
-export function explainError(err) { return String(err) }
 `,
   )
   writeFileSync(
     join(mockDir, 'auth.ts'),
     `
-export const login = async () => ({ data: { access_token: 'a', refresh_token: 'r' } })
 export const refreshToken = async () => ({ data: { access_token: 'a2', refresh_token: 'r2' } })
 export const getMe = async () => {
   // Cookie path: no Bearer needed; server accepts httpOnly session cookie.
@@ -142,11 +140,4 @@ if (__mem && typeof globalThis.localStorage === 'undefined') {
   assert.equal(store.getState().user?.username, 'cookie-user')
   assert.equal(store.getState().accessToken, null)
   assert.equal(storageMod.authStorageHasTokens(storage), false)
-
-  await store.getState().login('u', 'password')
-  assert.equal(store.getState().accessToken, 'a')
-  assert.equal(storageMod.authStorageHasTokens(storage), false)
-  for (const v of Object.values(storage._dump())) {
-    assert.equal(/accessToken|refreshToken|access_token/.test(String(v)), false)
-  }
 })

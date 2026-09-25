@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import create_engine, inspect as sa_inspect, text
 from app.config import settings
 from app.database import engine, Base
@@ -356,6 +356,23 @@ async def lifespan(app: FastAPI):
     # P2.7 稽核帳日級雜湊鏈。熱路徑不受影響 — 封存是每天一次的背景工作。
     ledger_task = await start_audit_checkpointer()
 
+    # Internal service credentials (router-primary, and any client named in
+    # ANILA_INTERNAL_SERVICE_CLIENTS). One pass before we report healthy so
+    # the router, which waits on this healthcheck, finds the token file.
+    # The periodic task repeats the same ensure. Tests set
+    # ANILA_SERVICE_CLIENT_AUTO_PROVISION=0 and skip both.
+    from app.services.internal_service_clients import (
+        auto_provision_enabled,
+        provision_internal_service_clients_once,
+        start_internal_service_client_provisioner,
+    )
+    provision_task = None
+    if auto_provision_enabled():
+        # Failures are recorded for /health. Startup continues so the
+        # process can report degraded instead of exiting before the probe.
+        provision_internal_service_clients_once()
+        provision_task = await start_internal_service_client_provisioner()
+
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
     # listing + agent-scoped FTS). The pool registers vector / halfvec
@@ -382,6 +399,8 @@ async def lifespan(app: FastAPI):
         alert_task.cancel()
     if ledger_task:
         ledger_task.cancel()
+    if provision_task:
+        provision_task.cancel()
     await close_pool()
 
 
@@ -673,12 +692,28 @@ async def custom_openapi(_admin: User = Depends(require_admin)):
 
 @app.get("/health", tags=["health"])
 async def health_check():
-    """Health check endpoint for container orchestration and monitoring."""
-    return {
-        "status": "healthy",
+    """Health check endpoint for container orchestration and monitoring.
+
+    Required internal-client provisioning is part of readiness. A write
+    or database failure, or auto-provision turned off, is HTTP 503
+    ``status=degraded`` so a deploy does not look healthy while the
+    router credential is not being published. ``service_client_provisioning``
+    is ``disabled`` when auto-provision is off.
+    """
+    from app.services.internal_service_clients import provisioning_health
+
+    ready = provisioning_health()
+    body = {
+        "status": "healthy" if ready["ok"] else "degraded",
         "version": APP_VERSION,
         "service": APP_NAME,
+        "service_client_provisioning": ready["state"],
     }
+    if ready["failed"]:
+        body["service_client_provisioning_failed"] = ready["failed"]
+    if not ready["ok"]:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 # Serve frontend SPA - check multiple possible locations

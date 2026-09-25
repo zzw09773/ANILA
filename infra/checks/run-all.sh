@@ -13,21 +13,22 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CHECKS="$ROOT/infra/checks"
 
-PY="${CHECKS_PYTHON:-}"
-if [[ -z "$PY" ]]; then
-  for candidate in \
-    "$ROOT/services/csp/.venv/bin/python" \
-    "/home/c1147259/桌面/ANILA/anila-migration-20260706/ANILA/services/csp/.venv/bin/python"
-  do
-    if [[ -x "$candidate" ]]; then PY="$candidate"; break; fi
-  done
-fi
-PY="${PY:-python3}"
+PY="${CHECKS_PYTHON:-$ROOT/services/csp/.venv/bin/python}"
+
+# 只有 ORM 檢查要用 CSP 的解譯器；contrast／zh／geometry 不需要，所以不在開頭擋。
+require_py() {
+  if [[ ! -x "$PY" ]]; then
+    echo "找不到本樹的 Python：$PY" >&2
+    echo "請在 services/csp 建立 .venv，或設 CHECKS_PYTHON 指向要使用的解譯器。" >&2
+    return 1
+  fi
+}
 
 which_run="${1:-all}"
 
 run_orm() {
   echo "======== Check 1 · ORM ↔ PG ========"
+  require_py || { echo "ORM: BROKEN（缺解譯器）"; return 1; }
   local dsn
   if ! dsn="$("$CHECKS/prepare_scratch_db.sh" --prepare)"; then
     echo "ORM: BROKEN（scratch DB / alembic）"

@@ -40,9 +40,8 @@ def get_agent_runtime_config(
 ):
     """Read the agent's persisted runtime config (inspection only).
 
-    Used by the CSP admin UI ``AgentRuntimeConfigView.vue`` as a
-    read-only view of any historically stored JSON. The official agent
-    template never polls this value; writes are 410.
+    The governance console has no page for this. Writes are 410.
+    The official agent template never polls this value.
     """
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:

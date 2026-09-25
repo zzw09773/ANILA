@@ -43,7 +43,7 @@
    crash-loop**。**已修**:`intranet-deploy.sh` 步驟 `[4b]` 會用 csp image 跑
    `scripts/generate-jwt-keypair.py` 產 `secrets/jwt-{private,public}.pem`,compose
    以 `:ro` mount 進 csp `/app/secrets`(`./secrets` 在 host,recreate 不失效;
-   `*.pem` 已被 .gitignore 擋,不進公開 repo)。手動 `docker compose -p anila-restart -f compose.yaml -f
+   `*.pem` 已被 .gitignore 擋,不進公開 repo)。手動 `docker compose -p anila -f compose.yaml -f
    intranet-image-overrides.yml up` 而沒先跑
    腳本的話,記得自己先產這把 key。
 
@@ -81,11 +81,11 @@
 
 ```bash
 CARD_INITIAL_OWNERS=1147259 \
-COMPOSE_PROJECT_NAME=anila-restart \
+COMPOSE_PROJECT_NAME=anila \
 bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
 ```
 
-`COMPOSE_PROJECT_NAME` 預設 `anila-restart`；`INCLUDE_ASR` 預設 `0`（平台開機沒語音）。
+`COMPOSE_PROJECT_NAME` 預設 `anila`；`INCLUDE_ASR` 預設 `0`（平台開機沒語音）。
 要開語音是開機後第二步,見 [`intranet-image-bundle.md` §5.1](./intranet-image-bundle.md)。那時才設
 `INCLUDE_ASR=1`,並帶 `ASR_OVERLAY`(`.15` CPU 主機預設 `infra/compose/asr-cpu.yml`;
 GPU 主機改 `infra/compose/asr-gpu.yml`;空字串表示不疊 overlay,由操作者自行承擔組態責任)。
@@ -98,7 +98,7 @@ bundle 的 `intranet-defaults.env` 可提供 `CARD_INITIAL_OWNERS` 與生成器�
 >    否則同仁卡片註冊時「完成註冊」的單位下拉是空的、卡在註冊。先建單位再請大家註冊。
 > 2. **break-glass(讀卡機/HiPKI 掛掉時的後路)**:card-only 模式關掉了帳密登入,若 go-live
 >    當天讀卡機或 HiPKI(`localhost:16888`)故障會**全員進不去**。應急:`.env` 暫設
->    `ANILA_AUTH_MODE=password` → `docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp`,用 owner 帳密
+>    `ANILA_AUTH_MODE=password` → `docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp`,用 owner 帳密
 >    (admin 密碼)break-glass 進去處理,修好讀卡環境後改回 `card-only` 再 recreate csp。
 
 ---
@@ -307,7 +307,7 @@ python3 infra/deployment/intranet/intranet-quantize-nvfp4.py \
 | 階段 | 內容 | 前置條件 |
 |------|------|----------|
 | **R0** | 5 組權重 pack-chunks + 6 個模型 image → `04-models.tar.gz`(pigz)→ 切塊;全部 unpack 回來 `diff -r` 逐 byte 比對 | 無(純檔案系統+`docker save`,不碰 running stack)|
-| **R1** | `build-and-export-for-intranet.sh` 出 01–03 tar.gz + INTRANET-LOAD.sh | bundle 以 `COMPOSE_PROJECT_NAME=anila-restart` 產 tag；loader 只做 checksum 驗證與 `docker load`，不 re-tag。起棧要沿用相同 `-p`，並疊 image override。 |
+| **R1** | `build-and-export-for-intranet.sh` 出 01–03 tar.gz + INTRANET-LOAD.sh | bundle 以 `COMPOSE_PROJECT_NAME=anila` 產 tag；loader 只做 checksum 驗證與 `docker load`，不 re-tag。起棧要沿用相同 `-p`，並疊 image override。 |
 | **R2** | 空機模擬:停 dev stack → INTRANET-LOAD.sh(sha256+load)→ `ANILA_HF_DIR=<staging>/rehearsal-hf` 起 models stack + `deploy-prod.sh` → §3 驗收清單 → 還原 dev stack(用原本 annotated-tag 工作樹重 build,不 checkout branch) | ⚠ 需重開機修 NVIDIA driver mismatch(host NVML 掛了,新 GPU 容器起不來);維護時段 user 排 |
 
 ```bash
@@ -485,7 +485,7 @@ fi
 set -a; source .env; set +a
 bash infra/deployment/scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
                                         # + curl 探測 gateway (帶 Bearer key)
-docker compose -p anila-restart \
+docker compose -p anila \
   -f compose.yaml -f intranet-image-overrides.yml \
   up -d --no-build  # image 已 load,跳過 build。語音是開機後第二步,見 intranet-image-bundle.md §5.1
 ```
@@ -554,7 +554,7 @@ done
    出來。`deploy-prod.sh` 的 `up` / `restart` 路徑已經內建這一步(`reload_nginx`),
    但手動只 recreate 一個服務時沒有人幫你做:
    ```bash
-   docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
+   docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
    docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
    ```
 4. 模型頁註冊:protocol 選「Triton/KServe gRPC」,端點填 `grpc://host:9001`
@@ -576,11 +576,11 @@ done
 
 ```bash
 # 1. 兩個旗標真的進到容器(沒輸出 = 沒進去,回頭做第 3 步)
-docker exec anila-restart-csp-1 printenv ANILA_ALLOW_GRPC_ENDPOINT
-docker exec anila-restart-csp-1 printenv ANILA_ALLOW_PRIVATE_ENDPOINT
+docker exec anila-csp-1 printenv ANILA_ALLOW_GRPC_ENDPOINT
+docker exec anila-csp-1 printenv ANILA_ALLOW_PRIVATE_ENDPOINT
 
 # 2. 端點在網路上通(csp 容器沒裝 curl / grpcurl,用 python socket)
-docker exec anila-restart-csp-1 python3 -c \
+docker exec anila-csp-1 python3 -c \
   "import socket;s=socket.create_connection(('172.16.120.35',9001),3);print('tcp ok');s.close()"
 
 # 3. 註冊後:模型頁該列應為 online;取一段文字經 /v1/embeddings 應回 4096 維
@@ -589,7 +589,7 @@ docker exec anila-restart-csp-1 python3 -c \
 # 4. 查詢/文件真的走不同張量(這條路徑存在的理由,也是 url_guard 的活體驗收):
 #    同一段文字送兩次、一次 query 一次 document,cosine 必須明顯小於 1.0。
 #    等於 1.0 = 查詢被當文件編碼了,不會報錯、排序無聲變差。
-docker exec anila-restart-csp-1 python3 -c "
+docker exec anila-csp-1 python3 -c "
 from anila_core.security.url_guard import validate_outbound_url
 from app.services.triton_grpc import client as tc
 URL, MODEL = 'grpc://172.16.120.35:9001', 'nv-embed-v2'
@@ -660,10 +660,10 @@ docstring 的「measured per-text latency is ~0.02s」。⚠ **那是該檔案�
 grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_BATCH_SIZE[[:space:]]*=' .env
 
 # 2. 套用:一定是 up -d(recreate),docker restart 不重載 .env
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d ingestion-worker
+docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d ingestion-worker
 
 # 3. 確認它真的到了容器裡(這一步不能跳)
-docker exec anila-restart-ingestion-worker-1 printenv EMBEDDING_BATCH_SIZE
+docker exec anila-ingestion-worker-1 printenv EMBEDDING_BATCH_SIZE
 ```
 
 > ⚠ 這個變數要有 `infra/compose/platform.yml` 的 **ingestion-worker** 區塊裡
@@ -677,8 +677,8 @@ docker exec anila-restart-ingestion-worker-1 printenv EMBEDDING_BATCH_SIZE
 
 ```bash
 grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_TIMEOUT_SECONDS[[:space:]]*=' .env
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d ingestion-worker
-docker exec anila-restart-ingestion-worker-1 printenv EMBEDDING_TIMEOUT_SECONDS
+docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d ingestion-worker
+docker exec anila-ingestion-worker-1 printenv EMBEDDING_TIMEOUT_SECONDS
 ```
 
 > ⚠ 它跟 csp 的 `EMBEDDING_TIMEOUT` **不是同一個變數**,也不在同一個容器。
@@ -734,13 +734,13 @@ docker exec anila-restart-ingestion-worker-1 printenv EMBEDDING_TIMEOUT_SECONDS
 grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_TIMEOUT[[:space:]]*=' .env
 
 # 2. 套用:一定是 up -d(recreate),docker restart 不重載 .env
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
+docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
 
 # 3. recreate 過就要 reload nginx,否則上游 IP 是舊的 → 全站 502 但容器全綠
 docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
 
 # 4. 確認它真的到了容器裡(這一步不能跳)
-docker exec anila-restart-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
+docker exec anila-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
 ```
 
 它同時是整通呼叫的預算主項:budget = `_wait_ready` 5s + `EMBEDDING_TIMEOUT`,
@@ -786,12 +786,12 @@ ALLOWED_HOSTS=localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw
 ```bash
 # 1. .env 改 ALLOWED_HOSTS(以及 ANILA_HOST),同步改 nginx 那條 map
 # 2. 套用:一定是 up -d(recreate);docker restart 不重載 .env
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
+docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
 # 3. recreate 過要 reload nginx,否則上游 IP 是舊的 → 全站 502 但容器全綠
 docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
 # 4. 確認名單真的到了容器裡,而且檢查真的開著
-docker exec anila-restart-csp-1 printenv ALLOWED_HOSTS
-docker compose -p anila-restart logs csp 2>&1 | grep 'host allow-list:'
+docker exec anila-csp-1 printenv ALLOWED_HOSTS
+docker compose -p anila logs csp 2>&1 | grep 'host allow-list:'
 # 5. 驗行為(csp 容器沒裝 curl,用 python;在 host 上驗 nginx 那一段用 curl -k)
 curl -sk -o /dev/null -w '%{http_code}\n' https://<你的FQDN>/health      # 200
 curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: evil.example' \
@@ -838,10 +838,10 @@ csp - WARNING - host allow-list: DISABLED — ALLOWED_HOSTS is '*', every incomi
 ```bash
 # 立刻恢復:把檢查整個關掉(* = 停用),平台馬上回來
 #   在 .env 把 ALLOWED_HOSTS 改成一顆星,然後 recreate(不是 restart):
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
+docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
 docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
 # 確認:這一行要從 ENFORCED 變成 DISABLED(不是「變成沒有」)
-docker compose -p anila-restart logs csp 2>&1 | grep 'host allow-list:'
+docker compose -p anila logs csp 2>&1 | grep 'host allow-list:'
 ```
 
 平台回來之後再查該補哪個 Host:從 csp 的 access log 找那個被擋的 Host,加進
@@ -858,7 +858,7 @@ docker compose -p anila-restart logs csp 2>&1 | grep 'host allow-list:'
 ### 3.2 startup_security 一定要過
 
 ```bash
-docker compose -p anila-restart logs csp 2>&1 | grep -E "startup_security|RuntimeError|Refusing"
+docker compose -p anila logs csp 2>&1 | grep -E "startup_security|RuntimeError|Refusing"
 ```
 
 | 看到的 log | 處理 |
@@ -872,13 +872,13 @@ docker compose -p anila-restart logs csp 2>&1 | grep -E "startup_security|Runtim
 
 ```bash
 curl -k https://localhost/health                       # 200
-docker compose -p anila-restart ps                                       # 全部 healthy
+docker compose -p anila ps                                       # 全部 healthy
 # 模型 e2e (在 host,key 換真值):
 curl --cacert share/pki/model-ca.pem \
   -H "Authorization: Bearer $MODEL_GATEWAY_API_KEY" \
   https://aiagent2.ai.ncsist.org.tw/v1/models           # 應列出 openai/gpt-oss-20b 等
 # csp 容器內 DNS 解析確認:
-docker compose -p anila-restart exec csp python -c "import socket; print(socket.gethostbyname('aiagent2.ai.ncsist.org.tw'))"
+docker compose -p anila exec csp python -c "import socket; print(socket.gethostbyname('aiagent2.ai.ncsist.org.tw'))"
 # 解不到 → compose csp 加 extra_hosts: "aiagent2.ai.ncsist.org.tw:10.53.100.12"
 ```
 
@@ -935,7 +935,7 @@ bash infra/deployment/intranet/model-serve.sh up flux2-dev flux2-dev-agent  # �
 #    ENABLE_IMAGE_CAPTIONS=true + VISION_MODEL=gemma4 (圖表進 RAG)
 
 # 4. 重建平台 csp 讓 auto_seed 重新註冊
-cd /opt/anila && docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
+cd /opt/anila && docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
 # /models 應出現 image-generator (圖像繪製);對話輸入「畫一張…」驗證 dispatch
 ```
 
@@ -945,13 +945,13 @@ cd /opt/anila && docker compose -p anila-restart -f compose.yaml -f intranet-ima
 
 ### 5.1 解凍 codeserver / n8n / gitlab
 
-nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx`。
+nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx`。
 （`infra/nginx/anila.conf` 是**單檔 bind-mount**；git 改檔會換 inode，容器仍抓舊檔且無任何錯誤。`restart`／`reload` 都不夠，見 `anila.conf:447`。）
 
 ### 5.2 TLS cert rotation
 
-wildcard 憑證 2029 到期;換發後同 §2.2 步驟 1 重抽,`docker compose -p anila-restart restart nginx`。
-NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p anila-restart restart csp`。
+wildcard 憑證 2029 到期;換發後同 §2.2 步驟 1 重抽,`docker compose -p anila restart nginx`。
+NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p anila restart csp`。
 （§5.2 的 restart 沒問題：憑證／CA 是**目錄**掛載，不是單檔 inode 綁定，換成新檔後 restart 就能讀到。）
 
 ### 5.3 Postgres backup
@@ -962,7 +962,7 @@ NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p 
 ### 5.4 加 owner / 模型 gateway key 輪替
 
 - 新 owner:改 `CARD_INITIAL_OWNERS` (只對新刷卡者生效) 或 `/users` UI 改既有帳號
-- gateway key 輪替:aiagent2 重簽 → 改 `.env` `MODEL_GATEWAY_API_KEY` → `docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp`
+- gateway key 輪替:aiagent2 重簽 → 改 `.env` `MODEL_GATEWAY_API_KEY` → `docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp`
 
 ---
 

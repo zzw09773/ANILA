@@ -60,7 +60,7 @@
 > (連帶解開被綁死的 bcrypt);④ **依賴補上限**(穩定無 CVE 版),而下限的看守
 > **放進專案測試套件,不做 CI**(擁有者:restart 時已釘板不要 GitHub CI)。
 > ⚠ 這四件全部是「定版本」,照本段開頭的順序鐵律,**做完才輪到第 5 段凍結**。
-> **✅ 2026-08-10 四件全數關板**(細節見 `docs/handoffs/HANDOFF-2026-08-10.md`)。
+> **✅ 2026-08-10 四件全數關板**(細節見 `docs/archive/handoffs/HANDOFF-2026-08-10.md`)。
 > ✅ **2026-08-21 四顆範圍已定**：① react-router 已在 v7，釘 `>=7.18.2 <8`（6→7 是 `c0877c05`，不再遷移）；② echarts 留 5.x `>=5.6.0 <6`＋`vue-echarts >=7.0.3 <8`（v6＋vue-echarts 8 是凍結後遷移，XSS `GHSA-fgmj-fm8m-jvvx` 本輪接受）；③ js-yaml 用 npm `overrides` 釘傳遞的 `4.3.0`（修在 4.3.1，本機無該版 tarball）；④ csp 顯式 `pytest==8.4.2`（`CVE-2025-71176` 修在 9.0.3，要 pytest-asyncio ≥1.3，凍結後再跳）。
 > ⚠ **凍結後遷移的規格寫死在這裡（不倚賴家目錄報告）**：echarts 6 配 zrender 6，
 > 活圖只有 `UsageLineChart.vue` 一張（core＋LineChart＋五個 components＋CanvasRenderer），
@@ -157,7 +157,7 @@ anila-shell 387 過。08-01 再合併並部署 6 包,**全部只在本機,`.15` 
 
 ### 完成度
 
-> 📌 **本表是權威現況**（2026-08-17 擁有者裁決）。`docs/PRE-TAG-RESIDUALS-2026-08-15.md` 不是取代本表，
+> 📌 **本表是權威現況**（2026-08-17 擁有者裁決）。`docs/archive/PRE-TAG-RESIDUALS-2026-08-15.md` 不是取代本表，
 > 它是本表的**收尾附錄**——打 tag 前的阻塞清單與 release gate 明細，在本表指到的地方看。
 > 兩份同源：都以 08-15 的跨家反驗（`closeout-inventory-verify`、`audit-findings-reverify-sol`）為證。
 > ⚠ **沒被今天複驗的項目，不因兩週前是 ✅ 就繼續寫 ✅**；未複驗標 ⬜ 並注明狀態停在何時。
@@ -264,7 +264,7 @@ core-opt 是照擁有者條件先修掉兩個壞預設,再過一輪跨家審查(
 ### 其他文件
 
 [`docs/FAKE-CONTROLS.md`](FAKE-CONTROLS.md) 26 項假控制項(13 已處理)、
-[`docs/UX-IDEAS.md`](UX-IDEAS.md) 15 條(4 已做)、
+[`docs/archive/UX-IDEAS.md`](docs/archive/UX-IDEAS.md) 15 條(4 已做)、
 [`docs/designs/`](designs/) 稽核帳兩家設計＋anila-core 三家對照。
 
 ---

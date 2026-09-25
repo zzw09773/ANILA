@@ -41,19 +41,36 @@ REQUIRED_ROUTES: dict[tuple[str, str], str] = {
 }
 
 
-def _route_index() -> set[tuple[str, str]]:
-    """All (method, path) pairs mounted on the FastAPI app."""
-    index = set()
-    for route in app.routes:
-        path = getattr(route, "path", None)
-        methods = getattr(route, "methods", None) or set()
-        if path is None or not methods:
+def _iter_mounted_routes(routes, prefix: str = ""):
+    """Yield ``(method, path)`` including routers wrapped by FastAPI 0.141.
+
+    ``include_router`` stores an ``_IncludedRouter`` on ``app.routes``.
+    That wrapper has no ``methods`` and no ``routes``; the real table is
+    ``original_router`` and the prefix is ``include_context.prefix``.
+    """
+    for route in routes:
+        original = getattr(route, "original_router", None)
+        include_context = getattr(route, "include_context", None)
+        if original is not None and include_context is not None:
+            child_prefix = prefix + (getattr(include_context, "prefix", "") or "")
+            yield from _iter_mounted_routes(original.routes, child_prefix)
+            low = getattr(original, "_low_priority_routes", None)
+            if low:
+                yield from _iter_mounted_routes(low, child_prefix)
             continue
-        for method in methods:
+        path = prefix + (getattr(route, "path", "") or "")
+        if hasattr(route, "routes") and route.routes:
+            yield from _iter_mounted_routes(route.routes, path)
+            continue
+        for method in getattr(route, "methods", None) or ():
             if method in ("HEAD", "OPTIONS"):
                 continue
-            index.add((method, path))
-    return index
+            yield method, path
+
+
+def _route_index() -> set[tuple[str, str]]:
+    """All (method, path) pairs mounted on the FastAPI app."""
+    return set(_iter_mounted_routes(app.routes))
 
 
 @pytest.mark.parametrize(
@@ -71,9 +88,9 @@ def test_phase1_endpoint_is_mounted(method, path):
     """
     index = _route_index()
     assert (method, path) in index, (
-        f"Phase 1 endpoint {method} {path} is not mounted on app.routes — "
+        f"Phase 1 endpoint {method} {path} is not mounted — "
         f"check that the corresponding include_router(...) call is in "
-        f"myCSPPlatform/backend/app/api/router.py"
+        f"services/csp/app/api/router.py"
     )
 
 

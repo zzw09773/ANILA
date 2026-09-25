@@ -1,7 +1,9 @@
 <!--
-  P2.1 三級接入：範本／單檔驗簽／sidecar。
+  P2.1 三級接入：快速起步／單檔驗簽／sidecar。
   畫面上不出現任何要保管的祕密字串。
-  每一級：今日能端到端就寫作法；不能就用畫面文案說清楚缺什麼。
+  ② 的 GET /api/agents/anila-verify/download 與平台 CA
+  GET /api/agents/platform-ca/download 都在。503 表示這次部署缺檔，請聯絡維運。
+  快速起步 zip 已含 anila_verify.py 與 ca.pem。
 -->
 <template>
   <TermBox
@@ -18,7 +20,8 @@
         設好 port forwarding 後再註冊，把 agent id 填回 deployment.env 後重啟。
         快速起步已是可運行的服務，不用再包一層 FastAPI。
         需要工具迴圈或長期狀態時，改下載進階實作範例；那是另一個下載，不是這包的下一章。
-        發行包若尚未備妥，下載會顯示失敗，不會假裝已下載。
+        快速起步 zip 已含 <code>anila_verify.py</code> 與 <code>ca.pem</code>。
+        發行包若這次部署缺檔，下載回 503（請聯絡維運），不會假裝已下載。
         註冊要填名稱、至少 24 字的用途說明、endpoint，以及基礎模型。不核發長效祕密。
       </p>
     </section>
@@ -44,8 +47,9 @@
       <p class="guard__prose">
         按「下載 anila_verify.py」取得單檔（stdlib＋cryptography），放到你的服務旁，
         再接上下列幾行。無需向平台申請任何憑證。
-        此檔由<strong>治理中心發行</strong>，給既有服務自行接驗簽；不是快速起步 zip 的替代品。
-        <strong>若下載端點尚未上線會顯示提示</strong>——在那之前則此級暫時無法在氣隙內取得該檔。
+        此檔由<strong>治理中心發行</strong>（<code>GET /api/agents/anila-verify/download</code>），
+        給既有服務自行接驗簽。快速起步 zip 裡已經有同一支檔與 <code>ca.pem</code>。
+        <strong>503 表示這次部署缺檔，請聯絡維運</strong>。
       </p>
       <p v-if="dlMsg" class="guard__notice" :class="dlOk ? 'is-ok' : 'is-err'">{{ dlMsg }}</p>
       <pre class="guard__code"><code>{{ snippets.pythonVerify }}</code></pre>
@@ -74,8 +78,9 @@
         />
       </header>
       <p class="guard__prose">
-        僅平台位址與 CA 檔路徑。用頁面「下載平台 CA」嘗試取得 PEM
-        （<strong>端點未上線時會提示，勿假設檔案已到手</strong>），
+        僅平台位址與 CA 檔路徑。用頁面「下載平台 CA」取得 PEM
+        （<code>GET /api/agents/platform-ca/download</code>；
+        <strong>503 表示這次部署缺檔，請聯絡維運</strong>），
         以 <code>ANILA_CA_FILE</code> 指向它——<strong>不要</strong>設 <code>SSL_CERT_FILE</code>。
       </p>
       <pre class="guard__code"><code>{{ snippets.env }}</code></pre>
@@ -133,9 +138,8 @@ async function downloadVerify() {
     dlMsg.value = 'anila_verify.py 已下載'
   } catch (e) {
     const status = e.response?.status
-    if (status === 404) {
-      dlMsg.value =
-        'anila_verify.py 下載端點尚未上線（需後端提供 GET /api/agents/anila-verify/download）'
+    if (status === 503) {
+      dlMsg.value = extractError(e, '此部署缺少 anila_verify.py，請聯絡維運')
     } else {
       dlMsg.value = extractError(e, '下載 anila_verify.py 失敗')
     }

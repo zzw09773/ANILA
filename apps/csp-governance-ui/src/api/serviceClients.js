@@ -10,12 +10,13 @@ export async function listServiceClients() {
 
 export async function createServiceClient(payload) {
   // payload: { client_name, client_type: "router"|"worker"|"admin_tool", description? }
+  // File-provisioned clients come back as delivery=file and no service_token.
   const { data } = await client.post('/api/service-clients', payload)
-  // → { service_token, client: {...} } — surface plaintext exactly once.
   return data
 }
 
 export async function issueStaticForClient(clientId) {
+  // Emergency-only path. delivery=emergency_only and the plaintext is shown once.
   const { data } = await client.post(`/api/service-clients/${clientId}/issue-static`, {})
   return data
 }

@@ -215,10 +215,14 @@ def test_legitimate_host_is_served(allowlisted_client, host, caller):
     """One caller per test. A red line here is a lockout, not a nit."""
     resp = allowlisted_client.get("/health", headers={"Host": host})
 
-    assert resp.status_code == 200, (
+    # The suite turns auto-provision off, so readiness is degraded/disabled.
+    # A 400 here would be the host allow-list locking the caller out.
+    assert resp.status_code == 503, (
         f"Host {host!r} was rejected — this locks out: {caller}"
     )
-    assert resp.json()["status"] == "healthy"
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert body["service_client_provisioning"] == "disabled"
 
 
 def test_every_legitimate_host_survives_a_narrowed_allowlist():
@@ -353,7 +357,8 @@ def test_default_configuration_serves_the_docker_internal_callers(client):
     """
     for host in ("localhost:8000", "127.0.0.1", "csp:8000"):
         resp = client.get("/health", headers={"Host": host})
-        assert resp.status_code == 200, (host, resp.text)
+        assert resp.status_code == 503, (host, resp.text)
+        assert resp.json()["service_client_provisioning"] == "disabled"
 
 
 # ── Parsing ────────────────────────────────────────────────────────────────
@@ -432,10 +437,11 @@ STILL_STRANGERS = [
 def test_the_same_name_spelled_differently_is_served(allowlisted_client, host):
     resp = allowlisted_client.get("/health", headers={"Host": host})
 
-    assert resp.status_code == 200, (
+    assert resp.status_code == 503, (
         f"Host {host!r} is the same name as an allow-listed entry, "
         "spelled per RFC — rejecting it is a lockout"
     )
+    assert resp.json()["service_client_provisioning"] == "disabled"
 
 
 @pytest.mark.parametrize("host", STILL_STRANGERS)

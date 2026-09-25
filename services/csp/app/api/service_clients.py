@@ -8,8 +8,11 @@ clients themselves have no ``/credentials/me`` self endpoint here.
 agents authenticate with a per-dispatch 5-minute RS256 JWT and hold no
 long-lived secret. The ``anila-core agent bootstrap`` CLI this
 docstring used to point at is gone with it. Platform service-to-service
-identity (Router / worker / admin tool) still lives here and is still
-issued by an admin; ``router-primary`` is live and depends on it.
+identity (Router / worker / admin tool) still lives here. Configured
+internal clients (at least ``router-primary``) are issued and rotated
+by CSP onto a shared credential directory; these admin endpoints remain
+for emergency revoke and manual rotate. Humans do not have to copy a
+token. ``router-primary`` is live and depends on the file CSP writes.
 
 Endpoint surface
 ================
@@ -27,8 +30,9 @@ one row and one token.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -47,8 +51,15 @@ from app.services.service_token_envelope import (
     generate_service_token,
 )
 from app.schemas.base import ApiResponseModel
+from app.services.internal_service_clients import (
+    ProvisionOutcome,
+    credential_is_file_provisioned,
+    note_provision_outcomes,
+    sync_configured_client_token,
+)
 
 router = APIRouter(prefix="/api/service-clients", tags=["Service Clients"])
+logger = logging.getLogger(__name__)
 
 
 # ---- Schemas ---------------------------------------------------------------
@@ -79,7 +90,18 @@ class CreateServiceClientRequest(BaseModel):
 
 
 class CreateServiceClientResponse(BaseModel):
-    service_token: str
+    """``delivery`` says where the plaintext went.
+
+    ``file`` — internal client provisioned onto the credential file. The
+    plaintext is not in this body.
+    ``response`` — client has no credential file, so the plaintext is
+    returned once.
+    ``emergency_only`` — explicit re-issue. The plaintext is shown once
+    and must not be stored.
+    """
+
+    service_token: str | None = None
+    delivery: Literal["file", "response", "emergency_only"]
     client: ServiceClientResponse
 
 
@@ -109,6 +131,62 @@ def _serialize_client(client: ServiceClient) -> ServiceClientResponse:
         has_previous_token=bool(client.service_token_previous_envelope),
         previous_expires_at=client.service_token_previous_expires_at,
         client_cert_fingerprint=client.client_cert_fingerprint,
+    )
+
+
+def _sync_token_file(db: Session, client: ServiceClient, *, required: bool) -> None:
+    """Publish the committed row.
+
+    ``required`` is create and rotate of a file-delivered client. A
+    failed sync is ``delivery_error`` and readiness goes degraded.
+    Emergency re-issue stays best-effort so the one-time plaintext is
+    still returned; a failed sync on that path still degrades readiness.
+    """
+    name = client.client_name
+    try:
+        sync_configured_client_token(db, client)
+    except Exception as exc:
+        logger.error(
+            "failed to sync credential file for service client %s: %s",
+            name,
+            exc.__class__.__name__,
+        )
+        note_provision_outcomes([ProvisionOutcome(name, "error")])
+        if required:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "delivery": "delivery_error",
+                    "message": (
+                        "credential committed but the token file was not published"
+                    ),
+                },
+            ) from None
+
+
+def _token_response(
+    client: ServiceClient,
+    plaintext: str,
+    *,
+    emergency: bool = False,
+) -> CreateServiceClientResponse:
+    serialized = _serialize_client(client)
+    if emergency:
+        return CreateServiceClientResponse(
+            service_token=plaintext,
+            delivery="emergency_only",
+            client=serialized,
+        )
+    if credential_is_file_provisioned(client.client_name):
+        return CreateServiceClientResponse(
+            service_token=None,
+            delivery="file",
+            client=serialized,
+        )
+    return CreateServiceClientResponse(
+        service_token=plaintext,
+        delivery="response",
+        client=serialized,
     )
 
 
@@ -182,10 +260,8 @@ def create_client(
     )
     db.commit()
     db.refresh(client)
-    return CreateServiceClientResponse(
-        service_token=plaintext,
-        client=_serialize_client(client),
-    )
+    _sync_token_file(db, client, required=True)
+    return _token_response(client, plaintext)
 
 
 @router.post("/{client_id}/issue-static", response_model=CreateServiceClientResponse)
@@ -195,11 +271,11 @@ def issue_static_for_client(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin: replace an existing client's token with a freshly minted one.
+    """Emergency re-issue. The only path that returns a file-provisioned token.
 
-    Unlike rotate, this does NOT keep the old token valid in a grace
-    window — useful when a token leak is suspected and you want
-    immediate cutoff. Otherwise prefer ``/rotate`` for production use.
+    Unlike rotate, this does NOT keep the old token valid. The plaintext
+    is labelled ``delivery=emergency_only`` and is shown once. Routine
+    create and rotate of a file-provisioned client omit it.
     """
     client = _resolve_client(db, client_id)
     plaintext = generate_service_token()
@@ -222,10 +298,8 @@ def issue_static_for_client(
     )
     db.commit()
     db.refresh(client)
-    return CreateServiceClientResponse(
-        service_token=plaintext,
-        client=_serialize_client(client),
-    )
+    _sync_token_file(db, client, required=False)
+    return _token_response(client, plaintext, emergency=True)
 
 
 @router.post("/{client_id}/rotate", response_model=CreateServiceClientResponse)
@@ -247,10 +321,8 @@ def rotate_client(
     )
     db.commit()
     db.refresh(client)
-    return CreateServiceClientResponse(
-        service_token=plaintext,
-        client=_serialize_client(client),
-    )
+    _sync_token_file(db, client, required=True)
+    return _token_response(client, plaintext)
 
 
 @router.delete("/{client_id}")
@@ -268,4 +340,5 @@ def revoke_client(
         reason=f"manual revoke via /api/service-clients/{client_id}",
     )
     db.commit()
+    _sync_token_file(db, client, required=False)
     return {"message": f"已撤銷 service_client id={client_id}"}

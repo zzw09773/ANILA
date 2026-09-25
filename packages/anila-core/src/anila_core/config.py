@@ -18,7 +18,7 @@ Field names map directly to env vars: LLM_URL, MODEL, API_KEY, etc.
 Example .env::
 
     LLM_URL = https://172.16.120.35/v1
-    MODEL   = google/gemma4
+    MODEL   =
     API_KEY = my-secret-key
 """
 
@@ -44,8 +44,11 @@ try:
             description="API key / Bearer token for the LLM endpoint.",
         )
         model: str = Field(
-            default="google/gemma4",
-            description="Model identifier sent to the LLM provider.",
+            default="",
+            description=(
+                "Model identifier sent to the LLM provider. Empty unless "
+                "MODEL names a model registered in CSP. Not a built-in name."
+            ),
         )
 
         # ── CSP Platform (Data Plane) ─────────────────────────────────
@@ -96,7 +99,7 @@ except ImportError:
     class Settings(BaseModel):  # type: ignore[no-redef]
         llm_url: str = "https://172.16.120.35/v1"
         llm_api_key: str = "not-set"
-        model: str = "google/gemma4"
+        model: str = ""
         csp_base_url: str = "http://localhost:8000"
         csp_api_key: str = "not-set"
         csp_service_token: Optional[str] = None

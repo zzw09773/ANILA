@@ -177,3 +177,18 @@ class FollowUpsPayload(BaseModel):
     """Sprint 9 PR 5 — chip suggestions for the user's next question."""
 
     suggestions: list[str]
+
+
+# Router 對客戶端的具名框是 ``event: anila.rescue``，不是上面的 EventType。
+# 主模型把輸出額度用在思考、正文是空的時，答案區塊之前先送這一框。
+RESCUE_REASON_REASONING_EXHAUSTED = "reasoning_exhausted"
+
+
+class RescuePayload(BaseModel):
+    """``anila.rescue`` 的 data。
+
+    ``reason`` 目前只有 ``reasoning_exhausted``：思考用完輸出額度，
+    Router 關掉思考再要一次正文。
+    """
+
+    reason: str

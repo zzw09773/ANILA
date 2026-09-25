@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { bindAuthAdapter, explainError } from '../api/client'
-import { getMe, login as loginApi, logoutApi, refreshToken as refreshApi } from '../api/auth'
+import { bindAuthAdapter } from '../api/client'
+import { getMe, logoutApi, refreshToken as refreshApi } from '../api/auth'
 import type { UserMe } from '../types'
 import { wipeAuthStorage } from './authStorage'
 
@@ -10,14 +10,10 @@ interface AuthState {
   user: UserMe | null
   // 'idle'     = 初始,尚未探測 session
   // 'checking' = 正在用 cookie 探測 /api/auth/me(跨 app SSO 接手)
-  // 'loading'  = 帳密登入進行中
   // 'authed'   = 已驗證
   // 'unauth'   = 已探測但未登入 → ProtectedRoute 會導去 CSP /login
-  // 'error'    = 帳密登入失敗(登入頁顯示訊息)
-  status: 'idle' | 'loading' | 'checking' | 'authed' | 'unauth' | 'error'
-  error: string | null
+  status: 'idle' | 'checking' | 'authed' | 'unauth'
 
-  login: (username: string, password: string) => Promise<void>
   refresh: () => Promise<string | null>
   fetchMe: () => Promise<void>
   logout: () => void
@@ -35,29 +31,6 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   refreshToken: null,
   user: null,
   status: 'idle',
-  error: null,
-
-  login: async (username, password) => {
-    set({ status: 'loading', error: null })
-    try {
-      const { data } = await loginApi(username, password)
-      // In-memory only for this page lifetime (Bearer interceptor).
-      // Durable session is the httpOnly cookie CSP sets on login.
-      set({
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token,
-        status: 'authed',
-        error: null,
-      })
-      await get().fetchMe()
-    } catch (err) {
-      // explainError → same backend-derived message the UI shows, so any
-      // consumer of state.error gets consistent text (not axios's generic
-      // "Request failed with status code 401").
-      set({ status: 'error', error: explainError(err) })
-      throw err
-    }
-  },
 
   refresh: async () => {
     // Cookie-first: CSP accepts anila_refresh_token on /api/auth/refresh
@@ -93,7 +66,6 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       refreshToken: null,
       user: null,
       status: 'unauth',
-      error: null,
     })
   },
 

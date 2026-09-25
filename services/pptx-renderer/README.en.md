@@ -16,7 +16,7 @@ services/anila-studio/         ← the only upstream caller (the Artifact Center
 infra/compose/platform.yml     ← compose definition (root compose.yaml is a shim that includes it)
 ```
 
-Bring-up goes through the root compose shim: `compose.yaml` → `infra/compose/platform.yml` (project `anila-platform`). In compose this service only `expose`s 7100 and is **not host-published** — it is anila-studio's internal rendering backend, not a "project entry" (`專案入口`) GUI service that would go through the Service Registry / Launch Token.
+Bring-up goes through the root compose shim: `compose.yaml` → `infra/compose/platform.yml` (project `anila`). In compose this service only `expose`s 7100 and is **not host-published** — it is anila-studio's internal rendering backend, not a "project entry" (`專案入口`) GUI service that would go through the Service Registry / Launch Token.
 
 ---
 

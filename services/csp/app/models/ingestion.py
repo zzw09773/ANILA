@@ -80,8 +80,8 @@ class IngestionCollection(Base):
     __table_args__ = (
         # 與 migration r1_0033 同名同式的雙宣告 —— 這個閘門必須在**本專案
         # 建得出來的每一份 schema** 裡都生效,不只在走完 alembic 的那一份:
-        # ``app/main.py:115`` 的 alembic 失敗退路、``scripts/init_db.py``、
-        # 以及測試 conftest 都是 ``Base.metadata.create_all()``,少了這一行
+        # ``app/main.py:115`` 的 alembic 失敗退路以及測試 conftest
+        # 都是 ``Base.metadata.create_all()``,少了這一行
         # 它們建出來的表就是「有標記欄位、沒有密等閘門」。
         # house style 就是這樣:``ck_messages_parent_not_self``(ORM +
         # r1_0012)、``ck_messages_rating_score_matches_thumb``(ORM +

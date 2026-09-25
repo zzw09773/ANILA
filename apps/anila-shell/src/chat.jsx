@@ -1239,6 +1239,20 @@ export const MessageBubble = ({
           ? displayPreface
           : (inlineThinking ? cleanBody : msg.text);
         const continuation = typeof msg.resumeText === "string" ? msg.resumeText : "";
+        const rescueStatus = msg.streaming && msg.rescueNotice ? (
+          <div
+            role="status"
+            data-testid="reasoning-rescue-status"
+            style={{
+              margin: "0 0 8px",
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--fg-subtle)",
+            }}
+          >
+            {msg.rescueNotice}
+          </div>
+        ) : null;
         const thinkingSummary = (
           <ReasoningSummary
             trace={msg.trace}
@@ -1417,6 +1431,7 @@ export const MessageBubble = ({
               {settled.map((item) => renderSummary(item))}
               {interrupt?.status === "answered" ? renderActiveCard() : null}
               {thinkingSummary}
+              {rescueStatus}
               {continuation ? renderBody(continuation, Boolean(msg.streaming)) : null}
               {interrupt && interrupt.status !== "answered" ? renderActiveCard() : null}
               {messageNotices}
@@ -1427,6 +1442,7 @@ export const MessageBubble = ({
         return (
           <>
             {thinkingSummary}
+            {rescueStatus}
             {renderBody(
               displayBody,
               Boolean(msg.streaming) && !interrupt,

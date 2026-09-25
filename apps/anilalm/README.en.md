@@ -63,14 +63,14 @@ In the ANILA product constitution (doc 00 §2) this SPA implements two first-cla
 ```
 apps/anilalm/
 ├── package.json · Dockerfile (node:22-alpine build → nginx; ARG BASE_PATH=/anilalm/)
-├── vite.config.ts (/api, /v1, /v2 → VITE_CSP_BACKEND; /api/studio → VITE_ANILA_STUDIO_BACKEND)
-├── tsconfig*.json · index.html · .env.example · docker/ · _design/ · scripts/gen-studio-types.sh
+├── vite.config.ts (/api, /v1, /v2 → CSP; /api/studio, /api/reports, /api/mindmaps, /api/infographics, /api/datatables → Studio)
+├── tsconfig*.json · index.html · .env.example · docker/ · scripts/gen-studio-types.sh
 └── src/
     ├── main.tsx / App.tsx / types.ts / vite-env.d.ts
     ├── api/          # client.ts(axios + STUDIO_BASE_URL) · auth · chat · collections · conversations ·
     │                 #   documents · jobs · search · studio · studio-types.gen.ts · tasks.ts
     ├── store/        # auth.ts / workspace.ts / artifacts.ts (Zustand)
-    ├── routes/       # ProtectedRoute / LoginPage / DashboardPage / WorkspacePage
+    ├── routes/       # ProtectedRoute / DashboardPage / WorkspacePage (login is the Console /login)
     ├── workspace/    # WSSidebar / WSChat / WSStudio / CommandModal / StudioWizard / ArtifactViewer /
     │                 #   ThemePicker / useJobStream
     ├── studio/       # generators.ts (5 artifact kinds, all create a Task first) / themeMapping.ts / themes.ts
@@ -98,7 +98,7 @@ The dev server proxies `/api`, `/v1`, `/v2` to `VITE_CSP_BACKEND` (default `http
 
 ### Container (monorepo compose)
 
-The SPA's compose service is **`anilalm`** (build context `apps/anilalm`, `BASE_PATH=/anilalm/`), managed by the root shim `compose.yaml` (`name: anila-platform`) → `infra/compose/platform.yml`; dev is `compose.dev.yaml` → `infra/compose/dev.yml`. Reverse-proxied same-origin at `/anilalm/`.
+The SPA's compose service is **`anilalm`** (build context `apps/anilalm`, `BASE_PATH=/anilalm/`), managed by the root shim `compose.yaml` (`name: anila`) → `infra/compose/platform.yml`; dev is `compose.dev.yaml` → `infra/compose/dev.yml`. Reverse-proxied same-origin at `/anilalm/`.
 
 ```bash
 docker compose -f compose.yaml up -d anilalm

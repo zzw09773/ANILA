@@ -44,9 +44,26 @@ from tests.conftest import make_user
 # tests register it explicitly. Idempotent: include_router is a no-op
 # when the same path/router pair already exists, and inspecting routes
 # avoids registering twice on repeat test runs.
+def _mounted_paths(routes, prefix: str = ""):
+    """Same shape as the phase-1 walker: FastAPI 0.141 hides included routers."""
+    found = set()
+    for route in routes:
+        original = getattr(route, "original_router", None)
+        include_context = getattr(route, "include_context", None)
+        if original is not None and include_context is not None:
+            child = prefix + (getattr(include_context, "prefix", "") or "")
+            found |= _mounted_paths(original.routes, child)
+            continue
+        path = prefix + (getattr(route, "path", "") or "")
+        if hasattr(route, "routes") and route.routes:
+            found |= _mounted_paths(route.routes, path)
+            continue
+        found.add(path)
+    return found
+
+
 def _ensure_blob_router_registered() -> None:
-    paths = {getattr(r, "path", None) for r in app.routes}
-    if "/api/ingestion/images/{image_id}/blob" not in paths:
+    if "/api/ingestion/images/{image_id}/blob" not in _mounted_paths(app.routes):
         app.include_router(image_blob_router)
 
 

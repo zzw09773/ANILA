@@ -122,6 +122,7 @@ import {
   isLengthBudgetError,
   isHarnessEmptyNotice,
   lengthBudgetNotice,
+  rescueStatusFromEvent,
 } from "./runtime/reservedTurn.js";
 
 import RouterModelPicker from "./components/RouterModelPicker.jsx";
@@ -939,6 +940,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         onMeta: (meta) => {
           if (meta?.compact) queueCompact(meta.compact);
           streamOpts.onMeta?.(meta);
+        },
+        onRescue: (payload) => {
+          const line = rescueStatusFromEvent(payload);
+          if (assistantId && line) {
+            updateMsg(convId, assistantId, { rescueNotice: line });
+          }
+          streamOpts.onRescue?.(payload);
         },
         onSessionId: (sessionId) => {
           if (assistantId) {
@@ -2415,6 +2423,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       interruptPendingAnswer: null,
       interruptRestore: null,
       error: null,
+      // 續答沿用同一則訊息；上一輪救援留下的狀態列要清掉，否則會在這輪重新出現。
+      rescueNotice: null,
       streaming: true,
       thinkingStartedAt: thinkingPump.startedAt,
       thinkingStatus: null,
@@ -2475,6 +2485,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
             applyLiveReasoningDelta(convId, msg.id, delta, thinkingPump);
+          },
+          onRescue: (payload) => {
+            const line = rescueStatusFromEvent(payload);
+            if (line) updateMsg(convId, msg.id, { rescueNotice: line });
           },
           onMeta: (metaFrame) => {
             finalMeta = metaFrame;
@@ -3389,7 +3403,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         historyOptions(convId, null),
       ),
     };
-    updateMsg(convId, assistantMsg.id, { streaming: true, finishReason: null });
+    updateMsg(convId, assistantMsg.id, { streaming: true, finishReason: null, rescueNotice: null });
     let appended = "";
     let combined = existing;
     try {

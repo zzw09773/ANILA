@@ -13,7 +13,7 @@
 
 | 項目 | 本樹預演選擇 | 理由 |
 |---|---|---|
-| `COMPOSE_PROJECT_NAME` | 正式包:`anila`。本機若不能停 `anila-restart` 活體棧:打包時另設 project 名並 overlay `codeserver` image,見 §8。 | build 出的 tag 前綴 = project 名。內網 `up` 的 `-p` **必須與 bundle 內 tag 一致**,否則會找錯 image。 |
+| `COMPOSE_PROJECT_NAME` | 正式包:`anila`。本機若不能停 `anila` 活體棧:打包時另設 project 名並 overlay `codeserver` image,見 §8。 | build 出的 tag 前綴 = project 名。內網 `up` 的 `-p` **必須與 bundle 內 tag 一致**,否則會找錯 image。 |
 | ASR profile | **預設不帶**(`INCLUDE_ASR=0`) | 平台開機沒語音。麥克風要 `/asr/health` 200 才出現。要開是開機後第二步(§5.1)。若預知之後要開、不想再跑一趟打包,打包時才設 `INCLUDE_ASR=1`(只帶映像;部署仍預設 0)。 |
 | `asr-cpu.yml` | **打包不帶**;起棧視 GPU | overlay 只改 device/env,不改 image 名。`.15` 有 GPU → 不要加;無 GPU 才加(見 §5)。 |
 | 模型 / 權重 | **不帶**(`WITH_MODELS` / `WITH_WEIGHTS` 不設) | 走 `.12` gateway;權重數十到數百 GB,審查不需要。 |
@@ -42,7 +42,7 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
 
 # 預知之後要開語音、這次就把映像帶上 USB(部署仍預設不起 ASR):
 # INCLUDE_ASR=1 \
-# COMPOSE_PROJECT_NAME=anila-restart \
+# COMPOSE_PROJECT_NAME=anila \
 # COMPOSE_ENV_FILE=.env \
 # bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 
@@ -52,14 +52,14 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
 #   時 SKIP_BUILD=1 會 fail-loud，不會靜默 build 10GB。
 # WITH_DOCLING_IMAGE=1 \
 # DOCLING_WEIGHTS_DIR=/path/to/fetch-docling-weights-output \
-# COMPOSE_PROJECT_NAME=anila-restart \
+# COMPOSE_PROJECT_NAME=anila \
 # COMPOSE_ENV_FILE=.env \
 # bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-images-export
 ```
 
 腳本會:
 
-1. `docker compose … config --images` **衍生**清單(不是手寫 `anila-platform-*`)
+1. `docker compose … config --images` **衍生**清單（project `anila`；不是手寫舊前綴 `anila-platform-*`）
 2. 缺任何一張、或 `docker save` 失敗 → **拒絕打包並點名**(寧可失敗,不要靜默短包)
 3. 寫出 `01-images/<safe>.tar.gz`(一 image 一檔)、`01-compose-images.images.txt`、
    `01-compose-images.files.txt`、`MANIFEST.txt`、`CHECKSUMS.sha256`、`INTRANET-LOAD.sh`
@@ -122,7 +122,7 @@ for ln in (root/"01-compose-images.files.txt").read_text().splitlines():
     ok = img in tags or (img+":latest") in tags
     print(("OK" if ok else "MISSING"), img, "->", sorted(tags))
 PY
-# 應涵蓋 01-compose-images.images.txt 每一行;且沒有 anila-platform-*
+# 應涵蓋 01-compose-images.images.txt 每一行;且沒有舊前綴 anila-platform-*
 ```
 
 `INTRANET-LOAD.sh` 也會在 load 前跑 `sha256sum -c` 並確認預期 tarball 存在。
@@ -159,8 +159,8 @@ docker network create anila-models-net 2>/dev/null || true
 # 平台本體。不要加 --profile asr。
 # ⚠ 不要加 --profile docling-local：平台主機是 CPU-only，docling 在獨立 GPU 主機。
 # 語音與 docling 是開機後第二步(§5.1),預設沒功能才不會靜默失敗。
-COMPOSE_PROJECT_NAME=anila-restart \
-docker compose --env-file .env -p anila-restart \
+COMPOSE_PROJECT_NAME=anila \
+docker compose --env-file .env -p anila \
   -f compose.yaml -f intranet-image-overrides.yml \
   up -d --no-build
 ```
@@ -181,11 +181,11 @@ docker compose --env-file .env -p anila-restart \
 INCLUDE_ASR=1 ASR_OVERLAY=infra/compose/asr-cpu.yml \
   bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
 # 或手動(映像已 load):
-# docker compose --env-file .env -p anila-restart \
+# docker compose --env-file .env -p anila \
 #   -f compose.yaml -f intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr \
 #   up -d --no-build
 # GPU 主機把 asr-cpu.yml 換成 asr-gpu.yml,或拿掉 overlay。
-docker compose -p anila-restart exec nginx nginx -s reload
+docker compose -p anila exec nginx nginx -s reload
 ```
 
 細節與 token、協定選錯會拒開機:`docs/runbooks/asr-voice-input.md`。
@@ -197,7 +197,7 @@ docker compose -p anila-restart exec nginx nginx -s reload
 ### 起棧後必做:reload nginx
 
 ```bash
-docker compose -p anila-restart exec nginx nginx -s reload
+docker compose -p anila exec nginx nginx -s reload
 ```
 
 **原因**:upstream 區塊的 DNS 只在載入設定時解析一次。`up -d` recreate 任何
@@ -209,7 +209,7 @@ docker compose -p anila-restart exec nginx nginx -s reload
 此時要:
 
 ```bash
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx
+docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx
 # 然後再確認健康;不要只 reload
 ```
 
@@ -247,7 +247,7 @@ done
 ### 6.2 csp 內部探測 — 容器沒有 `curl`
 
 ```bash
-CSP=$(docker compose -p anila-restart ps -q csp)
+CSP=$(docker compose -p anila ps -q csp)
 docker exec "$CSP" python3 -c 'import httpx; r=httpx.get("http://127.0.0.1:8000/api/health", timeout=5); print(r.status_code, r.headers.get("content-type"), r.text[:200])'
 ```
 
@@ -255,7 +255,7 @@ docker exec "$CSP" python3 -c 'import httpx; r=httpx.get("http://127.0.0.1:8000/
 
 ### 6.3 其他
 
-- `docker compose -p anila-restart ps` 全部 healthy / running
+- `docker compose -p anila ps` 全部 healthy / running
 - alembic head 與出發前一致(本樹預演當下為 `r1_0031`,以當日為準)
 - 登入路徑:卡登或 break-glass 依內網 `.env`,**不要**帶本機 mock 讀卡變數
 
@@ -268,7 +268,7 @@ docker exec "$CSP" python3 -c 'import httpx; r=httpx.get("http://127.0.0.1:8000/
 3. **nginx conf bind-mount inode** — 改 `anila.conf` 要 `--force-recreate nginx`。
 4. **csp 無 curl** — 用 `python3 -c "import httpx; …"`。
 5. **驗 Content-Type** — 不要被 SPA `200 text/html` 騙。
-6. **project 名必須一致** — 打包 `anila-restart-*` ↔ 內網 `-p anila-restart`。
+6. **project 名必須一致** — 打包 `anila-*` ↔ 內網 `-p anila`。
 7. **缺 JWT keypair** — JWKS 500、登入與 studio 全滅;先產 `secrets/jwt-*.pem`。
 8. **`SSL_CERT_FILE` / `ANILA_MODEL_CA_FILE` 是取代信任庫** — 指到空/壞檔,所有出向 https 掛。
 
@@ -292,8 +292,8 @@ Error response from daemon: open /var/lib/docker/overlay2/.../merged/run/sisidsd
 
 本節原本寫「先停棧再 export」是推薦解法。**實測推翻**:2026-08-02 演練時整棧
 `stop`(15 個容器全數停止,`ps -q` 為 0)後直接 export,同樣那四張
-(`anila-codeserver:local`、`anila-restart-anila-studio`、`anila-restart-asr-gateway`、
-`anila-restart-ingestion-worker`)照樣 save 失敗,錯誤訊息一字不差。
+(`anila-codeserver:local`、`anila-anila-studio`、`anila-asr-gateway`、
+`anila-ingestion-worker`)照樣 save 失敗,錯誤訊息一字不差。
 
 IDS 毒的是 **overlay 層本身**,不是「容器正在跑」這件事。停棧不會讓被毒的層恢復。
 照原建議做的人會停掉整個平台、等九分鐘、然後拿到一樣的失敗。
@@ -304,7 +304,7 @@ IDS 毒的是 **overlay 層本身**,不是「容器正在跑」這件事。停�
 `compose build --no-cache` 該服務並馬上再 save,搶在 IDS 再次掃描前完成。
 
 ```bash
-COMPOSE_PROJECT_NAME=anila-restart INCLUDE_ASR=1 \
+COMPOSE_PROJECT_NAME=anila INCLUDE_ASR=1 \
 SKIP_BUILD=1 SKIP_PULL=1 REBUILD_ON_SAVE_FAIL=1 \
   bash infra/deployment/intranet/build-and-export-for-intranet.sh /tmp/anila-intranet-bundle
 ```
@@ -328,7 +328,7 @@ SKIP_BUILD=1 SKIP_PULL=1 REBUILD_ON_SAVE_FAIL=1 \
 
 - 腳本改為自 `docker compose config --images` 衍生清單;`COMPOSE_PROJECT_NAME` 參數化。
 - 當時 `INCLUDE_ASR=1` 預設(v1.2.1 起改為 0,見 §0 / §5.1);缺圖 / save 失敗都 fail-loud 並點名。
-- 對執行中的 `anila-restart-*` 直接 save 時,studio / ingestion-worker / asr-gateway / codeserver 被本機 sisidsdaemon 擋下 → 改以 `anila-pack-rehearsal` project + codeserver image overlay 產出完整 bundle(證明腳本與媒體流程;內網起棧 `-p` 要與 bundle 內 tag 前綴一致,或明天停棧後用 `anila-restart` 重包)。
+- 對執行中的 `anila-*` 直接 save 時,studio / ingestion-worker / asr-gateway / codeserver 被本機 sisidsdaemon 擋下 → 改以 `anila-pack-rehearsal` project + codeserver image overlay 產出完整 bundle(證明腳本與媒體流程;內網起棧 `-p` 要與 bundle 內 tag 前綴一致,或明天停棧後用 `anila` 重包)。
 - Bundle 以 archive 內 `manifest.json` 的 `RepoTags` 驗齊服務 image,並 `bash -n INTRANET-LOAD.sh`。
 - **沒有**對本機 daemon `docker load` 回寫執行中 tag。
 
@@ -357,7 +357,7 @@ SKIP_BUILD=1 SKIP_PULL=1 REBUILD_ON_SAVE_FAIL=1 \
 
 **驗證有沒有裝到**(在內網起棧後):
 ```bash
-docker compose -p anila-restart exec -T csp python3 -c "import opencc; print('opencc ok')"
+docker compose -p anila exec -T csp python3 -c "import opencc; print('opencc ok')"
 ```
 
 ### 順帶:zh-TW 正規化刻意不改的字

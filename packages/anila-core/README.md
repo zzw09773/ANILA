@@ -218,6 +218,6 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 - anila-core 邊界:[`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md) · runtime 設計:[`../../docs/archive/anila-core/anila-core-runtime-design.md`](../../docs/archive/anila-core/anila-core-runtime-design.md)
 - Ingestion 平台設計:[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · 詳細 release notes:[`CHANGELOG.md`](./CHANGELOG.md)
 - 官方 RAG agent template:[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼:[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
-- 平台總覽:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- 平台總覽:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/archive/branch-sync-backlog.md`](../../docs/archive/branch-sync-backlog.md)
 
 > 版本以 `pyproject.toml`(v0.14.0)為權威;`CHANGELOG.md` 最新條目為 v0.13.0。⚠️ 已知程式碼不一致(非本 README):`src/anila_core/__init__.py` 的 `__version__` 仍寫死 `"0.7.0"`,以程式方式讀 `anila_core.__version__` 會拿到舊值。

@@ -9,14 +9,14 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 /**
  * Base URL for the anila-studio service.
  *
- * Studio (`/api/studio/*`) is its own FastAPI process — separate from
- * the CSP backend that serves `/api/auth`, `/api/chat`, etc. In local
- * dev we let the Vite proxy in `vite.config.ts` route `/api/studio` to
- * `http://localhost:8100`, so the default empty string is correct.
- * Production builds are usually served same-origin behind an nginx
- * reverse proxy that does the same routing. Only set this env var when
- * the SPA needs to call studio cross-origin (staging boxes,
- * preview deploys, etc.).
+ * Studio is its own FastAPI process — separate from the CSP backend
+ * that serves `/api/auth`, `/api/chat`, etc. Nginx (and the Vite proxy)
+ * send the same five prefixes to anila-studio: `/api/studio`,
+ * `/api/reports`, `/api/mindmaps`, `/api/infographics`, `/api/datatables`.
+ * In local dev those land on `http://localhost:8100`, so the default
+ * empty string is correct. Production builds are usually served
+ * same-origin behind that nginx. Only set this env var when the SPA
+ * needs to call studio cross-origin (staging boxes, preview deploys).
  *
  * Note: this constant is consumed by `src/api/studio.ts`. Other API
  * modules continue to use empty-string baseURL via the shared `client`

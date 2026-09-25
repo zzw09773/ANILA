@@ -91,14 +91,14 @@ req "$ADMIN_TOKEN" PUT "/api/users/$SMOKE_ID" '{"department_id":null}' >/dev/nul
 echo "  smoke-user moved out of test department"
 # L2: 用 psql -v 變數注入而不是 shell 字串內插，避免 $DEPT_ID 含意外字元
 # 時破壞 SQL（雖然當前流程確保是整數，但這樣更安全也容易 review）。
-docker exec anila-platform-csp-db-1 psql -U csp -d csp \
+docker exec anila-csp-db-1 psql -U csp -d csp \
   -v dept_id="$DEPT_ID" \
   -c "DELETE FROM service_access_grants WHERE department_id=:dept_id;" 2>&1 | tail -1
-docker exec anila-platform-csp-db-1 psql -U csp -d csp \
+docker exec anila-csp-db-1 psql -U csp -d csp \
   -v dept_id="$DEPT_ID" \
   -c "DELETE FROM departments WHERE id=:dept_id;" 2>&1 | tail -1
 green "Cleanup done"
 
 section "Final state"
-docker exec anila-platform-csp-db-1 psql -U csp -d csp -c "SELECT count(*) AS active_grants FROM service_access_grants WHERE revoked_at IS NULL;"
-docker exec anila-platform-csp-db-1 psql -U csp -d csp -c "SELECT count(*) AS departments FROM departments;"
+docker exec anila-csp-db-1 psql -U csp -d csp -c "SELECT count(*) AS active_grants FROM service_access_grants WHERE revoked_at IS NULL;"
+docker exec anila-csp-db-1 psql -U csp -d csp -c "SELECT count(*) AS departments FROM departments;"

@@ -65,7 +65,7 @@ graph LR
 | **dev** | 少數 | 建知識庫、灌文件、註冊 agent 與模型;經授權可指派權限 |
 | **admin** | 極少數 | 上述 + 核准帳號、指派 dev、**指派一般使用者可用的 agent/模型** |
 | **owner** | 系統維運者 | 全部 |
-| ⚠ **單位管理員** | 每單位 **最多 3 人** | **目前不存在,要新增** —— 見下 |
+| **單位管理員** | 每單位 **最多 3 人** | 綁在部門節點，權限涵蓋該節點以下。見 `services/csp/app/models/unit_admin_assignment.py` |
 
 ### 單位管理員(新角色)
 
@@ -87,7 +87,7 @@ graph LR
 院 ── 所 ── 組
 ```
 
-**現在的碼是扁平的單一 `departments` 表**,沒有父子關係、沒有 rollup。這要重做。
+部門是 `parent_id` 樹（根節點 parent 為空），用量範圍含自身與子孫。見 `services/csp/app/models/department.py`、`services/csp/app/services/department_tree.py`、`services/csp/app/services/usage_service.py`。
 
 ### 部門歸屬怎麼來
 
@@ -144,17 +144,11 @@ graph TD
 - **檢索是 agent 自己做的**,CSP 只提供搜尋 API
 - ⚠ collection ID 設定在 **MLSteam 那邊的 `.env`**,不是在 CSP 綁定
 
-### ⛔ 身分要能被證明,不能只是宣稱
+### 派工身分
 
-**現況:可以被偽造。** CSP 送純文字標頭(`X-ANILA-User-Id`)加一把**全艦隊共用的靜態 token**。
-拿到那把 token 的人(MLSteam 那台機器的管理員都看得到),或是能直接打 agent
-endpoint 的人(純 http NodePort),就能冒充任何使用者。
+CSP 派工時簽一枚 **5 分鐘 RS256 JWT**（claims：`user_id`、`department`、`agent_id`），agent 用 `/.well-known/jwks.json` 驗簽。簽發：`services/csp/app/services/proxy/dispatch_token.py`（`DISPATCH_TOKEN_TTL_MINUTES = 5`）。送出：`services/csp/app/services/proxy/headers.py` 的 `build_agent_headers`（`Authorization: Bearer`，不送明文 `X-ANILA-User-Id`，也不送 `X-CSP-Service-Token`）。
 
-**正解:短效簽章 token。** CSP 派工時簽一個 5 分鐘有效的 JWT,內含
-`{user_id, department, agent_id}`,agent 用 CSP 的公鑰(`/.well-known/jwks.json`)驗簽。
-改標頭就失效,外洩也有界。**CSP 現在就有這整套基礎設施**(RS256 金鑰、JWKS 端點)。
-
-⚠ **這同時是計費正確的前提** —— 身分能偽造,用量歸屬就能偽造,那份給長官的部門月報表就不可信。
+**模型 gateway 是另一條。** `build_model_gateway_headers` 只把員工編號（員編）放在 `X-ANILA-User-Id`，給 `.12` 追溯；不帶派工 JWT，也不帶 CSP 的 service token。
 
 ---
 

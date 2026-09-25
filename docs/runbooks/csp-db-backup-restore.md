@@ -10,7 +10,7 @@
 
 1. **先確認是不是磁碟滿／容器掛了**，不是一上來就還原。還原會覆蓋目標庫。
 2. **永遠不要對還在跑的 production 容器直接 `pg_restore`。** 先起一個替換庫／丟棄庫驗證列數，再切流量。
-3. 活體堆疊（本機常見 project 名 `anila-restart`）的 DB 容器類似 `anila-restart-csp-db-1`。  
+3. 活體堆疊（本機常見 project 名 `anila`）的 DB 容器類似 `anila-csp-db-1`。  
    **本 runbook 的演練容器名一律用 `anila-ops-…`，不要跟它撞名。**
 
 ---
@@ -41,10 +41,10 @@ crontab -e
 
 ```cron
 # ANILA CSP DB — 每天 02:15；失敗信寄給自己（若本機 mail 有通）
-15 2 * * * ANILA_DB_CONTAINER=anila-restart-csp-db-1 ANILA_BACKUP_DIR=/var/backups/anila /bin/bash /path/to/ANILA/infra/deployment/scripts/backup-csp-db.sh >>/var/backups/anila/backup.log 2>&1
+15 2 * * * ANILA_DB_CONTAINER=anila-csp-db-1 ANILA_BACKUP_DIR=/var/backups/anila /bin/bash /path/to/ANILA/infra/deployment/scripts/backup-csp-db.sh >>/var/backups/anila/backup.log 2>&1
 ```
 
-- 容器名用 `docker ps | grep csp-db` 對一下；內網正式機可能是 `anila-platform-csp-db-1`。
+- 容器名用 `docker ps | grep csp-db` 對一下；內網正式機可能是 `anila-csp-db-1`。
 - **不要**把 `.env` 的密碼寫進 crontab。`pg_dump` 走容器內本機 socket，用 `-U csp` 即可。
 
 ### 1.3 保留策略（腳本內建，會自己刪）
@@ -60,7 +60,7 @@ crontab -e
 ### 1.4 手動補一份（事故前也建議）
 
 ```bash
-export ANILA_DB_CONTAINER=anila-restart-csp-db-1   # 改成你的
+export ANILA_DB_CONTAINER=anila-csp-db-1   # 改成你的
 bash infra/deployment/scripts/backup-csp-db.sh     # 寫到 ~/anila-backups
 ```
 
@@ -196,7 +196,7 @@ docker volume rm anila-ops-restore-data
 
 ## 4. 一次成功的還原演練紀錄（2026-07-30，本機 wt-ops）
 
-> 對 **丟棄** 容器 `anila-ops-p31-restore-db` 執行；**未**碰 `anila-restart-csp-db-1`。
+> 對 **丟棄** 容器 `anila-ops-p31-restore-db` 執行；**未**碰 `anila-csp-db-1`。
 
 | 步驟 | 結果 |
 |---|---|

@@ -66,13 +66,13 @@ Expect:
   the real cutover watch metric; see Stage 3.
 
 Host ports for csp/router are not exposed on the stock compose; probe
-from inside the running containers (project name `anila-restart` below —
+from inside the running containers (project name `anila` below —
 adjust if yours differs).
 
 ```bash
 # Smoke: fleet secret still admitted on router-primary via the DB path.
 # Expect: 200 application/json and a model payload (not 401/403).
-docker exec anila-restart-csp-1 python3 -c "
+docker exec anila-csp-1 python3 -c "
 import os, httpx
 r = httpx.get(
     'http://127.0.0.1:8000/api/models/router-primary',
@@ -84,14 +84,14 @@ print(r.text[:200])
 "
 
 # Signal A — expect 0 on a stock post-0027 deploy (DB path wins).
-docker exec anila-restart-csp-db-1 psql -U csp -d csp -c "
+docker exec anila-csp-db-1 psql -U csp -d csp -c "
 SELECT count(*) AS legacy_env_audit_hits
   FROM audit_logs
  WHERE action = 'service_token_legacy_env_used';
 "
 
 # Signal B — expect non-zero today (the seeded router-primary row).
-docker exec anila-restart-csp-db-1 psql -U csp -d csp -c "
+docker exec anila-csp-db-1 psql -U csp -d csp -c "
 SELECT count(*) AS active_legacy_service_clients
   FROM service_clients
  WHERE is_active = TRUE AND is_legacy = TRUE;

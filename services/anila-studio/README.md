@@ -17,7 +17,7 @@ apps/anilalm/                  ← 前端「我的知識庫」＋製作台，經
 infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 shim → include 它）
 ```
 
-啟停走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（project `anila-platform`）；`compose.dev.yaml` → `infra/compose/dev.yml`。部署腳本在 `infra/deployment/{scripts,intranet}/`。
+啟停走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（project `anila`）；`compose.dev.yaml` → `infra/compose/dev.yml`。部署腳本在 `infra/deployment/{scripts,intranet}/`。
 
 ### 為什麼獨立
 

@@ -20,7 +20,7 @@
 #   httpx client，GPU 這端交給另一台主機。
 #
 # 用法（注意 -f 的順序，後者覆蓋前者）：
-#   docker compose -p anila-restart \
+#   docker compose -p anila \
 #     -f compose.yaml -f infra/compose/docling-gpu.yml \
 #     --profile docling-local up -d
 #

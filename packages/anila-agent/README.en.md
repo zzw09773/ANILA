@@ -102,32 +102,23 @@ The service wrapper exposes 3 endpoints: `GET /health`, `GET /v1/models` (manife
 `model_type=agent`), and `POST /v1/chat/completions` (main entry, streaming supported). This `host:port`
 is the agent endpoint you register with the CSP.
 
-Auth uses the **P2.1 dispatch JWT**: the CSP Router dispatches with `Authorization: Bearer <JWT>`
-(~5 minutes, RS256); the agent verifies it against the platform's public JWKS
+Auth is the **dispatch JWT**: the CSP Router sends `Authorization: Bearer <JWT>`
+(5 minutes, RS256); the agent verifies it against the platform JWKS
 (`/.well-known/jwks.json`). Claims include `user_id` / `department` / `agent_id`.
-Inbound already uses the dispatch JWT; outbound (RAG search / trace) in **this template still reads
-`CSP_SERVICE_TOKEN`** (`CSP_SEARCH_TOKEN` may override; otherwise falls back). CSP already accepts
-the dispatch JWT for those callbacks; the template-side switch has not landed yet — with only
-`CSP_BASE_URL` + `ANILA_CA_FILE` set, inbound verifies green but the two halves fail differently:
-RAG returns **500** outright (the retriever raises at construction), while trace fails **silently**
-via drop-and-log (the emitter stays active, it just sends no auth header). Point `ANILA_CA_FILE` at
-the platform CA PEM — **do not** set
-`SSL_CERT_FILE`. Three-tier onboarding (template / single-file `anila_verify.py` / sidecar) and
-honest "available today" wording: governance UI `AgentGuardPanel` and
-[`docs/guides/developer-guide.md`](../../docs/guides/developer-guide.md).
-⚠ Whether the template zip already ships verify code / CA / wheel: **open the downloaded zip and check**;
-if missing, use the governance-centre download of `anila_verify.py` (the UI prompts when the endpoint is
-not live yet). The verify **sidecar image is not published today**.
+Outbound RAG search and trace reuse **that same** dispatch JWT. There is no `csk-`
+onboarding and no `CSP_SERVICE_TOKEN` credential to collect. Point `ANILA_CA_FILE` at
+the platform CA PEM — **do not** set `SSL_CERT_FILE`. The quickstart zip already
+contains `anila_verify.py` and `ca.pem`. The governance center can serve them again
+(`GET /api/agents/anila-verify/download`, `GET /api/agents/platform-ca/download`);
+a 503 means this deployment is missing the file (contact ops).
 
-## Full Trace (doc-05 §6 / doc-06 §6, L3 approval blocker)
+## Trace spans (not an approval gate)
 
-The template ships a native `anila_agent/tracing.py` demonstrating the full span set the CSP requires, so
-**derived agents can copy it verbatim**. It auto-enables when a CSP dispatch carries `X-ANILA-Trace-Id`:
-`agent.run/step/model_call/tool_call/retrieval/output/error` spans are batched (≤256/batch) and
-callback-shipped to `POST {CSP}/v1/traces/{trace_id}/spans`, still authenticated in **this template
-with `CSP_SERVICE_TOKEN` / `CSP_SEARCH_TOKEN`** (same credential as RAG egress; dispatch-JWT reuse
-has not landed in the template yet). **No trace header or no endpoint → fully disabled, zero egress,
-zero behavior change**; ship failures are always drop-and-logged and never crash the agent.
+The template includes `anila_agent/tracing.py`. When a dispatch carries
+`X-ANILA-Trace-Id`, spans can be batched outbound under the same dispatch JWT,
+not `CSP_SERVICE_TOKEN`. There is no seven-state approval and no trace-test gate.
+No trace header or no endpoint → disabled, zero egress; ship failures are
+drop-and-logged and never crash the agent.
 
 Three wiring pieces — reuse them as-is when you swap in your own tools/retriever, no core changes needed:
 
@@ -138,29 +129,21 @@ Three wiring pieces — reuse them as-is when you swap in your own tools/retriev
 - **`TraceEmitter`**: the buffering, batching emitter; `async with emitter.span(...)` adds custom sub-spans
   that auto-nest under the current span (concurrency-isolated via `contextvars`).
 
-Env: `CSP_SERVICE_TOKEN` (still required for this template's RAG / trace egress; `CSP_SEARCH_TOKEN`
-may override), `ANILA_TRACE_ENDPOINT` (default = `CSP_BASE_URL`), `ANILA_TRACE_ENABLED` (default 1),
-`ANILA_CLASSIFICATION_LEVEL` (four-level classification: `無機密` / `營業秘密` / `密` / `機密`, carried on run/output spans to satisfy the
-classification item of the doc-06 §8 trace-test); `X-ANILA-Task-Id` is also carried on the run span to
-attribute back to a Task in the Task Center.
+Env: `CSP_BASE_URL` and `ANILA_CA_FILE` (trust anchor). Optional trace switches:
+`ANILA_TRACE_ENDPOINT` (default = `CSP_BASE_URL`) and `ANILA_TRACE_ENABLED` (default 1).
+`ANILA_CLASSIFICATION_LEVEL` (`無機密` / `營業秘密` / `密` / `機密`) may ride on a span.
+Do not set `CSP_SERVICE_TOKEN` as an onboarding credential.
 
 > **Non-anila-agent runtimes** (LangChain / custom HTTP) can join the same pipeline via the copy-paste
 > `AnilaTraceAdapter` in [`examples/trace-adapters/`](../../examples/trace-adapters/README.md).
 
 ## Registration (CSP Agent Registry)
 
-Running the template is only step one; to enter real tasks an agent must pass the Agent Registry's
-**7-state approval** (`draft` → `pending_connection_test` → `pending_trace_test` → `pending_security_review`
-→ `approved`, plus `rejected` / `disabled`). Two registration paths:
-
-- **Wizard**: `/developer/agents` in the governance UI `apps/csp-governance-ui` —
-  fill name / endpoint / runtime type / classification ceiling (**no long-lived secret is issued**) →
-  wire dispatch-JWT verification → health / trace gates.
-- **CLI**: `anila-core register` (reads `anila.yaml` → `POST /api/agents/register`), with
-  `--base-model` (base model NAME, resolved to an id by CSP) / `--base-model-id` /
-  `--runtime-type` / `--classification-level` / `--version` flags. `--draft` and
-  `--classification-ceiling` were removed — the server discarded both. Registration likewise
-  **does not** issue a long-lived agent key.
+Approval is three states: `registered` / `approved` / `disabled`. There is no
+seven-state machine, no trace-test gate, and no `anila-core register` CLI.
+Register in the governance center at `/developer/agents` (name, endpoint,
+description) or `POST /api/agents/register`. No long-lived secret is issued;
+the platform signs a 5-minute JWT on each dispatch.
 
 ## Docker / MLSteam image
 

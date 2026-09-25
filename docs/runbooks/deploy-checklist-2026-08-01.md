@@ -1,4 +1,4 @@
-# 部署清單 — 2026-08-01 收工批次(本機 `-p anila-restart`)
+# 部署清單 — 2026-08-01 收工批次(本機 `-p anila`)
 
 > 為什麼有這張表:2026-07-31 踩過「前端合併六包、映像 17 小時沒重建」。
 > 合併完 ≠ 部署完。**每次合併後回來對這張表**,不要憑印象決定要重建誰。
@@ -34,15 +34,15 @@
 cd ~/桌面/ANILA/anila-restart-20260729/ANILA
 
 # 1) 建映像。⚠ 平行建置的錯誤訊息不會說是哪個服務,一個一個建比較好抓
-docker compose -p anila-restart build csp anila-ui ingestion-worker router
+docker compose -p anila build csp anila-ui ingestion-worker router
 
 # 2) 起容器。⚠ 一定要帶 ASR 的 CPU overlay,否則 nvidia driver 錯誤會中斷整批啟動
-docker compose -p anila-restart \
+docker compose -p anila \
   -f compose.yaml -f infra/compose/asr-cpu.yml --profile asr up -d
 
 # 3) ⚠ 重新載入 nginx。upstream 的 DNS 只在載入設定時解析一次,
 #    recreate 任何服務都會讓 nginx 打到舊 IP → 全站 502 但容器全綠
-docker compose -p anila-restart exec nginx nginx -s reload
+docker compose -p anila exec nginx nginx -s reload
 ```
 
 ## 四、驗證(要驗行為,不是只看 status code)

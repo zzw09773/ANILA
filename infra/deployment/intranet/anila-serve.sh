@@ -9,7 +9,7 @@
 #   bash infra/deployment/intranet/anila-serve.sh status|logs <svc>
 #
 # 跟 model-serve.sh 的分工:
-#   anila-serve.sh  → 平台 stack (infra/compose/platform.yml, project: anila-platform)
+#   anila-serve.sh  → 平台 stack (infra/compose/platform.yml, project: anila)
 #   model-serve.sh  → 模型 stack (infra/models/, project: anila-models)
 # 兩個 compose project 生命週期獨立,互不誤殺。
 #

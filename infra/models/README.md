@@ -10,7 +10,7 @@
 
 ## 定位
 
-`infra/models/` 收容一份 `docker-compose.yml`（project `anila-models`）與非 FLUX 服務的 build context（`src/`）。它與平台 stack（`anila-platform`，見根 `compose.yaml` → `infra/compose/platform.yml`）是**兩個獨立 project**：
+`infra/models/` 收容一份 `docker-compose.yml`（project `anila-models`）與非 FLUX 服務的 build context（`src/`）。它與平台 stack（`anila`，見根 `compose.yaml` → `infra/compose/platform.yml`）是**兩個獨立 project**：
 
 - 在 repo 根跑 `docker compose down` 只會停平台，**不會誤殺**這裡的模型容器。
 - 兩個 project 靠共用的 external network `anila-models-net` 互通；CSP／Router／Studio 以 docker DNS（如 `http://gemma4:8000`）連上模型，host port 完全沒開。

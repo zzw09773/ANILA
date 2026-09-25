@@ -36,7 +36,7 @@
 #     http://gemma4:8000/v1
 #     http://nv-embed-proxy:8000/v1
 #
-# Project name "anila-models" 跟平台 "anila-platform" 不同,
+# Project name "anila-models" 跟平台 "anila" 不同,
 # `docker compose down` (在 repo 根目錄) 不會誤殺這邊。
 
 name: anila-models

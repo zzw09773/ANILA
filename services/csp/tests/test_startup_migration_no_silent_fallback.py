@@ -298,9 +298,11 @@ def test_skip_flag_allows_service_to_start(monkeypatch):
     )
     with TestClient(app) as client:
         response = client.get("/health")
-    assert response.status_code == 200
+    # Auto-provision is off in this suite, so the process is up but not ready.
+    assert response.status_code == 503
     body = response.json()
-    assert body["status"] == "healthy"
+    assert body["status"] == "degraded"
+    assert body["service_client_provisioning"] == "disabled"
     assert response.headers.get("content-type", "").startswith("application/json")
     assert backfills == []
 

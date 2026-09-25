@@ -15,7 +15,6 @@ const FORBIDDEN = {
   'BannersView.vue': ['公告 banner', 'content（公告內容）'],
   'ServiceAccessView.vue': ['platform_links 的', 'multi-service-integration'],
   'PlatformLinksView.vue': ['>服務登記<'],
-  'ClassificationInventoryView.vue': ['latch 為真', 'backfill'],
   'TrustedHostsView.vue': ['SSRF guard', 'allow-list', 'single-label', 'audit log'],
   'ServiceClientsView.vue': ['s2s', 'admin-tool'],
   'FeedbackView.vue': ['爛'],
@@ -27,10 +26,3 @@ for (const [file, words] of Object.entries(FORBIDDEN)) {
     for (const w of words) assert.ok(!src.includes(w), `${file} still contains "${w}"`)
   })
 }
-
-test('ClassificationInventoryView shows a Chinese label for every resource table, not the raw table name alone', () => {
-  const src = read('ClassificationInventoryView.vue')
-  for (const t of ['conversations', 'messages', 'ingestion_collections', 'ingestion_documents', 'agents', 'model_registry', 'tasks', 'source_snapshots']) {
-    assert.ok(new RegExp(`${t}:\\s*'[^']+'`).test(src), `no label for ${t}`)
-  }
-})

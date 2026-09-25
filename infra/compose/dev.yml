@@ -1,14 +1,14 @@
 # ANILA Platform — DEV stack for the feature/no-sso branch.
 #
 # 跟 platform.yml 完全隔離（不同 project / network / 容器名 / port / volume），
-# 因為 production stack `anila-platform` 還在外網被同事用，啟動 dev 不能撞它。
+# 因為 production stack `anila` 還在外網被同事用，啟動 dev 不能撞它。
 #
 # 用法（repo 根,經 root shim,root .env 才會被載入）：
 #   docker compose -f compose.dev.yaml up -d --build
 #
 # 對比 live stack：
 #   ─────────────────────────────────────────────────────────
-#   Live (anila-platform)             Dev (anila-platform-dev)
+#   Live (anila)                      Dev (anila-platform-dev)
 #   ─────────────────────────────────────────────────────────
 #   nginx :80 / :443 / :4443          nginx :8080 / :8443 / :9443
 #   csp-db 5433 (loopback)            csp-db 5533 (loopback)
@@ -22,6 +22,7 @@
 # 共用：anila-models-net (external) — 兩 stack 都要打 gemma4 / gpt-oss-20b /
 # nv-embed-proxy，這條 external network 同時 attach 不會破壞 live。
 
+# 刻意沿用舊名：改名會讓 dev 接上一組新的空 volume，舊 dev 資料留在原處。
 name: anila-platform-dev
 
 # ── 容器日誌上限（P3.5）────────────────────────────────────────────────
@@ -101,6 +102,9 @@ services:
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
       LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      # 內部服務憑證。與 platform.yml 同一路徑；volume 名稱分開，避免跟 live stack 混用。
+      ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
+      ANILA_SERVICE_CLIENT_FILE_GID: "10002"
       AUTO_REGISTER_MODELS: >-
         [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"http://gemma4:8000","api_version":"v1","description":"On-prem gemma4 vLLM (anila-models-net) — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
@@ -154,6 +158,7 @@ services:
       # 共用簽章鑰＝dev 簽的 token 在 live 也有效。
       - "../../share-dev/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       - ../../share-dev/attachments:/app/data/attachments
+      - anila-service-credentials-dev:/run/anila/service-clients
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -272,7 +277,10 @@ services:
     environment:
       CSP_BASE_URL: http://csp:8000
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary.token
       MODEL: ${LLM_MODEL:-gemma4}
+    volumes:
+      - anila-service-credentials-dev:/run/anila/service-clients:ro
     depends_on:
       csp:
         condition: service_healthy
@@ -501,6 +509,7 @@ networks:
     name: anila-models-net
 
 volumes:
+  anila-service-credentials-dev:
   csp-pgdata-dev:
   redis-data-dev:
   anila-studio-flux-cache-dev:

@@ -17,7 +17,7 @@ apps/anilalm/                  ← the "My Knowledge Base" + studio frontend, ca
 infra/compose/platform.yml     ← compose definition (root compose.yaml is a shim that includes it)
 ```
 
-Bring-up goes through the root compose shim: `compose.yaml` → `infra/compose/platform.yml` (project `anila-platform`); `compose.dev.yaml` → `infra/compose/dev.yml`. Deployment scripts live under `infra/deployment/{scripts,intranet}/`.
+Bring-up goes through the root compose shim: `compose.yaml` → `infra/compose/platform.yml` (project `anila`); `compose.dev.yaml` → `infra/compose/dev.yml`. Deployment scripts live under `infra/deployment/{scripts,intranet}/`.
 
 ### Why standalone
 

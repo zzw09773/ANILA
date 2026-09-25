@@ -49,6 +49,11 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 # ``app.config.Settings`` 的 ``env_file=".env"`` 是相對 cwd 解析的；硬設
 # 單一 auth mode 讓測試不受工作目錄或本機 .env 影響。
 os.environ["ANILA_AUTH_MODE"] = "password"
+# Internal service-client provisioning writes a real credential file and
+# inserts router-primary. Tests call the provisioner explicitly. Leaving
+# this on would publish tokens during every TestClient startup.
+os.environ["ANILA_SERVICE_CLIENT_AUTO_PROVISION"] = "0"
+os.environ["ANILA_SERVICE_CLIENT_DIR"] = str(Path(_TEST_DB_DIR) / "service-clients")
 
 from app.database import Base, engine as _session_local_engine, get_db
 from app.main import app

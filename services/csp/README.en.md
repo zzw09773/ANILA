@@ -180,7 +180,7 @@ cd services/csp && python -m pytest -q   # or from here; both MUST agree
 
 ## 9. Running & deployment
 
-The full stack (redis / ingestion-worker / router / anila-studio / frontends / nginx) is defined by the root compose shim: `compose.yaml` → [`infra/compose/platform.yml`](../../infra/compose/platform.yml) (prod, project `anila-platform`) and `compose.dev.yaml` → `infra/compose/dev.yml` (dev).
+The full stack (redis / ingestion-worker / router / anila-studio / frontends / nginx) is defined by the root compose shim: `compose.yaml` → [`infra/compose/platform.yml`](../../infra/compose/platform.yml) (prod, project `anila`) and `compose.dev.yaml` → `infra/compose/dev.yml` (dev).
 
 ```bash
 # from repo root

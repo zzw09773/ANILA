@@ -249,7 +249,7 @@ A（名稱＋`is_set`，永無值）。每列：`effective`／`stored`／`pendin
 1. `docs/runbooks/`：新增或補一節「從畫面改設定」——C 類下一請求生效／B_EDIT 儲存後要
    `docker compose up -d csp`／鎖定類要改 compose 哪個鍵（登錄表 locked_reason 已有指引，
    runbook 引一次即可，別抄第二份會漂的清單）。
-2. `docs/handoffs/HANDOFF-2026-08-07.md` §七：加「設定頁留下什麼要長期照顧」，逐條**軸線是維護成本**：
+2. `docs/archive/handoffs/HANDOFF-2026-08-07.md` §七：加「設定頁留下什麼要長期照顧」，逐條**軸線是維護成本**：
    - **登錄表是唯一宣告點**（`settings_registry.py`）：新增設定＝改一處；分類決定顯示與可編輯性。
    - **雙層優先序 DB > env > 程式預設** 的除錯指南：畫面「來源」欄說的就是哪一層贏了；
      值沒生效先看來源欄，不要先翻 compose。

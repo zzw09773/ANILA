@@ -39,7 +39,7 @@
 # 這支腳本已接進 infra/deployment/intranet/build-and-export-for-intranet.sh
 # (build 之後、docker save 之前;有違規就中止匯出)。
 # 也可以**單獨跑**——本機重建之後想確認一下、或事後稽核一張既有映像:
-#   bash infra/deployment/scripts/scan-image-artifacts.sh anila-restart-csp:latest
+#   bash infra/deployment/scripts/scan-image-artifacts.sh anila-csp:latest
 # 沒有接進 deploy-prod.sh:本機重建是開發者自己的迴圈,擋在那裡只是煩;
 # 髒映像變成**交付品**的地方是匯出,閘門就設在那裡。
 #

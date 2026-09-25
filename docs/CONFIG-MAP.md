@@ -5,54 +5,51 @@
 > ⚠ 本稿由**唯讀盤點**產生、盤點日 **2026-08-22**（當下 HEAD `5c5ed730`）。**值一律不抄**——只記鍵名與 `file:line`；
 > 未讀 `.env` 本體；`[未查]`＝那一格本輪查不到、不是「沒有」，讀者別把它當「已證無」。
 >
-> 🔴 **數字是快照，不是承諾。** 本檔每個數字都是以**盤點日**為準的一次量測，判準是「各節寫的產生指令」——
-> 數字漂了就用該指令重跑，不要相信紙面數。任何一處「目前共 N 顆」都**不成立**，別照抄。
+> 🔴 **不要抄紙面顆數。** 母集合用下面的指令現算。指令輸出變了，以指令為準。
 >
 > 🔴 **三層模型（全稿反覆用它）**：
 > 1. **烘進映像**（Dockerfile `ARG` × compose `build.args:`）——改它要 **rebuild**，`up -d` 不重跑 build。
 > 2. **部署參數**（`.env` → compose `environment:`）——改它要 **`up -d`**（`restart` 不重載 `.env`，本平台踩過）。
-> 3. **執行期即時**（治理頁 12 顆 C 類）——改它**下一個請求**就生效，不需重載。
+> 3. **執行期即時**（治理頁 C 類，含三份 Router prompt）——改它下一個請求或 Router 的 prompt TTL 內生效，不需重載、不需 rebuild。
 
 ---
 
-## 0. 開頭總數（快照，判準＝右欄產生指令）
+## 0. 開頭盤點（跑指令，不抄顆數）
 
-| 母集合 | 數 | 產生它的指令 |
-|---|---|---|
-| `.env.example` 鍵（compose 部署參數之源） | **55** | `/usr/bin/grep -oE '^[A-Za-z_][A-Za-z0-9_]*' .env.example \| sort -u \| wc -l` |
-| compose `${VAR}` 去重（6 份 compose） | **131** | `/usr/bin/grep -rhoE '\$\{[A-Za-z_][A-Za-z0-9_]*' compose.yaml infra/compose/*.yml \| sed 's/\${//' \| sort -u \| wc -l` |
-| 烘進映像 `ARG`（全樹 Dockerfile） | **4** | `grep -rhoE '^ARG ' apps/*/Dockerfile services/*/Dockerfile \| sort -u` |
-| UI 即時 C 類（治理頁） | **12** | `services/csp/app/services/settings_registry.py:132` 的 `SETTINGS: tuple` |
-| 有消費者、無旋鈕 | **44** | `comm -23 <(code 讀取集) <(.env 鍵集)` |
-| 死鍵候選 | **5**（＋1 半死） | §4 逐個給全樹命中 |
+| 母集合 | 產生它的指令 |
+|---|---|
+| `.env.example` 鍵（compose 部署參數之源） | `/usr/bin/grep -oE '^[A-Za-z_][A-Za-z0-9_]*' .env.example \| sort -u \| wc -l` |
+| compose `${VAR}` 去重 | `/usr/bin/grep -rhoE '\$\{[A-Za-z_][A-Za-z0-9_]*' compose.yaml infra/compose/*.yml \| sed 's/\${//' \| sort -u \| wc -l` |
+| 烘進映像 `ARG`（全樹 Dockerfile） | `grep -rhoE '^ARG ' apps/*/Dockerfile services/*/Dockerfile \| sort -u` |
+| UI 即時 C 類（治理頁，含三份 Router prompt） | `grep -c '^    _spec(' services/csp/app/services/settings_registry.py` |
+| 死鍵候選 | §4 的表；全樹命中用 `grep -n '<鍵名>'` 對程式正本 |
 
-⚠ **131 ≠ 55＋4**：差來自 (a) compose 自己 `:-預設` 的鍵（不寫吃預設、寫了能覆寫）；(b) Inheritance 跨檔、跨 profile 的變數。
-**131 是「compose 裡被引用的名字總數」，不是「管理員要設的鍵數」**——哪些要設、哪些吃預設，見 §2。
+compose 引用的名字總數不是「管理員要設的鍵數」：compose 自己有 `:-預設`，也有跨檔、跨 profile 的變數。哪些要設、哪些吃預設，見 §2。
 
 ---
 
 ## 1. 你要管的三層，白話一次講清
 
-1. **烘進映像的**（改一行 → **要 rebuild 映像**）：4 顆決定「前端 build 時把哪個後端 URL 寫死進 JS bundle、SPA 掛哪個子路徑」。
+1. **烘進映像的**（改一行 → **要 rebuild 映像**）：§0 的 `ARG` 指令列出的那幾顆，決定「前端 build 時把哪個後端 URL 寫死進 JS bundle、SPA 掛哪個子路徑」。
    改它而不 rebuild，**什麼都不會變**。檔案：`infra/compose/dev.yml` 與 `infra/compose/platform.yml` 的 `args:` 區塊；Dockerfile 端 `apps/anila-shell/Dockerfile`、`apps/anilalm/Dockerfile`。
-2. **部署參數的**（改 `.env` → **`docker compose up -d`**）：`.env.example` 那 55 顆大部分屬此。
+2. **部署參數的**（改 `.env` → **`docker compose up -d`**）：`.env.example` 裡 §0 第一條指令數到的鍵，大部分屬此。
    `docker restart` 不重載 `.env`（本平台親踩）。改完 `up -d`。
-3. **即時生效的**（治理中心「平台設定」頁 12 顆）：存在 DB、每請求重讀、不快取。§3 詳列。
+3. **即時生效的**（治理中心「平台設定」頁，顆數用 §0 的 `_spec` 指令）：存在 DB。一般鍵每請求重讀；三份 Router prompt 由 Router 以 TTL 向 CSP 取（預設 30 秒，`ANILA_ROUTER_PROMPTS_TTL`）。§3 詳列。
 
 ---
 
-## 2. `.env` 55 顆分群（全文完整，值不抄）
+## 2. `.env` 鍵分群（全文見附 1，值不抄；顆數用 §0 指令）
 
 > 每鍵只記「白話用途」與「層級／生效」，`file:line` 要真。按**誰會改它**分群，不按字母序。
 
-### 2a. 安全與信任 3 顆（越想自己先弄對的）
+### 2a. 安全與信任（越想自己先弄對的）
 | 鍵 | 白話用途 | 層級 | 生效 | 來源 |
 |---|---|---|---|---|
 | `ANILA_AUTH_MODE` | 登入方式開關（本機帳密／卡登） | 部署 | `up -d` | `.env.example` |
 | `CARD_INITIAL_OWNERS` | 卡登初批「擁有者」員編；**必須真員編、不可空**（填錯＝沒人能核准，自鎖） | 部署 | `up -d` | `.env.example` |
 | `ANILA_ALLOW_DEV_SECRET` | 開不開「開發祕密照收」 | 部署 | `up -d` | `.env.example` |
 
-### 2b. 改錯「大聲死」（拒絕啟動）的 4 顆
+### 2b. 改錯「大聲死」（拒絕啟動）
 `startup_security.py` **實際 grep 到的**（非猜）：`SECRET_KEY`、`CSP_SERVICE_TOKEN`、`INTERNAL_PLATFORM_API_KEY`、`ANILA_ALLOW_DEV_SECRET`。
 
 ⚠ 不在上面≠設錯無聲：`CSP_DB_PASSWORD`／`CSP_APP_DB_PASSWORD` 在連 DB 那刻爆；`MODEL_GATEWAY_API_KEY` 在出向呼叫時才用。
@@ -67,7 +64,7 @@
 
 全文逐鍵在附 1。
 
-### 附 1：`.env.example` 55 鍵清單（依 `.env.example` 行序；值不抄）
+### 附 1：`.env.example` 鍵清單（以 §0 指令為準；下面依檔案行序抄錄，值不抄）
 ```
 ADMIN_PASSWORD
 ALLOWED_HOSTS
@@ -128,10 +125,11 @@ SECRET_KEY
 
 ---
 
-## 3. UI 即時 12 顆
+## 3. UI 即時設定（顆數＝§0 的 `_spec` 指令）
 
-> 來源 `services/csp/app/services/settings_registry.py:132` `SETTINGS: tuple[SettingSpec, ...]`。
-> 回退鏈：`platform_settings`（DB）→ `os.environ` → 程式預設；管理員第一次從畫面改＝在 DB 寫一列，下個請求生效。
+> 來源 `services/csp/app/services/settings_registry.py` 的 `SETTINGS`。
+> 回退鏈：`platform_settings`（DB）→ `os.environ` → 程式預設；管理員第一次從畫面改＝在 DB 寫一列。
+> 一般鍵下個請求生效。三份 Router prompt 由 Router TTL 拉取（見該三列）。
 
 | key | 白話用途 | env 別名（若有） |
 |---|---|---|
@@ -147,6 +145,9 @@ SECRET_KEY
 | `limits.attachment_budget_ratio` | 附件可佔 context 比例 | `ANILA_ATTACHMENT_BUDGET_RATIO` |
 | `intl.zh_normalize` | 簡體→繁體正規化 | `ANILA_ZH_NORMALIZE` |
 | `intl.query_expansion` | 檢索前同義詞擴展 | `ANILA_QUERY_EXPANSION` |
+| `router.prompt.system` | Router 派工模板（有已註冊 agent 時）。必須留 `{agent_list}` | —（只住 DB；出貨全文在 `packages/anila-core/src/anila_core/api/router_prompts.py`） |
+| `router.prompt.plain` | Router 直答模板（沒有 agent 時） | —（同上） |
+| `router.prompt.forced` | Router 強制自答模板（依院內規章自己答） | —（同上） |
 
 改錯值：寫入正規化把關，收不進 → **400 明說**，不靜默反轉意圖。
 
@@ -164,17 +165,17 @@ SECRET_KEY
 | `N8N_NODE_FUNCTION_ALLOW_BUILTIN` | 0 | 死鍵候選 |
 | `N8N_NODE_FUNCTION_ALLOW_EXTERNAL` | 0 | 死鍵候選 |
 | `N8N_TLS_REJECT_UNAUTHORIZED` | 0 | 死鍵候選 |
-| `N8N_WEBHOOK_URL` | 未進 .env 55、compose 有引用 | 半死（見 open 問題） |
+| `N8N_WEBHOOK_URL` | 未進 `.env.example`、compose 有引用 | 半死（見 open 問題） |
 
 ---
 
-## 5. 有消費者沒旋鈕（44 顆）
+## 5. 有消費者沒旋鈕
 
 > **不補列進 `.env.example`**（擁有者 2026-08-22 裁定：「真的有必要再列，沒有就不要」）——查詢入口就是本表。
 
 code 真的在讀（`os.getenv`）、`.env.example` 卻完全沒列。全文在附 2。改法各異、改錯多是本平台「不知道去哪改」的核心。
 
-### 附 2：44 顆全文（`comm -23` 產生，非猜名）
+### 附 2：code 有讀、`.env.example` 沒列的鍵（以 `comm -23` 現算為準；下面是抄錄）
 ```
 ANILA_AGENT_STATE_DIR
 ANILA_CA_FILE
@@ -224,19 +225,11 @@ VISION_URL
 
 ---
 
-## 6. 無旋鈕的「寫死的」系統行——Router 三份 system prompt
+## 6. Router 三份 system prompt（已是即時設定）
 
-| 消費者 | 位置 |
-|---|---|
-| `_ROUTER_SYSTEM_TEMPLATE`（Router 派工主模板） | `packages/anila-core/src/anila_core/api/router_server.py:126-181` |
-| `_PLAIN_ASSISTANT_TEMPLATE`（無 agent 直答） | 同檔 `:192-209` |
-| `_FORCED_ANSWER_TEMPLATE`（「依院內規章重查」強制答） | 同檔 `:226-239` |
-
-⚖ **現況（以現況為準，勿把將來式寫成現在式）**：這三份「怎麼答、何時派工、用什麼口氣」的模板**目前仍寫死在 Python 檔**，
-改了要 **rebuild** 才生效。**擁有者 2026-08-22 已裁定「進 UI 設定頁」（治理中心可改），但尚未施工**
-——排隊單 `queued-fix-router-prompt-ui-knob.md`。**施工完成前，本節描述的現況 = 有效描述。**
-
-同族需改動：`COMMON_PREAMBLE`、`IDENTITY`（`prompts/__init__.py` ＋ `router_server.py:42`）。
+三份都在 §3：`router.prompt.system`、`router.prompt.plain`、`router.prompt.forced`。
+出貨全文在 `packages/anila-core/src/anila_core/api/router_prompts.py`（`DEFAULT_ROUTER_SYSTEM`／`DEFAULT_PLAIN_ASSISTANT`／`DEFAULT_FORCED_ANSWER`）。
+治理中心寫入 `platform_settings` 後，Router 用 `refresh_router_prompts` 在 TTL 內取回（`packages/anila-core/src/anila_core/api/router_server.py`，預設 30 秒）。CSP 讀不到時用出貨全文。改 prompt 不需要 rebuild。
 
 ---
 
@@ -244,9 +237,9 @@ VISION_URL
 
 | 格 | 判 |
 |---|---|
-| 烘進映像 4 顆 | 不 rebuild＝**全部無效（無訊號）** |
-| 部署參數 55 顆 | 改 `.env` 不 `up -d`＝續用舊值（無訊號）；`up -d` 後多數「大聲」（連線／URL 錯 → 健康檢失敗、500） |
-| UI 12 顆 | 改錯值＝**400 明講**；壞值經 API 寫透 → 下請求回退 env→預設並留 warning log |
+| 烘進映像的 `ARG`（§0） | 不 rebuild＝**全部無效（無訊號）** |
+| 部署參數（`.env.example`，§0） | 改 `.env` 不 `up -d`＝續用舊值（無訊號）；`up -d` 後多數「大聲」（連線／URL 錯 → 健康檢失敗、500） |
+| UI 即時設定（§3，含三份 Router prompt） | 改錯值＝**400 明講**；壞值經 API 寫透 → 下請求回退 env→預設並留 warning log。Router prompt 在 TTL 內生效，不 rebuild |
 
 ---
 

@@ -62,9 +62,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
-# Copy backend code (includes scripts/: generate-jwt-keypair.py + init_db.py
-# land in /app/scripts — no separate scripts COPY needed since §17.1 folded
-# myCSPPlatform/scripts/ into services/csp/scripts/)
+# Copy backend code (scripts/ such as generate-jwt-keypair.py land in
+# /app/scripts — no separate scripts COPY).
 COPY services/csp/ ./
 
 # Copy built frontend
@@ -111,6 +110,11 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 # 也是 10001,但那是巧合不是宣告 —— base image 換一版、多裝一個會建群組的
 # 套件,它就會變,而且不會有人發現。這裡要的是宣告。
 #
+# gid 10002（anila-svc-tokens）是內部服務憑證檔的群組,不是執行身分。
+# csp 以 uid 10001 寫 0640 檔,router 的 uid 1000 靠這個補充群組來讀。
+# 同一組 addgroup／adduser 也在 services/anila-core-router/Dockerfile。
+# 改這個 gid 時兩邊一起改,並改 compose 的 ANILA_SERVICE_CLIENT_FILE_GID。
+#
 # /app/logs 是**唯一**需要在映像裡就可寫的路徑:app/main.py 的 setup_logging()
 # 在 lifespan 啟動時對 logs/csp.log 開 RotatingFileHandler,不可寫 = 服務起不來。
 # 只處理這一個目錄,不做 `chown -R /app` (那會整包複製一層,映像肥一倍)。
@@ -124,10 +128,14 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 # **容器直接起不來**(2026-08-06 驗收實測)。根因由 .dockerignore 的 `**/logs/` 擋掉,
 # 這裡是第二道:即使哪天 context 又漏進什麼,服務仍然起得來。
 # 目錄照理是空的,`-R` 的成本是零。
-RUN addgroup -g 10001 anila \
+RUN addgroup -g 10002 -S anila-svc-tokens \
+ && addgroup -g 10001 anila \
  && adduser -D -u 10001 -G anila anila \
- && mkdir -p /app/logs \
+ && adduser anila anila-svc-tokens \
+ && mkdir -p /app/logs /run/anila/service-clients \
  && chown -R anila:anila /app/logs \
+ && chown 10001:10002 /run/anila/service-clients \
+ && chmod 2750 /run/anila/service-clients \
  && pip uninstall -y ecdsa \
  && pip uninstall -y pytest pytest-asyncio \
  && pip uninstall -y pip \

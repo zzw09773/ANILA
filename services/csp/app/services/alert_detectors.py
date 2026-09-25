@@ -581,6 +581,9 @@ def resolve_check_interval() -> int:
 
 
 async def _alert_detector_loop() -> None:
+    # Same reason as the model health loop: the nginx probe must not run
+    # on the event loop before lifespan reports startup complete.
+    await asyncio.sleep(0)
     while True:
         try:
             evaluate_database()

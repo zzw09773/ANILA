@@ -34,9 +34,9 @@ Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`,並公告 pseud
 
 `main.py` 不只是薄殼,它在 app factory 之外額外負責:
 
-1. **主路由模型 TTL refresh**(`_refresh_primary` / `_ensure_primary`,`PRIMARY_TTL_SECONDS=60`)+ `/v1/chat/completions` 的 503 gate middleware。無背景 timer:startup 觸發一次,之後由 gate middleware 在過期時 lazy refresh。
-2. **Service token 三段式解析**(`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`):優先序為 **state file → `CSP_SERVICE_TOKEN`(legacy env)→ `CSP_BOOTSTRAP_TOKEN`(僅前兩者皆空才走)**,啟動 log 明示走哪條。注意 `_self_bootstrap` 目前是 **v1 pass-through**:把 env 值寫進 state file(mode 0600),**不做 HTTP 交換**。
-3. **CSP 回 401/403 時 hot-reload state file 一次**後重試(admin 在 CSP 輪替 router-primary credential 後零停機)。
+1. **主路由模型 TTL refresh**(`_refresh_primary` / `_ensure_primary`,`PRIMARY_TTL_SECONDS=60`)+ `/v1/chat/completions` 的 503 gate middleware。主模型沒有背景 timer:startup 觸發一次,之後由 gate middleware 在過期時 lazy refresh。憑證檔另有一個週期重讀(預設 30 秒,見 `ANILA_SERVICE_TOKEN_RELOAD_SECONDS`)。
+2. **Service token 解析**(`_load_service_token` / `_initialise_token_source`):有設 `ANILA_SERVICE_TOKEN_FILE` 時只讀那個檔。檔案不在是 `file_missing`,讀不到或是空的是 `file_error`;兩種都不改走別的憑證,並照週期重讀,CSP 寫上檔之後會自己恢復。後三個(state file、`CSP_BOOTSTRAP_TOKEN`、`CSP_SERVICE_TOKEN`)只在 `ANILA_SERVICE_TOKEN_FILE` **沒設**時才用。`CSP_BOOTSTRAP_TOKEN` 有值且 state file 還沒有時,會把該值抄進 state file(mode 0600),**不做 HTTP 交換**。啟動 log 只記來源名稱,不記明文。`/health` 的 `token_source` 是 `file`、`file_missing`、`file_error`、`state_file`、`bootstrap`、`legacy_env` 或 `none`。
+3. **憑證檔變更會重讀**;CSP 回 401/403 時再強制讀一次後重試,然後才放棄。
 
 > `main.py` 對 CSP 只主動發一個呼叫 `GET /api/models/router-primary`(帶 `X-CSP-Service-Token`);`GET /v1/agents`、`POST /v1/chat/completions`、agent dispatch + SSE forward 都在 SDK `router_server.py`。Router **不**持有自己的 user API Key:它用 caller(UI / OpenAI SDK)的 Bearer API Key 回打 CSP data plane,因此 caller 看得到的 agent = Router 能分派的 agent(不放大權限)。
 
@@ -47,7 +47,7 @@ Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`,並公告 pseud
 ```
 services/anila-core-router/
 ├── main.py        # 部署 entrypoint:create_router_app() + 主路由模型 TTL refresh
-│                  #   + service-token state-file 三段式解析 + /router/primary-status debug endpoint
+│                  #   + 憑證檔/state-file token 解析 + /router/primary-status debug endpoint
 ├── Dockerfile     # multi-stage;build context 須為 repo 根(會 COPY packages/anila-core/)
 └── README.md / README.en.md
 
@@ -93,9 +93,11 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | 變數 | 說明 | 預設 |
 |---|---|---|
 | `CSP_BASE_URL` | CSP 基底 URL;容器內為 `http://csp:8000` | `http://csp:8000` |
-| `CSP_BOOTSTRAP_TOKEN` | 首次啟動 bootstrap token;entrypoint 寫進 state file | `""` |
-| `CSP_SERVICE_TOKEN` | legacy fleet-shared shared-secret;state file 不存在時 fallback | `""` |
-| `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄(state file `service_token.json`,mode 0600) | `/var/lib/anila-router` |
+| `ANILA_SERVICE_TOKEN_FILE` | CSP 寫好的憑證檔。compose 為 `/run/anila/service-clients/router-primary.token` | 未設 |
+| `ANILA_SERVICE_TOKEN_RELOAD_SECONDS` | 週期重讀憑證檔的間隔,最短 5 秒 | `30` |
+| `CSP_BOOTSTRAP_TOKEN` | 只在 `ANILA_SERVICE_TOKEN_FILE` 沒設、且 state file 也沒有時,抄進 state file | `""` |
+| `CSP_SERVICE_TOKEN` | 只在憑證檔路徑沒設時的最後後援:舊式共用祕密。router-primary 有自己的憑證後,打不進 router-only 端點 | `""` |
+| `ANILA_ROUTER_STATE_DIR` | state file `service_token.json`(mode 0600)的目錄。憑證檔路徑有設時不用它 | `/var/lib/anila-router` |
 
 SDK(`router_server`)另讀 **Full Trace opt-in** env(見 doc `09` §10 凍結線):
 
@@ -130,7 +132,7 @@ router (:9000)
 
 ## 相關文件
 
-- 平台整體:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- 平台整體:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/archive/branch-sync-backlog.md`](../../docs/archive/branch-sync-backlog.md)
 - Redesign 設計沿革（收斂紀錄）:constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry 協定 [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/事件凍結線(含 SSE + `/v1/traces`)[`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
 - 多服務整合計畫(含 Router 角色):[`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
 - Agent framework 架構:[`../../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../../docs/archive/agent-framework/anila-agent-framework-architecture.md)

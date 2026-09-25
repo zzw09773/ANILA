@@ -10,7 +10,7 @@
 
 ## Position
 
-`infra/models/` holds one `docker-compose.yml` (project `anila-models`) plus the build contexts for the non-FLUX services (`src/`). It is a **separate project** from the platform stack (`anila-platform`, see the root `compose.yaml` → `infra/compose/platform.yml`):
+`infra/models/` holds one `docker-compose.yml` (project `anila-models`) plus the build contexts for the non-FLUX services (`src/`). It is a **separate project** from the platform stack (`anila`, see the root `compose.yaml` → `infra/compose/platform.yml`):
 
 - Running `docker compose down` at the repo root only stops the platform — it does **not** kill the model containers here.
 - The two projects communicate over the shared external network `anila-models-net`; CSP / Router / Studio reach the models via docker DNS (e.g. `http://gemma4:8000`), with no host port exposed.

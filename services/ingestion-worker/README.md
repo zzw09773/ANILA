@@ -18,7 +18,7 @@ packages/anila-core/           ← 共用 SDK（parser / chunker / 向量儲存 
 infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 shim → include 它）
 ```
 
-啟停一律走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（prod stack，project `anila-platform`）；`compose.dev.yaml` → `infra/compose/dev.yml`（dev stack）。部署腳本在 `infra/deployment/{scripts,intranet}/`。
+啟停一律走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（prod stack，project `anila`）；`compose.dev.yaml` → `infra/compose/dev.yml`（dev stack）。部署腳本在 `infra/deployment/{scripts,intranet}/`。
 
 ---
 

@@ -56,7 +56,22 @@ class Settings(BaseSettings):
 
     # Service-to-service token sent to downstream agents so they can verify
     # requests originate from CSP. Set to a long random string in production.
+    # Router-only endpoints do not accept this fleet secret once router-primary
+    # has its own credential. That credential is provisioned below.
     CSP_SERVICE_TOKEN: str = ""
+
+    # Internal service credentials. CSP mints these and writes plaintext to
+    # ANILA_SERVICE_CLIENT_DIR/<client_name>.token (mode 0640, group
+    # ANILA_SERVICE_CLIENT_FILE_GID). Empty ANILA_INTERNAL_SERVICE_CLIENTS
+    # keeps the built-in list (router-primary / router). A JSON list adds
+    # clients such as ingestion-worker. router-primary is always included
+    # and is always client_type router.
+    ANILA_SERVICE_CLIENT_DIR: str = "/run/anila/service-clients"
+    ANILA_SERVICE_CLIENT_ROTATE_INTERVAL_SECONDS: int = 30 * 24 * 3600
+    ANILA_SERVICE_CLIENT_GRACE_SECONDS: int = 24 * 3600
+    ANILA_SERVICE_CLIENT_PROVISION_INTERVAL_SECONDS: int = 3600
+    ANILA_SERVICE_CLIENT_FILE_GID: int = 10002
+    ANILA_INTERNAL_SERVICE_CLIENTS: str = ""
 
     # Site URL (for external access, used by platform links)
     SITE_URL: str = "http://localhost"

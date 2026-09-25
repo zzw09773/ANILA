@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <PageHead title="服務客戶端" subtitle="平台內部服務彼此驗證用的身分，與助手派工權杖無關。">
+    <PageHead title="服務客戶端" subtitle="平台內部服務的憑證由系統自動核發與輪替，與助手派工權杖無關。緊急時才手動處理。">
       <template #actions>
         <TermButton variant="primary" @click="openCreateModal" label="建立客戶端" />
       </template>
@@ -15,6 +15,10 @@
       <span class="row-actions__sep">·</span>
       <button class="term-action" @click="fetchClients">重新整理</button>
     </div>
+
+    <TermBox>
+      設定名單內的內部服務（目前包含 router-primary）由系統在啟動與週期檢查時核發憑證，並寫入部署共用的憑證目錄。約 30 天自動輪替，上一把在寬限期內仍有效。建立與輪替不會在畫面上顯示憑證。只有「緊急重發」會顯示一次，並標明緊急專用。吊銷後不會自動重發，該服務會因為讀不到憑證而無法通過驗證。
+    </TermBox>
 
     <TermBox>
       <table class="data-table">
@@ -33,7 +37,7 @@
         <tbody>
           <tr v-if="!clients.length">
             <td colspan="8">
-              <TermEmpty message="尚未建立服務客戶端。下一步：建立第一個客戶端。" />
+              <TermEmpty message="尚未建立服務客戶端。設定名單內的內部服務會自動出現；其餘才需要手動建立。" />
             </td>
           </tr>
           <tr v-for="c in clients" :key="c.id" :class="{ 'is-revoked': !c.is_active }">
@@ -63,6 +67,10 @@
                   {{ busyId === c.id ? '…' : '輪替' }}
                 </button>
                 <span class="row-actions__sep">·</span>
+                <button class="term-action term-action--danger" :disabled="busyId === c.id" @click="handleEmergencyReissue(c)">
+                  {{ busyId === c.id ? '…' : '緊急重發' }}
+                </button>
+                <span class="row-actions__sep">·</span>
                 <button class="term-action term-action--danger" :disabled="busyId === c.id" @click="handleRevoke(c)">
                   {{ busyId === c.id ? '…' : '吊銷' }}
                 </button>
@@ -75,9 +83,12 @@
     </TermBox>
 
     <!-- Plaintext display -->
-    <TermModal :visible="!!issuedSecret" title="立即複製此 token" width="540px" @close="clearIssuedSecret">
-      <p class="cell-meta">
-        plaintext 只會出現一次。複製後妥善保存（password manager / vault）。
+    <TermModal :visible="!!issuedSecret" :title="issuedSecret?.emergency ? '緊急專用憑證' : '服務憑證'" width="540px" @close="clearIssuedSecret">
+      <p v-if="issuedSecret?.emergency" class="cell-meta">
+        緊急專用。這把憑證只在這個畫面顯示一次。平常由憑證檔交付，不要寫進環境變數。
+      </p>
+      <p v-else class="cell-meta">
+        這個客戶端沒有憑證檔，所以憑證只在這裡顯示一次。請立即保存。
       </p>
       <div class="secret-banner">
         <div class="secret-banner__body">
@@ -131,6 +142,7 @@ import { onMounted, ref } from 'vue'
 import { extractError } from '../api/errors'
 import {
   createServiceClient,
+  issueStaticForClient,
   listServiceClients,
   revokeServiceClient,
   rotateServiceClient,
@@ -178,6 +190,19 @@ function openCreateModal() {
   showCreateModal.value = true
 }
 
+function rememberIssuedToken(data, emergency) {
+  if (!data || data.delivery === 'file' || !data.service_token) return
+  issuedSecret.value = {
+    value: data.service_token,
+    emergency: emergency || data.delivery === 'emergency_only',
+    meta: {
+      client_name: data.client?.client_name,
+      client_type: data.client?.client_type,
+      note: data.delivery === 'emergency_only' ? '緊急專用。只顯示一次。' : '只顯示一次。',
+    },
+  }
+}
+
 async function handleCreate() {
   createBusy.value = true
   try {
@@ -186,13 +211,10 @@ async function handleCreate() {
       client_type: createForm.value.client_type,
       description: createForm.value.description.trim() || null,
     })
-    issuedSecret.value = {
-      value: data.service_token,
-      meta: {
-        client_name: data.client.client_name,
-        client_type: data.client.client_type,
-        note: '首次核發 — 貼進客戶端的 state 檔或 env',
-      },
+    if (data.delivery === 'file') {
+      setFeedback('success', `已建立 ${data.client.client_name}，憑證寫入憑證檔，畫面上不顯示。`)
+    } else {
+      rememberIssuedToken(data, false)
     }
     showCreateModal.value = false
     await fetchClients()
@@ -204,17 +226,14 @@ async function handleCreate() {
 }
 
 async function handleRotate(c) {
-  if (!(await confirm({ message: `輪替「${c.client_name}」？舊 token 仍可用 24h。`, confirmText: '輪替' }))) return
+  if (!(await confirm({ message: `輪替「${c.client_name}」？新憑證會寫入憑證檔，舊的在 24 小時內仍有效。畫面上不顯示憑證。`, confirmText: '輪替' }))) return
   busyId.value = c.id
   try {
     const data = await rotateServiceClient(c.id)
-    issuedSecret.value = {
-      value: data.service_token,
-      meta: {
-        client_name: data.client.client_name,
-        client_type: data.client.client_type,
-        note: '已輪替 — 前一組 24 小時內有效',
-      },
+    if (data.delivery === 'file') {
+      setFeedback('success', `已輪替 ${c.client_name}，憑證寫入憑證檔，畫面上不顯示。`)
+    } else {
+      rememberIssuedToken(data, false)
     }
     await fetchClients()
   } catch (e) {
@@ -224,8 +243,26 @@ async function handleRotate(c) {
   }
 }
 
+async function handleEmergencyReissue(c) {
+  if (!(await confirm({
+    message: `緊急重發「${c.client_name}」？現有憑證立刻失效，沒有寬限期。新憑證只在下一個畫面顯示一次，並標明緊急專用。平常不要使用。`,
+    confirmText: '緊急重發',
+    danger: true,
+  }))) return
+  busyId.value = c.id
+  try {
+    const data = await issueStaticForClient(c.id)
+    rememberIssuedToken(data, true)
+    await fetchClients()
+  } catch (e) {
+    setFeedback('error', extractError(e, '緊急重發失敗'))
+  } finally {
+    busyId.value = null
+  }
+}
+
 async function handleRevoke(c) {
-  if (!(await confirm({ message: `立即吊銷「${c.client_name}」？無 grace。`, confirmText: '吊銷', danger: true }))) return
+  if (!(await confirm({ message: `立即吊銷「${c.client_name}」？沒有寬限期。憑證檔會刪除，系統不會自動重發。`, confirmText: '吊銷', danger: true }))) return
   busyId.value = c.id
   try {
     await revokeServiceClient(c.id)

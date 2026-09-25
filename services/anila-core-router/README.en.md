@@ -34,9 +34,9 @@ The Router exposes an OpenAI-compatible `POST /v1/chat/completions` and advertis
 
 `main.py` is more than a thin shell; beyond the app factory it also handles:
 
-1. **Primary routing model TTL refresh** (`_refresh_primary` / `_ensure_primary`, `PRIMARY_TTL_SECONDS=60`) + the 503 gate middleware on `/v1/chat/completions`. No background timer: triggered once at startup, then lazily by the gate middleware when stale.
-2. **Three-tier service-token resolution** (`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`): precedence is **state file → `CSP_SERVICE_TOKEN` (legacy env) → `CSP_BOOTSTRAP_TOKEN` (only reached when both are empty)**; startup logs make explicit which path was taken. Note that `_self_bootstrap` is currently a **v1 pass-through**: it writes the env value into the state file (mode 0600) and does **no HTTP exchange**.
-3. **Hot-reload of the state file once on CSP 401/403** then retry (zero downtime after an admin rotates the router-primary credential in CSP).
+1. **Primary routing model TTL refresh** (`_refresh_primary` / `_ensure_primary`, `PRIMARY_TTL_SECONDS=60`) + the 503 gate middleware on `/v1/chat/completions`. The primary model has no background timer: one refresh at startup, then a lazy refresh from the gate when the TTL expires. The credential file has its own periodic re-read (default 30s, `ANILA_SERVICE_TOKEN_RELOAD_SECONDS`).
+2. **Service-token resolution** (`_load_service_token` / `_initialise_token_source`): when `ANILA_SERVICE_TOKEN_FILE` is set, that file is the only credential. A missing file is `file_missing`; an unreadable or empty file is `file_error`. Neither falls back, and both are re-read on the timer so the Router recovers after CSP writes the file. State file, `CSP_BOOTSTRAP_TOKEN`, and `CSP_SERVICE_TOKEN` are used only when `ANILA_SERVICE_TOKEN_FILE` is **unset**. When `CSP_BOOTSTRAP_TOKEN` is set and the state file does not exist yet, the value is copied into the state file (mode 0600). That copy does **no HTTP exchange**. Startup logs the source name and never the plaintext. `/health` reports `token_source` as `file`, `file_missing`, `file_error`, `state_file`, `bootstrap`, `legacy_env`, or `none`.
+3. **The credential file is re-read when it changes.** On CSP 401/403 the Router forces one more read and retries once, then gives up.
 
 > `main.py` actively makes exactly one CSP call, `GET /api/models/router-primary` (with `X-CSP-Service-Token`); `GET /v1/agents`, `POST /v1/chat/completions`, and agent dispatch + SSE forward all live in the SDK `router_server.py`. The Router holds **no** user API key of its own: it calls back to the CSP data plane with the caller's (UI / OpenAI SDK) Bearer API key, so the agents a caller can see equal the agents the Router can dispatch to (no privilege amplification).
 
@@ -47,7 +47,7 @@ The Router exposes an OpenAI-compatible `POST /v1/chat/completions` and advertis
 ```
 services/anila-core-router/
 ├── main.py        # deployment entrypoint: create_router_app() + primary-model TTL refresh
-│                  #   + 3-tier service-token state-file resolution + /router/primary-status debug endpoint
+│                  #   + credential-file/state-file token resolution + /router/primary-status debug endpoint
 ├── Dockerfile     # multi-stage; build context must be the repo root (COPYs packages/anila-core/)
 └── README.md / README.en.md
 
@@ -93,9 +93,11 @@ Read by `main.py` (raw `os.environ`):
 | Variable | Notes | Default |
 |---|---|---|
 | `CSP_BASE_URL` | CSP base URL; `http://csp:8000` inside containers | `http://csp:8000` |
-| `CSP_BOOTSTRAP_TOKEN` | first-start bootstrap token; entrypoint writes it into the state file | `""` |
-| `CSP_SERVICE_TOKEN` | legacy fleet-shared shared-secret; fallback when no state file | `""` |
-| `ANILA_ROUTER_STATE_DIR` | directory persisting the service token (state file `service_token.json`, mode 0600) | `/var/lib/anila-router` |
+| `ANILA_SERVICE_TOKEN_FILE` | Credential file written by CSP. Compose mounts `/run/anila/service-clients/router-primary.token` | unset |
+| `ANILA_SERVICE_TOKEN_RELOAD_SECONDS` | How often to re-read the credential file. Floor is 5 seconds | `30` |
+| `CSP_BOOTSTRAP_TOKEN` | Used only when `ANILA_SERVICE_TOKEN_FILE` is unset and the state file is empty. Copied into the state file | `""` |
+| `CSP_SERVICE_TOKEN` | Last fallback, and only when the token-file path is unset: the old fleet secret. Router-only CSP endpoints reject it once `router-primary` has its own credential | `""` |
+| `ANILA_ROUTER_STATE_DIR` | Directory for `service_token.json` (mode 0600). Not read when the token-file path is set | `/var/lib/anila-router` |
 
 The SDK (`router_server`) additionally reads the **Full Trace opt-in** env (doc `09` §10 frozen contract):
 

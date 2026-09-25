@@ -6,7 +6,7 @@ incoming queries to the most appropriate agent via the main LLM.
 Run (with CSP already running):
     CSP_BASE_URL=http://localhost:8000 \
     CSP_API_KEY=sk-... \
-    MODEL=google/gemma4 \
+    MODEL=<registered-model-name> \
     API_DEV_MODE=true \
     uvicorn main:app --host 0.0.0.0 --port 9000
 

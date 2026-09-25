@@ -8,7 +8,7 @@
 # 檔名只含時間戳，不含密碼／主機祕密（PUBLIC repo 友好）。
 #
 # 用法（在平台主機）：
-#   ANILA_DB_CONTAINER=anila-restart-csp-db-1 \
+#   ANILA_DB_CONTAINER=anila-csp-db-1 \
 #   bash infra/deployment/scripts/backup-csp-db.sh
 #
 # 預設寫到家目錄底下（~/anila-backups），所以不必 sudo 就跑得動。
@@ -41,7 +41,7 @@ resolve_container() {
     printf '%s\n' "$ANILA_DB_CONTAINER"
     return
   fi
-  # 常見：anila-restart-csp-db-1 / anila-platform-csp-db-1
+  # 常見：anila-csp-db-1（project anila）
   local matches match count
   matches="$(docker ps --format '{{.Names}}' | grep -E 'csp-db' || true)"
   if [[ -z "$matches" ]]; then

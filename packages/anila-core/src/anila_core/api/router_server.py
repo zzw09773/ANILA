@@ -66,6 +66,7 @@ from ..text.model_tokenize import tokenize_prompt
 from ..prompts.sampling import get_sampling
 from ..providers.guards import is_empty_reply
 from . import router_prompts
+from .events import RESCUE_REASON_REASONING_EXHAUSTED
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
 from .session_owner import (
@@ -192,6 +193,72 @@ def _forced_answer_prompt() -> str:
     return current_router_prompts()[router_prompts.KEY_FORCED]
 
 
+# Deployment entrypoint (services/anila-core-router/main.py) installs this
+# so a rotated credential file is picked up before a CSP call and once more
+# after HTTP 401/403. Library callers leave it unset and keep a single try.
+_service_token_reloader: Callable[[bool], None] | None = None
+
+
+def register_service_token_reloader(fn: Callable[[bool], None] | None) -> None:
+    """Re-read the process service token into ``settings.csp_service_token``.
+
+    ``force=False`` may no-op when the token file is unchanged.
+    ``force=True`` re-reads even if the mtime is unchanged. The callback
+    must not log token plaintext.
+    """
+    global _service_token_reloader
+    _service_token_reloader = fn
+
+
+def router_service_token_source() -> str:
+    """Where this process's CSP service token came from.
+
+    The router entrypoint replaces this with the live source
+    (``file`` / ``state_file`` / ``bootstrap`` / ``legacy_env`` / ``none``).
+    """
+    return "legacy_env" if (settings.csp_service_token or "").strip() else "none"
+
+
+def _current_service_token() -> str:
+    if _service_token_reloader is not None:
+        try:
+            _service_token_reloader(False)
+        except Exception:
+            logger.exception("service token reload failed")
+    return (settings.csp_service_token or "").strip()
+
+
+async def _csp_service_get(url: str, token: str) -> httpx.Response:
+    """GET with the service token. One retry when a reload changes it."""
+    client = get_http_client()
+    response = await client.get(
+        url,
+        headers={"X-CSP-Service-Token": token},
+        timeout=5.0,
+    )
+    if response.status_code not in (401, 403) or _service_token_reloader is None:
+        return response
+    try:
+        _service_token_reloader(True)
+    except Exception:
+        logger.exception(
+            "service token reload after HTTP %s failed", response.status_code
+        )
+        return response
+    new_token = (settings.csp_service_token or "").strip()
+    if not new_token or new_token == token:
+        return response
+    logger.info(
+        "CSP service token re-read after HTTP %s; retrying once",
+        response.status_code,
+    )
+    return await client.get(
+        url,
+        headers={"X-CSP-Service-Token": new_token},
+        timeout=5.0,
+    )
+
+
 async def refresh_router_prompts() -> None:
     """Re-read the three prompts from csp when the TTL expires.
 
@@ -200,7 +267,7 @@ async def refresh_router_prompts() -> None:
     previous values in place — the shipped defaults on a cold start — and
     logs a warning so the fallback is visible (work-order invariant ④).
     """
-    token = settings.csp_service_token
+    token = _current_service_token()
     if not token:
         return
     now = time.monotonic()
@@ -209,11 +276,9 @@ async def refresh_router_prompts() -> None:
             return
         _router_prompt_state["at"] = now
     try:
-        client = get_http_client()
-        response = await client.get(
+        response = await _csp_service_get(
             f"{settings.csp_base_url.rstrip('/')}/api/router-prompts",
-            headers={"X-CSP-Service-Token": token},
-            timeout=5.0,
+            token,
         )
         if response.status_code != 200:
             logger.warning(
@@ -835,8 +900,16 @@ async def _resume_router_ask(
                         routing_messages,
                         forwarded_headers=router_llm_headers,
                         apply_thinking_tier=True,
+                        rescue_empty_length=True,
                     ):
                         kind = ev.get("type")
+                        if kind == "rescue":
+                            yield _make_event(
+                                "anila.rescue",
+                                {"reason": RESCUE_REASON_REASONING_EXHAUSTED},
+                            )
+                            yield _make_event("anila.trace", _rescue_trace_step())
+                            continue
                         if kind == "error":
                             err = ev.get("error", "LLM error")
                             _log_router_ask_resume_failure(err, ev.get("detail"))
@@ -911,6 +984,7 @@ async def _resume_router_ask(
                     routing_messages,
                     forwarded_headers=router_llm_headers,
                     apply_thinking_tier=True,
+                    rescue_empty_length=True,
                 )
                 if llm_response["error"]:
                     err = llm_response["error"]
@@ -918,6 +992,15 @@ async def _resume_router_ask(
                     for frame in _router_llm_outage_frames(err):
                         yield frame
                     return
+                if llm_response.get("rescued"):
+                    prior = llm_response.get("reasoning") or ""
+                    if isinstance(prior, str) and prior:
+                        yield _make_event("anila.reasoning", {"delta": prior})
+                    yield _make_event(
+                        "anila.rescue",
+                        {"reason": RESCUE_REASON_REASONING_EXHAUSTED},
+                    )
+                    yield _make_event("anila.trace", _rescue_trace_step())
                 llm_text = llm_response["content"]
                 try:
                     ask, follow = await _store_routing_reply(llm_text)
@@ -1749,6 +1832,20 @@ def router_model_source() -> str:
         return _router_model_state["source"]
 
 
+def reported_router_model() -> tuple[str | None, str]:
+    """What ``/health`` should show.
+
+    A CSP primary or a non-empty MODEL is reported with its source.
+    The config default is empty: that is unresolved, not a model name.
+    Per-request resolution (``current_router_model`` / the resolve hop)
+    is unchanged.
+    """
+    name = (current_router_model() or "").strip()
+    if not name:
+        return None, "unresolved"
+    return name, router_model_source()
+
+
 async def refresh_router_model() -> None:
     """Re-read the CSP-designated router primary model when the TTL expires.
 
@@ -1756,7 +1853,7 @@ async def refresh_router_model() -> None:
     previously resolved (or env) model in place. The TTL clock is advanced on
     failure too, so an unreachable / unconfigured CSP is not hammered.
     """
-    token = settings.csp_service_token
+    token = _current_service_token()
     if not token:
         # No service credential → the service-to-service endpoint is not
         # callable at all. Env var stays authoritative.
@@ -1769,11 +1866,9 @@ async def refresh_router_model() -> None:
     name: str | None = None
     context_window: int | None = None
     try:
-        client = get_http_client()
-        response = await client.get(
+        response = await _csp_service_get(
             f"{settings.csp_base_url.rstrip('/')}/api/models/router-primary",
-            headers={"X-CSP-Service-Token": token},
-            timeout=5.0,
+            token,
         )
         if response.status_code == 200:
             payload = response.json() or {}
@@ -1893,6 +1988,7 @@ def create_router_app(
 
     @app.get("/health")
     async def health() -> dict:
+        model_name, model_source = reported_router_model()
         return {
             "status": "ok",
             "cached_agents": len(registry),
@@ -1900,8 +1996,11 @@ def create_router_app(
             "last_refresh_at": registry.last_refresh_at,
             # So an operator can see which model routing actually uses, and
             # whether it came from the governance UI or the MODEL env var.
-            "router_model": current_router_model(),
-            "router_model_source": router_model_source(),
+            # Empty fallback is null / source "unresolved", not a fake name.
+            "router_model": model_name,
+            "router_model_source": model_source,
+            # file | file_missing | file_error | state_file | bootstrap | legacy_env | none
+            "token_source": router_service_token_source(),
         }
 
     @app.get("/v1/models")
@@ -2176,7 +2275,10 @@ def create_router_app(
             routing_messages,
             forwarded_headers=router_llm_headers,
             apply_thinking_tier=True,
+            rescue_empty_length=True,
         )
+        if llm_response.get("rescued"):
+            base_trace.append(_rescue_trace_step())
         if llm_response["error"]:
             length_budget = _is_length_budget_error(llm_response["error"])
             base_trace.append(
@@ -2235,6 +2337,7 @@ def create_router_app(
                 )
                 if llm_response.get("reasoning"):
                     anila_meta["reasoning"] = llm_response["reasoning"]
+                _stamp_rescue_meta(anila_meta, llm_response)
                 return _respond_ask(
                     ask,
                     record,
@@ -2255,6 +2358,7 @@ def create_router_app(
             )
             if llm_response.get("reasoning"):
                 anila_meta["reasoning"] = llm_response["reasoning"]
+            _stamp_rescue_meta(anila_meta, llm_response)
             return _respond(
                 _forced_visible_text(
                     _normalize_clarify_bullets(_strip_ask_syntax(llm_text)),
@@ -2565,6 +2669,11 @@ def create_router_app(
                 )
                 if router_reasoning:
                     anila_meta["reasoning"] = router_reasoning
+                if any(
+                    isinstance(step, dict) and step.get("kind") == "rescue"
+                    for step in base_trace
+                ):
+                    anila_meta["rescue"] = {"reason": RESCUE_REASON_REASONING_EXHAUSTED}
 
                 # The synthesis turn can pause too (same first-line ASK rule
                 # as every Router-authored answer).
@@ -3423,6 +3532,7 @@ async def _router_streaming_multi_turn(
         routing_messages,
         forwarded_headers=router_llm_headers,
         apply_thinking_tier=True,
+        rescue_empty_length=True,
     )
     if llm_response["error"]:
         length_budget = _is_length_budget_error(llm_response["error"])
@@ -3485,6 +3595,12 @@ async def _router_streaming_multi_turn(
         direct_step = _make_trace_step(
             "direct", "Router 直接回答", "無需分派 agent",
         )
+        if llm_response.get("rescued"):
+            yield _make_event(
+                "anila.rescue",
+                {"reason": RESCUE_REASON_REASONING_EXHAUSTED},
+            )
+            yield _make_event("anila.trace", _rescue_trace_step())
         yield _make_event("anila.trace", direct_step)
         cleaned = _forced_visible_text(
             _normalize_clarify_bullets(_strip_ask_syntax(llm_text)), route_signal
@@ -3502,6 +3618,7 @@ async def _router_streaming_multi_turn(
         )
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
+        _stamp_rescue_meta(anila_meta, llm_response)
         yield _make_event("anila.meta", {**anila_meta, "trace": []})
         yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
@@ -3658,6 +3775,13 @@ async def _router_streaming_multi_turn(
     )
     for step in base_trace[already_emitted:]:
         yield _make_event("anila.trace", step)
+    if final_text is not None and any(
+        isinstance(step, dict) and step.get("kind") == "rescue" for step in base_trace
+    ):
+        yield _make_event(
+            "anila.rescue",
+            {"reason": RESCUE_REASON_REASONING_EXHAUSTED},
+        )
 
     # Stream the final content (router synthesis if any, else last agent),
     # personalized with the user's memory (CSP injects it into the recompose
@@ -3869,6 +3993,7 @@ async def _multi_turn_dispatch(
             convo,
             forwarded_headers=router_llm_headers,
             apply_thinking_tier=True,
+            rescue_empty_length=True,
         )
         if next_llm["error"]:
             base_trace.append(
@@ -3908,6 +4033,8 @@ async def _multi_turn_dispatch(
             )
 
         if not next_dispatch:
+            if next_llm.get("rescued"):
+                base_trace.append(_rescue_trace_step())
             base_trace.append(
                 _make_trace_step(
                     "direct",
@@ -4185,12 +4312,221 @@ def _sampling_payload(
     return params
 
 
+# 主模型把整段輸出額度用在思考、正文是空的：只再呼叫一次，關掉思考。
+# 尾端有上限，避免把整段思考再送回去。
+_RESCUE_REASONING_TAIL_CHARS = 6000
+_RESCUE_INSTRUCTION = (
+    "請根據先前的思考，直接寫出答案，不要再展開思考。"
+    "如果這個請求無法在一次回覆內完成（例如篇幅很長），"
+    "先交出目前最有用的部分，明確說明還沒寫的部分，並提議如何拆開（例如按章節）。"
+)
+_RESCUE_TRACE_DETAIL = "思考用完輸出額度，改直接作答"
+
+
+def _visible_reasoning(message: Mapping[str, Any]) -> str:
+    raw = message.get("reasoning_content") or message.get("reasoning") or ""
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
+
+
+def _reasoning_tail(text: str, limit: int = _RESCUE_REASONING_TAIL_CHARS) -> str:
+    """思考內容只留尾端。短於上限就整段帶上。"""
+    raw = text.strip() if isinstance(text, str) else ""
+    if len(raw) <= limit:
+        return raw
+    return raw[-limit:]
+
+
+def _rescue_followup_messages(
+    messages: list[dict], reasoning: str
+) -> list[dict]:
+    """原對話再補一則使用者指示。
+
+    不另插 system：vLLM 拒絕開頭以外的 system。指示用繁體中文，
+    思考只附尾端。
+    """
+    tail = _reasoning_tail(reasoning)
+    body = _RESCUE_INSTRUCTION
+    if tail:
+        body = body + "\n\n先前思考的結尾：\n" + tail
+    return [*messages, {"role": "user", "content": body}]
+
+
+def _reasoning_effort_rejected(status_code: int, body: str) -> bool:
+    """上游 400 是因為不接受 reasoning_effort，而不是別的錯誤。"""
+    if status_code != 400 or not isinstance(body, str):
+        return False
+    text = body.lower()
+    return "reasoning effort" in text or "reasoning_effort" in text
+
+
+def _apply_thinking_override(payload: dict[str, Any], override: str | None) -> None:
+    """把思考關掉。``none`` 送 reasoning_effort；``off`` 交給既有檔位。
+
+    ``off`` 不再帶 reasoning_effort：上一筆若被拒，改走 CSP 已會送的
+    關閉檔（一般模型 enable_thinking 關；GLM 由既有轉接維持最低檔）。
+    """
+    if override == "none":
+        payload.pop("anila_thinking_tier", None)
+        payload["reasoning_effort"] = "none"
+        existing = payload.get("chat_template_kwargs")
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged["enable_thinking"] = False
+        payload["chat_template_kwargs"] = merged
+        return
+    if override == "off":
+        payload.pop("reasoning_effort", None)
+        existing = payload.get("chat_template_kwargs")
+        if isinstance(existing, dict):
+            merged = {k: v for k, v in existing.items() if k != "enable_thinking"}
+            if merged:
+                payload["chat_template_kwargs"] = merged
+            else:
+                payload.pop("chat_template_kwargs", None)
+        payload["anila_thinking_tier"] = "off"
+
+
+def _rescue_trace_step() -> dict[str, Any]:
+    return _make_trace_step("rescue", "整理答案", _RESCUE_TRACE_DETAIL)
+
+
+def _stamp_rescue_meta(meta: dict[str, Any], source: Mapping[str, Any] | None) -> dict[str, Any]:
+    if isinstance(source, Mapping) and source.get("rescued"):
+        meta["rescue"] = {"reason": RESCUE_REASON_REASONING_EXHAUSTED}
+    return meta
+
+
+def _empty_length_stream_error() -> dict[str, Any]:
+    return {
+        "type": "error",
+        "error": _EMPTY_LENGTH_ERROR,
+        "detail": "finish_reason=length, empty content",
+    }
+
+
+async def _rescue_non_stream_answer(
+    caller_api_key: str,
+    messages: list[dict],
+    reasoning: str,
+    *,
+    forwarded_headers: dict[str, str] | None,
+) -> dict[str, Any] | None:
+    """關掉思考再要一次正文。參數被拒才改走 off，不做第二次救援。"""
+    logger.info(
+        "router reasoning rescue reason=%s",
+        RESCUE_REASON_REASONING_EXHAUSTED,
+    )
+    follow = _rescue_followup_messages(messages, reasoning)
+    result = await _call_llm_non_stream(
+        caller_api_key,
+        follow,
+        forwarded_headers=forwarded_headers,
+        apply_thinking_tier=False,
+        thinking_override="none",
+        rescue_empty_length=False,
+    )
+    if result.get("effort_rejected"):
+        logger.info("router reasoning rescue retry effort=off")
+        result = await _call_llm_non_stream(
+            caller_api_key,
+            follow,
+            forwarded_headers=forwarded_headers,
+            apply_thinking_tier=False,
+            thinking_override="off",
+            rescue_empty_length=False,
+        )
+    if result.get("error") or is_empty_reply(result.get("content")):
+        return None
+    prior = reasoning.strip() if isinstance(reasoning, str) else ""
+    if prior:
+        result["reasoning"] = prior
+    result["rescued"] = True
+    return result
+
+
+async def _rescue_stream_answer(
+    caller_api_key: str,
+    messages: list[dict],
+    reasoning: str,
+    *,
+    forwarded_headers: dict[str, str] | None,
+) -> AsyncIterator[dict[str, Any]]:
+    """串流救援。先送 rescue 事件，再送正文；失敗則回到空額度錯誤。"""
+    logger.info(
+        "router reasoning rescue reason=%s",
+        RESCUE_REASON_REASONING_EXHAUSTED,
+    )
+    yield {"type": "rescue", "reason": RESCUE_REASON_REASONING_EXHAUSTED}
+    follow = _rescue_followup_messages(messages, reasoning)
+    saw = False
+    done_ev: dict[str, Any] | None = None
+    rejected = False
+    async for ev in _stream_llm_sse(
+        caller_api_key,
+        follow,
+        forwarded_headers=forwarded_headers,
+        apply_thinking_tier=False,
+        thinking_override="none",
+        rescue_empty_length=False,
+    ):
+        kind = ev.get("type")
+        if kind == "error" and ev.get("effort_rejected") and not saw:
+            rejected = True
+            break
+        if kind == "error":
+            yield _empty_length_stream_error()
+            return
+        if kind == "done":
+            done_ev = ev
+            continue
+        if kind == "delta":
+            piece = ev.get("content")
+            if isinstance(piece, str) and piece.strip():
+                saw = True
+            elif not saw:
+                continue
+        yield ev
+    if rejected:
+        logger.info("router reasoning rescue retry effort=off")
+        saw = False
+        done_ev = None
+        async for ev in _stream_llm_sse(
+            caller_api_key,
+            follow,
+            forwarded_headers=forwarded_headers,
+            apply_thinking_tier=False,
+            thinking_override="off",
+            rescue_empty_length=False,
+        ):
+            kind = ev.get("type")
+            if kind == "error":
+                yield _empty_length_stream_error()
+                return
+            if kind == "done":
+                done_ev = ev
+                continue
+            if kind == "delta":
+                piece = ev.get("content")
+                if isinstance(piece, str) and piece.strip():
+                    saw = True
+                elif not saw:
+                    continue
+            yield ev
+    if saw and done_ev is not None:
+        yield done_ev
+        return
+    yield _empty_length_stream_error()
+
+
 async def _call_llm_non_stream(
     caller_api_key: str,
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None = None,
     apply_thinking_tier: bool = False,
+    thinking_override: str | None = None,
+    rescue_empty_length: bool = False,
     _retry_max_tokens: int | None = None,
     _auto_continue_left: int | None = None,
     _compact_retry: int | bool = 0,
@@ -4215,9 +4551,10 @@ async def _call_llm_non_stream(
         "stream": False,
         **_sampling_payload(
             max_tokens_override=_retry_max_tokens,
-            apply_thinking_tier=apply_thinking_tier,
+            apply_thinking_tier=apply_thinking_tier and not thinking_override,
         ),
     }
+    _apply_thinking_override(payload, thinking_override)
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
         "Content-Type": "application/json",
@@ -4241,14 +4578,32 @@ async def _call_llm_non_stream(
         data = response.json()
         choice = data["choices"][0]
         message = choice["message"]
-        # Empty-reply rule: no visible answer is an error, never a silent
-        # "" and never a second upstream call while the UI sits on 「思考中」.
+        # 沒有正文就是錯誤。finish_reason=length 且呼叫端要求救援時，
+        # 關掉思考再要一次；其他空回覆不打第二槍。
         if is_empty_reply(message.get("content")):
             finish_reason = choice.get("finish_reason")
-            logger.warning(
-                "LLM reply empty (finish_reason=%s); not retrying",
-                finish_reason,
-            )
+            if (
+                rescue_empty_length
+                and finish_reason == "length"
+                and not thinking_override
+            ):
+                rescued = await _rescue_non_stream_answer(
+                    caller_api_key,
+                    messages,
+                    _visible_reasoning(message),
+                    forwarded_headers=forwarded_headers,
+                )
+                if rescued is not None:
+                    return rescued
+                logger.warning(
+                    "LLM reply empty after reasoning rescue (finish_reason=%s)",
+                    finish_reason,
+                )
+            else:
+                logger.warning(
+                    "LLM reply empty (finish_reason=%s); not retrying",
+                    finish_reason,
+                )
             return {
                 "content": "",
                 "reasoning": None,
@@ -4299,7 +4654,9 @@ async def _call_llm_non_stream(
                     {"role": "user", "content": _CONTINUE_PROMPT},
                 ],
                 forwarded_headers=forwarded_headers,
-                apply_thinking_tier=apply_thinking_tier,
+                apply_thinking_tier=apply_thinking_tier and not thinking_override,
+                thinking_override=thinking_override,
+                rescue_empty_length=False,
                 _auto_continue_left=remaining - 1,
             )
             extra = (more.get("content") or "").strip()
@@ -4328,6 +4685,8 @@ async def _call_llm_non_stream(
                 retried,
                 forwarded_headers=forwarded_headers,
                 apply_thinking_tier=apply_thinking_tier,
+                thinking_override=thinking_override,
+                rescue_empty_length=rescue_empty_length,
                 _retry_max_tokens=_retry_max_tokens,
                 _auto_continue_left=_auto_continue_left,
                 _compact_retry=stage + 1,
@@ -4335,7 +4694,16 @@ async def _call_llm_non_stream(
         err = f"LLM upstream HTTP {exc.response.status_code}"
         body_text = exc.response.text[:300] if exc.response.text else ""
         logger.error("%s — body=%s", err, _scrub_diagnostic_value(body_text))
-        return {"content": "", "reasoning": None, "anila_meta": None, "raw": None, "error": err}
+        failure: dict[str, Any] = {
+            "content": "",
+            "reasoning": None,
+            "anila_meta": None,
+            "raw": None,
+            "error": err,
+        }
+        if _reasoning_effort_rejected(exc.response.status_code, exc.response.text or ""):
+            failure["effort_rejected"] = True
+        return failure
     except httpx.RequestError as exc:
         err = f"LLM connection error: {type(exc).__name__}"
         logger.error("%s — %s", err, exc)
@@ -4416,6 +4784,7 @@ async def _auto_continue_stream(
     accumulated: list[str],
     remaining: int,
     apply_thinking_tier: bool = False,
+    thinking_override: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Resume a partial ``length`` stream, or emit the terminal done event."""
     if finish_reason == "length" and saw_content and remaining > 0:
@@ -4429,7 +4798,9 @@ async def _auto_continue_stream(
                 {"role": "user", "content": _CONTINUE_PROMPT},
             ],
             forwarded_headers=forwarded_headers,
-            apply_thinking_tier=apply_thinking_tier,
+            apply_thinking_tier=apply_thinking_tier and not thinking_override,
+            thinking_override=thinking_override,
+            rescue_empty_length=False,
             _auto_continue_left=remaining - 1,
         ):
             yield ev
@@ -4443,6 +4814,8 @@ async def _stream_llm_sse(
     *,
     forwarded_headers: dict[str, str] | None = None,
     apply_thinking_tier: bool = False,
+    thinking_override: str | None = None,
+    rescue_empty_length: bool = False,
     _retry_max_tokens: int | None = None,
     _auto_continue_left: int | None = None,
     _compact_retry: int | bool = 0,
@@ -4475,9 +4848,10 @@ async def _stream_llm_sse(
         "stream": True,
         **_sampling_payload(
             max_tokens_override=_retry_max_tokens,
-            apply_thinking_tier=apply_thinking_tier,
+            apply_thinking_tier=apply_thinking_tier and not thinking_override,
         ),
     }
+    _apply_thinking_override(payload, thinking_override)
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
         "Content-Type": "application/json",
@@ -4511,17 +4885,22 @@ async def _stream_llm_sse(
                         retried,
                         forwarded_headers=forwarded_headers,
                         apply_thinking_tier=apply_thinking_tier,
+                        thinking_override=thinking_override,
+                        rescue_empty_length=rescue_empty_length,
                         _retry_max_tokens=_retry_max_tokens,
                         _auto_continue_left=_auto_continue_left,
                         _compact_retry=stage + 1,
                     ):
                         yield ev
                     return
-                yield {
+                http_error: dict[str, Any] = {
                     "type": "error",
                     "error": f"LLM HTTP {resp.status_code}",
                     "detail": detail[:300],
                 }
+                if _reasoning_effort_rejected(resp.status_code, detail):
+                    http_error["effort_rejected"] = True
+                yield http_error
                 return
             # Name of the ``event:`` line of the frame currently being read.
             # Cleared at the frame boundary (blank line) and after the frame's
@@ -4531,6 +4910,34 @@ async def _stream_llm_sse(
             saw_content = False
             finish_reason = ""
             accumulated: list[str] = []
+            reasoning_parts: list[str] = []
+
+            async def _finish_without_answer() -> AsyncIterator[dict[str, Any]]:
+                visible = "".join(accumulated).strip()
+                if (
+                    not visible
+                    and finish_reason == "length"
+                    and rescue_empty_length
+                    and not thinking_override
+                ):
+                    async for ev in _rescue_stream_answer(
+                        caller_api_key,
+                        messages,
+                        "".join(reasoning_parts),
+                        forwarded_headers=forwarded_headers,
+                    ):
+                        yield ev
+                    return
+                logger.warning(
+                    "LLM stream empty (finish_reason=%s); not retrying",
+                    finish_reason,
+                )
+                yield {
+                    "type": "error",
+                    "error": _empty_reply_error(finish_reason),
+                    "detail": f"finish_reason={finish_reason or 'unknown'}, empty content",
+                }
+
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line:
@@ -4543,16 +4950,15 @@ async def _stream_llm_sse(
                     continue
                 data_str = line[6:]
                 if data_str == "[DONE]":
-                    if not saw_content:
-                        logger.warning(
-                            "LLM stream empty (finish_reason=%s); not retrying",
-                            finish_reason,
-                        )
-                        yield {
-                            "type": "error",
-                            "error": _empty_reply_error(finish_reason),
-                            "detail": f"finish_reason={finish_reason or 'unknown'}, empty content",
-                        }
+                    visible = "".join(accumulated).strip()
+                    if not saw_content or (
+                        not visible
+                        and finish_reason == "length"
+                        and rescue_empty_length
+                        and not thinking_override
+                    ):
+                        async for ev in _finish_without_answer():
+                            yield ev
                         return
                     async for ev in _auto_continue_stream(
                         caller_api_key,
@@ -4563,6 +4969,7 @@ async def _stream_llm_sse(
                         accumulated=accumulated,
                         remaining=remaining,
                         apply_thinking_tier=apply_thinking_tier,
+                        thinking_override=thinking_override,
                     ):
                         yield ev
                     return
@@ -4590,22 +4997,22 @@ async def _stream_llm_sse(
                     finish_reason = str(first_choice["finish_reason"])
                 reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(reasoning_piece, str) and reasoning_piece:
+                    reasoning_parts.append(reasoning_piece)
                     yield {"type": "reasoning", "content": reasoning_piece}
                 content_piece = delta.get("content")
                 if isinstance(content_piece, str) and content_piece:
                     saw_content = True
                     accumulated.append(content_piece)
                     yield {"type": "delta", "content": content_piece}
-            if not saw_content:
-                logger.warning(
-                    "LLM stream empty (finish_reason=%s); not retrying",
-                    finish_reason,
-                )
-                yield {
-                    "type": "error",
-                    "error": _empty_reply_error(finish_reason),
-                    "detail": f"finish_reason={finish_reason or 'unknown'}, empty content",
-                }
+            visible = "".join(accumulated).strip()
+            if not saw_content or (
+                not visible
+                and finish_reason == "length"
+                and rescue_empty_length
+                and not thinking_override
+            ):
+                async for ev in _finish_without_answer():
+                    yield ev
                 return
             async for ev in _auto_continue_stream(
                 caller_api_key,
@@ -4616,6 +5023,7 @@ async def _stream_llm_sse(
                 accumulated=accumulated,
                 remaining=remaining,
                 apply_thinking_tier=apply_thinking_tier,
+                thinking_override=thinking_override,
             ):
                 yield ev
     except httpx.RequestError as exc:
@@ -5707,6 +6115,12 @@ async def _router_streaming(
     # until the direct-answer exits below, which are the only places it belongs
     # (on the dispatch branch this call's output is thrown away).
     downstream_meta: dict[str, Any] | None = None
+    rescue_reason: str | None = None
+
+    def _remember_rescue(meta: dict[str, Any]) -> dict[str, Any]:
+        if rescue_reason:
+            meta["rescue"] = {"reason": rescue_reason}
+        return meta
 
     # ``router_llm_headers`` = the relayed audit headers *plus* the answer-channel
     # marker. Plain ``forwarded_headers`` stays for the recompose call at the end
@@ -5718,8 +6132,14 @@ async def _router_streaming(
             router_llm_headers if router_llm_headers is not None else forwarded_headers
         ),
         apply_thinking_tier=True,
+        rescue_empty_length=True,
     ):
         kind = ev.get("type")
+        if kind == "rescue":
+            rescue_reason = str(ev.get("reason") or RESCUE_REASON_REASONING_EXHAUSTED)
+            yield _make_event("anila.rescue", {"reason": rescue_reason})
+            yield _make_event("anila.trace", _rescue_trace_step())
+            continue
         if kind == "error":
             err = ev.get("error", "LLM error")
             length_budget = _is_length_budget_error(err)
@@ -5967,6 +6387,7 @@ async def _router_streaming(
             )
             if merged_reasoning:
                 anila_meta["reasoning"] = merged_reasoning
+            _remember_rescue(anila_meta)
             anila_meta_evt = {**anila_meta, "trace": []}
             yield _make_event("anila.meta", anila_meta_evt)
             yield _make_chunk(
@@ -6006,6 +6427,7 @@ async def _router_streaming(
         )
         if reasoning_text:
             anila_meta["reasoning"] = reasoning_text
+        _remember_rescue(anila_meta)
         anila_meta_evt = {**anila_meta, "trace": []}
         yield _make_event("anila.meta", anila_meta_evt)
         yield _make_chunk(

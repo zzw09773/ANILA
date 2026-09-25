@@ -12,7 +12,7 @@ ANILA 是一套部署於**中科院內網（air-gapped，機房無外網）** �
 ## 現在怎麼跑
 
 看 [`docs/CURRENT-STATUS.md`](docs/CURRENT-STATUS.md)：開發線 `main`、測試入口、尚未上線項目。
-下面「唯一產品入口／七態 Agent 審批／Launch Token」有一部分是 redesign 期的產品語彙或已收斂的舊架構，**不要當成 2026-09 的實作清單**。
+下面「唯一產品入口／Launch Token」有一部分是 redesign 期的產品語彙或已收斂的舊架構，**不要當成 2026-09 的實作清單**。Agent 審批是三態（已註冊／已核准／已停用），沒有七態，也沒有 trace-test 閘門。
 
 ## 唯一產品入口
 
@@ -44,8 +44,8 @@ ANILA
     <td><img src="docs/assets/screenshots/redesign/models.png" alt="模型治理"><br><sub><b>模型治理</b>｜五態健康 / 分類上限 / per-model 金鑰狀態（Slice 6）</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/screenshots/redesign/agents.png" alt="Agent Registry"><br><sub><b>Agent Registry</b>｜七態審批 + trace-test 審批閘門（Slice 5）</sub></td>
-    <td><img src="docs/assets/screenshots/redesign/classification-inventory.png" alt="分類盤點"><br><sub><b>分類盤點</b>｜八資源 × 四級 cutover 前盤點（Slice 3）</sub></td>
+    <td><img src="docs/assets/screenshots/redesign/agents.png" alt="Agent Registry"><br><sub><b>Agent Registry</b>｜三態審批（已註冊／已核准／已停用），無 trace-test 閘門</sub></td>
+    <td><img src="docs/assets/screenshots/redesign/classification-inventory.png" alt="分類盤點"><br><sub><b>分類盤點</b>｜舊截圖。治理中心已下線此頁（2026-09-14），`classification-inventory` 導回儀表板</sub></td>
   </tr>
   <tr>
     <td><img src="docs/assets/screenshots/redesign/services.png" alt="服務登記 / 專案入口"><br><sub><b>服務登記</b>｜Launch Gateway 服務管理（Slice 7）</sub></td>
@@ -79,7 +79,7 @@ flowchart TB
 
     subgraph csp["services/csp（CSP 治理底座）"]
         ctrl["Control Plane /api/*<br/>身份 · 分類 · Agent/Service Registry · Task · Audit"]
-        data["Data Plane /v1/*<br/>OpenAI 相容 proxy · POST /v1/traces/{id}/spans"]
+        data["Data Plane /v1/*<br/>OpenAI 相容 proxy"]
         auth["card SSO /api/auth/card/*<br/>PKCS#7/CMS 驗章 · JWKS · revocation"]
     end
 
@@ -87,7 +87,7 @@ flowchart TB
     studio["anila-studio<br/>產出引擎 + job store"]
     pptx["pptx-renderer :7100"]
     worker["ingestion-worker（arq）"]
-    agents["已註冊 Agent（Full Trace 回報）"]
+    agents["已註冊 Agent"]
     redis[("Redis<br/>queue · revoke · studio job store")]
     db[("PostgreSQL + pgvector（RLS: csp_app）")]
     models["infra/models（anila-models-net）<br/>vLLM · TensorRT-LLM · FLUX"]
@@ -95,7 +95,7 @@ flowchart TB
     users -->|讀卡| card --> shell
     users -->|cookie| nginx --> shell & alm & gov & ctrl & data & router & studio
     shell -->|簽章| auth
-    data -.->|model=anila-router| router --> agents -->|trace spans| data
+    data -.->|model=anila-router| router --> agents
     ctrl --> db
     data --> models
     ctrl -.->|enqueue| redis --> worker --> db
@@ -138,7 +138,7 @@ flowchart TB
 
 | 目錄 | 說明 |
 |---|---|
-| [`compose`](./infra/compose/) | `platform.yml`（`anila-platform`）＋ `dev.yml`（`anila-platform-dev`）；由 root `compose.yaml` / `compose.dev.yaml` shim `include` |
+| [`compose`](./infra/compose/) | `platform.yml`（`anila`）＋ `dev.yml`（`anila-dev`）；由 root `compose.yaml` / `compose.dev.yaml` shim `include` |
 | [`deployment/scripts`](./infra/deployment/scripts/) | prod 生命週期：`deploy-prod.sh` ＋ `reissue-tls-cert.sh`／`reencrypt-credentials.py` 等 |
 | [`deployment/intranet`](./infra/deployment/intranet/) | air-gap 離線工具鏈：`intranet-deploy.sh`（card bootstrap）＋ `build-and-export-for-intranet.sh` ＋ 模型 / toolkit 下載與分塊搬運 |
 | [`nginx`](./infra/nginx/) | `anila.conf`（唯一外部入口設定）＋ `certs/`（live 憑證為 untracked） |
@@ -158,8 +158,8 @@ flowchart TB
 | 1B | CSP 骨架：`tasks` / `policy` / `launch` module 互不 import ＋ 契約 schema | `services/csp/app/modules/*` ＋ `.importlinter` | doc 02 / doc 10 §14 |
 | 2 | Task 中樞 ＋ Source Snapshot；`X-ANILA-Task-Id` 貫穿 proxy／usage | `services/csp/app/services/proxy/task_link.py` | doc 09 |
 | 3 | 四級分類（無機密 < 營業秘密 < 密 < 機密）＋ 單向閂鎖 ＋ 降級審批（雙人原則） | `services/csp/app/models/classification.py` | doc 08 |
-| 4 | Full Trace：`POST /v1/traces/{trace_id}/spans` 收攏 ＋ `anila_core.tracing` 匯出 SDK | `services/csp/app/api/traces.py`、`packages/anila-core/src/anila_core/tracing/` | doc 05 / 09 |
-| 5 | Agent Registry：七態審批（`draft` → … → `approved`）＋ trace-test 閘門（`trace_test_passed_at` 非空才可核章） | `services/csp/app/models/agent.py` | doc 05 |
+| 4 | 無 Full Trace span 收攏（現行樹沒有 `app/api/traces.py`，也沒有 `POST /v1/traces/{trace_id}/spans`） | — | — |
+| 5 | Agent Registry：三態審批（`registered` / `approved` / `disabled`），無 trace-test 閘門 | `services/csp/app/models/agent.py`、`apps/csp-governance-ui/src/utils/approvalStatus.js` | SYSTEM-MAP |
 | 6 | Model Gateway：per-model 金鑰（僅露 boolean presence）＋ 五態健康 ＋ http endpoint 預設拒收、由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準） | `services/csp/app/api/models.py` | doc 04 |
 | 7 | Service Registry ＋ launch token（Project Entry；`platform_links` 擴充為 `registered_services`） | `services/csp/app/models/service_launch.py` | doc 07 |
 | 8 | Studio artifact 契約 ＋ Redis durable job store（Redis 中斷則降級為 in-process） | `services/anila-studio/app/services/job_store.py` | doc 09 |
@@ -176,7 +176,7 @@ repo 根保有 `docker compose up -d` 錨點：root `compose.yaml` 以 `include:
 ```bash
 cp .env.example .env       # dev 才設 ANILA_ALLOW_DEV_SECRET=1
 docker compose up -d       # = compose.yaml → infra/compose/platform.yml
-docker compose -f compose.dev.yaml up -d   # dev stack（anila-platform-dev，獨立 ports/volumes）
+docker compose -f compose.dev.yaml up -d   # dev stack（anila-dev，獨立 ports/volumes）
 ```
 
 card 登入需本機 HiPKI 讀卡元件；本地 dev 若無實體卡，將 `ANILA_AUTH_MODE=password`（或 `mixed`）保留帳密流程，但**勿把開發模式推上內網 production 環境檔**。
@@ -270,7 +270,7 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 - **模型出向預設拒 http**：model endpoint 由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，production 與 dev 同準）；per-model 金鑰僅以 boolean presence 對外，不外洩。
 - **Credential 加密 ＋ SSRF guard**：AES-256-GCM ＋ PBKDF2；SSRF guard 對所有 user-supplied endpoint 把關，loopback / metadata 永不可繞過。
 - **唯一外部入口**：nginx `:443`（`infra/nginx/anila.conf`）Host allowlist ＋ 安全 header；runtime DB 以 `csp_app` role（非 superuser）連線以維持 RLS。
-- **審計**：所有 admin 操作 ＋ card 登入 / OIDC 失敗自動寫 `audit_logs`；正式 task 產生 `trace_id` 並進 Full Trace tree。
+- **審計**：所有 admin 操作 ＋ card 登入 / OIDC 失敗自動寫 `audit_logs`。沒有 Full Trace span 收攏。
 
 ---
 

@@ -169,7 +169,7 @@ Lab(`CLAUDE.md` §1)。`services/flux2-dev*`(在 `infra/models/docker-compose.ym
 (`services/asr-gateway/Dockerfile:51-53`、`:63`):
 
 ```bash
-docker exec anila-restart-asr-gateway-1 cat /app/.url_guard.sha256
+docker exec anila-asr-gateway-1 cat /app/.url_guard.sha256
 sha256sum packages/anila-core/src/anila_core/security/url_guard.py
 # 兩邊不同 = 跑的是舊碼,要 docker compose build asr-gateway 再 up -d
 ```

@@ -18,7 +18,7 @@ packages/anila-core/           ← shared SDK (parser / chunker / vector store /
 infra/compose/platform.yml     ← compose definition (root compose.yaml is a shim that includes it)
 ```
 
-Bring-up always goes through the root compose shim: `compose.yaml` → `infra/compose/platform.yml` (prod stack, project `anila-platform`); `compose.dev.yaml` → `infra/compose/dev.yml` (dev stack). Deployment scripts live under `infra/deployment/{scripts,intranet}/`.
+Bring-up always goes through the root compose shim: `compose.yaml` → `infra/compose/platform.yml` (prod stack, project `anila`); `compose.dev.yaml` → `infra/compose/dev.yml` (dev stack). Deployment scripts live under `infra/deployment/{scripts,intranet}/`.
 
 ---
 

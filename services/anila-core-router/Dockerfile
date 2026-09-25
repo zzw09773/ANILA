@@ -39,6 +39,9 @@ COPY services/anila-core-router/main.py ./
 # /app/.anila 是 router session SQLite 的家（compose 掛 named volume）。目錄要在
 # image 裡先建好並歸 anila，named volume 第一次建立時才會繼承這個所有權，否則
 # volume 是 root 的、router 寫不進去（uid 1000）。
+# /run/anila/service-clients 是 CSP 寫、router 讀的憑證目錄。所有權釘成
+# 10001:10002（anila-svc-tokens），mode 2750，跟 infra/docker/csp.Dockerfile
+# 相同，誰先掛上 named volume 都繼承得到。router 使用者加入該群組才能讀 0640。
 # pip's vendored CycloneDX SBOM still lists msgpack 1.1.2 and setuptools 70.3.0.
 # Runtime does not need pip; drop it after the setuptools/msgpack upgrade so
 # Trivy does not treat those vendor copies as shipped packages.
@@ -46,9 +49,13 @@ RUN pip install --no-cache-dir --upgrade 'setuptools>=78.1.1' 'msgpack>=1.2.1' \
     && pip uninstall -y pip \
     && rm -rf /usr/local/lib/python3.13/site-packages/pip \
     && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \
-    && mkdir -p /app/.anila \
+    && mkdir -p /app/.anila /run/anila/service-clients \
+    && addgroup -g 10002 -S anila-svc-tokens \
     && adduser -D -u 1000 anila \
+    && adduser anila anila-svc-tokens \
     && chown -R anila:anila /app \
+    && chown 10001:10002 /run/anila/service-clients \
+    && chmod 2750 /run/anila/service-clients \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 

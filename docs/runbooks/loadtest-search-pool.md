@@ -10,7 +10,7 @@ embedding HTTP 佔住（舊缺陷：池 30、實測 ~31 連線、health 全掛�
 
 - 本機可打到平台入口（預設 `https://127.0.0.1`，nginx → csp）。
 - 內網 gateway（`aiagent2` / `aiops`）**不可達** → 必須用 throwaway stub。
-- 可對 `anila-restart` 送負載；**不要** recreate / 改 compose / 重啟其容器。
+- 可對 `anila` 送負載；**不要** recreate / 改 compose / 重啟其容器。
 - 需要 `docker`（跑 `grafana/k6` 與 stub）、`curl`、`python3`。
 - 密碼只走環境變數：`ANILA_PASSWORD`。
 

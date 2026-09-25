@@ -18,7 +18,7 @@
 How each role relates to anila-core:
 
 - **Router deployment** ([`anila-core-router`](../../services/anila-core-router/)): directly `import`s Pillar 1 + Pillar 2.
-- **Agent developers**: `anila-core init` produces a non-RAG starter, or `pip install "anila-core[rag]"` and fork [`anila-agent`](../anila-agent/) as the official RAG agent starter template. The `[rag]` extra provides the heavyweight document-parsing packages.
+- **Agent developers**: fork [`anila-agent`](../anila-agent/) (the official RAG agent starter; the governance guide teaches this path). There is no `anila-core init` / `register` CLI. `pip install "anila-core[rag]"` provides the heavyweight document-parsing packages.
 - **ingestion-worker** (Arq async pipeline): consumes only Pillar 2 (`chunking_plugins`, `IngestionError`, `pg_pool`, `pgvector_store`, `credential_crypto`); never touches Pillar 1.
 
 > **Post-redesign repo layout (§17.1)**: the monorepo uses four tiers — `services/` (deployable services, incl. `csp` / `anila-core-router`), `apps/` (frontends), `packages/` (importable packages; this SDK lives here), `infra/` (compose / deploy scripts / nginx / models). The root [`compose.yaml`](../../compose.yaml) is a shim → `include: infra/compose/platform.yml`; deploy scripts live under `infra/deployment/{scripts,intranet}/`. Repo-root positioning: [`../../README.md`](../../README.md).
@@ -101,8 +101,6 @@ packages/anila-core/
     ├── registry/             # agent_registry + remote_agent_manifest (fetches from CSP /v1/agents)
     ├── runtime_config/       # snapshot · poller · apply (hot-reload)
     ├── models/               # pydantic DTOs
-    ├── cli/                  # init / register / status / bootstrap (legacy) + templates/
-    │
     └── ──── Pillar 2 · shared infrastructure ────
         ├── security/         # credential_crypto (AES-GCM + PBKDF2) + url_guard (SSRF, incl. endpoint_kind split)
         ├── storage/          # ports.py (Protocol) + adapters/ (pg_pool · pgvector_store · memory_file_store)
@@ -124,7 +122,7 @@ Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; ani
 | **Full Trace** (spans + `/v1/traces` ingest) | `anila_trace_sdk` producer: batch-export spans to the CSP endpoint and mirror them into the `anila.spans` SSE event | `tracing/sdk.py`; doc `05` §6 / `09` §10 |
 | **Task spine** (`X-ANILA-Task-Id`) | the runtime reads it via `CallerContext` and threads the task-id through the turn | `api/caller_context.py` |
 | **Four-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (`無機密` / `營業秘密` / `密` / `機密`) (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
-| **Agent Registry** (OE-1 three states: registered / approved / disabled) | `register` / `status` CLI submit into the CSP registry; the base model may be given by NAME (`base_model`) and CSP resolves it to an id. **The state machine lives in CSP** | `cli/register_cmd.py`; doc `05` |
+| **Agent Registry** (OE-1 three states: registered / approved / disabled) | No `anila-core register` CLI. Registration is the governance UI or `POST /api/agents/register`. **The state machine lives in CSP** | `services/csp/app/models/agent.py` |
 | **Model Gateway** (`ANILA_ENV` http fail-closed) | `url_guard` hard-rejects http for `endpoint_kind='model'` in production (no flag can rescue it). **Per-model keys / 5-state health live in CSP** | `security/url_guard.py`; doc `04` §8 |
 
 ---
@@ -189,31 +187,13 @@ Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the who
 
 Three pieces in code: `TraceExporter` (thread-safe, batching, bounded queue, drop-and-log), `TraceSession` (per-`trace_id` span factory; `span()` / `async_span()` context managers auto-time / mark ok/error / auto-parent), `ExportingProcessor` (bridges the in-tree `Tracer`/`Span` onto the exporter, mapping `SpanKind` → doc `05` §6 span-types). All exported from `anila_core.tracing`.
 
-### Scaffold a new agent + register
+### Where a new agent starts
 
-```bash
-anila-core init my-agent      # scaffolds a non-RAG starter from cli/templates/agent-template
-anila-core register \
-  --csp http://localhost:8000 --endpoint http://your-host:9100 \
-  --base-model gemma4 \
-  --runtime-type anila_agent --classification-level 機密 \
-  --version 1.0.0
-```
-
-`register` reads `anila.yaml`, logs into CSP with JWT, then `POST /api/agents/register`. Each flag overrides the manifest and is validated against a closed set:
-
-| Flag | Notes |
-|---|---|
-| `--base-model` | **required (or `base_model` in `anila.yaml`)**: the base model NAME. CSP resolves the name to an id, so a developer never has to copy a numeric database id out of the governance UI |
-| `--base-model-id` | only needed when two models share a display name: pass the numeric id directly |
-| `--runtime-type` | 5 values (doc `05` §3): `anila_agent` / `langchain` / `openwebui_pipe_compatible` / `openai_compatible_agent` / `custom_http` |
-| `--classification-level` | four levels (doc `08`): `無機密` / `營業秘密` / `密` / `機密`. Written to `default_classification_level` |
-| `--version` | agent version string (e.g. `1.0.0`) |
-
-> `--draft` (shadow registration) and `--classification-ceiling` were removed. Since OE-1
-> `approval_status` has three states (registered / approved / disabled) — there is no draft —
-> and agents have no classification ceiling; what is stored and enforced is
-> `default_classification_level`. Both flags only ever sent a field the server discarded.
+`anila-core init` and `anila-core register` are gone. Fork
+[`anila-agent`](../anila-agent/) and register from the governance center
+(Agent → register) or `POST /api/agents/register`.
+Approval is three states: registered / approved / disabled. There is no
+seven-state machine and no trace-test gate.
 
 ---
 

@@ -279,7 +279,7 @@ class ChatRequest(BaseModel):
 
     session_id: str
     user_message: str
-    model: str = settings.model  # 從 .env MODEL= 讀取，預設 google/gemma4
+    model: str = settings.model  # 從 .env MODEL= 讀取；未設定則為空，不猜模型名
     max_turns: int = 10
     system_prompt: str = ""
     history: list[dict[str, Any]] = []

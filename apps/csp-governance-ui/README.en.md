@@ -54,9 +54,8 @@ Routes are two-tier: `/login` (public) and `/` (`AppLayout`, `requiresAuth`) wit
 |---|---|---|
 | Dashboard | `DashboardView` (`/`) | platform overview (`dashboard/PlatformCard.vue`) |
 | Model governance | `ModelsView` (`models`) | **five-state health** (`utils/healthStatus.js`: unknown / healthy / degraded / unhealthy / disabled, normalizing legacy online/connecting/offline) + **per-model keys** (`has_api_key`: model key set / uses global key; `api_key` write-only). doc 04 |
-| Agent Registry | `DeveloperAgentsView` (`developer/agents`, developer) + `DeveloperGuideView`, `AgentRuntimeConfigView` | **seven-state approval** (`utils/approvalStatus.js`: draft / pending_connection_test / pending_trace_test / pending_security_review / approved / rejected / disabled) + **trace-test gate** (`isApprovable` requires `trace_test_passed_at`; not passed → not approvable, backend returns 409) + test-connection probe. doc 05 |
+| Agent Registry | `DeveloperAgentsView` (`developer/agents`, developer) + `DeveloperGuideView` | **three-state approval** (`utils/approvalStatus.js`: registered / approved / disabled). No seven-state machine and no trace-test gate. The test-connection probe remains. |
 | Service Registry | `PlatformLinksView` (`platform-links`), `ServiceAccessView`, `ServiceClientsView` | registered GUI services (`utils/serviceRegistry.js`: `launch_mode` new_tab/iframe, `config_source` env_seeded/db field locking, `classification_ceiling` four-level: 無機密 / 營業秘密 / 密 / 機密); service-token management. doc 07 |
-| Classification | `ClassificationInventoryView` (`classification-inventory`, admin) | pre-cutover classification inventory (doc 08 §15) |
 | Knowledge governance | `KnowledgeCollectionsView`, `ChunkingPreviewView`, `CollectionDetailView` (developer) | collection inspector, chunking-strategy comparison wizard; relation graph via `components/RelationGraph.vue` (cytoscape) |
 | Identity / departments | `UsersView`, `DepartmentsView` (admin) | users, departments, roles |
 | Audit / usage | `AuditLogsView`, `UsageView` | audit; usage charted with echarts (`charts/UsageLineChart.vue`, `TimeRangeSelector.vue`) |
@@ -74,7 +73,7 @@ Routes are two-tier: `/login` (public) and `/` (`AppLayout`, `requiresAuth`) wit
 | Styling | `tailwindcss` 3.4.17 + `postcss` + `autoprefixer` (build-time); design tokens via `src/assets/styles/tokens.css` |
 | Build | **Vite 6.0.5** (`@vitejs/plugin-vue` 5.2.1) |
 
-`scripts`: `dev` / `build` / `preview`. **No `test` script — `npm run build` is the verification gate.** The utils (`healthStatus` / `approvalStatus` / `serviceRegistry`) are deliberately pure functions so they can adopt vitest later with zero changes.
+`scripts`: `dev` / `build` / `preview` / `test` (`node --test tests/*.test.mjs`). The utils (`healthStatus` / `approvalStatus` / `serviceRegistry`) are pure functions; tests read the source directly.
 
 ---
 
@@ -93,13 +92,12 @@ apps/csp-governance-ui/
     │   ├── agents/     # AgentGuardPanel / BootstrapHowToTabs / bootstrapSnippets / inboundGuardSnippets
     │   ├── dashboard/  # PlatformCard
     │   └── RelationGraph.vue (cytoscape)
-    ├── api/            # 26 modules: agents / models / usage / auditLogs / apiKeys / agentCredentials /
+    ├── api/            # see src/api/: agents / models / usage / auditLogs / apiKeys /
     │                   #   services / serviceClients / serviceAccessGrants / platformLinks /
-    │                   #   classificationInventory / trustedHosts / ingestion* (collections/documents/jobs/
-    │                   #   evalRuns/llmCredentials/relations) / users / departments / banners / alerts /
+    │                   #   trustedHosts / ingestion* / users / departments / banners / alerts /
     │                   #   caAuth / chunkingPreview / client
     ├── stores/         # apiKeys / auth / models / usage (pinia)
-    ├── utils/          # approvalStatus (7-state) / healthStatus (5-state) / serviceRegistry
+    ├── utils/          # approvalStatus (3-state) / healthStatus (5-state) / serviceRegistry
     ├── composables/    # useTheme (light-first) / useDialog
     └── assets/styles/  # tokens.css (institutional blue) / main.css
 ```
@@ -125,7 +123,7 @@ The governance center **has no standalone compose service**: it is built by the 
 So **changing the governance center = rebuilding the `csp` image**:
 
 ```bash
-docker compose -f compose.yaml build csp        # name: anila-platform → infra/compose/platform.yml
+docker compose -f compose.yaml build csp        # name: anila → infra/compose/platform.yml
 docker compose -f compose.yaml up -d csp
 # day-2 lifecycle via infra/deployment/scripts/deploy-prod.sh; intranet bootstrap via infra/deployment/intranet/intranet-deploy.sh
 ```
@@ -133,7 +131,7 @@ docker compose -f compose.yaml up -d csp
 ### Verification gates
 
 ```bash
-npm run build          # the only frontend gate (this UI has no unit tests)
+npm test && npm run build
 # backend tests live in services/csp: cd services/csp && .venv/bin/python -m pytest
 ```
 

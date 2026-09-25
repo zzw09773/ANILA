@@ -28,8 +28,7 @@ import logging
 import os
 import sys
 
-# Ensure the CSP backend package is importable when run as a one-off
-# (matches scripts/init_db.py's path bootstrap).
+# Ensure the CSP package is importable when run as a one-off.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "services", "csp"))
 
 from anila_core.security.credential_crypto import (  # noqa: E402

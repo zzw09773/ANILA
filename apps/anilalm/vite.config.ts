@@ -24,11 +24,15 @@ export default defineConfig(({ mode }) => {
       port: 5174,
       strictPort: false,
       // Order matters: Vite's http-proxy walks the proxy table in
-      // insertion order, so the more specific `/api/studio` must come
-      // before the generic `/api` catch-all (otherwise studio traffic
-      // gets forwarded to csp).
+      // insertion order. The five Studio prefixes nginx sends to
+      // anila-studio must come before the generic `/api` catch-all
+      // (otherwise that traffic is forwarded to CSP).
       proxy: {
         '/api/studio': { target: anilaStudio, changeOrigin: true },
+        '/api/reports': { target: anilaStudio, changeOrigin: true },
+        '/api/mindmaps': { target: anilaStudio, changeOrigin: true },
+        '/api/infographics': { target: anilaStudio, changeOrigin: true },
+        '/api/datatables': { target: anilaStudio, changeOrigin: true },
         '/api': { target: cspBackend, changeOrigin: true },
         '/v1': { target: cspBackend, changeOrigin: true },
         '/v2': { target: cspBackend, changeOrigin: true },

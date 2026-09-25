@@ -62,7 +62,7 @@ The shell **holds no business logic or models**. It handles session guarding, co
 apps/anila-shell/
 ├── index.html · vite.config.js · vitest.setup.js
 ├── Dockerfile              # node:22-alpine build (npm ci) → nginx:1.30.4-alpine (digest-pinned) serve; EXPOSE 80
-├── .env.example · docker/nginx.conf · docs/ · e2e/ (historical README only)
+├── .env.example · docker/nginx.conf · docs/
 └── src/
     ├── main.jsx            # entry; BrowserRouter(basename=BASE_URL) + AuthProvider + ConfirmProvider; /app/* only, no login page
     ├── app.jsx             # ChatRuntime — agent selection, send, Task creation, Trace Explorer, watermarks, ServicesPanel
@@ -92,7 +92,7 @@ npm install && npm run dev      # Vite dev server :5173
 
 ### Container (monorepo compose)
 
-The shell's compose service is **`anila-ui`** (build context `apps/anila-shell`), managed by the root compose shim: `compose.yaml` (`name: anila-platform`) → `infra/compose/platform.yml`; dev is `compose.dev.yaml` → `infra/compose/dev.yml`. Production builds with `BASE_PATH=/anila/` and is reverse-proxied same-origin at 443 `/anila/` (shared SSO cookie).
+The shell's compose service is **`anila-ui`** (build context `apps/anila-shell`), managed by the root compose shim: `compose.yaml` (`name: anila`) → `infra/compose/platform.yml`; dev is `compose.dev.yaml` → `infra/compose/dev.yml`. Production builds with `BASE_PATH=/anila/` and is reverse-proxied same-origin at 443 `/anila/` (shared SSO cookie).
 
 ```bash
 docker compose -f compose.yaml up -d anila-ui        # built/up with the full stack
@@ -105,7 +105,7 @@ docker compose -f compose.yaml up -d anila-ui        # built/up with the full st
 npm test        # vitest run — 17 files / 222 tests (all green at time of writing)
 ```
 
-Vitest unit tests only; no Playwright E2E currently (`e2e/README.md` is a stale remnant — do not follow it).
+Vitest unit tests only; there is no Playwright E2E.
 
 ---
 

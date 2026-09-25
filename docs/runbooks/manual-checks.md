@@ -23,7 +23,7 @@ Exit code：`0` 乾淨、`3` 有發現（自己決定要不要修）、`1` 檢�
 SQLAlchemy／alembic／psycopg2）。**不新增**要在內網主機另裝的套件。
 ORM 檢查會借舊樹 `services/csp/.venv`（或設 `CHECKS_PYTHON`）；
 scratch DB 預設連本機已在跑的 throwaway Postgres（`127.0.0.1:55441`，
-可用 `SCRATCH_*` 覆寫）。**絕不**對 `anila-restart-csp-db-1` 跑 alembic。
+可用 `SCRATCH_*` 覆寫）。**絕不**對 `anila-csp-db-1` 跑 alembic。
 Check 4（幾何）同樣**不新增 npm／pip 相依**——用系統既有的 Chrome/Chromium；
 🔴 **找不到瀏覽器時它回 BROKEN(1)，不回 PASS**（安靜通過的幾何檢查比沒有檢查更糟）。
 

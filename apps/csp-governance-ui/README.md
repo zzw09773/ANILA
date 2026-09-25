@@ -54,9 +54,8 @@
 |---|---|---|
 | 儀表板 | `DashboardView`（`/`） | 平台總覽（`dashboard/PlatformCard.vue`） |
 | 模型治理 | `ModelsView`（`models`） | **五態健康**（`utils/healthStatus.js`：未知 / 健康 / 降級 / 異常 / 已停用，含舊 online/connecting/offline 正規化）＋**每模型金鑰**（`has_api_key`：已設定模型金鑰 / 使用全域金鑰；`api_key` write-only）。doc 04 |
-| Agent Registry | `DeveloperAgentsView`（`developer/agents`, developer）＋ `DeveloperGuideView`、`AgentRuntimeConfigView` | **七態審批**（`utils/approvalStatus.js`：草稿 / 待連線測試 / 待軌跡測試 / 待安全審查 / 已核准 / 已駁回 / 已停用）＋**軌跡測試關卡**（`isApprovable` 要求 `trace_test_passed_at`，未過不可核准、後端回 409）＋測試連線探針。doc 05 |
+| Agent Registry | `DeveloperAgentsView`（`developer/agents`, developer）＋ `DeveloperGuideView` | **三態審批**（`utils/approvalStatus.js`：已註冊 / 已核准 / 已停用）。無七態、無軌跡測試關卡。測試連線探針仍在。 |
 | Service Registry | `PlatformLinksView`（`platform-links`）、`ServiceAccessView`、`ServiceClientsView` | 已註冊 GUI 服務（`utils/serviceRegistry.js`：`launch_mode` 新分頁／iframe、`config_source` env_seeded／db 欄位鎖定、`classification_ceiling` 四級：無機密／營業秘密／密／機密）；service-token 管理。doc 07 |
-| 機敏分類 | `ClassificationInventoryView`（`classification-inventory`, admin） | 切換前分類盤點（doc 08 §15） |
 | 知識治理 | `KnowledgeCollectionsView`、`ChunkingPreviewView`、`CollectionDetailView`（developer） | collection 檢視、chunking 策略比較精靈；關聯圖走 `components/RelationGraph.vue`（cytoscape） |
 | 身份 / 部門 | `UsersView`、`DepartmentsView`（admin） | 使用者、部門、角色 |
 | 稽核 / 用量 | `AuditLogsView`、`UsageView` | 稽核；用量以 echarts（`charts/UsageLineChart.vue`、`TimeRangeSelector.vue`） |
@@ -74,7 +73,7 @@
 | 樣式 | `tailwindcss` 3.4.17 + `postcss` + `autoprefixer`（build 期）；設計 token 走 `src/assets/styles/tokens.css` |
 | Build | **Vite 6.0.5**（`@vitejs/plugin-vue` 5.2.1） |
 
-`scripts`：`dev` / `build` / `preview`。**無 `test` script — `npm run build` 即驗證閘門**。utils（`healthStatus` / `approvalStatus` / `serviceRegistry`）刻意寫成純函式，待日後接 vitest 時零改動即可測。
+`scripts`：`dev` / `build` / `preview` / `test`（`node --test tests/*.test.mjs`）。utils（`healthStatus` / `approvalStatus` / `serviceRegistry`）是純函式，測試直接讀原始碼。
 
 ---
 
@@ -93,13 +92,12 @@ apps/csp-governance-ui/
     │   ├── agents/     # AgentGuardPanel / BootstrapHowToTabs / bootstrapSnippets / inboundGuardSnippets
     │   ├── dashboard/  # PlatformCard
     │   └── RelationGraph.vue（cytoscape）
-    ├── api/            # 26 個模組：agents / models / usage / auditLogs / apiKeys / agentCredentials /
+    ├── api/            # 見 src/api/：agents / models / usage / auditLogs / apiKeys /
     │                   #   services / serviceClients / serviceAccessGrants / platformLinks /
-    │                   #   classificationInventory / trustedHosts / ingestion*（collections/documents/jobs/
-    │                   #   evalRuns/llmCredentials/relations）/ users / departments / banners / alerts /
+    │                   #   trustedHosts / ingestion* / users / departments / banners / alerts /
     │                   #   caAuth / chunkingPreview / client
     ├── stores/         # apiKeys / auth / models / usage（pinia）
-    ├── utils/          # approvalStatus（7 態）/ healthStatus（5 態）/ serviceRegistry
+    ├── utils/          # approvalStatus（3 態）/ healthStatus（5 態）/ serviceRegistry
     ├── composables/    # useTheme（淺色優先）/ useDialog
     └── assets/styles/  # tokens.css（官方藍）/ main.css
 ```
@@ -125,7 +123,7 @@ npm run dev            # Vite dev server :5173
 因此**改動治理中心 = 重建 `csp` 映像**：
 
 ```bash
-docker compose -f compose.yaml build csp        # name: anila-platform → infra/compose/platform.yml
+docker compose -f compose.yaml build csp        # name: anila → infra/compose/platform.yml
 docker compose -f compose.yaml up -d csp
 # 日常生命週期走 infra/deployment/scripts/deploy-prod.sh；內網 bootstrap 走 infra/deployment/intranet/intranet-deploy.sh
 ```
@@ -133,7 +131,7 @@ docker compose -f compose.yaml up -d csp
 ### 驗證閘門
 
 ```bash
-npm run build          # 唯一前端閘門（本 UI 無單元測試）
+npm test && npm run build
 # 後端測試另在 services/csp： cd services/csp && .venv/bin/python -m pytest
 ```
 

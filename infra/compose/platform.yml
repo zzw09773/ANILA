@@ -11,7 +11,7 @@
 # Dev 切換回去:把 .env 還原成 .env.dev.local 內容即可,所有 dev opt-in flag
 # 都被 .env 那邊重新賦值,compose 不再提供「dev 預設值」這個安全網。
 
-name: anila-platform
+name: anila
 
 # ── 容器日誌上限（P3.5）────────────────────────────────────────────────
 # 單一宣告點：各 service 用 logging: *anila-logging，不要在個別服務改數字。
@@ -169,6 +169,10 @@ services:
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
+      # 內部服務憑證。CSP 寫、router 只讀。人不必複製 token。
+      # FILE_GID 10002 = 兩支 Dockerfile 的 anila-svc-tokens。
+      ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
+      ANILA_SERVICE_CLIENT_FILE_GID: "10002"
       # ── branch SSO:中科院憑證卡登入 (prod-intranet-card fork 區) ─────────
       # ⚠ fork 區:main→prod sync 時不可拿 main 版 compose 整檔覆蓋 —
       # 6fcbdce (PR #16) 曾把這段蓋掉,內網就沒有刷卡登入了 (P0 迴歸)。
@@ -277,6 +281,9 @@ services:
       # intranet-deploy.sh 的 [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py
       # 產到 repo 根 ./secrets。
       - ../../secrets:/app/secrets:ro
+      # 空 volume 第一次掛上時，繼承映像裡 /run/anila/service-clients 的
+      # 10001:10002 與 mode 2750。改過 uid 之後要重建 csp 與 router 映像。
+      - anila-service-credentials:/run/anila/service-clients
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
@@ -432,23 +439,19 @@ services:
       - "9000"
     environment:
       CSP_BASE_URL: http://csp:8000
-      # 必須跟 csp 的 CSP_SERVICE_TOKEN 一致 — router 用它走 service-auth endpoint。
+      # 後援。正常憑證是 ANILA_SERVICE_TOKEN_FILE。這把舊式共用祕密在
+      # router-primary 有自己的憑證之後，打不進 router-only 端點。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       # 多輪派工的中途狀態（/v1/sessions/{id}/state、/answer）存在這個 SQLite；
       # 2026-09-02 之前沒有 volume，recreate 一次就全部消失（harness M2）。
       ANILA_SESSION_DB_PATH: /app/.anila/sessions.db
-      # 輪替後的 service token 寫在這個 state 目錄（main.py ROUTER_STATE_FILE）。
-      # 2026-09-24 之前預設 /var/lib/anila-router 沒有 volume：9/19 輪替的 token
-      # 在 recreate 後消失，Router 退回舊式 CSP_SERVICE_TOKEN，CSP 以
-      # legacy_env_cannot_satisfy_client_type 拒絕 router-primary／router-prompts（403），
-      # 主模型因此落回 settings.model。放進 router-sessions volume 才能保留。
+      # 只在 ANILA_SERVICE_TOKEN_FILE 沒設時才當後援。路徑有設而檔案不在時，
+      # router 失敗即關閉（token_source=file_missing），不讀這個目錄。
       ANILA_ROUTER_STATE_DIR: /app/.anila/state
-      # 換發時才設定：Console「Service clients」對 router-primary 按輪替後顯示一次的
-      # csk- token。state 目錄沒有 token 時，Router 啟動會把它寫進 state 檔
-      # （main.py _self_bootstrap，v1 是直接沿用，不是一次性交換）；寫入後即可從 .env 移除。
-      CSP_BOOTSTRAP_TOKEN: ${CSP_BOOTSTRAP_TOKEN:-}
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary.token
     volumes:
       - router-sessions:/app/.anila
+      - anila-service-credentials:/run/anila/service-clients:ro
       # 歸檔 2026-08-09:`MODEL: ${LLM_MODEL:-gemma4}` 曾列在這裡,但 main.py 不讀它
       # (README.md:107)——主路由模型完全由 CSP /api/models/router-primary runtime
       # 決定。留著只會讓人以為改 LLM_MODEL 就能換主路由模型。
@@ -1071,6 +1074,7 @@ volumes:
   csp-pgdata:
   redis-data:
   router-sessions:
+  anila-service-credentials:
   anila-studio-flux-cache:
   anila-studio-artifacts:
   # cold-stored — 對應上面 commented service。volume 名稱保留可以避免

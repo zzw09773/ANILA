@@ -56,7 +56,7 @@ grep -q '^ASR_DECODER_TOKEN=' .env || \
   printf 'ASR_DECODER_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
 
 # 起這兩個服務(明列服務名,不要裸跑 up -d 去動到別人正在測的容器)
-docker compose -p anila-restart --profile asr up -d --no-recreate asr-decoder asr-gateway
+docker compose -p anila --profile asr up -d --no-recreate asr-decoder asr-gateway
 
 # ⚠⚠ 一定要 reload nginx
 docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
@@ -78,7 +78,7 @@ COMPOSE_PROFILES=asr
 ### 關掉語音
 
 ```bash
-docker compose -p anila-restart --profile asr stop asr-gateway asr-decoder
+docker compose -p anila --profile asr stop asr-gateway asr-decoder
 docker exec anila-nginx nginx -s reload
 ```
 
@@ -152,10 +152,10 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
 
 ```bash
 # 本地全套(現行指令,沒有變):
-docker compose -p anila-restart --profile asr up -d
+docker compose -p anila --profile asr up -d
 
 # 遠端:只起 gateway,解碼交給算力中心
-docker compose -p anila-restart --profile asr-remote up -d
+docker compose -p anila --profile asr-remote up -d
 docker exec anila-nginx nginx -s reload
 ```
 
@@ -173,7 +173,7 @@ project`,連 `up` 都進不去。`asr-local` 只是順手給「只想起本機 d
 ### 驗證
 
 ```bash
-docker exec anila-restart-asr-gateway-1 \
+docker exec anila-asr-gateway-1 \
   python3 -c "import httpx,json;print(json.dumps(httpx.get('http://localhost:8200/asr/health').json(),ensure_ascii=False,indent=2))"
 ```
 
@@ -238,11 +238,11 @@ asr-gateway 的 `url_guard.py` 是 **build 時複製進 image 的拷貝**,沒有
 gateway 會**繼續用舊規則,而且沒有任何錯誤訊息**。比對指紋:
 
 ```bash
-docker exec anila-restart-asr-gateway-1 cat /app/.url_guard.sha256
+docker exec anila-asr-gateway-1 cat /app/.url_guard.sha256
 sha256sum packages/anila-core/src/anila_core/security/url_guard.py
 ```
 
-兩邊不同 → `docker compose -p anila-restart build asr-gateway && ... up -d asr-gateway`。
+兩邊不同 → `docker compose -p anila build asr-gateway && ... up -d asr-gateway`。
 
 - 指紋檔是 2026-08-05 才加進 Dockerfile 的。**`cat` 回 `No such file` 就代表這個
   映像比那天更舊** —— 那本身就是答案,直接重建。
@@ -269,7 +269,7 @@ sha256sum packages/anila-core/src/anila_core/security/url_guard.py
 **GPU 主機要自己疊回去:**
 
 ```bash
-docker compose -p anila-restart \
+docker compose -p anila \
   -f compose.yaml -f infra/compose/asr-gpu.yml \
   --profile asr up -d
 ```
@@ -290,7 +290,7 @@ could not select device driver "nvidia" with capabilities: [[gpu]]
 | | 症狀 | 多久看得出來 | 訊息在哪 |
 |---|---|---|---|
 | 疊 `asr-gpu.yml` | `up` 直接失敗 | 立刻 | `up` 的輸出 |
-| 都沒疊 | asr-decoder 起得來 → 載模型時死 → 重啟迴圈;asr-gateway 卡在 `depends_on: service_healthy` | 最多 20 × 30s ≈ **10 分鐘** | `docker logs anila-restart-asr-decoder-1` |
+| 都沒疊 | asr-decoder 起得來 → 載模型時死 → 重啟迴圈;asr-gateway 卡在 `depends_on: service_healthy` | 最多 20 × 30s ≈ **10 分鐘** | `docker logs anila-asr-decoder-1` |
 
 一樣不會偷偷用 CPU 跑大模型,但慢十分鐘、而且要自己去翻 decoder 的日誌。
 沒有 GPU 又要語音,就明確選一邊:`asr-cpu.yml`(小模型)或 `--profile asr-remote`(交給算力中心)。
@@ -307,7 +307,7 @@ could not select device driver "nvidia" with capabilities: [[gpu]]
 `infra/compose/asr-cpu.yml` 把 GPU 要求拿掉,改用 CPU + 小模型:
 
 ```bash
-docker compose -p anila-restart \
+docker compose -p anila \
   -f compose.yaml -f infra/compose/asr-cpu.yml \
   --profile asr up -d --no-recreate asr-decoder asr-gateway
 docker exec anila-nginx nginx -s reload
@@ -353,14 +353,14 @@ curl -sk -i https://localhost/asr/health | head -3
 ### A. 502 —— 先分「沒開」還是「起不來」
 
 ```bash
-docker ps -a --filter name=anila-restart-asr --format '{{.Names}}\t{{.Status}}'
+docker ps -a --filter name=anila-asr --format '{{.Names}}\t{{.Status}}'
 ```
 
 - **列表是空的** → 語音就是**沒開**。這是正常狀態,要開就照 §1。
 - **`Exited` / `Restarting`** → 語音**壞了**。看日誌:
   ```bash
-  docker logs --tail 50 anila-restart-asr-decoder-1
-  docker logs --tail 50 anila-restart-asr-gateway-1
+  docker logs --tail 50 anila-asr-decoder-1
+  docker logs --tail 50 anila-asr-gateway-1
   ```
   常見三種:
   - `ASR_DECODER_TOKEN must be set` → `.env` 沒填,見 §2。

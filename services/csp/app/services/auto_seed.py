@@ -348,28 +348,18 @@ def auto_seed():
                             health_status=item.get("health_status", "unknown"),
                             approval_status=item.get("approval_status", "approved"),
                         )
+                        if existing.approval_status == "approved":
+                            existing.approved_by = admin.id
                         db.add(existing)
                         logger.info(f"自動註冊 agent: {item['name']} -> {item['endpoint_url']}")
                     else:
-                        existing.owner_user_id = owner.id
-                        # OE-2 B3(同上):不覆寫既有 agent 的端點。管理員在治理中心
-                        # 改過的位址,不該因為一次重啟就悄悄變回 env 的值。
-                        existing.api_version = item.get("api_version", existing.api_version)
-                        existing.description_for_router = item.get(
-                            "description_for_router",
-                            existing.description_for_router,
+                        # 與模型相同:env 只負責建立。既有列歸管理員,
+                        # 開機不覆寫 description_for_router / approval_status /
+                        # health_status / approved_by(也不改端點與其它欄)。
+                        logger.info(
+                            "agent %s 已存在,保留現值(env 只負責建立)",
+                            item["name"],
                         )
-                        existing.base_model_id = base_model_id
-                        existing.capabilities = item.get("capabilities", existing.capabilities)
-                        existing.input_schema = item.get("input_schema", existing.input_schema)
-                        existing.health_status = item.get("health_status", existing.health_status)
-                        existing.approval_status = item.get(
-                            "approval_status",
-                            existing.approval_status,
-                        )
-
-                    if existing.approval_status == "approved":
-                        existing.approved_by = admin.id
 
                 db.flush()
             except json.JSONDecodeError as e:

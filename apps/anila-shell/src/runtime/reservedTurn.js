@@ -63,6 +63,14 @@ export function lengthBudgetNotice(hasContent = true) {
     : "輸出額度被思考用完，沒有留下正文。可把思考調低再問。";
 }
 
+/** 思考用完額度、Router 改直接作答時，思考區塊底下的一行。重整後不留。 */
+export const RESCUE_STATUS_LINE = "思考已用完額度，正在根據思考整理答案…";
+
+export function rescueStatusFromEvent(payload) {
+  if (!payload || payload.reason !== "reasoning_exhausted") return null;
+  return RESCUE_STATUS_LINE;
+}
+
 const HARNESS_EMPTY_NOTICE = /（(?:模型沒有留下正文|輸出額度被思考用完，沒有留下正文)[^）]*）/g;
 
 /** True when the bubble is only the empty-reply harness sentence (possibly repeated). */

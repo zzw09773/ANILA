@@ -62,7 +62,7 @@ ANILA
 apps/anila-shell/
 ├── index.html · vite.config.js · vitest.setup.js
 ├── Dockerfile              # node:22-alpine build（npm ci）→ nginx:1.30.4-alpine（釘 digest）serve；EXPOSE 80
-├── .env.example · docker/nginx.conf · docs/ · e2e/（僅歷史 README，無 spec）
+├── .env.example · docker/nginx.conf · docs/
 └── src/
     ├── main.jsx            # 入口；BrowserRouter(basename=BASE_URL) + AuthProvider + ConfirmProvider；僅 /app/*，無登入頁
     ├── app.jsx             # ChatRuntime — agent 選擇、送訊息、Task 建立、Trace Explorer、分類浮水印、ServicesPanel 掛載
@@ -92,7 +92,7 @@ npm install && npm run dev      # Vite dev server :5173
 
 ### 容器（monorepo compose）
 
-本 Shell 在 compose 中的 service 名為 **`anila-ui`**（build context `apps/anila-shell`），由根目錄 compose shim 納管：`compose.yaml`（`name: anila-platform`）→ `infra/compose/platform.yml`，dev 為 `compose.dev.yaml` → `infra/compose/dev.yml`。正式部署以 `BASE_PATH=/anila/` build，經主 nginx 於同源 443 `/anila/` 反向代理（SSO cookie 自然共用）。
+本 Shell 在 compose 中的 service 名為 **`anila-ui`**（build context `apps/anila-shell`），由根目錄 compose shim 納管：`compose.yaml`（`name: anila`）→ `infra/compose/platform.yml`，dev 為 `compose.dev.yaml` → `infra/compose/dev.yml`。正式部署以 `BASE_PATH=/anila/` build，經主 nginx 於同源 443 `/anila/` 反向代理（SSO cookie 自然共用）。
 
 ```bash
 docker compose -f compose.yaml up -d anila-ui        # 隨全棧一起 build/up
@@ -105,7 +105,7 @@ docker compose -f compose.yaml up -d anila-ui        # 隨全棧一起 build/up
 npm test        # vitest run — 17 檔 / 222 個測試（截至撰稿全綠）
 ```
 
-僅 Vitest 單元測試；本子專案目前無 Playwright E2E（`e2e/README.md` 為過時殘留，勿依它執行）。
+僅 Vitest 單元測試；本子專案沒有 Playwright E2E。
 
 ---
 

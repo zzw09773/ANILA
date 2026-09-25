@@ -16,7 +16,7 @@ services/anila-studio/         ← 唯一上游呼叫者（產出中心引擎）
 infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 shim → include 它）
 ```
 
-啟停走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（project `anila-platform`）。compose 中本服務只 `expose: 7100`、**不對 host 發佈 port**——它是 anila-studio 的內部渲染後端，不是需經 Service Registry / Launch Token 的「專案入口」GUI 服務。
+啟停走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（project `anila`）。compose 中本服務只 `expose: 7100`、**不對 host 發佈 port**——它是 anila-studio 的內部渲染後端，不是需經 Service Registry / Launch Token 的「專案入口」GUI 服務。
 
 ---
 

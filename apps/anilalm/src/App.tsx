@@ -2,8 +2,7 @@ import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { ThemeProvider } from './theme/ThemeContext'
 import { useAuthStore } from './store/auth'
-// branch SSO: LoginPage 留檔但不再 mount route — 唯一登入頁是 myCSPPlatform
-// CSP 平台 (路徑 /login)，ProtectedRoute 在 unauthenticated 時 redirect 過去。
+// 唯一登入頁是治理中心 /login。ProtectedRoute 在未登入時整頁導過去。
 import { DashboardPage } from './routes/DashboardPage'
 import { WorkspacePage } from './routes/WorkspacePage'
 import { ProtectedRoute } from './routes/ProtectedRoute'

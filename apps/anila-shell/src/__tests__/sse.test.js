@@ -141,6 +141,21 @@ describe("dispatchSseEvent", () => {
     expect(onReasoning).toHaveBeenCalledWith("thinking...");
   });
 
+  it("routes anila.rescue without treating it as answer text", () => {
+    const onRescue = vi.fn();
+    const acc = makeAccumulator();
+    dispatchSseEvent(
+      {
+        event: "anila.rescue",
+        data: '{"reason":"reasoning_exhausted"}',
+        raw: "",
+      },
+      { onRescue, accumulator: acc },
+    );
+    expect(onRescue).toHaveBeenCalledWith({ reason: "reasoning_exhausted" });
+    expect(acc.get()).toBe("");
+  });
+
   it("ignores anila.reasoning frames without delta", () => {
     const onReasoning = vi.fn();
     dispatchSseEvent(

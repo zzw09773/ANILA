@@ -31,21 +31,21 @@
 閘門關的是「可用」，不是「可管理」——把列從管理員眼前拿掉，他就沒辦法停用／
 編輯／刪除它（08-02 踩過：當時服務登記在前端濾掉整列，要停用只能手打 API）。
 
-## 操作步驟（本機 `-p anila-restart`）
+## 操作步驟（本機 `-p anila`）
 
 ```bash
 cd ~/桌面/ANILA/anila-restart-20260729/ANILA   # 或對應 worktree
 
 # 1) 還原 nginx 區塊（見上表 #1）後強制 recreate —— reload 不夠
 #    （bind-mount 綁 inode；git 改檔＝新 inode，容器仍握舊檔）
-docker compose -p anila-restart up -d --force-recreate nginx
+docker compose -p anila up -d --force-recreate nginx
 # ⚠ 不要 docker cp 進 conf.d/，會變成第二份設定 → resolver 重複宣告。
 
 # 2) shell / 治理中心 / 後端旗標改 true 後重建映像
 #    （治理中心與後端閘門都在 csp 映像裡；shell 在 anila-ui）
-docker compose -p anila-restart build anila-ui csp
-docker compose -p anila-restart up -d anila-ui csp
-docker compose -p anila-restart up -d --force-recreate nginx
+docker compose -p anila build anila-ui csp
+docker compose -p anila up -d anila-ui csp
+docker compose -p anila up -d --force-recreate nginx
 ```
 
 ## 驗收

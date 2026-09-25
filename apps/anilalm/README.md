@@ -63,14 +63,14 @@
 ```
 apps/anilalm/
 ├── package.json · Dockerfile（node:22-alpine build → nginx；ARG BASE_PATH=/anilalm/）
-├── vite.config.ts（/api、/v1、/v2 → VITE_CSP_BACKEND；/api/studio → VITE_ANILA_STUDIO_BACKEND）
-├── tsconfig*.json · index.html · .env.example · docker/ · _design/ · scripts/gen-studio-types.sh
+├── vite.config.ts（/api、/v1、/v2 → CSP；/api/studio、/api/reports、/api/mindmaps、/api/infographics、/api/datatables → Studio）
+├── tsconfig*.json · index.html · .env.example · docker/ · scripts/gen-studio-types.sh
 └── src/
     ├── main.tsx / App.tsx / types.ts / vite-env.d.ts
     ├── api/          # client.ts(axios + STUDIO_BASE_URL) · auth · chat · collections · conversations ·
     │                 #   documents · jobs · search · studio · studio-types.gen.ts · tasks.ts
     ├── store/        # auth.ts / workspace.ts / artifacts.ts（Zustand）
-    ├── routes/       # ProtectedRoute / LoginPage / DashboardPage / WorkspacePage
+    ├── routes/       # ProtectedRoute / DashboardPage / WorkspacePage（登入走治理中心 /login）
     ├── workspace/    # WSSidebar / WSChat / WSStudio / CommandModal / StudioWizard / ArtifactViewer /
     │                 #   ThemePicker / useJobStream
     ├── studio/       # generators.ts（5 種 artifact，皆先建 Task）/ themeMapping.ts / themes.ts
@@ -98,7 +98,7 @@ dev server 把 `/api`、`/v1`、`/v2` proxy 到 `VITE_CSP_BACKEND`（預設 `htt
 
 ### 容器（monorepo compose）
 
-本 SPA 在 compose 中的 service 名為 **`anilalm`**（build context `apps/anilalm`、`BASE_PATH=/anilalm/`），由根目錄 shim `compose.yaml`（`name: anila-platform`）→ `infra/compose/platform.yml` 納管；dev 為 `compose.dev.yaml` → `infra/compose/dev.yml`。經主 nginx 於同源 `/anilalm/` 反向代理。
+本 SPA 在 compose 中的 service 名為 **`anilalm`**（build context `apps/anilalm`、`BASE_PATH=/anilalm/`），由根目錄 shim `compose.yaml`（`name: anila`）→ `infra/compose/platform.yml` 納管；dev 為 `compose.dev.yaml` → `infra/compose/dev.yml`。經主 nginx 於同源 `/anilalm/` 反向代理。
 
 ```bash
 docker compose -f compose.yaml up -d anilalm

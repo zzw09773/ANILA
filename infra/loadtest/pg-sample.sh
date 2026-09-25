@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sample pg_stat_activity while a load level is running.
-# Reclaimed from attic W2-8; adapted to anila-restart project DB container.
+# Reclaimed from attic W2-8. Default DB is this tree's compose service
+# `csp-db` (project `anila`), else the container name `anila-csp-db-1`.
 #
 #   ./infra/loadtest/pg-sample.sh <label> <seconds> [interval_s]
 #
@@ -16,7 +17,15 @@ mkdir -p "$OUT_DIR"
 OUT="${OUT_DIR}/pg-${LABEL}.jsonl"
 : >"$OUT"
 
-DB_CONTAINER="${ANILA_DB_CONTAINER:-anila-restart-csp-db-1}"
+if [[ -n "${ANILA_DB_CONTAINER:-}" ]]; then
+  DB_CONTAINER="$ANILA_DB_CONTAINER"
+else
+  REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+  DB_CONTAINER="$(docker compose -f "$REPO_ROOT/compose.yaml" ps -q csp-db 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$DB_CONTAINER" ]]; then
+    DB_CONTAINER="anila-csp-db-1"
+  fi
+fi
 DB_USER="${ANILA_DB_USER:-csp}"
 DB_NAME="${ANILA_DB_NAME:-csp}"
 

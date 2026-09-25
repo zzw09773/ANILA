@@ -9,7 +9,7 @@
 
 > ANILA 平台技術 / 治理文件總入口。實作 source 在 repo 各子專案,本目錄是「為什麼這樣做」的記錄處。
 >
-> ⚠️ 現行開發線是單一 `main`。`governance/` 與 `runbooks/` 在這棵樹上。[`branch-sync-backlog.md`](./branch-sync-backlog.md) 描述的七分支同步**已失效**，只當歷史。
+> ⚠️ 現行開發線是單一 `main`。`governance/` 與 `runbooks/` 在這棵樹上。[`branch-sync-backlog.md`](./archive/branch-sync-backlog.md) 描述的七分支同步**已失效**，只當歷史。
 
 ---
 
@@ -18,11 +18,13 @@
 ```
 docs/
 ├── README.md                   <-- 本檔(索引)
-├── branch-sync-backlog.md      <-- main ↔ prod 同步策略 + 永久 fork 區清單 (已失效,見警語)
-│
-├── handoffs/                   <-- session 移交紀錄 (HANDOFF 系列,12 份)
-│
 ├── archive/                    <-- 歷史文件,按原目錄名分群
+│   ├── branch-sync-backlog.md  <-- 舊七分支同步（已失效）
+│   ├── agents-seven-branch-model.md
+│   ├── handoffs/               <-- session 移交紀錄
+│   ├── TOMORROW.md
+│   ├── UX-IDEAS.md
+│   ├── PRE-TAG-RESIDUALS-2026-08-15.md
 │   ├── agent-framework/        <-- anila-agent / runtime 架構 (8 份)
 │   ├── agenticrag/             <-- AgenticRAG 解耦 / 增強計畫 (3 份)
 │   ├── anila-core/             <-- anila-core 邊界 / runtime 設計 (2 份)
@@ -67,7 +69,7 @@ docs/
 | 我想知道… | 看這份 |
 |---|---|
 | **內網部署怎麼跑** | [`runbooks/intranet-deployment-runbook.md`](./runbooks/intranet-deployment-runbook.md) + `infra/deployment/scripts/deploy-prod.sh` |
-| **（已失效）舊七分支同步策略** | [`branch-sync-backlog.md`](./branch-sync-backlog.md) |
+| **（已失效）舊七分支同步策略** | [`branch-sync-backlog.md`](./archive/branch-sync-backlog.md) |
 | **TLS 私鑰怎麼輪換** | [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) |
 | **Service token 怎麼 cutover** | [`runbooks/service-token-cutover.md`](./runbooks/service-token-cutover.md) |
 | **legacy agent bootstrap 流程** | [`runbooks/legacy-agent-bootstrap.md`](./runbooks/legacy-agent-bootstrap.md) |

@@ -27,8 +27,8 @@ Multi-replica
 -------------
 Unlike ``agent_credentials`` we keep ``service_clients`` 1:1 with a
 client name — the row IS the client. Multiple replicas of the same
-service share the row's plaintext token; rotation pushes a new token
-to all replicas via the state-file refresh path (Phase B / Phase C).
+service share the row's plaintext token; CSP writes that plaintext into
+the shared credential directory and each replica re-reads the file.
 We can revisit if a service ever needs per-replica tokens.
 """
 from datetime import datetime, timezone

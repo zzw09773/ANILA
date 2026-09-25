@@ -565,6 +565,7 @@ def seal_once() -> list[date]:
 async def _checkpoint_loop() -> None:
     import asyncio
 
+    await asyncio.sleep(0)
     while True:
         try:
             await asyncio.to_thread(seal_once)

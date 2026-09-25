@@ -180,7 +180,7 @@ cd services/csp && python -m pytest -q   # 或從這裡；兩者結果必須一�
 
 ## 9. 啟動與部署
 
-整合 stack（含 redis / ingestion-worker / router / anila-studio / 前端 / nginx）由根目錄 compose shim 定義：`compose.yaml` → [`infra/compose/platform.yml`](../../infra/compose/platform.yml)（prod，project `anila-platform`）、`compose.dev.yaml` → `infra/compose/dev.yml`（dev）。
+整合 stack（含 redis / ingestion-worker / router / anila-studio / 前端 / nginx）由根目錄 compose shim 定義：`compose.yaml` → [`infra/compose/platform.yml`](../../infra/compose/platform.yml)（prod，project `anila`）、`compose.dev.yaml` → `infra/compose/dev.yml`（dev）。
 
 ```bash
 # 從 repo 根目錄

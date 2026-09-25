@@ -5,7 +5,6 @@
 但本專案還有第二條建表路徑，而且其中一條是**正式環境**的：
 
 * ``app/main.py:115`` —— alembic 升級失敗時的退路 ``Base.metadata.create_all()``；
-* ``scripts/init_db.py:15``；
 * ``tests/conftest.py:76`` 與 ``:100``（整套 SQLite 測試的 schema）。
 
 這幾條走的是 ORM 的 ``__table_args__``，不是 migration。少了那份宣告，它們建出來

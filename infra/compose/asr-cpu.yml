@@ -21,7 +21,7 @@
 #  日誌裡。本檔把 ASR_DEVICE 明確設成 cpu,正是為了不落進那個狀態。)
 #
 # 用法(注意 -f 的順序,後者覆蓋前者):
-#   docker compose -p anila-restart \
+#   docker compose -p anila \
 #     -f compose.yaml -f infra/compose/asr-cpu.yml \
 #     --profile asr up -d --no-recreate asr-decoder asr-gateway
 #

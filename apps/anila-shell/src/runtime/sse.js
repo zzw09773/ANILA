@@ -118,6 +118,8 @@ export async function streamChatCompletion({
   onError,
   // Continue Response:回應被 max_tokens 截斷(finish_reason==='length')時回報。
   onFinishReason,
+  // 思考用完輸出額度：Router 關掉思考再整理一次答案。
+  onRescue,
   // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
   // 已累積文字保留(onText 已即時寫入),中止不視為錯誤(回傳累積值)。
   signal,
@@ -218,6 +220,7 @@ export async function streamChatCompletion({
         onSpans,
         onUnknownEvent,
         onFinishReason,
+        onRescue,
         onError: (payload) => {
           terminalError = payload;
           onError?.(payload);
@@ -325,6 +328,10 @@ export function dispatchSseEvent(event, callbacks) {
   }
   if (event.event === "anila.spans") {
     safeJsonInvoke(event.data, callbacks.onSpans, "anila.spans");
+    return;
+  }
+  if (event.event === "anila.rescue") {
+    safeJsonInvoke(event.data, callbacks.onRescue, "anila.rescue");
     return;
   }
   if (event.event === "anila.error") {

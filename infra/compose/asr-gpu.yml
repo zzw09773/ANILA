@@ -23,7 +23,7 @@
 #   `--profile asr-remote` 只起 gateway、解碼交給算力中心。
 #
 # 用法(注意 -f 的順序,後者覆蓋前者):
-#   docker compose -p anila-restart \
+#   docker compose -p anila \
 #     -f compose.yaml -f infra/compose/asr-gpu.yml \
 #     --profile asr up -d
 #

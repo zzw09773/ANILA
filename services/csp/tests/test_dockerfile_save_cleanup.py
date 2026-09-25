@@ -22,7 +22,6 @@ PID_PATH = "/run/sisidsdaemon.pid"
 EXCLUDED_DOCKERFILES: dict[str, str] = {
     "cht/Dockerfile": "development-only mock card reader",
     "infra/loadtest/stub/Dockerfile": "load-test-only embedding stub",
-    "scraps/ANILA_UI/scraps/anila-ui-backup-2026-04-21/Dockerfile": "dead backup",
 }
 
 _DOCKERFILE_NAME = re.compile(

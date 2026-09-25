@@ -223,14 +223,30 @@ def _walk_routes(routes, prefix: str = ""):
     (``StaticFiles``, WSGI) are yielded with the ``_OPAQUE`` marker so the
     caller has to decide about them rather than skip them silently.
 
-    Descent is keyed on carrying a ``routes`` attribute rather than on
-    ``isinstance(..., Mount)``: ``starlette.routing.Host`` is a container
-    too, and an isinstance check walks straight past a host-based sub-app
-    serving ``POST /health/wipe``. ``Route`` has no ``routes``, so endpoints
-    are unaffected; ``Host`` has no ``path`` either, which is correct —
-    host-based routing adds no path prefix.
+    FastAPI 0.141 wraps ``include_router`` targets in ``_IncludedRouter``.
+    That object has no ``routes`` list; the child table is
+    ``original_router.routes`` and the mounted prefix is
+    ``include_context.prefix`` (already joined with the parent router's
+    own prefix, but not with the prefix of how *this* router was included).
+    The walk prefix carries that outer prefix.
+
+    Descent into Mount/Host is keyed on carrying a ``routes`` attribute
+    rather than on ``isinstance(..., Mount)``: ``starlette.routing.Host``
+    is a container too, and an isinstance check walks straight past a
+    host-based sub-app serving ``POST /health/wipe``. ``Route`` has no
+    ``routes``, so endpoints are unaffected; ``Host`` has no ``path``
+    either, which is correct — host-based routing adds no path prefix.
     """
     for route in routes:
+        original = getattr(route, "original_router", None)
+        include_context = getattr(route, "include_context", None)
+        if original is not None and include_context is not None:
+            child_prefix = prefix + (getattr(include_context, "prefix", "") or "")
+            yield from _walk_routes(original.routes, child_prefix)
+            low = getattr(original, "_low_priority_routes", None)
+            if low:
+                yield from _walk_routes(low, child_prefix)
+            continue
         path = prefix + (getattr(route, "path", "") or "")
         if hasattr(route, "routes"):
             sub = route.routes

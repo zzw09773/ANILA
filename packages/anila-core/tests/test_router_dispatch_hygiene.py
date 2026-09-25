@@ -456,6 +456,7 @@ def test_router_uses_the_csp_designated_primary_model(db_path, monkeypatch) -> N
 
 @respx.mock
 def test_router_falls_back_to_env_model_when_no_primary_is_set(db_path, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "model", "env-configured-model")
     monkeypatch.setattr(settings, "csp_service_token", "svc-token")
     respx.get(CSP_ROUTER_PRIMARY_URL).mock(
         return_value=httpx.Response(404, json={"detail": "尚未指定 ANILA 主路由模型"})
@@ -473,8 +474,38 @@ def test_router_falls_back_to_env_model_when_no_primary_is_set(db_path, monkeypa
 
     client = TestClient(create_router_app(session_db_path=str(db_path)))
     _post(client, [{"role": "user", "content": "嗨"}])
-    assert sent[0]["model"] == settings.model
-    assert client.get("/health").json()["router_model_source"] == "env"
+    assert sent[0]["model"] == "env-configured-model"
+    health = client.get("/health").json()
+    assert health["router_model"] == "env-configured-model"
+    assert health["router_model_source"] == "env"
+
+
+@respx.mock
+def test_router_health_reports_unresolved_when_fallback_is_empty(db_path, monkeypatch) -> None:
+    """The config default is empty. /health must not invent a model name."""
+    monkeypatch.setattr(settings, "model", "")
+    monkeypatch.setattr(settings, "csp_service_token", "svc-token")
+    respx.get(CSP_ROUTER_PRIMARY_URL).mock(
+        return_value=httpx.Response(404, json={"detail": "尚未指定 ANILA 主路由模型"})
+    )
+    respx.get(CSP_AGENTS_URL).mock(
+        return_value=httpx.Response(200, json=_agents_payload())
+    )
+    sent: list[dict] = []
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=_completion("你好"))
+
+    respx.post(CSP_URL).mock(side_effect=capture)
+
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    _post(client, [{"role": "user", "content": "嗨"}])
+    assert sent[0]["model"] == ""
+    assert sent[0]["model"] != "google/gemma4"
+    health = client.get("/health").json()
+    assert health["router_model"] is None
+    assert health["router_model_source"] == "unresolved"
 
 
 # ---------------------------------------------------------------------------

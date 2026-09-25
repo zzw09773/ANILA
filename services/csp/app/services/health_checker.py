@@ -264,6 +264,10 @@ def _model_probe_targets(db) -> list[dict]:
 
 async def _health_check_loop():
     """Periodically check all registered model endpoints."""
+    # Yield before the first probe. Those probes do blocking DNS and HTTP
+    # on this loop; running them before lifespan finishes startup makes
+    # TestClient (and a slow boot) sit in startup until a probe returns.
+    await asyncio.sleep(0)
     while True:
         try:
             db = SessionLocal()
@@ -352,6 +356,7 @@ async def _health_check_loop():
 
 async def _agent_health_check_loop():
     """Periodically check all approved agent endpoints."""
+    await asyncio.sleep(0)
     while True:
         try:
             db = SessionLocal()

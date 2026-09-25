@@ -48,17 +48,15 @@ export function filenameFromContentDisposition(headers) {
   return plain[1].trim().replace(/^"(.*)"$/, '$1')
 }
 
-// P2.1 — public CSPKI CA bundle for JWKS over https (agent-side trust anchor).
-// Backend route required: GET /api/agents/platform-ca/download → application/x-pem-file
-// (serves services/csp/app/services/cspki_ca_bundle.pem).
+// P2.1 — 平台 CA。GET /api/agents/platform-ca/download 已存在。
+// 503 = 這次部署缺檔（「請聯絡維運」），不是端點沒做。
+// 快速起步 zip 已含 ca.pem。
 export const downloadPlatformCa = () =>
   client.get('/api/agents/platform-ca/download', { responseType: 'blob' })
 
-// P2.1 — single-file dispatch JWT verifier for existing Python agents.
-// Backend route required: GET /api/agents/anila-verify/download
-// → text/x-python (or application/octet-stream), filename=anila_verify.py
-// Source of truth: packages/anila-core/.../contrib/anila_verify.py (served by CSP).
-// Not implemented in this package — UI degrades honestly on 404.
+// P2.1 — 單檔驗簽。GET /api/agents/anila-verify/download 已存在，
+// 檔名 anila_verify.py。503 = 這次部署缺檔（「請聯絡維運」）。
+// 快速起步 zip 已含同一支 anila_verify.py。
 export const downloadAnilaVerify = () =>
   client.get('/api/agents/anila-verify/download', { responseType: 'blob' })
 
@@ -80,13 +78,6 @@ export const testAgentConnection = (id) =>
 // not updatable here (latter two retired as accept-and-ignore controls).
 export const updateAgent = (id, patch) =>
   client.put(`/api/agents/${id}`, patch)
-
-// Runtime-config admin writes are retired (PATCH → 410). GET remains for
-// read-only inspection of any historically stored JSON. The governance
-// view no longer calls PATCH — do not re-add a write helper that the UI
-// would present as a working control.
-export const getAgentRuntimeConfig = (id) =>
-  client.get(`/api/agents/${id}/runtime-config`)
 
 // Per-agent functions (2026-06-11, extensible) — developer-designed,
 // surfaced in the ANILA chat UI for the active agent. kind + config.
