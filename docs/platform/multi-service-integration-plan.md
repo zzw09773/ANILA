@@ -1,3 +1,5 @@
+> ⚠ **2026-09-26**：擁有者裁定先拿掉 GitLab。compose 不再宣告 `gitlab`，nginx 不再代理 `/gitlab`。下文凡是要部署或打開 `/gitlab` 的步驟都不要照做。n8n 與 code-server 仍在。
+>
 > ⚠ **2026-08-01 P2.1 契約更新**：下文若仍描述 `csk-`／`bsk-`／`X-CSP-Service-Token`／
 > `CSP_SERVICE_TOKEN` 作為 agent 派工身分，該段已過時。現行＝5 分鐘派工 JWT＋JWKS 驗簽
 > （開發者不領鑰匙；三級接入見 `docs/guides/developer-guide.md`）。

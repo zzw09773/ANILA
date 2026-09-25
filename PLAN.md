@@ -620,8 +620,7 @@ downgrade 先把集合收斂進純量再 drop 表(第一版直接 drop,會讓鏡
   批次核准(兩道界線=原始輸入 1000／實際核准 500)。
 - **codeserver**:擁有者裁定必要(掛 repo＋docker extension 內網維運)。
   ⚠ docker.sock = 主機 root 等價,密碼即失守——取捨記錄在 `platform.yml` 註解。
-- **n8n/gitlab 裁定保留**;gitlab 的 `.env` 必帶 `GITLAB_ROOT_PASSWORD`(omnibus 直讀 env,
-  空字串在 Ruby 是 truthy,長度檢查會炸)。
+- **n8n 仍保留**（`COMPOSE_PROFILES=ops`）。**GitLab 於 2026-09-26 先拿掉**：不再宣告服務、volume、`GITLAB_*` 或 nginx `/gitlab`。主機上的舊 volume `anila-platform_gitlab_data` 留著，由擁有者以後移除。
 - ⚠ **`ANILA_ENV=production` 與 `ANILA_ALLOW_DEV_SECRET` 無交叉檢查**——內網部署照抄 dev 值
   不會被擋,上線前自查。
 - ⚠ 觀察(未處理):`UserResponse.updated_at` 非選擇性,若有資料列該欄為 NULL,

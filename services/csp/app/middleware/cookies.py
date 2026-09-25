@@ -12,8 +12,8 @@ Three cookies make up the Wave 2 session:
   echoes the value back as the ``X-CSRF-Token`` header on mutating
   requests (double-submit pattern, see ``middleware/csrf.py``).
 
-Cookie ``Path`` (P2.6 medium: same-origin ``/n8n`` / ``/gitlab`` /
-``/codeserver`` must not receive the session JWT):
+Cookie ``Path`` (P2.6 medium: same-origin ``/n8n`` / ``/codeserver``
+must not receive the session JWT):
 
 - Access token is issued once per prefix that actually consumes it
   (``ACCESS_COOKIE_PATHS``). nginx 443/4443 send cookie-auth traffic

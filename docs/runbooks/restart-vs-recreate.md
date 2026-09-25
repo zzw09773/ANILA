@@ -134,7 +134,7 @@ build 當下就編進 JS bundle 了。這兩個服務改到那幾個鍵,`up -d` 
 
 **拉的、不是 build 的**(改 repo 不會動到它們;換版本或 digest 才要 `up -d`):
 `csp-db`(`platform.yml:33`)、`redis`(`:271`)、`nginx`(`:399`,tag＋digest 都釘死)、
-`n8n`(`:649`)、`gitlab`(`:684`)。平台 16 個服務裡有 `build:` 的是 11 個、
+`n8n`。GitLab 已於 2026-09-26 從 compose 拿掉，不再是拉來的映像。平台服務裡有 `build:` 的仍是 11 個、
 共 10 張映像(`codeserver-init` 與 `codeserver` 共用 `anila-codeserver:local`)。
 nginx 的設定檔不在映像裡,是 bind mount(`platform.yml:406`)—— 那條路走上一節第 2 點。
 

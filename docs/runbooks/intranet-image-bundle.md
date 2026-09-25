@@ -92,7 +92,8 @@ bash infra/deployment/intranet/build-and-export-for-intranet.sh /mnt/usb/anila-i
   `restart/from-redesign` 的 annotated tag export,`MANIFEST.txt` 記錄 tag+commit;
   內網端不 checkout branch,只接收 bundle
 
-預演量級(本機 2026-08-02,含 gitlab + asr-decoder,不含模型):大約十 GB 級;
+預演量級(本機 2026-08-02,當時含 gitlab + asr-decoder,不含模型):大約十 GB 級;
+2026-09-26 起出貨不再帶 GitLab 映像。
 出發前看 `du -sh` 與 `MANIFEST.txt` 當日數字,USB 預留餘裕。
 
 ---
@@ -314,7 +315,7 @@ SKIP_BUILD=1 SKIP_PULL=1 REBUILD_ON_SAVE_FAIL=1 \
 所以**執行前要先停棧**(停棧對 IDS 無效,但對「不要動到正在服務的映像」有效),
 或改用另一個 `COMPOSE_PROJECT_NAME` 加 overlay 換 tag(見下)。
 
-**上游 image**(pg/redis/nginx/n8n/gitlab)沒有 `build:`,救不回來——那幾張如果被毒到
+**上游 image**(pg/redis/nginx/n8n)沒有 `build:`,救不回來——那幾張如果被毒到
 只能 `docker pull` 重抓,內網無網路時就必須從有網路的機器重新打包。
 
 **替代路徑**(棧完全不能動時):用另一個 `COMPOSE_PROJECT_NAME`(例如

@@ -164,7 +164,7 @@ WITH_MODELS=1 WITH_WEIGHTS=1 bash infra/deployment/intranet/build-and-export-for
 ```
 01-anila-built.tar.gz       (csp / ingestion-worker / router / anilalm / anila-ui / pptx-renderer)
 02-base.tar.gz              (pgvector / redis / nginx)
-03-cold.tar.gz              (codeserver / n8n / gitlab — nginx 鎖死但保留)
+03-cold.tar.gz              (codeserver / n8n — nginx 鎖死但保留；GitLab 已於 2026-09-26 撤下)
 04-models.tar.gz            (WITH_MODELS=1:含 flux2-dev / anila-flux-agent / vllm-gemma4 等,數十 GB)
 05-weights-*.tar            (WITH_WEIGHTS=1:預設 FLUX.2-dev 166G + gemma4 59G + assistant 0.9G)
 INTRANET-LOAD.sh            (內網一鍵 import,含 sha256 驗檔 + 權重解壓)
@@ -181,7 +181,7 @@ intranet-image-overrides.yml   (compose up 時將 pinned image 改為已 load �
 > **首次建置的入口卡片**：`AUTO_REGISTER_LINKS` 已移除，fresh DB 的首頁不會再自動
 > 長出入口卡片；既有資料不會被這次收斂刪除。平台管理員需在 `/platform-links` 手動
 > 建立交付需要的初始入口，建議清單為：`/anila`、`/anilalm`、`/codeserver`、
-> `/n8n`、`/gitlab`，以及內網 MLOps 入口 `https://aiops.ai.ncsist.org.tw:4443/`。
+> `/n8n`，以及內網 MLOps 入口 `https://aiops.ai.ncsist.org.tw:4443/`。不要再加 `/gitlab`。
 > ⚠ `/anilalm/` 現回 **503「尚未開放」是刻意的發行閘，不是故障**——重開程序見 `anilalm-release-gate.md`。
 
 > **權重只能從這裡帶** — 內網無對外下載通道。image 同理 (本地客製 build,
@@ -944,9 +944,9 @@ cd /opt/anila && docker compose -p anila -f compose.yaml -f intranet-image-overr
 
 ## 5. Phase 4:後續維運
 
-### 5.1 解凍 codeserver / n8n / gitlab
+### 5.1 解凍 codeserver / n8n
 
-nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx`。
+nginx 對 `/codeserver` `/n8n` 若仍是 `return 404`，解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d --force-recreate nginx`。沒有 `/gitlab` location，不要加回去。
 （`infra/nginx/anila.conf` 是**單檔 bind-mount**；git 改檔會換 inode，容器仍抓舊檔且無任何錯誤。`restart`／`reload` 都不夠，見 `anila.conf:447`。）
 
 ### 5.2 TLS cert rotation

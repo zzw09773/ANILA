@@ -35,7 +35,7 @@ class PlatformLink(Base):
     # When True, the link is visible to anyone passing the role gate — no
     # per-user / per-department grant required. Set on portal-style links
     # (the ANILA dashboard itself) and Help pages. Sensitive services
-    # (ANILA LM / codeserver / GitLab) leave this False so they require
+    # (ANILA LM / codeserver / n8n) leave this False so they require
     # an explicit ServiceAccessGrant. New rows default to False (private).
     is_public = Column(Boolean, nullable=False, default=False, server_default="false")
     # Array of role names. [] = everyone (default); ['admin'] = admin

@@ -572,7 +572,7 @@ fi
 # 閘門設在這裡而不是 build 之後隨便一個地方:這是「本機髒映像」變成「交付品」的
 # 那一步,過了這一步就出門了。
 #
-# 只掃**本專案 build 出來的**映像(有 build: 的服務),不掃 pg/redis/nginx/gitlab
+# 只掃**本專案 build 出來的**映像(有 build: 的服務),不掃 pg/redis/nginx
 # 這些上游映像 —— 那些映像的內容不是我們的 build context 決定的,而且實測就會紅:
 # nginx:alpine 有 etc/ssl/cert.pem 與 var/log/nginx/*.log、redis:7-alpine 有
 # etc/ssl/cert.pem(2026-08-06 實測)。把不歸我們管、也修不動的東西擋在閘門上,

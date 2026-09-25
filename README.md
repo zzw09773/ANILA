@@ -215,7 +215,8 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 這是**尚未打包進 `.15`** 的出貨樹應長成的樣子。打包／打 tag 是後續步驟，不在這份 README 當完成條件。
 
 - Compose 專案名跟 `.env` 的 `COMPOSE_PROJECT_NAME`（Lab 常用 `anila`）。不要再用 `anila-restart` 當出貨 project。
-- **預設不起** GitLab、n8n：兩者都是 `COMPOSE_PROFILES=ops`。nginx `/gitlab/`、`/n8n` 在容器沒起時會 502。要自動化／合規再顯式開 ops。
+- **GitLab 已拿掉**（2026-09-26）：compose 不宣告服務與 volume，nginx 沒有 `/gitlab`。主機上的舊 volume `anila-platform_gitlab_data` 留著，由擁有者以後自行移除。
+- **預設不起 n8n**：`COMPOSE_PROFILES=ops`。nginx `/n8n` 在容器沒起時會 502。要自動化再顯式開 ops。
 - **code-server 預設開**：密碼 + 掛 `docker.sock`，不走卡片 SSO；這是擁有者接受的維運面，不是一般使用者入口。
 - 使用者提供的模型／agent／憑證 URL：**禁止** `host.docker.internal`。LAN embedding 用明確 IP/FQDN（例如 Triton gRPC `9001`，不要把 ASR `9000` 當成 embedding）。
 - 內網 production 卡登：**不要設** `CARD_CA_BUNDLE_PATH`；用映像內 `cspki_ca_bundle.pem`。Lab 的 `secrets/dev-card-ca/` 是 mock，絕不可帶進 `.15`。

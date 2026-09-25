@@ -237,7 +237,7 @@ def _cookie_path(header: str) -> str | None:
 
 
 def test_session_cookies_use_csp_paths_not_site_root(db):
-    """Access JWT is scoped off /n8n /gitlab; CSRF stays readable at /."""
+    """Access JWT is scoped off /n8n /codeserver; CSRF stays readable at /."""
     user = make_user(db, username="path-user")
     tokens = create_tokens(user, db, include_lifetimes=True)
     response = Response()

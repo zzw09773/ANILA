@@ -110,7 +110,7 @@ Source-of-truth 規則（✅ 已拍板 2026-07-02）：
 
 ```text
 env_seeded service：
-- 適合系統內建入口（ANILA LM、GitLab、n8n、MLSteam 等）。
+- 適合系統內建入口（ANILA LM、n8n、MLSteam 等）。GitLab 已於 2026-09-26 撤下，不要再當內建入口。
 - UI 可顯示，但不可直接修改 env-owned 欄位（顯示鎖定標記）；
   修改需回到 deployment env，重啟後由 seed 重新同步。
 - db_editable_fields 白名單內的欄位（如 is_active）為 admin-sticky，seed 不覆蓋。
@@ -458,8 +458,8 @@ Service 可回傳：
 - `myCSPPlatform/frontend/src/views/PlatformLinksView.vue` 是既有管理 UI；
   支援新增、編輯、停用、重新啟用與永久刪除 platform link。
 - `AUTO_REGISTER_LINKS` 由 `myCSPPlatform/backend/app/services/auto_seed.py`
-  寫入，只處理既有欄位；root compose 目前可自動註冊 ANILA LM、
-  Code Server、n8n、GitLab、MLSteam 等入口。
+  寫入，只處理既有欄位。舊清單曾含 ANILA LM、Code Server、n8n、GitLab、MLSteam。
+  2026-09-26 起不要再註冊 `/gitlab`。
 - ⚠ source-of-truth 衝突（設計待解）：`AUTO_REGISTER_LINKS` 的 seed 是
   **每次重啟都會 re-sync 的 idempotent upsert** —— 對既有 row 會把
   `url`、`icon`、`description`、`sort_order`、`is_public`、`required_roles`
@@ -523,7 +523,7 @@ policy、classification ceiling、origin allow-list 或 iframe session policy。
 `myCSPPlatform/docker/nginx.conf` 目前是靜態 reverse proxy：
 
 - 443 入口包含 `/anila/`（ANILA runtime UI，同源入口）、`/anilalm`、
-  `/codeserver`、`/n8n`、`/gitlab/`、`/api/*`、`/v1`、`/v2`、`/router/`、
+  `/codeserver`、`/n8n`、`/api/*`、`/v1`、`/v2`、`/router/`、
   `/uploads/` 等固定路徑。
 - ANILA UI 已從 4443 搬到 443 同源 subpath `/anila/`（帶尾斜線的
   `location /anila/` 精準前綴；origin commit `a06c0cb`，本機工作樹對應
@@ -534,7 +534,7 @@ policy、classification ceiling、origin allow-list 或 iframe session policy。
 - 已有 path-prefix proxy 能力，但不是 registry-driven route。
 - Response header 目前含 `X-Frame-Options SAMEORIGIN` 與
   `Content-Security-Policy frame-ancestors 'self'`；nginx 註解提到若要
-  iframe GitLab/n8n，之後需補 `frame-src` whitelist。
+  iframe n8n，之後需補 `frame-src` whitelist。GitLab 路徑已移除。
 
 結論：repo 已有固定 path prefix proxy，尚未有依 `platform_links` 動態產生
 iframe route、allowed origin、sandbox、launch gateway 或 per-service CSP

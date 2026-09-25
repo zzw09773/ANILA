@@ -127,7 +127,7 @@ export async function resolveLaunch(request, service) {
 /**
  * launch_url 是否指向本平台自己的 origin。
  *
- * 平台自營的五個服務(/anila、/n8n、/gitlab、/codeserver…)由同一台 nginx
+ * 平台自營的服務(/anila、/n8n、/codeserver…)由同一台 nginx
  * 同源代理,後端回的 launch_url 就是相對路徑。這件事對「內嵌」模式有決定性
  * 影響 —— 見 IframeOverlay 的註解。
  *

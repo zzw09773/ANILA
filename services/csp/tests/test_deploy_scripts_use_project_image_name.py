@@ -39,11 +39,39 @@ def test_csp_image_derives_from_compose_project_name():
 CPU_OVERLAY = REPO / "infra/compose/asr-cpu.yml"
 
 
-def test_deploy_generates_gitlab_root_password_like_every_other_secret():
-    """gitlab crash-looped on the fresh install: 'initial_root_password: Length
-    is too short' — the one-shot script generated every secret except this one."""
-    text = (REPO / "infra/deployment/intranet/intranet-deploy.sh").read_text(encoding="utf-8")
-    assert 'set_env GITLAB_ROOT_PASSWORD       "${GITLAB_ROOT_PASSWORD:-$(openssl rand -base64 24)}"' in text
+def test_gitlab_is_absent_while_n8n_and_codeserver_stay():
+    """2026-09-26 擁有者裁定先拿掉 GitLab。服務、volume、GITLAB_* 與 /gitlab
+    location 都不再宣告；n8n 與 codeserver 維持原樣。主機上的舊 volume 不在
+    這份測試裡刪。"""
+    import re
+
+    import yaml
+
+    platform = (REPO / "infra/compose/platform.yml").read_text(encoding="utf-8")
+    doc = yaml.safe_load(platform)
+    services = set((doc.get("services") or {}))
+    volumes = set((doc.get("volumes") or {}))
+    assert "gitlab" not in services
+    assert "n8n" in services
+    assert "codeserver" in services
+    assert not any(name.startswith("gitlab") for name in volumes)
+    assert "n8n_data" in volumes
+    assert "codeserver_config" in volumes
+    assert "GITLAB_" not in platform
+
+    deploy = (REPO / "infra/deployment/intranet/intranet-deploy.sh").read_text(encoding="utf-8")
+    example = (REPO / ".env.example").read_text(encoding="utf-8")
+    assert "GITLAB_" not in deploy
+    assert "GITLAB_" not in example
+
+    nginx = (REPO / "infra/nginx/anila.conf").read_text(encoding="utf-8")
+    assert not re.search(r"location\s+/gitlab/?", nginx)
+    assert "gitlab:8181" not in nginx
+    assert nginx.count("location /n8n") >= 1
+    assert nginx.count("location /codeserver") >= 1
+    # 兩條 TLS listener 都要留 n8n／codeserver，且都不再有 /gitlab。
+    assert nginx.count("location /n8n") == 2
+    assert nginx.count("location /codeserver") == 2
 
 
 def test_cpu_overlay_forces_a_cpu_compute_type():

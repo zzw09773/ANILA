@@ -149,7 +149,7 @@
   <rect x="470" y="195" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="550" y="218" text-anchor="middle" fill="#1c1d20">ingestion-worker</text><text x="550" y="236" text-anchor="middle" fill="#6f737c" font-size="11">文件解析、切塊、嵌入</text>
   <rect x="290" y="275" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0"/><text x="370" y="298" text-anchor="middle" fill="#1c1d20">anila-studio + pptx</text><text x="370" y="316" text-anchor="middle" fill="#6f737c" font-size="11">簡報產生與渲染</text>
   <rect x="470" y="275" width="160" height="60" rx="6" fill="#fff" stroke="#c9cbd0" stroke-dasharray="4 3"/><text x="550" y="298" text-anchor="middle" fill="#1c1d20">asr-gateway (+decoder)</text><text x="550" y="316" text-anchor="middle" fill="#6f737c" font-size="11">語音輸入，選配</text>
-  <rect x="290" y="355" width="340" height="44" rx="6" fill="#fff" stroke="#c9cbd0" stroke-dasharray="4 3"/><text x="460" y="374" text-anchor="middle" fill="#1c1d20">codeserver · n8n · gitlab · anilalm</text><text x="460" y="391" text-anchor="middle" fill="#6f737c" font-size="11">附屬服務；預設關閉或維護中</text>
+  <rect x="290" y="355" width="340" height="44" rx="6" fill="#fff" stroke="#c9cbd0" stroke-dasharray="4 3"/><text x="460" y="374" text-anchor="middle" fill="#1c1d20">codeserver · n8n · anilalm</text><text x="460" y="391" text-anchor="middle" fill="#6f737c" font-size="11">附屬服務；預設關閉或維護中</text>
   <line x1="460" y1="95" x2="460" y2="115" stroke="#6f737c" marker-end="url(#ar)"/>
   <line x1="370" y1="175" x2="370" y2="195" stroke="#6f737c" marker-end="url(#ar)"/>
   <line x1="550" y1="175" x2="550" y2="195" stroke="#6f737c" marker-end="url(#ar)"/>
@@ -176,7 +176,7 @@
 <tr><td>文件匯入</td><td>ingestion-worker</td><td>解析上傳的文件、切塊、算向量。</td><td>知識庫文件卡在處理中。</td></tr>
 <tr><td>簡報</td><td>anila-studio、pptx-renderer</td><td>由對話產生簡報。</td><td>只影響簡報功能。</td></tr>
 <tr><td>語音（選配）</td><td>asr-gateway、asr-decoder</td><td>麥克風輸入轉文字。gateway 一定在平台主機；decoder 可本機或外部（第 11 節）。</td><td>麥克風按鈕不出現。</td></tr>
-<tr><td>附屬（預設關）</td><td>codeserver、n8n、gitlab、anilalm</td><td>開發與自動化工具、ANILA LM。nginx 預設回 404 或「暫時維護中」。</td><td>無影響。</td></tr>
+<tr><td>附屬（預設關）</td><td>codeserver、n8n、anilalm</td><td>開發與自動化工具、ANILA LM。nginx 對未開放的入口回 404 或「暫時維護中」。GitLab 已撤下，沒有 <code>/gitlab</code>。</td><td>無影響。</td></tr>
 </table>
 
 <h2 id="s2"><span class="num">2</span>出貨包裡有什麼、怎麼分辨演練包</h2>
@@ -188,7 +188,7 @@
 ├── intranet-image-overrides.yml  ← 讓 compose 用載入的映像而不是 build
 ├── 01-compose-images.images.txt  ← 映像清單
 ├── 01-compose-images.files.txt
-└── 01-images/                    ← 15 個 .tar.gz，約 6 GB
+└── 01-images/                    ← 映像 tar.gz（不再含 GitLab）
     ├── anila-restart-csp.tar.gz
     ├── anila-restart-anila-ui.tar.gz
     ├── anila-restart-router.tar.gz
@@ -202,8 +202,7 @@
     ├── nginx_1.30.4-alpine@sha256_….tar.gz
     ├── pgvector_pgvector_pg16.tar.gz
     ├── redis_7-alpine.tar.gz
-    ├── n8nio_n8n_1.98.2.tar.gz
-    └── gitlab_gitlab-ce_19.2.1-ce.0@sha256_….tar.gz</code></pre>
+    └── n8nio_n8n_1.98.2.tar.gz</code></pre>
 <p>出貨包<strong>只有映像</strong>。設定（<code>.env</code>）、憑證、密碼都是在內網主機上由安裝腳本產生的，不在包裡，也不該在包裡。程式碼與文件（含本手冊）由對應版本的 repo 帶進去。</p>
 <h3>Ref 判準：演練包與出貨包長得一模一樣</h3>
 <p>唯一的差別在 <code>MANIFEST.txt</code> 的 <code>Ref</code> 欄位：</p>
@@ -413,7 +412,7 @@ docker exec anila-nginx nginx -s reload</code></pre>
 </ul>
 
 <h3>10.6 附屬入口</h3>
-<p>nginx 對 <code>/codeserver</code>、<code>/n8n</code>、<code>/gitlab/</code> 預設回 404，<code>/anilalm/</code> 回「暫時維護中」（503）。這些是刻意的發行閘，<strong>不是故障，不要為它們動 nginx</strong>。要開放時照 <code>docs/runbooks/anilalm-release-gate.md</code>。</p>
+<p>nginx 對 <code>/codeserver</code>、<code>/n8n</code> 若回 404，<code>/anilalm/</code> 回「暫時維護中」（503），那是刻意的發行閘，<strong>不是故障，不要為它們動 nginx</strong>。沒有 <code>/gitlab/</code>。要開放 ANILA LM 時照 <code>docs/runbooks/anilalm-release-gate.md</code>。</p>
 <h3>10.7 每天看一眼</h3>
 <ul>
   <li>儀表板 → 服務健康全綠、告警為 0。</li>

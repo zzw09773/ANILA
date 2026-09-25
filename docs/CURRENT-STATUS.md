@@ -1,7 +1,7 @@
 # 目前狀態（給交接與代理）
 
 > 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
-> 更新：2026-09-24。HEAD 以 `git log -1` 為準。
+> 更新：2026-09-26。HEAD 以 `git log -1` 為準。
 
 ## 開發線
 
@@ -33,6 +33,12 @@ Router 讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀（另外每 30 秒
 緊急吊銷：治理中心「服務客戶端」按吊銷。CSP 不會把已吊銷的列重新核發，並刪掉憑證檔，該服務因此失敗即關閉。日誌可搜 `refusing to re-issue`。要恢復時，刪掉那筆已吊銷的 `service_clients` 列，然後重啟 CSP（或等下一個週期）；系統會重新核發並寫檔。畫面上的手動輪替只供緊急使用，新憑證會直接寫回憑證檔，不必貼進 `.env`。
 
 換上這版之後要做一次：重建 csp 與 router 映像（兩邊都加了 gid 10002），再用更新後的 compose 啟動，讓新的 named volume `anila-service-credentials`（dev 是 `anila-service-credentials-dev`）掛上。不要再把 `CSP_BOOTSTRAP_TOKEN` 灌進 router。
+
+## GitLab（2026-09-26 先拿掉）
+
+compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab_logs`、`gitlab_data`。nginx 各 listener 不再代理 `/gitlab`。部署腳本不再寫 `GITLAB_*`。n8n 與 code-server 仍在。
+
+這次沒有刪除主機上的 Docker volume。舊的 `anila-platform_gitlab_data` 還在主機上，之後由擁有者自行移除。
 
 ## 尚未當成上線完成的項目
 

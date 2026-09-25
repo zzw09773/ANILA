@@ -255,14 +255,14 @@ fi
 
 # 預設值來源(選用):image 包裡的 intranet-defaults.env(刻意不進 git,實體隨包帶入
 # air-gap)。提供 ADMIN_PASSWORD / CODESERVER_PASSWORD / CARD_INITIAL_OWNERS /
-# GITLAB_ROOT_PASSWORD 等;沒提供的 secret 一律 openssl 隨機生成。
+# 沒提供的 secret 一律 openssl 隨機生成。GitLab 已撤下,不再生成它的 root 密碼。
 # 安全:不用 `source`(被竄改的 defaults 檔會執行任意指令),改嚴格解析 KEY=VALUE
 # + 白名單;非白名單 / 註解 / 空行一律略過。
 DEFAULTS="$BUNDLE/intranet-defaults.env"
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|SECRET_KEY|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|ASR_DECODER_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|SECRET_KEY|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|ASR_DECODER_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
         printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
       *) : ;;
@@ -285,13 +285,6 @@ if [ "$REGEN" = 1 ]; then
   set_env CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
   set_env CSP_APP_DB_PASSWORD       "${CSP_APP_DB_PASSWORD:-$(openssl rand -hex 32)}"
   set_env CODESERVER_PASSWORD       "${CODESERVER_PASSWORD:-$(openssl rand -base64 24)}"
-  # gitlab 的 initial_root_password 最短 8 字元;不生成的話 gitlab 在乾淨主機上
-  # 會 crash-loop(2026-09-02 演練實撞)。跟其他 secret 一樣:有提供用提供,否則隨機。
-  set_env GITLAB_ROOT_PASSWORD       "${GITLAB_ROOT_PASSWORD:-$(openssl rand -base64 24)}"
-  # gitlab root 初始密碼:與其他 secret 同 parity — 只在 REGEN(全新/重生)寫;
-  # REGEN=0(保留現有)時不動,避免 re-run 偷改既有密碼。compose 用 env 帶入,
-  # 只在 gitlab 首次 reconfigure 生效。
-  : # GITLAB_ROOT_PASSWORD 已在上面與其他 secret 一起處理(提供或隨機生成)
 else
   SECRET_KEY_VALUE="$(get_env SECRET_KEY)"
   [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(get_env CSP_SECRET_KEY)"

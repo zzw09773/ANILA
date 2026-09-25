@@ -44,7 +44,8 @@
 | `services/csp` | CSP control plane + data plane | FastAPI + SQLAlchemy/Alembic + PostgreSQL/pgvector + Redis；權威管理 users/API keys/models/agents/conversations/ingestion/usage/JWKS/revocation；Vue 管理前端在 `apps/csp-governance-ui`。 |
 | `packages/anila-core` | 共用 Python runtime library | agent runtime、Router app factory、tools、memory、SSRF guard、credential crypto、pgvector store、ingestion/parser primitives。不是常駐服務。 |
 | `services/anila-core-router` | OpenAI-compatible Router 部署 wrapper | 實際 app 由 `anila_core.api.router_server.create_router_app()` 產生；負責 primary model refresh、agent dispatch、SSE passthrough、多輪 session/resume。 |
-| `packages/anila-agent` | 官方 agent starter/template | OpenAI Agents SDK 型 runtime；可 CLI 或 FastAPI service wrapper；root compose 以唯讀模板掛進 CSP。 |
+| `packages/anila-agent-quickstart` | 預設助手路徑 | 助手頁下載的通用 zip。MLSteam lab 只改 `agent.py`，`./run.sh start` 後再註冊。 |
+| `packages/anila-agent` | 進階實作範例（第二個下載） | 不是預設上手路徑。要工具迴圈、長期記憶、多輪或背景工作才用。 |
 | `services/ingestion-worker` | Arq background worker | parse -> image caption -> chunk -> embed -> pgvector -> rule/LLM/similarity relations；無 HTTP port。 |
 | `services/anila-studio` | artifact 生成服務 | FastAPI；不共用 CSP DB，透過 HTTP/JWKS/Redis 與 CSP 協作；處理 slides/reports/mindmaps/infographics/datatables。 |
 | `apps/anilalm` | knowledge-base + Studio SPA | React/TS/Vite；另有 `services/pptx-renderer` Node renderer，前端不直接打 renderer，由 `anila-studio` server-to-server 呼叫。 |
@@ -167,7 +168,7 @@ Image generation：
 
 ## 8. 已知雷區 / 待確認事項
 
-- `prod-public-passwd` 已移除 code-server，但 `n8n` / `gitlab` 仍在 compose 與 nginx 對外。外網部署若不需要，必須移除 service、nginx location 與 `AUTO_REGISTER_LINKS`。
+- GitLab 已於 2026-09-26 從 compose、nginx `/gitlab` 與 `GITLAB_*` 拿掉。n8n 與 code-server 仍在。不要把 `/gitlab` 加回導覽或 smoke。主機 volume `anila-platform_gitlab_data` 沒刪，見 `docs/CURRENT-STATUS.md`。
 - `infra/deployment/scripts/phase1-e2e.sh` 仍測 `/codeserver/`，對目前 `prod-public-passwd` 是過時殘留，不可當 prod 驗證依據。
 - `apps/anila-shell` 的 `BASE_PATH` / nginx `/anila/` routing 曾被 README 提到，但 root/dev compose 主要只傳 CSP/Router build args。重建 UI 前先確認資產路徑。
 - `services/flux2-dev-agent` volume 目前偏向 `share-dev/uploads/flux`，但 prod deploy 腳本檢查 `share/uploads/flux`。prod 啟用 image-generator 前確認落地路徑與 nginx `/uploads/flux` 一致。

@@ -825,7 +825,7 @@ UI 送 `version`,後端 schema 只收 `agent_version` 且沒有 `extra="forbid"`
   **加上**本專案選了 `url.path` 而不是 `scope["path"]`。
   **只升版不改判斷來源,等於把安全邊界外包給函式庫。**
 - **nginx 擋得住,但不夠**:Host 允許清單在 80／443／4443 三個埠都擋掉了(已實測),
-  然而 csp 與 codeserver／n8n／gitlab 同在 `anila-net`,那三個都跑使用者提供的程式碼,
+  然而 csp 與 codeserver／n8n 同在 `anila-net`,那兩個都跑使用者提供的程式碼,
   可以直接打 `csp:8000` 繞過 nginx。
   ⚠ `TrustedHostMiddleware` **沒有註冊**,而且就算註冊,它掛在 `CsrfMiddleware` **內側**,
   補不到這個洞。

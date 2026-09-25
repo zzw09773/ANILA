@@ -101,7 +101,7 @@ bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
 docker compose -p anila -f compose.yaml -f /path/to/bundle/intranet-image-overrides.yml up -d --no-build
 ```
 
-預設**不要** `COMPOSE_PROFILES=ops`（GitLab／n8n 不起）。code-server 預設開。
+預設**不要** `COMPOSE_PROFILES=ops`（n8n 不起）。GitLab 已於 2026-09-26 從 compose 與 nginx 拿掉，沒有 `/gitlab` 可探。code-server 預設開。
 
 ## 5. 服務驗證清單
 
@@ -131,7 +131,8 @@ Lab 另外要重新註冊 LAN GLM／Qwen（`http://172.16.120.38:4000`）與 Tri
 | `https://127.0.0.1/login`、`/` | 200 HTML 治理中心 |
 | `https://127.0.0.1:4443/` | 200 HTML 對話 UI |
 | `https://127.0.0.1/codeserver/` | 200 |
-| `https://127.0.0.1/n8n/`、`/gitlab/` | **502**（預設不起 ops profile，正確） |
+| `https://127.0.0.1/n8n/` | **502**（預設不起 ops profile，正確） |
+| `https://127.0.0.1/gitlab/` | 當天仍是 **502**。2026-09-26 起不再代理這個路徑，不要再把 502 當成現況 |
 | `https://127.0.0.1/anilalm/` | **503 尚未開放**（發行閘，正確） |
 | `SSL_CERT_FILE`（csp 容器） | `/etc/anila/pki/model-ca.pem`（compose 把 `.env` 的 `ANILA_MODEL_CA_FILE` 映射成這顆；容器內**沒有**同名 `ANILA_MODEL_CA_FILE` 變數） |
 | `POST /api/auth/login` admin | 200，role=`owner`，三顆 cookie |

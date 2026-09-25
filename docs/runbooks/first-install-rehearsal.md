@@ -103,10 +103,10 @@ docker run --rm -v "$PWD/share:/s" alpine:3.20 sh -c "chown -R $(id -u):$(id -g)
 ### 🔴 D 類：祕密**可能不是產生的，而是從包裡讀的**
 
 `intranet-deploy.sh:207-212` 會從**映像包裡**讀 `intranet-defaults.env`
-（**刻意不進 git，實體隨包帶入**），直接覆寫九個鍵：
-`ADMIN_PASSWORD`、`CODESERVER_PASSWORD`、`CARD_INITIAL_OWNERS`、`GITLAB_ROOT_PASSWORD`、
+（**刻意不進 git，實體隨包帶入**），直接覆寫八個鍵：
+`ADMIN_PASSWORD`、`CODESERVER_PASSWORD`、`CARD_INITIAL_OWNERS`、
 `SECRET_KEY`、`CSP_SERVICE_TOKEN`、`CSP_DB_PASSWORD`、`CSP_APP_DB_PASSWORD`、
-`INTERNAL_PLATFORM_API_KEY`。
+`INTERNAL_PLATFORM_API_KEY`。不再讀寫 `GITLAB_ROOT_PASSWORD`。
 
 **兩條路都可能發生，裝機的人必須知道自己走的是哪一條**：
 

@@ -68,10 +68,10 @@ AFTER_REVOKE=$(req "$USER_TOKEN" GET "/api/platform-links" | python3 -c "import 
 echo "  smoke-user sees ANILA LM AFTER revoke: $AFTER_REVOKE  (expected: NO)"
 [ "$AFTER_REVOKE" = "NO" ] && green "    ✓ revoke removes visibility" || red "    ✗ revoke leaked"
 
-# Step 10 — codeserver + GitLab + n8n smoke through nginx
+# Step 10 — codeserver + n8n smoke through nginx（GitLab 已撤，不再探 /gitlab/）
 section "Step 10 — same-origin paths reachable via nginx (port 443)"
 
-for path in "/codeserver/" "/gitlab/" "/n8n/"; do
+for path in "/codeserver/" "/n8n/"; do
   HTTP=$(curl -sk -L -o /dev/null -w "%{http_code}" "https://localhost$path")
   TITLE=$(curl -sk -L "https://localhost$path" | grep -oE "<title>[^<]*</title>" | head -1)
   echo "  $path → HTTP $HTTP $TITLE"

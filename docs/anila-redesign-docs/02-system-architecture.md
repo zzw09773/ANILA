@@ -308,7 +308,7 @@ root `docker-compose.yml` 是目前完整 stack，project name 為 `anila-platfo
 - `pptx-renderer`、`anilalm`、`anila-ui`：artifact renderer 與兩個前端 experience。
 - `nginx`：唯一對外 edge。
 
-root compose 也仍包含冷存或 branch-sensitive 的 `codeserver`、`n8n`、`gitlab` 入口，且 `AUTO_REGISTER_LINKS` 會 seed ANILA LM、Code Server、n8n、GitLab、MLSteam 等 link。新專案不可整包照搬，需先決定哪些服務是正式產品、哪些只是部署環境工具。
+root compose 仍包含 `codeserver`、`n8n`。GitLab 已於 2026-09-26 從 compose 與 nginx 拿掉，不要再把 `/gitlab` 種進入口。`AUTO_REGISTER_LINKS` 的舊清單曾含 ANILA LM、Code Server、n8n、GitLab、MLSteam；新專案不可整包照搬。
 
 `docker-compose-dev.yml` 是隔離 dev stack，project name 為 `anila-platform-dev`，使用 `8080/8443/9443`、DB `127.0.0.1:5533`、`share-dev/`、`*-dev` volumes、`anila-dev-net`。它開啟 dev-only endpoint flexibility，例如 `ANILA_ALLOW_HTTP_ENDPOINT=1`、`ANILA_ALLOW_PRIVATE_ENDPOINT=1`，並有 image-generator 相關 auto registration。這些不能被視為 prod hardening baseline。
 
@@ -319,7 +319,7 @@ root compose 也仍包含冷存或 branch-sensitive 的 `codeserver`、`n8n`、`
 `myCSPPlatform/docker/nginx.conf` 是現有 edge contract：
 
 - port `80`：redirect HTTPS。
-- port `443`：CSP / Vue 管理入口、`/api`、`/v1`、`/v2`、Studio API family、`/anila/`（同源 ANILA runtime UI 主要入口）、`/anilalm`、`/n8n`、`/gitlab`、`/codeserver`、`/router`。
+- port `443`：CSP / Vue 管理入口、`/api`、`/v1`、`/v2`、Studio API family、`/anila/`（同源 ANILA runtime UI 主要入口）、`/anilalm`、`/n8n`、`/codeserver`、`/router`。沒有 `/gitlab`。
 - `443` 的 `/anila/` 同源入口（origin commit `a06c0cb`）：裸 `/anila` 由 exact-match `location = /anila` 回 301 補尾斜線，`location /anila/` 帶尾斜線前綴 proxy 到 `anila_ui_static`（`nginx.conf` ~:400-414）；SPA 以 Vite `base='/anila/'` 建置，compose `anila-ui` build arg `BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}`（`docker-compose.yml` ~:397-406）。同源讓 CSP 登入 cookie 自然共用。
 - port `4443`：ANILA runtime UI 的 legacy / 替代入口，同時 proxy `/api/auth`、`/api`、`/v1`、`/v2`、`/router`、Studio API family、uploads 與其他 registered paths。
 - 已知不一致：`docker-compose-dev.yml` 的 `anila-ui` build 不帶 `BASE_PATH`（~:302-308，SPA 以 base `'/'` 建置），但 dev stack 掛的是同一份 `nginx.conf`（~:333）——dev 環境的 `/anila/` route 與 SPA base 對不上，重新設計時應收斂。

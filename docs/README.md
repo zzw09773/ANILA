@@ -107,7 +107,7 @@ docs/
 |---|---|
 | **目前 sprint 在做什麼** | [`planning/sprint-7x-plan.md`](./archive/planning/sprint-7x-plan.md) |
 | **SSO 切換進度** | [`platform/sso-migration.md`](./platform/sso-migration.md) |
-| **GitLab / n8n / ANILA LM 整合** | [`platform/multi-service-integration-plan.md`](./platform/multi-service-integration-plan.md) |
+| **n8n / ANILA LM 整合**（GitLab 已於 2026-09-26 撤下，該計畫裡的 `/gitlab` 步驟不要照做） | [`platform/multi-service-integration-plan.md`](./platform/multi-service-integration-plan.md) |
 | **AgenticRAG 解耦 / Phase 1 計畫** | [`agenticrag/agenticrag-decouple-from-anila-core.md`](./archive/agenticrag/agenticrag-decouple-from-anila-core.md) + [`agenticrag/agenticrag-phase1-plan.md`](./archive/agenticrag/agenticrag-phase1-plan.md) |
 | **AgenticRAG 後續增強** | [`agenticrag/agenticrag-enhancement-plan.md`](./archive/agenticrag/agenticrag-enhancement-plan.md) |
 

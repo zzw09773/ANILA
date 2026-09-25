@@ -147,7 +147,7 @@ LEGITIMATE_HOSTS = [
     (
         "172.16.120.35",
         "the trial machine — nginx $is_anila_host allows it and it is the "
-        "ANILA_HOST fallback in platform.yml (n8n / gitlab)",
+        "ANILA_HOST fallback in platform.yml (n8n)",
     ),
 ]
 
