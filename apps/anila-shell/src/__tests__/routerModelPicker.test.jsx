@@ -51,6 +51,58 @@ describe("RouterModelPicker", () => {
     expect(screen.queryByText("沒有可用模型")).toBeNull();
   });
 
+  it("不列出已停用、未授權、已關閉選單或平台入口", () => {
+    render(
+      <RouterModelPicker
+        models={[
+          ...MODELS,
+          {
+            id: 9,
+            name: "glm-5.3-flash",
+            display_name: "glm-5.3-flash",
+            is_active: false,
+            router_enabled: true,
+            grant_sources: ["all"],
+          },
+          {
+            id: 10,
+            name: "secret",
+            display_name: "秘密模型",
+            is_active: true,
+            router_enabled: true,
+            grant_sources: [],
+          },
+          {
+            id: 11,
+            name: "closed-menu",
+            display_name: "已關閉選單",
+            is_active: true,
+            router_enabled: false,
+            grant_sources: ["all"],
+          },
+          {
+            id: 12,
+            name: "anila-router",
+            display_name: "ANILA 自動選助手",
+            is_active: true,
+            router_enabled: true,
+            grant_sources: ["all"],
+          },
+        ]}
+        selectedId={3}
+        defaultModelId={3}
+        onChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選"));
+    expect(screen.getByText("Qwen")).toBeTruthy();
+    expect(screen.queryByText("glm-5.3-flash")).toBeNull();
+    expect(screen.queryByText("秘密模型")).toBeNull();
+    expect(screen.queryByText("已關閉選單")).toBeNull();
+    expect(screen.queryByText("ANILA 自動選助手")).toBeNull();
+    expect(screen.queryByText("anila-router")).toBeNull();
+  });
+
   it("locks during send and shows reselect error", () => {
     render(
       <RouterModelPicker

@@ -215,12 +215,31 @@ def _enforce_endpoint_url(url: str) -> None:
         raise HTTPException(status_code=400, detail=detail) from exc
 
 
+def _router_conversation_counts(db: Session) -> dict[int, int]:
+    """每個模型目前被幾段對話綁著。停用前要給管理員看，不在這裡改綁。"""
+    from sqlalchemy import func
+    from app.models.conversation import Conversation
+
+    rows = (
+        db.query(Conversation.router_model_id, func.count(Conversation.id))
+        .filter(Conversation.router_model_id.isnot(None))
+        .group_by(Conversation.router_model_id)
+        .all()
+    )
+    return {
+        int(model_id): int(count)
+        for model_id, count in rows
+        if model_id is not None
+    }
+
+
 def _build_response(
     model: ModelRegistry,
     *,
     caller: User | None = None,
     db: Session | None = None,
     is_service_token: bool = False,
+    router_conversation_count: int = 0,
 ) -> dict:
     """Serialize a model row.
 
@@ -248,6 +267,7 @@ def _build_response(
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
         "router_enabled": bool(getattr(model, "router_enabled", False)),
+        "router_conversation_count": int(router_conversation_count or 0),
         "is_image_primary": bool(getattr(model, "is_image_primary", False)),
         "is_asr_primary": bool(getattr(model, "is_asr_primary", False)),
         "is_slides_primary": bool(getattr(model, "is_slides_primary", False)),
@@ -318,8 +338,15 @@ def list_models(
         if not clauses:
             return []
         query = query.filter(or_(*clauses))
+    # 對話數是全站數字，只給管理員看，避免一般使用者從清單推知別人用了多少。
+    counts = _router_conversation_counts(db) if is_admin_tier(current_user) else {}
     return [
-        _build_response(m, caller=current_user, db=db)
+        _build_response(
+            m,
+            caller=current_user,
+            db=db,
+            router_conversation_count=counts.get(m.id, 0),
+        )
         for m in query.all()
     ]
 

@@ -32,10 +32,68 @@ class RouterModelSelection:
 
 
 class RouterModelPolicyError(Exception):
-    def __init__(self, status_code: int, detail: str):
-        super().__init__(detail)
+    def __init__(self, status_code: int, detail: str | dict):
+        super().__init__(detail if isinstance(detail, str) else detail.get("code", "router_model"))
         self.status_code = status_code
         self.detail = detail
+
+
+# 對話模型不能用的原因。停用優先於授權，避免「還有全院授權但已下線」被說成沒權限。
+MODEL_UNAVAILABLE = "model_unavailable"
+UNAVAILABLE_INACTIVE = "inactive"
+UNAVAILABLE_MISSING = "missing"
+UNAVAILABLE_NOT_ROUTER_ENABLED = "not_router_enabled"
+UNAVAILABLE_NOT_GRANTED = "not_granted"
+
+
+def unavailable_model_detail(
+    reason: str,
+    *,
+    display_name: str | None,
+    name: str | None = None,
+) -> dict:
+    """機器可讀的 model_unavailable。display_name 給使用者看的名稱。"""
+    label = (display_name or name or "已刪除的模型").strip() or "已刪除的模型"
+    detail = {
+        "code": MODEL_UNAVAILABLE,
+        "reason": reason,
+        "display_name": label,
+    }
+    if name:
+        detail["name"] = name
+    return detail
+
+
+def raise_model_unavailable(
+    reason: str,
+    *,
+    display_name: str | None,
+    name: str | None = None,
+    status_code: int = 409,
+) -> None:
+    raise RouterModelPolicyError(
+        status_code,
+        unavailable_model_detail(reason, display_name=display_name, name=name),
+    )
+
+
+def bound_model_block_reason(
+    db: Session, user: User, model: ModelRegistry | None, *, now: datetime | None = None
+) -> str | None:
+    """這位使用者不能再用此列當對話模型時的原因。能用則回 None。"""
+    if model is None:
+        return UNAVAILABLE_MISSING
+    if not model.is_active:
+        return UNAVAILABLE_INACTIVE
+    if model.name == PLATFORM_ROUTER_NAME:
+        return UNAVAILABLE_NOT_ROUTER_ENABLED
+    if (model.model_type or "") not in ROUTER_ELIGIBLE_TYPES:
+        return UNAVAILABLE_NOT_ROUTER_ENABLED
+    if not bool(getattr(model, "router_enabled", False)):
+        return UNAVAILABLE_NOT_ROUTER_ENABLED
+    if not user_can_use_router_model(db, user, model, now=now):
+        return UNAVAILABLE_NOT_GRANTED
+    return None
 
 
 def _now() -> datetime:
@@ -205,18 +263,40 @@ def resolve_router_model(
             raise RouterModelPolicyError(409, "anila-router 是平台入口，不是可選基礎模型")
         target = db.query(ModelRegistry).filter(ModelRegistry.name == requested_name).first()
         if target is None:
-            raise RouterModelPolicyError(404, "模型不存在")
+            raise_model_unavailable(
+                UNAVAILABLE_MISSING,
+                display_name=requested_name,
+                name=requested_name,
+                status_code=404,
+            )
     else:
         target = campus_default_model(db)
         if target is None:
             raise RouterModelPolicyError(409, "尚未設定可用的全院預設模型，請先選擇")
 
     if target is None:
+        # 對話列還指著 id，但登錄列已經不在。不要改去抓全院預設。
+        if conversation_model_id is not None:
+            raise_model_unavailable(
+                UNAVAILABLE_MISSING,
+                display_name=requested_name or "已刪除的模型",
+                name=requested_name,
+            )
         raise RouterModelPolicyError(409, "請重新選擇對話模型")
-    if not _is_router_eligible(target):
-        raise RouterModelPolicyError(409, "請重新選擇對話模型")
-    if not user_can_use_router_model(db, caller, target, now=now):
-        raise RouterModelPolicyError(403, "沒有此 Router 模型的使用權限，請重新選擇")
+    block = bound_model_block_reason(db, caller, target, now=now)
+    if block == UNAVAILABLE_NOT_GRANTED:
+        raise_model_unavailable(
+            block,
+            display_name=target.display_name or target.name,
+            name=target.name,
+            status_code=403,
+        )
+    if block:
+        raise_model_unavailable(
+            block,
+            display_name=target.display_name or target.name,
+            name=target.name,
+        )
 
     if api_key_id is not None:
         perm = (

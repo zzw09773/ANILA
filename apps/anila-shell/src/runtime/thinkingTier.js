@@ -149,5 +149,12 @@ export function conversationSelectionFromServer(serverRow) {
   if (serverRow && Object.prototype.hasOwnProperty.call(serverRow, "thinking_tier")) {
     next.thinkingTier = normalizeThinkingTier(serverRow.thinking_tier);
   }
+  // 缺欄位的舊回應不能把「已不能用」洗掉；有欄位才跟著伺服器。
+  if (serverRow && Object.prototype.hasOwnProperty.call(serverRow, "router_model_unavailable_reason")) {
+    next.routerModelUnavailableReason = serverRow.router_model_unavailable_reason || null;
+  }
+  if (serverRow && Object.prototype.hasOwnProperty.call(serverRow, "router_model_display_name")) {
+    next.routerModelDisplayName = serverRow.router_model_display_name || null;
+  }
   return next;
 }

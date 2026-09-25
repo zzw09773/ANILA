@@ -295,6 +295,8 @@ class ModelResponse(ApiResponseModel):
     is_active: bool
     is_router_primary: bool = False
     router_enabled: bool = False
+    # 仍綁在這個模型上的對話數。只有管理員清單會填真值，其餘為 0。
+    router_conversation_count: int = 0
     is_image_primary: bool = False
     is_asr_primary: bool = False
     is_slides_primary: bool = False

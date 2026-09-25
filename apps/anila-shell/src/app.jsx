@@ -129,6 +129,10 @@ import {
 } from "./runtime/reservedTurn.js";
 
 import RouterModelPicker from "./components/RouterModelPicker.jsx";
+import {
+  noticeForBoundModel,
+  readModelUnavailableError,
+} from "./runtime/modelUnavailable.js";
 import ThinkingPicker from "./components/ThinkingPicker.jsx";
 import {
   conversationSelectionFromServer,
@@ -519,6 +523,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const deepThinkNextRef = useRef(false);
   const [conversations, setConversations] = useState([]);
   const [selectedConvId, setSelectedConvId] = useState(null);
+  const [modelUnavailable, setModelUnavailable] = useState(null);
+  const [draftRestore, setDraftRestore] = useState(null);
 
   const authRequestRef = useRef(authRequest);
   authRequestRef.current = authRequest;
@@ -534,6 +540,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         setRouterModels(models);
         setRouterDefaultId(data?.default_model_id ?? null);
         setSelectedRouterModelId((current) => {
+          // 已打開的對話若綁著下線模型，不能改成清單裡的另一個，否則下一輪會靜默換模型。
+          const openId = selectedConvIdRef.current;
+          const bound = conversationsRef.current.find((row) => row.id === openId);
+          if (bound && typeof bound.routerModelId === "number") return bound.routerModelId;
           if (current && models.some((m) => m.id === current)) return current;
           return data?.default_model_id ?? models[0]?.id ?? null;
         });
@@ -582,6 +592,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const messagesRef = useRef({});
   const conversationsRef = useRef([]);
   conversationsRef.current = conversations;
+  const selectedConvIdRef = useRef(selectedConvId);
+  selectedConvIdRef.current = selectedConvId;
   const lastHistoryRef = useRef(new Map());
   const pendingCompactRef = useRef(new Map());
   const compactAppliedRef = useRef(new Set());
@@ -1029,6 +1041,23 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         },
       });
       } catch (err) {
+        const unavailable = readModelUnavailableError(err);
+        if (
+          unavailable
+          && !controller.signal.aborted
+          && !userStoppedRef.current.has(convId)
+        ) {
+          // 原文留在輸入框，讓使用者改選模型後再送，不必重打。
+          setModelUnavailable({ convId, message: unavailable.message });
+          const draft = outgoingUserText(opts?.payload);
+          if (draft) {
+            setDraftRestore({
+              token: `${convId}:${Date.now()}`,
+              conversationId: convId,
+              text: draft,
+            });
+          }
+        }
         if (
           assistantId
           && !controller.signal.aborted
@@ -1152,6 +1181,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     () => conversations.find((c) => c.id === selectedConvId) || null,
     [conversations, selectedConvId],
   );
+  const modelNotice = useMemo(() => {
+    if (modelUnavailable && modelUnavailable.convId === selectedConvId && modelUnavailable.message) {
+      return modelUnavailable.message;
+    }
+    return noticeForBoundModel(selectedConv);
+  }, [modelUnavailable, selectedConv, selectedConvId]);
   useEffect(() => {
     const page = selectedConv?.title ? String(selectedConv.title) : "新對話";
     document.title = `${page} · ANILA`;
@@ -1352,6 +1387,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
       routerModelId: serverRow.router_model_id ?? null,
       routerModelName: serverRow.router_model_name ?? null,
+      routerModelDisplayName: serverRow.router_model_display_name || null,
+      routerModelUnavailableReason: serverRow.router_model_unavailable_reason || null,
       routerSelectionVersion: serverRow.router_selection_version ?? 0,
       thinkingTier: normalizeThinkingTier(serverRow.thinking_tier),
       ...compactFieldsFromServer({
@@ -1550,13 +1587,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             selectedConvId,
           ),
         }));
+        const availability = {};
+        if (Object.prototype.hasOwnProperty.call(detail, "router_model_unavailable_reason")) {
+          availability.routerModelUnavailableReason = detail.router_model_unavailable_reason || null;
+        }
+        if (Object.prototype.hasOwnProperty.call(detail, "router_model_display_name")) {
+          availability.routerModelDisplayName = detail.router_model_display_name || null;
+        }
         if (detail.active_leaf_message_id !== undefined) {
           updateConv(selectedConvId, {
             activeLeafMessageId: detail.active_leaf_message_id,
             ...compactFieldsFromServer(detail),
+            ...availability,
           });
         } else {
-          updateConv(selectedConvId, compactFieldsFromServer(detail));
+          updateConv(selectedConvId, {
+            ...compactFieldsFromServer(detail),
+            ...availability,
+          });
         }
       } catch (error) {
         if (active) {
@@ -4421,6 +4469,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 defaultModelId={routerDefaultId}
                 fallbackName={selectedConv?.routerModelName || ""}
                 error={routerModelError}
+                highlighted={Boolean(modelNotice)}
                 disabled={routerPickerLocked}
                 onChange={async (id) => {
                   const previous = selectedRouterModelId;
@@ -4439,6 +4488,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         ...conversationSelectionFromServer(saved),
                       } : row));
                       if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
+                      setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
                     } catch (err) {
                       setSelectedRouterModelId(previous);
                       setRouterModelError(err?.message || "無法保存對話模型");
@@ -4738,6 +4788,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 defaultModelId={routerDefaultId}
                 fallbackName={selectedConv?.routerModelName || ""}
                 error={routerModelError}
+                highlighted={Boolean(modelNotice)}
                 disabled={routerPickerLocked}
                 onChange={async (id) => {
                   const previous = selectedRouterModelId;
@@ -4756,6 +4807,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         ...conversationSelectionFromServer(saved),
                       } : row));
                       if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
+                      setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
                     } catch (err) {
                       setSelectedRouterModelId(previous);
                       setRouterModelError(err?.message || "無法保存對話模型");
@@ -4796,8 +4848,27 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         )}
                       </div>
                     )}
+                    {modelNotice ? (
+                      <div
+                        role="alert"
+                        data-testid="model-unavailable-notice"
+                        style={{
+                          marginBottom: 8,
+                          padding: "10px 12px",
+                          borderRadius: "var(--radius)",
+                          border: "1px solid var(--danger)",
+                          background: "color-mix(in oklch, var(--danger) 12%, var(--bg))",
+                          color: "var(--danger)",
+                          fontSize: 14,
+                          lineHeight: 1.55,
+                        }}
+                      >
+                        {modelNotice}
+                      </div>
+                    ) : null}
                     <Composer
                       onSend={sendMessage}
+                      restoredDraft={draftRestore}
                       agents={agents}
                       redactionMode={redactionMode}
                       onChangeRedactionMode={changeRedactionMode}

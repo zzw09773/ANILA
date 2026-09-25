@@ -161,6 +161,9 @@ class ConversationOut(ApiResponseModel):
     collection_id: Optional[int] = None
     router_model_id: Optional[int] = None
     router_model_name: Optional[str] = None
+    # 顯示名稱與「為什麼現在不能用」。reason 為 null 代表仍可送出。
+    router_model_display_name: Optional[str] = None
+    router_model_unavailable_reason: Optional[str] = None
     router_selection_version: int = 0
     thinking_tier: Optional[str] = None
     compact_summary: Optional[str] = None
@@ -359,17 +362,30 @@ def _enrich_message_list(
 def _enrich_out(
     conv: Conversation,
     meta: ConversationUserMeta | None = None,
+    *,
+    db: Session | None = None,
+    user: User | None = None,
 ) -> dict:
     data = ConversationOut.model_validate(conv).model_dump()
     data.update(svc.meta_view(conv, meta))
     model = getattr(conv, "router_model", None)
     if model is None and getattr(conv, "router_model_id", None):
         from app.models.model_registry import ModelRegistry
-        session = object_session(conv)
+        session = db if db is not None else object_session(conv)
         if session is not None:
             model = session.get(ModelRegistry, conv.router_model_id)
     data["router_model_id"] = getattr(conv, "router_model_id", None)
     data["router_model_name"] = getattr(model, "name", None) if model is not None else None
+    data["router_model_display_name"] = (
+        getattr(model, "display_name", None) if model is not None else None
+    )
+    reason = None
+    if getattr(conv, "router_model_id", None) and user is not None:
+        from app.services.router_model_policy import bound_model_block_reason
+        session = db if db is not None else object_session(conv)
+        if session is not None:
+            reason = bound_model_block_reason(session, user, model)
+    data["router_model_unavailable_reason"] = reason
     data["router_selection_version"] = int(getattr(conv, "router_selection_version", 0) or 0)
     data["thinking_tier"] = getattr(conv, "thinking_tier", None)
     data["compact_summary"] = getattr(conv, "compact_summary", None)
@@ -384,7 +400,7 @@ def _conversation_out(
     db: Session, user: User, conv: Conversation,
 ) -> ConversationOut:
     meta = svc.get_user_meta(db, user.id, conv.id)
-    return ConversationOut(**_enrich_out(conv, meta))
+    return ConversationOut(**_enrich_out(conv, meta, db=db, user=user))
 
 
 def _conversation_detail(
@@ -400,7 +416,7 @@ def _conversation_detail(
     else:
         messages = svc.load_active_path(db, conv)
     meta = svc.get_user_meta(db, user.id, conv.id)
-    data = _enrich_out(conv, meta)
+    data = _enrich_out(conv, meta, db=db, user=user)
     data["active_leaf_message_id"] = conv.active_leaf_message_id
     data["messages"] = _enrich_message_list(messages, edges)
     return ConversationDetail(**data)
@@ -461,7 +477,7 @@ def list_conversations(
     # One batch query for the caller's meta — keeps the sidebar O(1) extra.
     metas = svc.load_user_metas(db, current_user.id, [c.id for c in rows])
     return [
-        ConversationOut(**_enrich_out(c, metas.get(c.id)))
+        ConversationOut(**_enrich_out(c, metas.get(c.id), db=db, user=current_user))
         for c in rows
     ]
 
@@ -835,7 +851,7 @@ def search_conversations(
             ))
             audits_pending = True
         meta = metas.get(c.id)
-        data = _enrich_out(c, meta)
+        data = _enrich_out(c, meta, db=db, user=current_user)
         data["snippet"] = snippet
         hits.append(data)
     if audits_pending:

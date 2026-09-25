@@ -747,6 +747,7 @@ import ModelRolesPanel from '../components/ModelRolesPanel.vue'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
+import { deactivateConfirm } from '../utils/modelDeactivate.js'
 import { formatDate } from '../utils/formatDate'
 import {
   THINKING_EFFORT_OPTIONS,
@@ -1456,7 +1457,12 @@ async function handleUnsetPlatformEmbed(id) {
   finally { settingEmbedId.value = null }
 }
 async function handleDeactivate(id) {
-  if (await confirm({ message: '停用此模型？之後可透過該列的「啟用」按鈕重新啟用。', confirmText: '停用', danger: true })) {
+  const model = modelsStore.models.find((row) => row.id === id)
+  const gate = deactivateConfirm({
+    ...model,
+    router_conversation_count: model?.router_conversation_count,
+  })
+  if (await confirm({ message: gate.message, confirmText: gate.confirmText, danger: gate.danger })) {
     await modelsStore.remove(id)
   }
 }

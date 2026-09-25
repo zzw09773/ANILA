@@ -2227,6 +2227,8 @@ export const Composer = ({
   presetPrompts = [],
   deepThinkNext = false,
   onDeepThinkNextChange,
+  // 模型不能用時，把剛剛送出的原文放回輸入框。
+  restoredDraft = null,
 }) => {
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
@@ -2336,6 +2338,21 @@ export const Composer = ({
     // 切換對話只在 conversationId 變動時觸發,故僅依賴 draftKey。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
+
+  useEffect(() => {
+    if (!restoredDraft || typeof restoredDraft.text !== "string") return;
+    if (
+      restoredDraft.conversationId != null
+      && conversationId != null
+      && String(restoredDraft.conversationId) !== String(conversationId)
+    ) {
+      return;
+    }
+    setText(restoredDraft.text);
+    if (draftKey && typeof sessionStorage !== "undefined" && restoredDraft.text) {
+      sessionStorage.setItem(draftKey, restoredDraft.text);
+    }
+  }, [restoredDraft, conversationId, draftKey]);
 
   // 草稿存檔:text 變動時 debounce 寫回 sessionStorage(空字串則清掉)。
   useEffect(() => {

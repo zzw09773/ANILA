@@ -1710,6 +1710,37 @@ def _make_event(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\n" + "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
+_MODEL_UNAVAILABLE_REASONS = frozenset({
+    "inactive",
+    "missing",
+    "not_router_enabled",
+    "not_granted",
+})
+
+
+def _model_unavailable_payload(detail: object) -> dict[str, Any] | None:
+    """CSP resolve 的 model_unavailable。其他錯誤維持原本的 HTTP 明細。"""
+    if not isinstance(detail, dict) or detail.get("code") != "model_unavailable":
+        return None
+    reason = detail.get("reason")
+    if reason not in _MODEL_UNAVAILABLE_REASONS:
+        return None
+    payload: dict[str, Any] = {
+        "code": "model_unavailable",
+        "reason": reason,
+        "display_name": detail.get("display_name") or "",
+    }
+    name = detail.get("name")
+    if isinstance(name, str) and name.strip():
+        payload["name"] = name.strip()
+    return payload
+
+
+async def _model_unavailable_stream(detail: dict[str, Any]) -> AsyncIterator[str]:
+    # 只送 anila.error。不要改叫環境變數裡的模型，也不要補一段成功的 stop。
+    yield _make_event("anila.error", detail)
+
+
 def _thinking_stage_frames(events: list[dict[str, Any]]) -> list[str]:
     return [_make_event("anila.thinking_stage", event) for event in events]
 
@@ -2465,7 +2496,20 @@ def create_router_app(
         REQUEST_THINKING_TIER.set(
             thinking_tier_from_body(body) if isinstance(body, dict) else None
         )
-        selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
+        wants_stream = bool(body.get("stream", False)) if isinstance(body, dict) else False
+        try:
+            selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
+        except HTTPException as exc:
+            unavailable = _model_unavailable_payload(exc.detail)
+            # 串流回合改成 anila.error，讓 Shell 能認出原因。非串流維持 HTTP 明細，
+            # 兩種都不改叫另一個模型。
+            if unavailable is not None and wants_stream:
+                return StreamingResponse(
+                    _model_unavailable_stream(unavailable),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            raise
         REQUEST_ROUTER_MODEL.set(selected_model)
         continue_answer = False
         if isinstance(body, dict):

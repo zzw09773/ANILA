@@ -8,6 +8,18 @@ function healthLabel(status) {
   return "異常";
 }
 
+// 選單只放現在真的能選的模型。缺欄位的舊資料照舊列出，明確停用或沒授權的不列。
+function listedModels(models) {
+  return (Array.isArray(models) ? models : []).filter((model) => {
+    if (!model || typeof model !== "object") return false;
+    if (model.name === "anila-router") return false;
+    if (model.is_active === false) return false;
+    if (model.router_enabled === false) return false;
+    if (Array.isArray(model.grant_sources) && model.grant_sources.length === 0) return false;
+    return true;
+  });
+}
+
 export default function RouterModelPicker({
   models = [],
   selectedId,
@@ -15,9 +27,10 @@ export default function RouterModelPicker({
   disabled = false,
   error = "",
   fallbackName = "",
+  highlighted = false,
   onChange,
 }) {
-  const options = Array.isArray(models) ? models : [];
+  const options = listedModels(models);
   const selected = options.find((model) => model.id === selectedId) || null;
   const selectedName = selected
     ? (selected.display_name || selected.name)
@@ -46,6 +59,10 @@ export default function RouterModelPicker({
     if (locked) setOpen(false);
   }, [locked]);
 
+  useEffect(() => {
+    if (highlighted && !locked) setOpen(true);
+  }, [highlighted, locked]);
+
   return (
     <div className="router-model-picker" ref={rootRef} style={{ position: "relative", display: "inline-block" }}>
       <button
@@ -53,6 +70,7 @@ export default function RouterModelPicker({
         aria-label="此則對話使用的模型，僅自動選助手時可選"
         aria-haspopup="listbox"
         aria-expanded={open}
+        data-highlighted={highlighted ? "true" : undefined}
         disabled={locked}
         onClick={() => {
           if (!locked) setOpen((value) => !value);
@@ -62,7 +80,7 @@ export default function RouterModelPicker({
           alignItems: "center",
           gap: 8,
           background: "transparent",
-          border: "1px solid " + (open ? "var(--border-strong)" : "var(--border)"),
+          border: "1px solid " + (highlighted ? "var(--danger)" : open ? "var(--border-strong)" : "var(--border)"),
           borderRadius: "var(--radius)",
           padding: "5px 8px 5px 10px",
           cursor: locked ? "not-allowed" : "pointer",

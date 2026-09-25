@@ -742,7 +742,14 @@ export function createFakeBackend(options = {}) {
         return errorResponse(409, "模型選擇版本衝突，請重新整理");
       }
       const nextId = body?.router_model_id;
-      const updated = { ...row, router_model_id: nextId, router_model_name: nextId === 4 ? "qwen-example" : "glm-example", router_selection_version: expected + 1 };
+      const updated = {
+        ...row,
+        router_model_id: nextId,
+        router_model_name: nextId === 4 ? "qwen-example" : "glm-example",
+        router_model_display_name: nextId === 4 ? "Qwen" : "GLM",
+        router_model_unavailable_reason: null,
+        router_selection_version: expected + 1,
+      };
       convs.set(convId, updated);
       return jsonResponse(updated);
     }

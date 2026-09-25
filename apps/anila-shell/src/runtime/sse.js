@@ -1,3 +1,5 @@
+import { modelUnavailableFromPayload } from "./modelUnavailable.js";
+
 export function parseSseBlocks(buffer) {
   const normalized = buffer.replace(/\r\n/g, "\n");
   const blocks = normalized.split("\n\n");
@@ -29,23 +31,59 @@ export function parseSseEvent(block) {
   return { event, data, raw: block };
 }
 
-async function readErrorMessage(response, fallback) {
+function errorFromHttpBody(body, status, fallback) {
+  let payload = null;
+  if (body) {
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      payload = null;
+    }
+  }
+  const unavailable = modelUnavailableFromPayload(
+    payload && typeof payload.detail === "object" ? payload.detail : null,
+  );
+  if (unavailable) {
+    const error = new Error(unavailable.message);
+    error.code = unavailable.code;
+    error.reason = unavailable.reason;
+    error.displayName = unavailable.displayName;
+    error.status = status;
+    return error;
+  }
+  let detail = fallback;
+  if (typeof payload?.detail === "string" && payload.detail.trim()) {
+    detail = payload.detail;
+  }
+  const error = new Error(detail || fallback);
+  error.status = status;
+  return error;
+}
+
+async function readHttpError(response, label) {
+  const fallback = statusFallback(label, response.status);
   const body = await response.text();
   console.error(`[ANILA SSE] HTTP ${response.status} response body:`, body);
-  if (!body) return fallback;
+  return errorFromHttpBody(body, response.status, fallback);
+}
 
-  try {
-    const payload = JSON.parse(body);
-    if (typeof payload?.detail === "string" && payload.detail.trim()) {
-      return payload.detail;
-    }
-    // A JSON error without the API's detail field has no user-facing message.
-    // Keep the existing transport fallback instead of surfacing the envelope.
-    return fallback;
-  } catch {
-    // Non-JSON responses (including proxy HTML) are diagnostic data only.
-    return fallback;
+function errorFromTerminal(terminalError, accumulatedText) {
+  const unavailable = modelUnavailableFromPayload(terminalError);
+  if (unavailable) {
+    const err = new Error(unavailable.message);
+    err.code = unavailable.code;
+    err.reason = unavailable.reason;
+    err.displayName = unavailable.displayName;
+    err.isStreamError = true;
+    err.partialText = accumulatedText;
+    return err;
   }
+  const raw =
+    typeof terminalError?.message === "string" ? terminalError.message.trim() : "";
+  const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
+  err.isStreamError = true;
+  err.partialText = accumulatedText;
+  return err;
 }
 
 function statusFallback(label, status) {
@@ -163,11 +201,7 @@ export async function streamChatCompletion({
   });
 
   if (!response.ok) {
-    const fallback = statusFallback("串流失敗", response.status);
-    const detail = await readErrorMessage(response, fallback);
-    const error = new Error(detail || fallback);
-    error.status = response.status;
-    throw error;
+    throw await readHttpError(response, "串流失敗");
   }
 
   // Surface the session id the Router echoes in X-Anila-Session-Id so
@@ -241,14 +275,7 @@ export async function streamChatCompletion({
   }
 
   if (terminalError) {
-    const raw =
-      typeof terminalError.message === "string"
-        ? terminalError.message.trim()
-        : "";
-    const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
-    err.isStreamError = true;
-    err.partialText = accumulatedText;
-    throw err;
+    throw errorFromTerminal(terminalError, accumulatedText);
   }
 
   return accumulatedText;
@@ -504,11 +531,7 @@ export async function streamSessionAnswer({
     body: JSON.stringify({ interrupt_id: interruptId, answer }),
   });
   if (!response.ok) {
-    const fallback = statusFallback("續答失敗", response.status);
-    const detail = await readErrorMessage(response, fallback);
-    const error = new Error(detail || fallback);
-    error.status = response.status;
-    throw error;
+    throw await readHttpError(response, "續答失敗");
   }
 
   const reader = response.body?.getReader();
@@ -558,14 +581,7 @@ export async function streamSessionAnswer({
   }
 
   if (terminalError) {
-    const raw =
-      typeof terminalError.message === "string"
-        ? terminalError.message.trim()
-        : "";
-    const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
-    err.isStreamError = true;
-    err.partialText = accumulatedText;
-    throw err;
+    throw errorFromTerminal(terminalError, accumulatedText);
   }
 
   return accumulatedText;
