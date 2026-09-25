@@ -17,8 +17,9 @@ Invariants:
   5. whichever of those two the Router filled in from the table is listed in
      ``anila_sampling_defaults`` so the CSP proxy can let the per-model
      governance knobs override them (a caller value is never listed).
-  6. ``length`` with partial content auto-continues up to
-     ``LENGTH_AUTO_CONTINUE_ROUNDS`` instead of stopping for a button click.
+  6. ``length`` with partial content is returned as-is (``finish_reason``
+     stays ``length``) so the caller can offer a continue button. Empty
+     content still does not retry.
 """
 
 from __future__ import annotations
@@ -242,7 +243,7 @@ def test_stream_empty_length_reply_stops_without_retry(monkeypatch):
     assert len(client.streams) == 1
 
 
-def test_stream_length_with_content_auto_continues_until_stop(monkeypatch):
+def test_stream_length_with_content_auto_continues(monkeypatch):
     client = _Client(
         streams=[
             _stream_lines("<!DOCTYPE html><html>", "length"),
@@ -256,28 +257,24 @@ def test_stream_length_with_content_auto_continues_until_stop(monkeypatch):
 
     events = asyncio.run(run())
     deltas = [ev["content"] for ev in events if ev.get("type") == "delta"]
-    assert "".join(deltas).replace("\n", "") == "<!DOCTYPE html><html><body>太陽系</body></html>"
+    assert "".join(deltas) == "<!DOCTYPE html><html><body>太陽系</body></html>"
     assert events[-1] == {"type": "done", "finish_reason": "stop"}
     assert len(client.streams) == 2
-    cont = client.streams[1]["messages"]
-    assert cont[-2]["role"] == "assistant"
-    assert "<!DOCTYPE html>" in cont[-2]["content"]
-    assert cont[-1]["role"] == "user"
-    assert "接續" in cont[-1]["content"]
+    assert not any(ev.get("type") == "error" for ev in events)
 
 
-def test_stream_length_stops_after_auto_continue_budget(monkeypatch):
-    client = _Client(
-        streams=[_stream_lines("chunk", "length") for _ in range(rs.LENGTH_AUTO_CONTINUE_ROUNDS + 1)]
-    )
+def test_stream_length_with_content_does_not_error(monkeypatch):
+    client = _Client(streams=[_stream_lines("chunk", "length") for _ in range(4)])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
     async def run():
         return [ev async for ev in rs._stream_llm_sse("sk", [{"role": "user", "content": "q"}])]
 
     events = asyncio.run(run())
+    deltas = [ev["content"] for ev in events if ev.get("type") == "delta"]
+    assert "".join(deltas) == "chunk" * 4
     assert events[-1] == {"type": "done", "finish_reason": "length"}
-    assert len(client.streams) == rs.LENGTH_AUTO_CONTINUE_ROUNDS + 1
+    assert len(client.streams) == 4
     assert not any(ev.get("type") == "error" for ev in events)
 
 
@@ -291,8 +288,8 @@ def test_non_stream_length_with_content_auto_continues(monkeypatch):
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
     assert result["error"] is None
-    assert "<!DOCTYPE html>" in result["content"]
-    assert "</html>" in result["content"]
+    assert result["content"] == "<!DOCTYPE html><html>\n</html>"
+    assert result["finish_reason"] == "stop"
     assert len(client.posts) == 2
 
 

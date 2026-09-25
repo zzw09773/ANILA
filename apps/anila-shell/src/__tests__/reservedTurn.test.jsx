@@ -17,6 +17,7 @@ import {
   makeAuthRequest,
 } from "./fakeConversationBackend.js";
 import { makeStreamWriter } from "../runtime/reservedTurn.js";
+import { config } from "../runtime/api.js";
 
 // ── 受控串流 ─────────────────────────────────────────────────────────────────
 //
@@ -55,6 +56,15 @@ vi.mock("../runtime/sse.js", () => ({
       /** 模型回報截斷原因(Continue Response 的觸發條件)。 */
       finishReason(reason) {
         opts.onFinishReason?.(reason);
+      },
+      meta(payload) {
+        opts.onMeta?.(payload);
+      },
+      stage(event) {
+        opts.onThinkingStage?.(event);
+      },
+      reasoning(delta) {
+        opts.onReasoning?.(delta);
       },
       fail(error) {
         streamControl.pending = streamControl.pending.filter((h) => h !== handle);
@@ -1180,7 +1190,7 @@ describe("Continue Response", () => {
       expect(a.content).toBe("被截斷的前半");
     });
 
-    const cont = await screen.findByRole("button", { name: /繼續產生/ });
+    const cont = await screen.findByRole("button", { name: (name) => name.trim() === "繼續" });
     await act(async () => {
       cont.click();
     });
@@ -1192,11 +1202,182 @@ describe("Continue Response", () => {
 
     await waitFor(() => {
       const a = [...backend.messages.values()].find((m) => m.role === "assistant");
-      expect(a.content).toBe("被截斷的前半 後半段");
+      expect(a.content).toBe("被截斷的前半後半段");
     });
     // 續寫沒有把那一列的串流標記弄丟。
     const a = [...backend.messages.values()].find((m) => m.role === "assistant");
     expect(a.metadata.anila_stream.state).toBe("complete");
+  });
+});
+
+function continueButton() {
+  return screen.getByRole("button", { name: (name) => name.trim() === "繼續" });
+}
+
+async function finishTurn(text, reason) {
+  await waitFor(() => expect(streamControl.pending.length).toBe(1));
+  await act(async () => {
+    const handle = streamControl.latest();
+    handle.emit(text);
+    if (reason) handle.finishReason(reason);
+    handle.finish();
+  });
+  await waitFor(() => expect(streamControl.pending.length).toBe(0));
+}
+
+describe("答案被長度截斷時的繼續", () => {
+  it("有正文而且 finish_reason 是 length 時，答案下方出現繼續", async () => {
+    renderRuntime();
+    await typeAndSend("請寫長文");
+    await finishTurn("這段答案在太陽系的形成過程被截斷", "length");
+    expect(continueButton()).toBeTruthy();
+    const answer = screen.getByText("這段答案在太陽系的形成過程被截斷");
+    expect(
+      answer.compareDocumentPosition(continueButton()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("正常結束時不出現繼續", async () => {
+    renderRuntime();
+    await typeAndSend("短問題");
+    await finishTurn("完整的短答案", "stop");
+    expect(screen.queryByRole("button", { name: (name) => name.trim() === "繼續" })).toBeNull();
+  });
+
+  it("按下繼續只接到同一則，重疊的結尾只留一次，而且請求走 Router", async () => {
+    renderRuntime();
+    await typeAndSend("請寫長文");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    const replay = `${"太陽系的形成過程".repeat(5)}被截斷`;
+    await act(async () => {
+      const handle = streamControl.latest();
+      handle.emit(`這段答案在${replay}`);
+      handle.meta({ answering_agent_id: "image-generator" });
+      handle.finishReason("length");
+      handle.finish();
+    });
+    const usersBefore = [...backend.messages.values()].filter((m) => m.role === "user").length;
+    await act(async () => {
+      continueButton().click();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    const call = streamControl.latest().opts;
+    expect(call.url).toBe(`${config.routerBaseUrl}/v1/chat/completions`);
+    expect(call.payload.model).toBe("anila-router");
+    expect(call.payload.anila_continue).toBe(true);
+    const messages = call.payload.messages;
+    expect(messages.some((m) => m.role === "assistant" && m.content.includes("太陽系的形成過程被截斷"))).toBe(true);
+    expect(messages.at(-1).content).toContain("請接續上文");
+    expect(messages.at(-1).content).toContain("不要重複");
+    await act(async () => {
+      streamControl.latest().emit(`${replay}，然後寫下水星。`);
+      streamControl.latest().finishReason("stop");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => {
+      const assistants = [...backend.messages.values()].filter((m) => m.role === "assistant");
+      expect(assistants).toHaveLength(1);
+      expect(assistants[0].content).toBe(`這段答案在${replay}，然後寫下水星。`);
+    });
+    expect([...backend.messages.values()].filter((m) => m.role === "user")).toHaveLength(usersBefore);
+    expect(screen.queryByRole("button", { name: (name) => name.trim() === "繼續" })).toBeNull();
+    expect(screen.getAllByText(`這段答案在${replay}，然後寫下水星。`)).toHaveLength(1);
+  });
+
+  it("程式碼圍欄切在半途時，接上後仍是同一個區塊", async () => {
+    renderRuntime();
+    await typeAndSend("寫一段程式");
+    await finishTurn("程式如下：\n```js\nconst answer = \"", "length");
+    await act(async () => {
+      continueButton().click();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("```js\nconst answer = \"ok\";\n```\n完成。");
+      streamControl.latest().finishReason("stop");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => {
+      const assistant = [...backend.messages.values()].find((m) => m.role === "assistant");
+      expect(assistant.content).toBe(
+        "程式如下：\n```js\nconst answer = \"const answer = \"ok\";\n```\n完成。",
+      );
+    });
+  });
+
+  it("重新整理之後繼續還在", async () => {
+    const first = renderRuntime();
+    await typeAndSend("請寫長文");
+    await finishTurn("這段答案在太陽系的形成過程被截斷", "length");
+    await waitFor(() => {
+      const assistant = [...backend.messages.values()].find((m) => m.role === "assistant");
+      expect(assistant.metadata.finish_reason).toBe("length");
+    });
+    first.unmount();
+    renderRuntime();
+    const row = await screen.findByText("請寫長文");
+    await act(async () => {
+      row.click();
+    });
+    expect(await screen.findByText("這段答案在太陽系的形成過程被截斷")).toBeTruthy();
+    expect(continueButton()).toBeTruthy();
+  });
+
+  it("再截斷一次，繼續會再出現，思考階段接在同一則後面", async () => {
+    renderRuntime();
+    await typeAndSend("請寫長文");
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    const replay = `${"太陽系的形成過程".repeat(5)}被截斷`;
+    await act(async () => {
+      const handle = streamControl.latest();
+      handle.stage({ index: 0, title: "拆解需求", status: "done" });
+      handle.emit(`這段答案在${replay}`);
+      handle.finishReason("length");
+      handle.finish();
+    });
+    await waitFor(() => expect(screen.getByText("拆解需求")).toBeTruthy());
+    await act(async () => {
+      continueButton().click();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    expect(screen.getByTestId("thinking-summary-headline").textContent).toMatch(/正在思考/);
+    await act(async () => {
+      const handle = streamControl.latest();
+      handle.stage({ index: 0, title: "接寫後半", status: "running" });
+      handle.reasoning("接著補水星。");
+      handle.emit(`${replay}，水星還沒寫完`);
+      handle.finishReason("length");
+      handle.finish();
+    });
+    await waitFor(() => {
+      const assistant = [...backend.messages.values()].find((m) => m.role === "assistant");
+      expect(assistant.content).toBe(`這段答案在${replay}，水星還沒寫完`);
+      expect(assistant.metadata.finish_reason).toBe("length");
+    });
+    expect(screen.getByText("拆解需求")).toBeTruthy();
+    expect(screen.getByText("接寫後半")).toBeTruthy();
+    expect(continueButton()).toBeTruthy();
+  });
+
+  it("空的額度提示不會把截斷狀態改成結束", async () => {
+    renderRuntime();
+    await typeAndSend("請寫長文");
+    await finishTurn("這段答案在太陽系的形成過程被截斷", "length");
+    await act(async () => {
+      continueButton().click();
+    });
+    await waitFor(() => expect(streamControl.pending.length).toBe(1));
+    await act(async () => {
+      streamControl.latest().emit("（輸出額度被思考用完，沒有留下正文。可把思考調低再問。）");
+      streamControl.latest().finishReason("stop");
+      streamControl.latest().finish();
+    });
+    await waitFor(() => {
+      const assistant = [...backend.messages.values()].find((m) => m.role === "assistant");
+      expect(assistant.content).toBe("這段答案在太陽系的形成過程被截斷");
+      expect(assistant.metadata.finish_reason).toBe("length");
+    });
+    expect(continueButton()).toBeTruthy();
   });
 });
 

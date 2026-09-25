@@ -1527,11 +1527,12 @@ export const MessageBubble = ({
         );
       })()}
 
-      {/* Continue Response:回應被 max_tokens 截斷時(finishReason==='length')顯示
-          「繼續」鈕,點擊接續往下寫。長 context 是 ANILA 賣點,長答案易撞上限。 */}
+      {/* 正文已經寫出、但被長度截斷時，讓使用者從斷點接下去。 */}
       {!msg.streaming && canContinueLengthReply(msg) && typeof onContinue === "function" && (
         <button
+          type="button"
           onClick={() => onContinue(msg)}
+          title="從截斷處接下去寫"
           style={{
             display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8,
             padding: "6px 12px", fontSize: 13,
@@ -1542,7 +1543,8 @@ export const MessageBubble = ({
           onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-elev)")}
           onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
         >
-          <IconRefresh size={13} /> 繼續產生（回應被長度上限截斷）
+          <span aria-hidden="true"><IconRefresh size={13} /></span>
+          繼續
         </button>
       )}
 

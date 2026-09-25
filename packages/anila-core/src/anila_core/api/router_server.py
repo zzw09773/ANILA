@@ -1215,10 +1215,20 @@ async def _resume_router_ask(
                                     "anila.reasoning", {"delta": visible_reason}
                                 )
                             continue
+                        if kind == "thinking_stage":
+                            for frame in _thinking_stage_frames(
+                                _open_stage_once(live_stages, str(ev.get("title") or ""))
+                            ):
+                                yield frame
+                            continue
                         if kind == "delta":
-                            visible_delta, stage_events = live_stages.feed_content(
-                                ev["content"]
-                            )
+                            # 續寫正文裡的 STAGE 行是範例，不要改記成思考階段。
+                            if REQUEST_CONTINUE.get():
+                                visible_delta, stage_events = ev.get("content") or "", []
+                            else:
+                                visible_delta, stage_events = live_stages.feed_content(
+                                    ev["content"]
+                                )
                             for frame in _thinking_stage_frames(stage_events):
                                 yield frame
                             buf += visible_delta
@@ -1704,6 +1714,21 @@ def _thinking_stage_frames(events: list[dict[str, Any]]) -> list[str]:
     return [_make_event("anila.thinking_stage", event) for event in events]
 
 
+def _open_stage_once(live: LiveThinkingStages | None, title: str) -> list[dict[str, Any]]:
+    """開一筆階段。同一標題已經在跑就不要再開一筆。"""
+    if live is None:
+        return []
+    cleaned = title.strip()
+    if not cleaned:
+        return []
+    if any(
+        item.get("title") == cleaned and item.get("status") == "running"
+        for item in live.snapshot()
+    ):
+        return []
+    return live.open_named(cleaned)
+
+
 def _stages_on_meta(meta: dict[str, Any], live: LiveThinkingStages, status: str) -> list[str]:
     """把還在跑的階段收成 status，並寫進這次要送出的 meta。"""
     frames = _thinking_stage_frames(live.settle(status))
@@ -1735,27 +1760,39 @@ def _stamp_request_stages(meta: dict[str, Any]) -> None:
 
 
 def _absorb_llm_turn(response: dict[str, Any], text: str) -> str:
-    """拿掉這一輪的 STAGE 行，階段記在這次請求的清單上。沒有清單就只回原文。"""
+    """拿掉這一輪的 STAGE 行，階段記在這次請求的清單上。沒有清單就只回原文。
+
+    續寫的正文可能含 ``STAGE:`` 範例或程式。那一行是答案，原樣留下。
+    """
     live = _REQUEST_STAGES.get()
     if live is None:
         return text
+    keep_body = bool(REQUEST_CONTINUE.get())
     reasoning, content, _events = live.absorb_turn(
         str(response.get("reasoning") or ""),
-        text or "",
+        "" if keep_body else (text or ""),
         rescued=bool(response.get("rescued")),
     )
     response["reasoning"] = reasoning or None
+    if keep_body:
+        return text
     response["content"] = content
     return content
 
 
-def _make_full_response(content: str, model: str, anila_meta: dict[str, Any] | None = None) -> dict:
+def _make_full_response(
+    content: str,
+    model: str,
+    anila_meta: dict[str, Any] | None = None,
+    *,
+    finish: str = "stop",
+) -> dict:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": finish}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         "anila_meta": anila_meta or _default_anila_meta(),
     }
@@ -2430,9 +2467,12 @@ def create_router_app(
         )
         selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
         REQUEST_ROUTER_MODEL.set(selected_model)
+        continue_answer = False
         if isinstance(body, dict):
             body.pop("router_model", None)
             body.pop("anila_thinking_tier", None)
+            continue_answer = body.pop("anila_continue", None) is True
+        REQUEST_CONTINUE.set(continue_answer)
         messages: list[dict] = body.get("messages", [])
         stream: bool = body.get("stream", False)
 
@@ -2528,6 +2568,9 @@ def create_router_app(
         # existing UI relies on. Streaming path keeps single-shot for now
         # — multi-turn streaming is deferred to a future PR.
         max_iterations = max(1, int(body.get("anila_multi_turn", 1)))
+        if continue_answer:
+            # 續寫是同一則答案的下一段，不另開多輪派工。
+            max_iterations = 1
 
         agents = registry.list_agents(caller_api_key)
 
@@ -2701,7 +2744,9 @@ def create_router_app(
             )
 
         llm_text = _absorb_llm_turn(llm_response, llm_response["content"] or "")
-        dispatch = _dispatch_for_turn(llm_text, route_signal)
+        continue_answer = bool(REQUEST_CONTINUE.get())
+        # 續寫開頭的 DISPATCH／ASK／RECALL 是正文，不是新的一輪派工。
+        dispatch = None if continue_answer else _dispatch_for_turn(llm_text, route_signal)
 
         # The ``reasoning`` field is NOT a dispatch signal. It used to be
         # salvaged here (scan reasoning for a query-less ``DISPATCH:<agent>:``
@@ -2715,7 +2760,7 @@ def create_router_app(
         # on a question (``ASK:``), which is the plain-chat twin of DISPATCH.
         # RECALL 比 ASK 先處理：第一行只能是其中一種。搜尋完再開一輪，不多搜。
         if not dispatch:
-            recall_query = _parse_recall(llm_text)
+            recall_query = None if continue_answer else _parse_recall(llm_text)
             if recall_query:
                 base_trace.append(
                     _make_trace_step("recall", _RECALL_STAGE_LABEL, recall_query)
@@ -2763,7 +2808,7 @@ def create_router_app(
                 llm_text = _absorb_llm_turn(second, second.get("content") or "")
                 if _parse_recall(llm_text):
                     llm_text = _strip_recall_syntax(llm_text)
-            ask = _parse_ask(llm_text)
+            ask = None if continue_answer else _parse_ask(llm_text)
             if ask is not None:
                 record = await _persist_router_ask(
                     sess, ask=ask, user_message=last_user_text
@@ -2805,11 +2850,14 @@ def create_router_app(
             if llm_response.get("reasoning"):
                 anila_meta["reasoning"] = llm_response["reasoning"]
             _stamp_rescue_meta(anila_meta, llm_response)
+            _note_length_finish(anila_meta, llm_response.get("finish_reason"))
+            shown = (
+                llm_text
+                if continue_answer
+                else _forced_visible_text(_strip_ask_syntax(llm_text), route_signal)
+            )
             return _respond(
-                _forced_visible_text(
-                    _strip_ask_syntax(llm_text),
-                    route_signal,
-                ),
+                shown,
                 anila_meta,
                 stream,
                 session_id=session_id,
@@ -3216,6 +3264,7 @@ def create_router_app(
         """
         anila_meta = _attach_compact_event(anila_meta, compact_event)
         _stamp_request_stages(anila_meta)
+        finish = "length" if anila_meta.get("finish_reason") == "length" else "stop"
         if stream:
             async def _event_stream() -> AsyncIterator[str]:
                 for step in anila_meta["trace"]:
@@ -3247,7 +3296,7 @@ def create_router_app(
 
                 meta_for_event = {**anila_meta, "trace": []}
                 yield _make_event("anila.meta", meta_for_event)
-                yield _make_chunk("", "anila-router", finish="stop")
+                yield _make_chunk("", "anila-router", finish=finish)
                 yield "data: [DONE]\n\n"
 
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -3263,7 +3312,7 @@ def create_router_app(
             {"X-Anila-Session-Id": session_id} if session_id else None
         )
         return JSONResponse(
-            _make_full_response(content, "anila-router", anila_meta=anila_meta),
+            _make_full_response(content, "anila-router", anila_meta=anila_meta, finish=finish),
             headers=json_headers,
         )
 
@@ -3816,6 +3865,7 @@ async def _auto_compact_routing_messages(
         keep_recent_turns=keep_recent_turns,
         force=force,
         tokens_before=tokens_before,
+        preserve_assistant_content=_preserve_continued_answer(messages),
     )
     if tokens_source == "model":
         logger.info(
@@ -3842,6 +3892,41 @@ async def _auto_compact_routing_messages(
         ),
         compact_event,
     )
+
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            return content if isinstance(content, str) else ""
+    return ""
+
+
+def _preserve_continued_answer(messages: list[dict[str, Any]]) -> str | None:
+    """續寫時，最後一個 user 前面那則 assistant 答案要原樣留下。"""
+    if not messages:
+        return None
+    continuing = (
+        bool(REQUEST_CONTINUE.get())
+        or _last_user_text(messages).strip() == _CONTINUE_PROMPT
+    )
+    if not continuing:
+        return None
+    last_user: int | None = None
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            last_user = index
+            break
+    if last_user is None or last_user == 0:
+        return None
+    prev = messages[last_user - 1]
+    if not isinstance(prev, dict) or prev.get("role") != "assistant":
+        return None
+    content = prev.get("content")
+    if isinstance(content, str) and content:
+        return content
+    return None
 
 
 def _compact_retry_stage(already: int | bool) -> int:
@@ -3879,6 +3964,7 @@ async def _messages_after_prompt_too_long(
         summarizer=None,
         keep_recent_turns=2,
         force=True,
+        preserve_assistant_content=_preserve_continued_answer(messages),
     )
     if not result.compacted:
         return None
@@ -4708,6 +4794,9 @@ async def _recompose_reply(
         return agent_reply, "fallback"
     if result.get("error") or not (result.get("content") or "").strip():
         return agent_reply, "fallback"
+    # 自動續寫用完仍被截斷時，不把半截改寫當成完成的個人化答案。
+    if str(result.get("finish_reason") or "") == "length":
+        return agent_reply, "fallback"
     return result["content"], "applied"
 
 
@@ -4727,18 +4816,23 @@ REQUEST_ROUTER_MODEL: contextvars.ContextVar[str | None] = contextvars.ContextVa
 REQUEST_THINKING_TIER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "anila_router_request_thinking_tier", default=None
 )
+# 使用者按「繼續」的那一輪。仍走同一條 Router，但不把續寫開頭的
+# DISPATCH／ASK／RECALL 當成控制行。
+REQUEST_CONTINUE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "anila_router_continue", default=False
+)
 THINKING_TIERS = frozenset({"default", "off", "standard", "deep"})
 _EMPTY_LENGTH_ERROR = "LLM 回覆為空（finish_reason=length：輸出額度被思考用完）"
 _EMPTY_REPLY_ERROR = "LLM 回覆為空（沒有留下正文）"
 _OUTAGE_FALLBACK = "（暫時無法回應，請稍後再試。若一直發生，請聯絡管理員。）"
-_LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續產生」。）"
+_LENGTH_FALLBACK = "（輸出額度不足，思考或正文被截斷。已產生的內容保留；可按「繼續」。）"
 _EMPTY_LENGTH_FALLBACK = "（輸出額度被思考用完，沒有留下正文。可把思考調低再問。）"
 _EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可把思考調低再問，或再問一次。）"
-# After a partial ``length`` reply, keep writing in the same turn instead of
-# asking the user to click Continue. Empty-content length stops immediately
-# and tells the user — do not silently double ``max_tokens`` and wait again.
+# 有正文的 length：同一輪自動再寫，最多三次。仍被截斷才把 finish_reason=length
+# 交回去，Shell 才顯示「繼續」。空正文的 length 仍走上面的救援，只做一次。
 LENGTH_AUTO_CONTINUE_ROUNDS = 3
 _CONTINUE_PROMPT = "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。"
+_AUTO_CONTINUE_STAGE = "繼續撰寫"
 
 
 def _is_length_budget_error(err: object) -> bool:
@@ -4917,6 +5011,13 @@ def _rescue_trace_step() -> dict[str, Any]:
 def _stamp_rescue_meta(meta: dict[str, Any], source: Mapping[str, Any] | None) -> dict[str, Any]:
     if isinstance(source, Mapping) and source.get("rescued"):
         meta["rescue"] = {"reason": RESCUE_REASON_REASONING_EXHAUSTED}
+    return meta
+
+
+def _note_length_finish(meta: dict[str, Any], finish: object) -> dict[str, Any]:
+    """有正文卻被長度截斷時，把 finish_reason 放進 anila.meta，Shell 才能畫「繼續」。"""
+    if str(finish or "") == "length":
+        meta["finish_reason"] = "length"
     return meta
 
 
@@ -5159,15 +5260,14 @@ async def _call_llm_non_stream(
             "anila_meta": data.get("anila_meta"),
             "raw": data,
             "error": None,
+            "finish_reason": str(choice.get("finish_reason") or "stop"),
         }
         remaining = (
             LENGTH_AUTO_CONTINUE_ROUNDS if _auto_continue_left is None else _auto_continue_left
         )
-        if (
-            str(choice.get("finish_reason") or "") == "length"
-            and result["content"]
-            and remaining > 0
-        ):
+        if result["finish_reason"] == "length" and result["content"] and remaining > 0:
+            if remaining == LENGTH_AUTO_CONTINUE_ROUNDS:
+                _open_stage_once(_REQUEST_STAGES.get(), _AUTO_CONTINUE_STAGE)
             logger.info("LLM reply truncated; auto-continuing (%s left)", remaining)
             more = await _call_llm_non_stream(
                 caller_api_key,
@@ -5177,7 +5277,7 @@ async def _call_llm_non_stream(
                     {"role": "user", "content": _CONTINUE_PROMPT},
                 ],
                 forwarded_headers=forwarded_headers,
-                apply_thinking_tier=apply_thinking_tier and not thinking_override,
+                apply_thinking_tier=apply_thinking_tier,
                 thinking_override=thinking_override,
                 rescue_empty_length=False,
                 _auto_continue_left=remaining - 1,
@@ -5189,10 +5289,18 @@ async def _call_llm_non_stream(
             extra_reason = more.get("reasoning")
             if extra_reason:
                 prior = result["reasoning"] or ""
-                result["reasoning"] = (prior + "\n\n" + extra_reason).strip() if prior else extra_reason
+                result["reasoning"] = (
+                    (prior + "\n\n" + extra_reason).strip() if prior else extra_reason
+                )
             if more.get("anila_meta"):
                 result["anila_meta"] = more["anila_meta"]
-            result["raw"] = more.get("raw") or result["raw"]
+            if more.get("raw") is not None:
+                result["raw"] = more["raw"]
+            # 續寫失敗又沒有新正文時，維持截斷，外層才知道還沒寫完。
+            if more.get("error") and not extra:
+                result["finish_reason"] = "length"
+            else:
+                result["finish_reason"] = str(more.get("finish_reason") or "stop")
         return result
     except httpx.HTTPStatusError as exc:
         stage = _compact_retry_stage(_compact_retry)
@@ -5305,30 +5413,40 @@ async def _auto_continue_stream(
     messages: list[dict],
     *,
     forwarded_headers: dict[str, str] | None,
+    apply_thinking_tier: bool,
+    thinking_override: str | None,
     finish_reason: str,
-    saw_content: bool,
     accumulated: list[str],
     remaining: int,
-    apply_thinking_tier: bool = False,
-    thinking_override: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Resume a partial ``length`` stream, or emit the terminal done event."""
-    if finish_reason == "length" and saw_content and remaining > 0:
-        full = "".join(accumulated)
+    """有正文卻被長度截斷時再寫一輪；額度用完或寫完才送 done。"""
+    content = "".join(accumulated).strip()
+    if finish_reason == "length" and content and remaining > 0:
+        if remaining == LENGTH_AUTO_CONTINUE_ROUNDS:
+            _open_stage_once(_REQUEST_STAGES.get(), _AUTO_CONTINUE_STAGE)
+            yield {"type": "thinking_stage", "title": _AUTO_CONTINUE_STAGE}
         logger.info("LLM stream truncated; auto-continuing (%s left)", remaining)
+        saw_extra = False
         async for ev in _stream_llm_sse(
             caller_api_key,
             list(messages)
             + [
-                {"role": "assistant", "content": full},
+                {"role": "assistant", "content": "".join(accumulated)},
                 {"role": "user", "content": _CONTINUE_PROMPT},
             ],
             forwarded_headers=forwarded_headers,
-            apply_thinking_tier=apply_thinking_tier and not thinking_override,
+            apply_thinking_tier=apply_thinking_tier,
             thinking_override=thinking_override,
             rescue_empty_length=False,
             _auto_continue_left=remaining - 1,
         ):
+            kind = ev.get("type")
+            if kind == "delta" and ev.get("content"):
+                saw_extra = True
+            # 續寫這輪失敗、又沒接到新正文：維持截斷，不要改成錯誤結束。
+            if kind == "error" and not saw_extra:
+                yield {"type": "done", "finish_reason": "length"}
+                return
             yield ev
         return
     yield {"type": "done", "finish_reason": finish_reason or "stop"}
@@ -5490,12 +5608,11 @@ async def _stream_llm_sse(
                         caller_api_key,
                         messages,
                         forwarded_headers=forwarded_headers,
-                        finish_reason=finish_reason,
-                        saw_content=saw_content,
-                        accumulated=accumulated,
-                        remaining=remaining,
                         apply_thinking_tier=apply_thinking_tier,
                         thinking_override=thinking_override,
+                        finish_reason=finish_reason,
+                        accumulated=accumulated,
+                        remaining=remaining,
                     ):
                         yield ev
                     return
@@ -5544,12 +5661,11 @@ async def _stream_llm_sse(
                 caller_api_key,
                 messages,
                 forwarded_headers=forwarded_headers,
-                finish_reason=finish_reason,
-                saw_content=saw_content,
-                accumulated=accumulated,
-                remaining=remaining,
                 apply_thinking_tier=apply_thinking_tier,
                 thinking_override=thinking_override,
+                finish_reason=finish_reason,
+                accumulated=accumulated,
+                remaining=remaining,
             ):
                 yield ev
     except httpx.RequestError as exc:
@@ -6615,7 +6731,8 @@ async def _router_streaming(
     upstream_reasoning = ""
     # 思考與正文的 STAGE 行共用這一條階段清單。半行先留在篩子裡，不進路由緩衝。
     live_stages = LiveThinkingStages()
-    state = "detecting"
+    # 續寫從第一個字就是答案。開頭的 DISPATCH／ASK／RECALL 不再進偵測。
+    state = "answering" if REQUEST_CONTINUE.get() else "detecting"
     answer_emitted_up_to = 0
     dispatch: tuple[str, str, int, int] | None = None
     ask: dict[str, Any] | None = None
@@ -6757,6 +6874,8 @@ async def _router_streaming(
                 if upstream_reasoning:
                     anila_meta["reasoning"] = upstream_reasoning
                 failure_meta = {**anila_meta, "trace": []}
+                if already:
+                    _note_length_finish(failure_meta, "length")
                 for frame in _stages_on_meta(failure_meta, live_stages, "error"):
                     yield frame
                 yield _make_event("anila.meta", failure_meta)
@@ -6795,11 +6914,21 @@ async def _router_streaming(
         if kind == "done":
             stream_finish = str(ev.get("finish_reason") or "stop")
             break
+        if kind == "thinking_stage":
+            for frame in _thinking_stage_frames(
+                _open_stage_once(live_stages, str(ev.get("title") or ""))
+            ):
+                yield frame
+            continue
         if kind != "delta":
             continue
 
         # 階段行不進路由緩衝，避免 STAGE 被當成答案開頭，也避免擋住後面的協定行。
-        visible_delta, stage_events = live_stages.feed_content(ev["content"])
+        # 續寫模式整段都是正文，STAGE 範例要原樣留下。
+        if REQUEST_CONTINUE.get():
+            visible_delta, stage_events = ev.get("content") or "", []
+        else:
+            visible_delta, stage_events = live_stages.feed_content(ev["content"])
         for frame in _thinking_stage_frames(stage_events):
             yield frame
         if not visible_delta:
@@ -7117,6 +7246,7 @@ async def _router_streaming(
                 anila_meta["reasoning"] = merged_reasoning
             _remember_rescue(anila_meta)
             anila_meta_evt = {**anila_meta, "trace": []}
+            _note_length_finish(anila_meta_evt, stream_finish)
             for frame in _stages_on_meta(anila_meta_evt, live_stages, "done"):
                 yield frame
             yield _make_event("anila.meta", anila_meta_evt)
@@ -7159,6 +7289,7 @@ async def _router_streaming(
             anila_meta["reasoning"] = reasoning_text
         _remember_rescue(anila_meta)
         anila_meta_evt = {**anila_meta, "trace": []}
+        _note_length_finish(anila_meta_evt, stream_finish)
         for frame in _stages_on_meta(anila_meta_evt, live_stages, "done"):
             yield frame
         yield _make_event("anila.meta", anila_meta_evt)

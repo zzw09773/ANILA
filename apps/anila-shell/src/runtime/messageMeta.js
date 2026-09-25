@@ -112,6 +112,10 @@ export function buildPersistMeta(finalMeta, messageState) {
   if (typeof state.thinkingElapsedMs === "number") {
     base.thinking_elapsed_ms = state.thinkingElapsedMs;
   }
+  // 截斷才有「繼續」。後一輪若正常結束，要用 stop 蓋掉先前的 length，重整才不會再畫按鈕。
+  if (state.finishReason === "length" || state.finishReason === "stop") {
+    base.finish_reason = state.finishReason;
+  }
 
   // Drop undefined-only results (empty-object meta isn't useful to persist).
   const hasAnyValue = Object.values(base).some(

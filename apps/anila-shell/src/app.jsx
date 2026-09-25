@@ -111,6 +111,7 @@ import {
   listVisibleActions,
   runActionInvokeFillback,
 } from "./runtime/messageActions.js";
+import { CONTINUE_INSTRUCTION, joinContinuation } from "./runtime/continueSeam.js";
 import {
   ANSWER_PERSIST_FAILURE_NOTICE,
   STREAM_STATE,
@@ -1397,6 +1398,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingLocked: meta.thinking_locked === true,
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
+      finishReason:
+        meta.finish_reason === "length" || meta.finish_reason === "stop"
+          ? meta.finish_reason
+          : null,
       interrupt: normalizeInterrupt(meta.interrupt),
       settledInterrupts: Array.isArray(meta.settled_interrupts)
         ? meta.settled_interrupts.map((item) => normalizeInterrupt(item)).filter(Boolean)
@@ -2215,6 +2220,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           reasoning: accumulatedReasoning,
           interrupt: persistedInterrupt,
           thinkingStages: drafted?.thinkingStages,
+          finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
           ...thinkingSnap,
         },
       );
@@ -2826,6 +2832,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ? { thinkingStages: mergeThinkingStages(current?.thinkingStages, meta.thinking_stages) }
         : {}),
       thinkingLocked: meta.thinking_locked === true,
+      ...(meta.finish_reason === "length" || meta.finish_reason === "stop"
+        ? { finishReason: meta.finish_reason }
+        : {}),
       ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
@@ -3339,6 +3348,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           reasoning: accumulatedReasoning,
           interrupt: persistedInterrupt,
           thinkingStages: drafted?.thinkingStages,
+          finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
           ...thinkingSnap,
         },
       );
@@ -3540,10 +3550,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     });
   }
 
-  // Continue Response:回應被 max_tokens 截斷(finishReason==='length')時,
-  // 把已生內容當 assistant 上文 + 一句「請接續」當 user turn 重新串流,新內容
-  // **附加**到同一則訊息(非取代)。只做 Router/文字回合(分派 agent 的釘定需
-  // 後端 session-pin,user 拍板先只做這條);圖像 agent 回合不會有 length 截斷。
+  // 答案被長度截斷時，在同一則助理訊息上接下去寫。
+  // 一律走 Router：模型解析、身分、日期與不得外洩都跟一般回合一樣。
+  // 續寫開頭若剛好是 DISPATCH／ASK／RECALL，由 anila_continue 告訴 Router 那是正文。
   async function continueMessage(assistantMsg) {
     if (!isAuthenticated) { setRuntimeError("尚未登入，請重新登入後再試。"); return; }
     const convId = assistantMsg.conversationId;
@@ -3555,28 +3564,45 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       updateMsg(convId, assistantMsg.id, { streaming: false, finishReason: null });
       return;
     }
-    const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
-    const baseUrl = effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
-    // history 含截斷的這則 assistant + 一句續寫指示。buildMessageHistory 會把
-    // 截斷訊息(已非 streaming)當 assistant role 帶上。
+    // 在標成 streaming 之前組歷史，截斷的這則才會以 assistant 帶上去。
     const payload = {
-      model: effectiveTarget,
-      ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
+      model: ROUTER_AGENT.id,
+      ...(selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
+      anila_continue: true,
       messages: buildMessageHistory(
         msgs.slice(0, idx + 1),
-        "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。",
+        CONTINUE_INSTRUCTION,
         [],
         historyOptions(convId, null),
       ),
     };
-    updateMsg(convId, assistantMsg.id, { streaming: true, finishReason: null, rescueNotice: null });
+    const stageBase = Array.isArray(assistantMsg.thinkingStages)
+      ? assistantMsg.thinkingStages.length
+      : 0;
+    stageBaseRef.current.set(assistantMsg.id, stageBase);
+    const thinkingPump = makeThinkingSummaryPump(
+      convId,
+      assistantMsg.id,
+      isThinkingDisplayOff(assistantMsg.thinkingApplied),
+      assistantMsg.thinkingSummaries,
+    );
+    let accumulatedReasoning = "";
+    updateMsg(convId, assistantMsg.id, {
+      streaming: true,
+      finishReason: null,
+      rescueNotice: null,
+      thinkingStatus: null,
+      thinkingStartedAt: thinkingPump.startedAt,
+      error: null,
+    });
     let appended = "";
     let combined = existing;
     try {
       await streamWithAbort(convId, {
-        url: `${baseUrl}/v1/chat/completions`,
+        url: `${config.routerBaseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        assistantId: assistantMsg.id,
         onText: (acc) => {
           if (isHarnessEmptyNotice(acc)) {
             appended = "";
@@ -3584,41 +3610,74 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             return;
           }
           appended = acc;
-          // 接在原文後(若原文未以空白結尾補一個空格,避免黏字)。
-          const joiner = existing && !/\s$/.test(existing) ? " " : "";
-          combined = existing + joiner + acc;
+          combined = joinContinuation(existing, acc);
           updateMsg(convId, assistantMsg.id, { text: combined });
         },
         onFinishReason: (reason) => updateMsg(convId, assistantMsg.id, { finishReason: reason, finishedAt: Date.now() }),
+        onTrace: (step) => {
+          applyLiveTraceStep(convId, assistantMsg.id, step);
+        },
+        onMeta: (metaFrame) => {
+          applyMeta(convId, assistantMsg.id, ROUTER_AGENT.id, metaFrame);
+        },
+        onReasoning: (delta) => {
+          accumulatedReasoning += delta;
+          applyLiveReasoningDelta(convId, assistantMsg.id, delta, thinkingPump);
+        },
       });
     } catch (err) {
       setRuntimeError(err?.message || "續寫失敗");
     } finally {
-      updateMsg(convId, assistantMsg.id, { streaming: false });
+      thinkingPump.close();
     }
+    await thinkingPump.flush();
+    const row = (messagesRef.current[convId] || []).find((m) => m.id === assistantMsg.id);
+    const stopped = userStoppedRef.current.has(convId);
+    userStoppedRef.current.delete(convId);
+    // 沒有新的可顯示正文時，維持原來的截斷。空的額度提示不能把按鈕消掉。
+    const gainedText = Boolean(appended)
+      && combined !== existing
+      && !isHarnessEmptyNotice(appended);
+    const nextReason = gainedText ? (row?.finishReason || "length") : "length";
+    const snap = thinkingPump.snapshot({
+      hadReasoning: accumulatedReasoning.length > 0,
+      finishReason: nextReason,
+      lengthBudget: nextReason === "length",
+    });
+    const thinkingPatch = {};
+    if (snap.thinkingStatus) thinkingPatch.thinkingStatus = snap.thinkingStatus;
+    if (typeof snap.thinkingElapsedMs === "number" && (snap.thinkingStatus || accumulatedReasoning)) {
+      thinkingPatch.thinkingElapsedMs = snap.thinkingElapsedMs;
+    }
+    if (Array.isArray(snap.thinkingSummaries) && snap.thinkingSummaries.length > 0) {
+      thinkingPatch.thinkingSummaries = snap.thinkingSummaries;
+    }
+    updateMsg(convId, assistantMsg.id, {
+      streaming: false,
+      text: combined,
+      finishReason: nextReason,
+      ...thinkingPatch,
+    });
 
-    // 續寫的內容要寫回資料庫。
-    //
-    // ⚠ 2026-08-05 之前這裡什麼都沒有:續寫在螢幕上一個字一個字長出來、
-    // 提示詞正確、沒有任何錯誤,而資料庫裡那一列仍然只有續寫前的文字 ——
-    // 使用者看著答案變長,重新整理之後就沒了。這不是先落庫再串流引入的,
-    // 是那之前就一直存在、順手在這一輪關掉的(舊的 wt/fix-shell-persist
-    // 分支曾宣稱修好,那條分支已經作廢,沒有進到任何地方)。
-    //
-    // 只送 content:不帶 metadata,所以伺服器不會動到那一列的 anila_stream
-    // 標記(update_message_content 只在 metadata 非 None 時才碰它)。
-    // 那一列若還停在非終局狀態(孤兒 reserved),這個 PUT 會 409 —— 那時
-    // 使用者看得到氣泡上的說明,不是靜默失敗。
     if (typeof convId !== "number" || typeof assistantMsg.dbId !== "number") return;
-    if (!appended) return;
+    if (!appended && nextReason === "length" && !stopped) return;
+    const current = (messagesRef.current[convId] || []).find((m) => m.id === assistantMsg.id) || row;
+    const persistMeta = buildPersistMeta(current?.metadata, {
+      ...(current || {}),
+      finishReason: nextReason,
+    });
     try {
       const saved = await apiUpdateMessage(authRequest, convId, assistantMsg.dbId, {
         content: combined,
+        metadata: persistMeta,
       });
       if (!saved || typeof saved.id !== "number") {
         throw new Error("對話訊息儲存失敗");
       }
-      updateMsg(convId, assistantMsg.id, { persistError: null });
+      updateMsg(convId, assistantMsg.id, {
+        persistError: null,
+        metadata: saved.metadata || persistMeta,
+      });
     } catch (err) {
       setRuntimeError(err?.message || "對話訊息儲存失敗");
       updateMsg(convId, assistantMsg.id, {
@@ -3786,6 +3845,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           reasoning: accumulatedReasoning,
           interrupt: interruptFromMessage(convId, placeholderId),
           thinkingStages: stageRow?.thinkingStages,
+          finishReason: stageRow?.finishReason,
           ...thinkingPump.snapshot({
             hadReasoning: accumulatedReasoning.length > 0,
           }),

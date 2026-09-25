@@ -4,7 +4,7 @@ Contract (blueprint §2.3 Router):
   * caller body may send ``anila_thinking_tier`` = default|off|standard|deep
     (case-insensitive, trimmed). Other values are ignored.
   * Router forwards the canonical value on primary-model calls only
-    (non-stream, stream, and same-turn auto-continue). Those helpers
+    (non-stream and stream). Those helpers
     opt in via ``apply_thinking_tier=True``; default is off.
   * Compact summarizer, agent dispatch, and recompose must not see the key.
   * ``anila_sampling_defaults`` never lists it.
@@ -265,7 +265,7 @@ def test_non_stream_omits_thinking_tier_unless_opted_in(monkeypatch):
     assert client.posts[1]["anila_thinking_tier"] == "deep"
 
 
-def test_non_stream_auto_continue_keeps_thinking_tier(monkeypatch):
+def test_non_stream_length_keeps_thinking_tier_while_auto_continuing(monkeypatch):
     client = _Client(answers=[_reply("<html>", "length"), _reply("</html>", "stop")])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     token = _with_tier("deep")
@@ -278,11 +278,10 @@ def test_non_stream_auto_continue_keeps_thinking_tier(monkeypatch):
     finally:
         rs.REQUEST_THINKING_TIER.reset(token)
     assert len(client.posts) == 2
-    assert client.posts[0]["anila_thinking_tier"] == "deep"
-    assert client.posts[1]["anila_thinking_tier"] == "deep"
+    assert all(post["anila_thinking_tier"] == "deep" for post in client.posts)
 
 
-def test_stream_auto_continue_keeps_thinking_tier(monkeypatch):
+def test_stream_length_keeps_thinking_tier_while_auto_continuing(monkeypatch):
     client = _Client(
         streams=[
             _stream_lines("<!DOCTYPE html><html>", "length"),
@@ -304,8 +303,7 @@ def test_stream_auto_continue_keeps_thinking_tier(monkeypatch):
     finally:
         rs.REQUEST_THINKING_TIER.reset(token)
     assert len(client.streams) == 2
-    assert client.streams[0]["anila_thinking_tier"] == "deep"
-    assert client.streams[1]["anila_thinking_tier"] == "deep"
+    assert all(post["anila_thinking_tier"] == "deep" for post in client.streams)
 
 
 @pytest.mark.parametrize("bad", ["turbo", 3])

@@ -469,7 +469,7 @@ export function ArtifactPanel({
                   borderRadius: 8,
                 }}
               >
-                這份 HTML 還沒寫完（腳本或 &lt;/html&gt; 被截斷）。畫面裡的「載入中」是頁面自己的，不是預覽壞掉。請用「繼續產生」把程式補完。
+                這份 HTML 還沒寫完（腳本或 &lt;/html&gt; 被截斷）。畫面裡的「載入中」是頁面自己的，不是預覽壞掉。請用「繼續」把程式補完。
               </div>
             ) : null}
             {(kind === "html" || kind === "jsx") && artifactStillNeedsCdn(localizeArtifactHtml(source)) ? (

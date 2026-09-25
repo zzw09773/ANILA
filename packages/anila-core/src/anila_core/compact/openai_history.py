@@ -210,12 +210,64 @@ def _result_from_outbound(
     )
 
 
+def _assistant_text(msg: Mapping[str, Any]) -> str:
+    if msg.get("role") != "assistant":
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    return flatten_openai_content(content)
+
+
+def _pin_preserved_assistant(
+    recent: list[dict[str, Any]],
+    old: list[dict[str, Any]],
+    preserve: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """續寫中的答案不進摘要。整段搬回最近訊息，尾端才接得上。"""
+    if not preserve:
+        return recent, old
+    if any(_assistant_text(msg) == preserve for msg in recent):
+        return recent, old
+    kept: list[dict[str, Any]] = []
+    moved: dict[str, Any] | None = None
+    for msg in old:
+        if _assistant_text(msg) == preserve:
+            if moved is not None:
+                kept.append(moved)
+            moved = msg
+            continue
+        kept.append(msg)
+    if moved is None:
+        return recent, old
+    return [moved, *recent], kept
+
+
+def _keep_floor(
+    turns: Sequence[Sequence[dict[str, Any]]],
+    keep_recent_turns: int,
+    preserve: str | None,
+) -> int:
+    """滑動視窗至少留到含這段答案的那一輪，避免續寫尾端被丟掉。"""
+    floor = max(1, keep_recent_turns)
+    if not preserve:
+        return floor
+    found: int | None = None
+    for index, turn in enumerate(turns):
+        if any(_assistant_text(msg) == preserve for msg in turn):
+            found = index
+    if found is None:
+        return floor
+    return max(floor, len(turns) - found)
+
+
 def _sliding_window_apply(
     messages: list[dict[str, Any]],
     max_tokens: int,
     *,
     keep_recent_turns: int = 4,
     protected: Sequence[Mapping[str, Any]] = (),
+    preserve_assistant_content: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
     """Hard-truncate older turns. Third value is the produced marker, if any."""
     if not messages:
@@ -228,7 +280,7 @@ def _sliding_window_apply(
     if not turns:
         return [_retain_or_copy(m, protected) for m in messages], 0, None
 
-    min_keep = max(1, keep_recent_turns)
+    min_keep = _keep_floor(turns, keep_recent_turns, preserve_assistant_content)
     kept = turns[-min_keep:] if len(turns) > min_keep else list(turns)
     older = turns[:-min_keep] if len(turns) > min_keep else []
     for turn in reversed(older):
@@ -301,11 +353,15 @@ async def auto_compact_openai_messages(
     keep_recent_turns: int = 4,
     force: bool = False,
     tokens_before: int | None = None,
+    preserve_assistant_content: str | None = None,
 ) -> CompactResult:
     """Strip old images, then summarize or truncate at the compact threshold.
 
     ``tokens_before`` overrides the heuristic when the caller already has a
     model ``/tokenize`` count (threshold uses that true value).
+
+    ``preserve_assistant_content`` 是正在續寫的那則答案。摘要與滑動視窗都要
+    原樣留下，不能只留最後一個 user turn。
     """
     tokens_before = (
         tokens_before if tokens_before is not None else estimate_openai_tokens(messages)
@@ -364,6 +420,7 @@ async def auto_compact_openai_messages(
 
     recent = _flatten_turns(turns[-keep_n:]) if len(turns) > keep_n else _flatten_turns(turns[-1:])
     old = _flatten_turns(turns[:-keep_n] if len(turns) > keep_n else turns[:-1])
+    recent, old = _pin_preserved_assistant(recent, old, preserve_assistant_content)
     if not old:
         if tokens_saved > 0:
             return CompactResult(
@@ -407,6 +464,7 @@ async def auto_compact_openai_messages(
                         threshold,
                         keep_recent_turns=max(1, keep_recent_turns - 1),
                         protected=(summary_msg,),
+                        preserve_assistant_content=preserve_assistant_content,
                     )
                     after = estimate_openai_tokens(compacted)
                 return _result_from_outbound(
@@ -430,7 +488,10 @@ async def auto_compact_openai_messages(
         )
 
     compacted, _, marker_message = _sliding_window_apply(
-        working, threshold, keep_recent_turns=keep_n
+        working,
+        threshold,
+        keep_recent_turns=keep_n,
+        preserve_assistant_content=preserve_assistant_content,
     )
     after = estimate_openai_tokens(compacted)
     if after >= tokens_before:

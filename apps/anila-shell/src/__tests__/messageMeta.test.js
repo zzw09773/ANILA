@@ -140,6 +140,15 @@ describe("buildPersistMeta - Sprint 13 typed events", () => {
     expect(result.interrupt).toEqual(interrupt);
   });
 
+  it("persists finish_reason so a reloaded length answer can show 繼續", () => {
+    expect(
+      buildPersistMeta({ trace_id: "t" }, { finishReason: "length" }).finish_reason,
+    ).toBe("length");
+    expect(
+      buildPersistMeta({ finish_reason: "length" }, { finishReason: "stop" }).finish_reason,
+    ).toBe("stop");
+  });
+
   it("prefers final meta values when both sources carry the field", () => {
     const finalTodos = [{ id: "x", content: "from server", status: "pending" }];
     const stateTodos = [{ id: "y", content: "stale", status: "completed" }];
