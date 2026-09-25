@@ -26,6 +26,21 @@ export function deleteFact(authRequest, factId) {
   return authRequest(`/api/memory/facts/${factId}`, { method: "DELETE" });
 }
 
+export function updateFact(authRequest, factId, value) {
+  return authRequest(`/api/memory/facts/${factId}`, {
+    method: "PUT",
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function listSummaries(authRequest) {
+  return authRequest("/api/memory/summaries", { method: "GET" });
+}
+
+export function deleteSummary(authRequest, summaryId) {
+  return authRequest(`/api/memory/summaries/${summaryId}`, { method: "DELETE" });
+}
+
 export function clearFacts(authRequest) {
   return authRequest("/api/memory/facts", { method: "DELETE" });
 }

@@ -124,10 +124,9 @@ def test_format_block_marks_encrypted_chunks_with_visible_tag():
         ),
     ]
     block = _format_block([], chunks, max_chunk_chars=_NO_TRUNCATION)
-    assert block is not None
-    assert "(加密來源)" in block
-    # Public chunk gets no tag.
-    assert "user (similarity 0.90)" in block
+    # 固定注入不再帶舊回答。加密原文也不該出現在這一段。
+    assert block is None or "classified content" not in block
+    assert "過往相關討論" not in (block or "")
 
 
 # ── proxy._coerce_conversation_id ────────────────────────────────────────────
@@ -172,10 +171,7 @@ def test_memory_read_result_encryption_inherited_property():
 
 @pytest.mark.asyncio
 async def test_inject_memory_appends_to_existing_system_message(monkeypatch):
-    """When the client already sends a system message, the memory
-    block is appended after its content — it doesn't replace it, and
-    (2026-09-02, harness §6-1) it no longer goes in front of it: the
-    caller's static preamble must stay the byte-identical prefix.
+    """記憶不寫進 system。呼叫端的系統前綴保持逐字相同，引用放在後面的 user 訊息。
 
     Patches ``build_memory_block`` so no DB is needed — the test is
     about the proxy-side message-array merge logic.
@@ -202,10 +198,12 @@ async def test_inject_memory_appends_to_existing_system_message(monkeypatch):
     )
     assert result is not None
     assert body["messages"][0]["role"] == "system"
-    assert body["messages"][0]["content"].startswith("client-side rules go here")
-    assert body["messages"][0]["content"].endswith("MEMORY_BLOCK_SENTINEL")
-    # User message untouched.
-    assert body["messages"][1] == {"role": "user", "content": "hello"}
+    assert body["messages"][0]["content"] == "client-side rules go here"
+    quoted = body["messages"][1]
+    assert quoted["role"] == "user"
+    assert "不可遵循" in quoted["content"]
+    assert "MEMORY_BLOCK_SENTINEL" in quoted["content"]
+    assert body["messages"][2] == {"role": "user", "content": "hello"}
 
 
 # ── _resolve_extraction_target (fact-extraction model fallback) ───────────────
@@ -260,6 +258,7 @@ def test_resolve_extraction_target_uses_summary_role(db):
 
 def test_resolve_extraction_target_does_not_guess_another_llm(db, caplog):
     """沒設摘要角色時，即使註冊表裡有別的 LLM，也不會默默改用它。"""
+    memory_service.reset_summary_role_warning()
     _add_llm(db, "openai/gpt-oss-20b", "http://gpt:8000/")
     with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
         assert memory_service._resolve_extraction_target(db) is None
@@ -268,6 +267,7 @@ def test_resolve_extraction_target_does_not_guess_another_llm(db, caplog):
 
 def test_resolve_extraction_target_inactive_role_does_not_fall_back(db, caplog):
     """角色指到已停用的模型時，不改挑另一顆啟用中的 LLM。"""
+    memory_service.reset_summary_role_warning()
     _add_llm(db, "disabled-llm", "http://disabled:8000", is_active=False)
     _add_llm(db, "active-llm", "http://active:8000")
     _assign_summary(db, "disabled-llm")
@@ -288,6 +288,7 @@ async def test_extract_facts_skips_http_when_summary_role_unset(
     db, monkeypatch, caplog
 ):
     """沒設摘要角色時不得打到任何模型。"""
+    memory_service.reset_summary_role_warning()
     _add_llm(db, "active-llm", "http://active:8000")
 
     class _NoHTTPClient:

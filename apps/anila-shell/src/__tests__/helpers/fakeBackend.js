@@ -678,6 +678,15 @@ export function createFakeBackend(options = {}) {
     if (path === "/api/memory/facts" && method === "DELETE") {
       return jsonResponse({ deleted: 0 });
     }
+    if (/^\/api\/memory\/facts\/\d+$/.test(path) && method === "PUT") {
+      return jsonResponse({ id: Number(path.split("/").pop()), value: body?.value || "" });
+    }
+    if (path === "/api/memory/summaries" && method === "GET") {
+      return jsonResponse({ total: 0, items: [] });
+    }
+    if (/^\/api\/memory\/summaries\/\d+$/.test(path) && method === "DELETE") {
+      return jsonResponse({ deleted: 1 });
+    }
     if (path.startsWith("/api/memory/chunks") && method === "GET") {
       return jsonResponse({
         total: 0,

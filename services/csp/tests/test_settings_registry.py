@@ -1,6 +1,6 @@
 """設定收斂的契約測試。
 
-這裡守治理頁仍承諾的十五顆 C 類設定，以及整棵 repo 的 Python env
+這裡守治理頁仍承諾的十七顆 C 類設定，以及整棵 repo 的 Python env
 reader 不得再讀本輪刪掉的 CSP 設定名。
 
 ⚠ 2026-08-17：**部署檔與腳本這一側現在也由本檔掃描**（`*.yml`／`*.yaml`／
@@ -34,6 +34,8 @@ KEEP_KEYS = {
     "institutional_kb.score_threshold",
     "memory.retrieve_min_cosine",
     "memory.retrieve_top_k",
+    "memory.enabled",
+    "memory.idle_minutes",
     "proxy.llm_timeout",
     "proxy.embedding_timeout",
     "auth.access_token_expire_minutes",
@@ -246,7 +248,7 @@ def test_registry_is_exactly_the_fifteen_immediate_settings():
     assert set(REGISTRY) == KEEP_KEYS
     assert all(spec.setting_class is SettingClass.C for spec in SETTINGS)
     assert EDITABLE_CLASSES == frozenset({SettingClass.C})
-    assert sum(spec.value_type is T_BOOL_NE_0 for spec in SETTINGS) == 2
+    assert sum(spec.value_type is T_BOOL_NE_0 for spec in SETTINGS) == 3
 
 
 def test_removed_settings_have_no_python_environment_reader():

@@ -141,6 +141,51 @@ describe("dispatchSseEvent", () => {
     expect(onReasoning).toHaveBeenCalledWith("thinking...");
   });
 
+  it("routes anila.stage recall onto the trace timeline", () => {
+    const onTrace = vi.fn();
+    const acc = makeAccumulator();
+    dispatchSseEvent(
+      {
+        event: "anila.stage",
+        data: '{"kind":"recall","label":"搜尋過往對話","status":"running"}',
+        raw: "",
+      },
+      { onTrace, accumulator: acc },
+    );
+    expect(onTrace).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "recall", label: "搜尋過往對話" }),
+    );
+    expect(acc.get()).toBe("");
+  });
+
+  it("keeps the terminal status of a recall stage", () => {
+    const onTrace = vi.fn();
+    dispatchSseEvent(
+      {
+        event: "anila.stage",
+        data: '{"kind":"recall","label":"搜尋過往對話","status":"done"}',
+        raw: "",
+      },
+      { onTrace, accumulator: makeAccumulator() },
+    );
+    expect(onTrace).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "recall", status: "done" }),
+    );
+
+    onTrace.mockClear();
+    dispatchSseEvent(
+      {
+        event: "anila.stage",
+        data: '{"kind":"recall","label":"搜尋過往對話","status":"error"}',
+        raw: "",
+      },
+      { onTrace, accumulator: makeAccumulator() },
+    );
+    expect(onTrace).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "recall", status: "error" }),
+    );
+  });
+
   it("routes anila.rescue without treating it as answer text", () => {
     const onRescue = vi.fn();
     const acc = makeAccumulator();

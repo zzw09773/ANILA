@@ -71,6 +71,10 @@ class UserFact(Base):
     # not a FK because messages aren't a first-class table.
     source_message_id = Column(Integer, nullable=True)
     confidence = Column(Float, nullable=False, default=1.0)
+    # 使用者在記憶頁改過的事實。整理對話時不得用逐字稿裡的舊值蓋掉。
+    user_edited = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -142,3 +146,107 @@ class ConversationMemoryChunk(Base):
 
     user = relationship("User", foreign_keys=[user_id])
     conversation = relationship("Conversation", foreign_keys=[conversation_id])
+
+
+class ConversationSummary(Base):
+    """一個對話一則摘要。給需要時的 RECALL 搜尋，也給使用者自己刪。
+
+    摘要只描述使用者要什麼、得出什麼結論，不存助理原文。
+    ``covered_message_id`` 是這則摘要已經涵蓋的最後一則訊息；
+    之後又有合格回合，閒置或開新對話時才重寫。
+    """
+
+    __tablename__ = "conversation_summaries"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    summary = Column(Text, nullable=False)
+    covered_message_id = Column(Integer, nullable=True)
+    embedding = Column(Text, nullable=True)
+    embedding_source_model = Column(String(200), nullable=True)
+    embedding_native_dim = Column(Integer, nullable=True)
+    is_encrypted = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", foreign_keys=[user_id])
+    conversation = relationship("Conversation", foreign_keys=[conversation_id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", name="uq_conversation_summaries_conversation"
+        ),
+    )
+
+
+class MemoryTombstone(Base):
+    """使用者刪掉的摘要或事實。閒置整理不得從涵蓋範圍內把內容做回來。
+
+    ``kind`` 是 ``summary`` 或 ``fact``。摘要墓碑記來源對話與已涵蓋的訊息；
+    事實墓碑再記 key。``covered_message_id`` 以內的原文不再產生同一筆記憶。
+    """
+
+    __tablename__ = "memory_tombstones"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    kind = Column(String(20), nullable=False)
+    fact_key = Column(String(120), nullable=True)
+    covered_message_id = Column(Integer, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", foreign_keys=[user_id])
+    conversation = relationship("Conversation", foreign_keys=[conversation_id])
+
+
+class MemoryRefreshLease(Base):
+    """一個對話同時只許一個 worker 整理。
+
+    ``claimed_until`` 是 unix 秒。過期後別的 worker 才能認領。
+    ``claim_token`` 留到下一輪認領，避免舊結果在租約讓出後把新摘要蓋掉。
+    """
+
+    __tablename__ = "memory_refresh_leases"
+
+    conversation_id = Column(
+        Integer,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    claim_token = Column(String(64), nullable=False)
+    claimed_until = Column(Integer, nullable=False)

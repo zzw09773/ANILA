@@ -36,8 +36,10 @@ from .embedding import (
 )
 from .extraction import (
     EXTRACTION_SYSTEM_PROMPT,
+    MEMORY_REFRESH_SYSTEM_PROMPT,
     format_transcript_for_extraction,
     parse_extraction_response,
+    parse_memory_refresh_response,
 )
 from .models import (
     MemoryReadResult,
@@ -50,11 +52,13 @@ __all__ = [
     "EMBED_DIM",
     "EMBED_NATIVE_DIM",
     "EXTRACTION_SYSTEM_PROMPT",
+    "MEMORY_REFRESH_SYSTEM_PROMPT",
     "MemoryAdapter",
     "MemoryReadResult",
     "RetrievedChunk",
     "UserFactDTO",
     "format_transcript_for_extraction",
     "parse_extraction_response",
+    "parse_memory_refresh_response",
     "truncate_embedding",
 ]

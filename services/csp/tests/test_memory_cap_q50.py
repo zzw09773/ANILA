@@ -108,17 +108,17 @@ def _isolated_upstream(monkeypatch):
 
 
 def _body_text(body: dict) -> str:
+    """記憶區塊在引用訊息裡，不在 system。回傳引用內文，長度上限才對得上。"""
     messages = body["messages"]
-    first = messages[0]
-    assert first["role"] == "system"
-    content = first["content"]
-    if isinstance(content, str):
-        return content
-    return "\n".join(
-        part["text"]
-        for part in content
-        if isinstance(part, dict) and isinstance(part.get("text"), str)
-    )
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            continue
+        start = content.find("<quoted-memory>")
+        end = content.find("</quoted-memory>")
+        if start != -1 and end > start:
+            return content[start + len("<quoted-memory>") : end].strip()
+    raise AssertionError("記憶沒有放進不可遵循的引用訊息")
 
 
 class _Request:
@@ -220,8 +220,9 @@ def test_total_cap_drops_whole_memory_items_with_deterministic_priority():
     assert len(block) <= memory_service._MEMORY_BLOCK_MAX_CHARS
     assert "FACT_NEW_" + "n" * 2100 in block
     assert "FACT_OLD_" not in block
-    assert "CHUNK_HIGH_" + "h" * 650 in block
-    assert "CHUNK_LOW_" + "l" * 650 in block
+    assert "CHUNK_HIGH_" not in block
+    assert "CHUNK_LOW_" not in block
+    assert "過往相關討論" not in block
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
@@ -272,8 +273,8 @@ async def test_non_agent_model_outbound_payload_contains_bounded_memory(
     assert len(memory_text) <= memory_service._MEMORY_BLOCK_MAX_CHARS
     assert "FACT_NEW_" in memory_text
     assert "FACT_OLD_" not in memory_text
-    assert "CHUNK_HIGH_" in memory_text
-    assert "CHUNK_LOW_" in memory_text
+    assert "CHUNK_HIGH_" not in memory_text
+    assert "CHUNK_LOW_" not in memory_text
 
 
 @pytest.mark.parametrize("source_is_internal", [False, True])

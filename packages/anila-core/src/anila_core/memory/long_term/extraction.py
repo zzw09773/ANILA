@@ -55,6 +55,49 @@ def format_transcript_for_extraction(
     return f"使用者：{user_message}\n\n助理：{assistant_message}"
 
 
+MEMORY_REFRESH_SYSTEM_PROMPT = """你是記憶整理器。讀完對話後只輸出一個 JSON 物件，不要前言。
+
+summary：這段對話裡使用者想做什麼、最後決定或結論是什麼。
+不要逐字抄寫助理的回答，不要寫路徑、主機、設定名稱或錯誤訊息。
+facts：只有使用者親口講的、關於自己的穩定事實或偏好（單位、職稱、長期偏好）。
+助理說的話不是事實。短期狀態不要收。沒有就給空陣列。
+
+格式（尖括號是佔位，不要原樣輸出）：
+{"summary":"<短摘要>","facts":[{"key":"<類別>","value":"<使用者原話裡的內容>","confidence":0.0}]}
+"""
+
+
+def parse_memory_refresh_response(raw: str) -> dict[str, Any]:
+    """把整理模型的輸出收成 ``{"summary", "facts"}``。壞掉就當這次沒有產出。"""
+    empty = {"summary": "", "facts": []}
+    if not isinstance(raw, str) or not raw.strip():
+        return empty
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return empty
+    try:
+        parsed = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        logger.warning(
+            "anila_core.memory.user: refresh returned non-JSON: %r",
+            raw[:200],
+        )
+        return empty
+    if not isinstance(parsed, dict):
+        return empty
+    summary = parsed.get("summary")
+    if not isinstance(summary, str):
+        summary = ""
+    summary = summary.strip()
+    facts_raw = parsed.get("facts")
+    if not isinstance(facts_raw, list):
+        facts_raw = []
+    # 與逐輪萃取同一套欄位檢查，佔位符與超長 key 都在這裡丟掉。
+    facts = parse_extraction_response(json.dumps(facts_raw, ensure_ascii=False))
+    return {"summary": summary, "facts": facts}
+
+
 def parse_extraction_response(raw: str) -> list[dict[str, Any]]:
     """Tolerant parser for the extractor LLM output.
 

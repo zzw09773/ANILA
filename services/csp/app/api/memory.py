@@ -30,10 +30,17 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
-from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.models.conversation import Conversation
+from app.models.user_memory import ConversationMemoryChunk, ConversationSummary, UserFact
 from app.services.auth_service import get_current_user
 from app.schemas.base import ApiResponseModel
-from app.services.memory_service import REPLY_STYLE_KEY, REPLY_STYLE_MAX_CHARS
+from app.services.memory_service import (
+    REPLY_STYLE_KEY,
+    REPLY_STYLE_MAX_CHARS,
+    remember_fact_deleted,
+    remember_summary_deleted,
+    search_conversation_summaries,
+)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -92,6 +99,40 @@ class ChunkListResponse(BaseModel):
 
 class DeleteResponse(BaseModel):
     deleted: int
+
+
+class FactUpdateBody(BaseModel):
+    value: str
+
+
+class SummaryItem(ApiResponseModel):
+    id: int
+    conversation_id: int
+    summary: str
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SummaryListResponse(BaseModel):
+    total: int
+    items: list[SummaryItem]
+
+
+class RecallBody(BaseModel):
+    query: str
+    exclude_conversation_id: Optional[int] = None
+
+
+class RecallHit(BaseModel):
+    conversation_id: int
+    summary: str
+    cosine: float
+
+
+class RecallResponse(BaseModel):
+    items: list[RecallHit]
 
 
 class PreferenceBody(BaseModel):
@@ -211,9 +252,41 @@ def delete_fact(
     )
     if not fact:
         raise HTTPException(status_code=404, detail="Fact 不存在")
+    remember_fact_deleted(db, fact)
     db.delete(fact)
     db.commit()
     return DeleteResponse(deleted=1)
+
+
+@router.put("/facts/{fact_id}", response_model=FactResponse)
+def update_fact(
+    fact_id: int,
+    body: FactUpdateBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """改一筆自己的事實。別人的 id 回 404，不透露它在不在。"""
+    value = (body.value or "").strip()
+    if not value:
+        raise HTTPException(status_code=422, detail="事實內容不可空白")
+    if len(value) > 4000:
+        raise HTTPException(status_code=422, detail="事實內容過長")
+    fact = (
+        db.query(UserFact)
+        .filter(UserFact.id == fact_id, UserFact.user_id == current_user.id)
+        .first()
+    )
+    if not fact:
+        raise HTTPException(status_code=404, detail="Fact 不存在")
+    if fact.key == REPLY_STYLE_KEY:
+        raise HTTPException(status_code=422, detail="回覆偏好請用偏好設定修改")
+    fact.value = value
+    fact.confidence = 1.0
+    fact.user_edited = True
+    fact.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(fact)
+    return FactResponse.model_validate(fact)
 
 
 @router.delete("/facts", response_model=DeleteResponse)
@@ -222,6 +295,16 @@ def clear_facts(
     db: Session = Depends(get_db),
 ):
     """Wipe extracted facts. The user-authored reply style is kept."""
+    rows = (
+        db.query(UserFact)
+        .filter(
+            UserFact.user_id == current_user.id,
+            UserFact.key != REPLY_STYLE_KEY,
+        )
+        .all()
+    )
+    for row in rows:
+        remember_fact_deleted(db, row)
     deleted = (
         db.query(UserFact)
         .filter(
@@ -232,6 +315,87 @@ def clear_facts(
     )
     db.commit()
     return DeleteResponse(deleted=int(deleted))
+
+
+# ── 對話摘要 ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/summaries", response_model=SummaryListResponse)
+def list_summaries(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(ConversationSummary)
+        .filter(ConversationSummary.user_id == current_user.id)
+        .order_by(ConversationSummary.updated_at.desc())
+        .all()
+    )
+    return SummaryListResponse(
+        total=len(rows),
+        items=[SummaryItem.model_validate(row) for row in rows],
+    )
+
+
+@router.delete("/summaries/{summary_id}", response_model=DeleteResponse)
+def delete_summary(
+    summary_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(ConversationSummary)
+        .filter(
+            ConversationSummary.id == summary_id,
+            ConversationSummary.user_id == current_user.id,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="摘要不存在")
+    remember_summary_deleted(db, row)
+    db.delete(row)
+    db.commit()
+    return DeleteResponse(deleted=1)
+
+
+@router.post("/recall", response_model=RecallResponse)
+async def recall_summaries(
+    body: RecallBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Router 的 RECALL。只搜這位使用者的對話摘要。"""
+    query = (body.query or "").strip()
+    if not query:
+        return RecallResponse(items=[])
+    if body.exclude_conversation_id is not None:
+        owned = (
+            db.query(Conversation.id)
+            .filter(
+                Conversation.id == body.exclude_conversation_id,
+                Conversation.user_id == current_user.id,
+            )
+            .first()
+        )
+        if owned is None:
+            raise HTTPException(status_code=404, detail="對話不存在")
+    hits = await search_conversation_summaries(
+        db,
+        current_user.id,
+        query,
+        exclude_conversation_id=body.exclude_conversation_id,
+    )
+    visible = []
+    for hit in hits:
+        visible.append(
+            RecallHit(
+                conversation_id=int(hit.conversation_id),
+                summary=str(hit.summary),
+                cosine=float(hit.cosine),
+            )
+        )
+    return RecallResponse(items=visible)
 
 
 # ── Chunks (cross-conversation RAG) ───────────────────────────────────────────

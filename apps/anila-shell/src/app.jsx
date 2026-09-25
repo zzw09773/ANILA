@@ -18,6 +18,7 @@ import React, {
 import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion, streamSessionAnswer } from "./runtime/sse.js";
+import { mergeLiveTrace } from "./runtime/trace.js";
 import { createTaskForConversation } from "./runtime/tasks.js";
 import {
   appendClassifiedTag,
@@ -2084,7 +2085,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               updateMsg(convId, assistantId, { finishReason: reason, finishedAt: Date.now() });
             },
             onTrace: (step) => {
-              accumulatedTrace.push(step);
+              mergeLiveTrace(accumulatedTrace, step);
               applyLiveTraceStep(convId, assistantId, step);
             },
             onMeta: (metaFrame) => {
@@ -2232,7 +2233,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         m.id === msgId
           ? {
               ...m,
-              trace: [...(m.trace || []), step],
+              trace: mergeLiveTrace([...(m.trace || [])], step),
               stageLabel: step.label,
               stage: (m.trace?.length ?? 0),
             }
@@ -2539,7 +2540,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updateMsg(convId, msg.id, { finishReason: reason, finishedAt: Date.now() });
           },
           onTrace: (step) => {
-            accumulatedTrace.push(step);
+            mergeLiveTrace(accumulatedTrace, step);
             applyLiveTraceStep(convId, msg.id, step);
           },
           onReasoning: (delta) => {
@@ -3169,7 +3170,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updateMsg(convId, assistantId, { finishReason: reason, finishedAt: Date.now() });
           },
           onTrace: (step) => {
-            accumulatedTrace.push(step);
+            mergeLiveTrace(accumulatedTrace, step);
             applyLiveTraceStep(convId, assistantId, step);
           },
           onMeta: (metaFrame) => {
@@ -3412,7 +3413,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 updateMsg(convId, placeholderId, { text: acc });
               },
               onTrace: (step) => {
-                accumulatedTrace.push(step);
+                mergeLiveTrace(accumulatedTrace, step);
                 applyLiveTraceStep(convId, placeholderId, step);
               },
               onMeta: (meta) => {
@@ -3657,7 +3658,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updateMsg(convId, placeholderId, { text: acc });
           },
           onTrace: (step) => {
-            accumulatedTrace.push(step);
+            mergeLiveTrace(accumulatedTrace, step);
             applyLiveTraceStep(convId, placeholderId, step);
           },
           onMeta: (meta) => {
@@ -3939,7 +3940,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   m.id === aId
                     ? {
                         ...m,
-                        trace: [...(m.trace || []), step],
+                        trace: mergeLiveTrace([...(m.trace || [])], step),
                         stageLabel: step.label,
                         stage: (m.trace?.length ?? 0),
                       }

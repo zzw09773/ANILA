@@ -41,21 +41,27 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Optional, Iterable, Optional
+import re
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Optional
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from anila_core.memory.long_term import (
     EXTRACTION_SYSTEM_PROMPT,
+    MEMORY_REFRESH_SYSTEM_PROMPT,
     MemoryAdapter,
     MemoryReadResult,
     RetrievedChunk,
     UserFactDTO,
     format_transcript_for_extraction,
     parse_extraction_response,
+    parse_memory_refresh_response,
     truncate_embedding,
 )
 
@@ -68,12 +74,54 @@ from anila_core.security import (
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.platform_setting import get_setting
-from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.models.conversation import Conversation
+from app.models.message import Message
+from app.models.user_memory import (
+    ConversationMemoryChunk,
+    ConversationSummary,
+    MemoryRefreshLease,
+    MemoryTombstone,
+    UserFact,
+)
 from app.services import zh_normalize_service
 from app.services.platform_embedding import resolve_platform_embedding
 from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
+
+# 摘要角色沒設或已停用時只記一次。閒置掃描若每分鐘都喊，日誌會被洗掉。
+_summary_role_warnings: set[str] = set()
+
+_ERROR_NOTICE_MARKERS = (
+    "產生回應時發生錯誤",
+    "本次無法查詢院內規章知識庫",
+    "LLM 無法回應",
+)
+_SKIP_STREAM_STATES = frozenset({
+    "failed",
+    "interrupted",
+    "unanswered",
+    "reserved",
+    "streaming",
+    "stopped",
+})
+_VERBATIM_MIN_CHARS = 12
+
+
+def reset_summary_role_warning() -> None:
+    """測試用。正式路徑不要呼叫。"""
+    _summary_role_warnings.clear()
+
+
+def _warn_summary_role_once(message: str | None) -> None:
+    if not message or message in _summary_role_warnings:
+        return
+    _summary_role_warnings.add(message)
+    logger.warning("memory_service: %s", message)
+
+
+def _memory_enabled(db: Session) -> bool:
+    return bool(get_setting(db, "memory.enabled"))
 
 
 def _guard_outbound(url: str) -> None:
@@ -110,6 +158,18 @@ _MEMORY_BLOCK_MAX_CHARS = 4_000
 # short text but spending a round-trip to confirm "[]" on every "yes"
 # / "ok" reply doubles per-turn cost without value.
 _EXTRACT_MIN_CHARS = 8
+
+# 摘要硬上限。模型輸出可到 800 tokens，這裡先擋住再寫入。
+SUMMARY_MAX_CHARS = 600
+# 跟助理原文重疊到這個比例就視為改寫抄襲，不存。
+_OVERLAP_WINDOW = 6
+_OVERLAP_REJECT = 0.5
+_EVIDENCE_MIN_CHARS = 2
+# 認領租約。過期後別的 worker 才能接手，迴圈本身不忙等。
+_LEASE_SECONDS = 120
+_OVERLAP_STRIP = re.compile(
+    r"[\s，。、；：！？,.!?;:\"'「」『』（）()\[\]{}<>《》\-—_]+"
+)
 
 # 使用者自己寫的回覆風格。萃取不可覆寫，否則設定頁存的字會被下一輪對話洗掉。
 REPLY_STYLE_KEY = "preference.reply_style"
@@ -161,7 +221,7 @@ def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
 
     resolved = resolve_role(db, "summary")
     if resolved.status != "ok" or resolved.model is None:
-        logger.warning("memory_service: %s", resolved.message)
+        _warn_summary_role_once(resolved.message)
         return None
     return resolved.model.name, resolved.model.endpoint_url.rstrip("/")
 
@@ -440,10 +500,8 @@ def _format_block(
     prefs = [f for f in facts if f.key.startswith("preference.")]
     others = [f for f in facts if not f.key.startswith("preference.")]
 
-    # Retrieval already returns chunks by descending similarity. Sort again
-    # with the row id as a tie-breaker so a caller-provided list has the same
-    # deterministic priority contract.
-    ranked_chunks = sorted(chunks, key=lambda c: (-c.cosine, c.id))
+    # 呼叫端仍會傳 chunks。固定區塊不再使用它們。
+    _ = chunks
 
     def _render(
         selected_prefs: list[str],
@@ -462,17 +520,10 @@ def _format_block(
             lines.append("### 已知事實")
             lines.extend(selected_others)
 
-        if selected_chunks:
-            lines.append("")
-            lines.append("### 過往相關討論")
-            for i, c in enumerate(selected_chunks, start=1):
-                content = c.content
-                if len(content) > max_chunk_chars:
-                    content = content[:max_chunk_chars] + "…"
-                tag = " (加密來源)" if c.is_encrypted else ""
-                lines.append(
-                    f"[{i}] {c.role}{tag} (similarity {c.cosine:.2f}): {content}"
-                )
+        # 過往對話不再自動附上。chunks／max_chunk_chars 留在簽名上，呼叫端不用改。
+        del selected_chunks
+        if max_chunk_chars < 0:
+            return ""
 
         lines.append("")
         lines.append(
@@ -509,12 +560,7 @@ def _format_block(
             if len(_render(selected_prefs, selected_others, selected_chunks)) > _MEMORY_BLOCK_MAX_CHARS:
                 selected.pop()
 
-    for chunk in ranked_chunks:
-        selected_chunks.append(chunk)
-        if len(_render(selected_prefs, selected_others, selected_chunks)) > _MEMORY_BLOCK_MAX_CHARS:
-            selected_chunks.pop()
-
-    if not (selected_prefs or selected_others or selected_chunks):
+    if not (selected_prefs or selected_others):
         return None
     return _render(selected_prefs, selected_others, selected_chunks)
 
@@ -534,24 +580,22 @@ async def build_memory_block(
     would leak through the other; the whole point of the parameter is
     that it covers every store the block is assembled from.
     """
+    if not _memory_enabled(db):
+        return MemoryReadResult(block=None, facts_count=0, chunks=[])
     facts = get_user_facts(
         db, user_id, only_conversation_id=only_conversation_id
     )
-    chunks = await retrieve_relevant_chunks(
-        db,
-        user_id,
-        latest_user_message,
-        exclude_conversation_id=exclude_conversation_id,
-        only_conversation_id=only_conversation_id,
-    )
+    facts = _facts_allowed_in_prompt(db, facts)
+    # 舊回答片段不再注入。exclude／only 仍只作用在事實（ANILALM 同一對話框）。
+    del latest_user_message, exclude_conversation_id
     return MemoryReadResult(
         block=_format_block(
             facts,
-            chunks,
+            [],
             max_chunk_chars=1200,
         ),
         facts_count=len(facts),
-        chunks=chunks,
+        chunks=[],
     )
 
 
@@ -572,9 +616,6 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
 
     target = _resolve_extraction_target(db)
     if target is None:
-        logger.warning(
-            "memory_service: 摘要模型尚未在治理中心設定 — fact extraction disabled"
-        )
         return []
     model_name, base_url = target
     url = join_upstream_path(base_url, "/v1/chat/completions")
@@ -753,115 +794,973 @@ async def persist_turn(
     user_message_id: int | None = None,
     assistant_message_id: int | None = None,
 ) -> None:
-    """Background entry point — writes both chunks and extracts facts.
+    """每一輪結束不再把原文寫進記憶。
 
-    Designed to be invoked from FastAPI ``BackgroundTasks``. Opens its
-    own DB session because the request-scoped session has already
-    been closed by the time this runs. All errors are caught and
-    logged so a memory write failure can never propagate up to break
-    the user-facing response.
+    摘要與事實改在對話閒置、或使用者另開對話時整理。這裡留著是因為
+    proxy 仍會排這個背景工作；它必須繼續吞掉例外，不能影響回答。
     """
+    del (
+        user_id,
+        conversation_id,
+        user_message,
+        assistant_message,
+        is_encrypted,
+        user_message_id,
+        assistant_message_id,
+    )
+    return
+
+
+def _as_utc(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def turn_is_extractable(
+    *,
+    user_text: str,
+    assistant_text: str,
+    assistant_metadata: dict | None,
+) -> bool:
+    """失敗、救援、錯誤通知，以及還沒寫完的回合，都不進摘要。"""
+    if not (user_text or "").strip() or not (assistant_text or "").strip():
+        return False
+    meta = assistant_metadata if isinstance(assistant_metadata, dict) else {}
+    state = (meta.get("anila_stream") or {}).get("state")
+    if state in _SKIP_STREAM_STATES:
+        return False
+    if meta.get("rescue"):
+        return False
+    trace = meta.get("trace")
+    if isinstance(trace, list) and any(
+        isinstance(step, dict) and step.get("kind") == "rescue" for step in trace
+    ):
+        return False
+    blob = f"{user_text}\n{assistant_text}"
+    if any(marker in blob for marker in _ERROR_NOTICE_MARKERS):
+        return False
+    return True
+
+
+def _eligible_turns(messages: list[Message]) -> list[tuple[Message, Message]]:
+    pending: Message | None = None
+    turns: list[tuple[Message, Message]] = []
+    for msg in messages:
+        if msg.role == "user":
+            pending = msg
+            continue
+        if msg.role == "assistant" and pending is not None:
+            if turn_is_extractable(
+                user_text=pending.content or "",
+                assistant_text=msg.content or "",
+                assistant_metadata=msg.metadata_,
+            ):
+                turns.append((pending, msg))
+            pending = None
+    return turns
+
+
+def _messages_for_extract(db: Session, conv: Conversation) -> list[Message]:
+    from app.services.conversation_service import load_active_path
+
+    return load_active_path(db, conv)
+
+
+def conversation_excluded_from_memory(conv: Conversation | None) -> bool:
+    """分類或已閂鎖的對話不進記憶。等級比布林優先，兩者任一成立都排除。"""
+    if conv is None:
+        return False
+    if bool(getattr(conv, "classified", False)):
+        return True
+    level = getattr(conv, "classification_level", None) or "無機密"
+    return level not in ("無機密", "")
+
+
+def _forget_excluded_conversation(db: Session, conversation_id: int) -> None:
+    """分類之後才發現的摘要與事實直接刪掉，不再被召回或注入。"""
+    purge_conversation_memory(db, conversation_id)
+    db.commit()
+
+
+def _facts_allowed_in_prompt(db: Session, facts: list[UserFact]) -> list[UserFact]:
+    forgotten: set[int] = set()
+    kept: list[UserFact] = []
+    for fact in facts:
+        source = getattr(fact, "source_conversation_id", None)
+        if source is None:
+            kept.append(fact)
+            continue
+        if source in forgotten:
+            continue
+        conv = db.get(Conversation, source)
+        if conversation_excluded_from_memory(conv):
+            _forget_excluded_conversation(db, int(source))
+            forgotten.add(int(source))
+            continue
+        kept.append(fact)
+    return kept
+
+
+def _insert_tombstone(db: Session, **fields: Any) -> None:
+    if db.get_bind().dialect.name == "sqlite":
+        fields["id"] = int(db.query(func.max(MemoryTombstone.id)).scalar() or 0) + 1
+    db.add(MemoryTombstone(**fields))
+
+
+def remember_summary_deleted(db: Session, row: ConversationSummary) -> None:
+    """刪摘要時記下這段對話已經涵蓋到哪一則訊息。"""
+    covered = row.covered_message_id
+    if covered is None:
+        covered = (
+            db.query(func.max(Message.id))
+            .filter(Message.conversation_id == row.conversation_id)
+            .scalar()
+        )
+    _insert_tombstone(
+        db,
+        user_id=row.user_id,
+        conversation_id=row.conversation_id,
+        kind="summary",
+        fact_key=None,
+        covered_message_id=covered,
+    )
+
+
+def remember_fact_deleted(db: Session, fact: UserFact) -> None:
+    """刪事實時記下來源訊息。那個範圍內的原文不能再把同一個 key 寫回來。"""
+    covered = fact.source_message_id
+    if covered is None and fact.source_conversation_id is not None:
+        covered = (
+            db.query(func.max(Message.id))
+            .filter(Message.conversation_id == fact.source_conversation_id)
+            .scalar()
+        )
+    _insert_tombstone(
+        db,
+        user_id=fact.user_id,
+        conversation_id=fact.source_conversation_id,
+        kind="fact",
+        fact_key=fact.key,
+        covered_message_id=covered,
+    )
+
+
+def _summary_tombstone_boundary(db: Session, conversation_id: int) -> int:
+    rows = (
+        db.query(MemoryTombstone.covered_message_id)
+        .filter(
+            MemoryTombstone.conversation_id == conversation_id,
+            MemoryTombstone.kind == "summary",
+        )
+        .all()
+    )
+    if not rows:
+        return 0
+    return max(int(row[0] or 0) for row in rows)
+
+
+def _turns_after_boundary(
+    turns: list[tuple[Message, Message]], boundary: int
+) -> list[tuple[Message, Message]]:
+    if boundary <= 0:
+        return turns
+    return [turn for turn in turns if int(turn[1].id) > boundary]
+
+
+def _fact_reinsert_blocked(
+    db: Session, user_id: int, key: str, evidence_message_id: int | None
+) -> bool:
+    rows = (
+        db.query(MemoryTombstone)
+        .filter(
+            MemoryTombstone.user_id == user_id,
+            MemoryTombstone.kind == "fact",
+            MemoryTombstone.fact_key == key,
+        )
+        .all()
+    )
+    for row in rows:
+        limit = row.covered_message_id
+        if limit is None:
+            return True
+        if evidence_message_id is None or int(evidence_message_id) <= int(limit):
+            return True
+    return False
+
+
+def _now_epoch(now: datetime | None = None) -> int:
+    return int(_as_utc(now or datetime.now(timezone.utc)).timestamp())
+
+
+def claim_refresh_lease(
+    db: Session, conversation_id: int, *, now: datetime | None = None
+) -> str | None:
+    """原子認領。別人還握著租約就回 None，呼叫端直接跳過，不重試。"""
+    now_epoch = _now_epoch(now)
+    until = now_epoch + _LEASE_SECONDS
+    token = uuid.uuid4().hex
+    updated = db.execute(
+        text(
+            """
+            UPDATE memory_refresh_leases
+               SET claim_token = :token,
+                   claimed_until = :until
+             WHERE conversation_id = :cid
+               AND claimed_until <= :now
+            """
+        ),
+        {"token": token, "until": until, "cid": conversation_id, "now": now_epoch},
+    )
+    if updated.rowcount:
+        db.flush()
+        return token
+    try:
+        with db.begin_nested():
+            db.add(
+                MemoryRefreshLease(
+                    conversation_id=conversation_id,
+                    claim_token=token,
+                    claimed_until=until,
+                )
+            )
+            db.flush()
+        return token
+    except IntegrityError:
+        return None
+
+
+def release_refresh_lease(db: Session, conversation_id: int, token: str) -> None:
+    """讓出租約，但留下 token，舊的那次結果不能再寫。"""
+    db.execute(
+        text(
+            """
+            UPDATE memory_refresh_leases
+               SET claimed_until = 0
+             WHERE conversation_id = :cid
+               AND claim_token = :token
+            """
+        ),
+        {"cid": conversation_id, "token": token},
+    )
+    db.flush()
+
+
+def conversations_due(
+    db: Session,
+    *,
+    now: datetime,
+    user_id: int | None = None,
+    exclude_conversation_id: int | None = None,
+    force: bool = False,
+) -> list[int]:
+    """閒置夠久、而且還有沒整理過的合格回合。開新對話時 force 不等閒置。"""
+    if not _memory_enabled(db):
+        return []
+    idle_minutes = int(get_setting(db, "memory.idle_minutes"))
+    cutoff = _as_utc(now) - timedelta(minutes=idle_minutes)
+    query = db.query(Conversation)
+    if user_id is not None:
+        query = query.filter(Conversation.user_id == user_id)
+    if exclude_conversation_id is not None:
+        query = query.filter(Conversation.id != exclude_conversation_id)
+    due: list[int] = []
+    for conv in query.all():
+        if conversation_excluded_from_memory(conv):
+            continue
+        messages = _messages_for_extract(db, conv)
+        if not messages:
+            continue
+        last_at = max(_as_utc(msg.created_at) for msg in messages)
+        turns = _turns_after_boundary(
+            _eligible_turns(messages),
+            _summary_tombstone_boundary(db, int(conv.id)),
+        )
+        if not turns:
+            continue
+        latest_id = int(turns[-1][1].id)
+        summary = (
+            db.query(ConversationSummary)
+            .filter(ConversationSummary.conversation_id == conv.id)
+            .one_or_none()
+        )
+        if summary is not None and (summary.covered_message_id or 0) >= latest_id:
+            continue
+        if not force and last_at > cutoff:
+            continue
+        due.append(int(conv.id))
+    return due
+
+
+def remove_verbatim_assistant(
+    summary: str,
+    assistant_texts: list[str],
+    *,
+    min_chars: int = _VERBATIM_MIN_CHARS,
+) -> str:
+    """摘要裡若出現助理原文的連續片段，就把那段拿掉。"""
+    cleaned = summary or ""
+    for text in assistant_texts:
+        raw = text or ""
+        index = 0
+        while index + min_chars <= len(raw):
+            if raw[index : index + min_chars] not in cleaned:
+                index += 1
+                continue
+            end = index + min_chars
+            while end < len(raw) and raw[index : end + 1] in cleaned:
+                end += 1
+            cleaned = cleaned.replace(raw[index:end], "")
+            index = end
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip(" \n，。；")
+
+
+def facts_from_user_statements(
+    facts: list[dict[str, Any]],
+    user_texts: list[str],
+    assistant_texts: list[str],
+    *,
+    user_messages: list[tuple[int | None, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """每個事實都要在某一則使用者訊息裡原樣出現，並記下那則訊息。
+
+    模型編造、改寫或翻譯出來的值直接丟掉。助理原文不再拿來當反證。
+    """
+    del assistant_texts
+    messages = (
+        list(user_messages)
+        if user_messages is not None
+        else [(None, text) for text in user_texts]
+    )
+    kept: list[dict[str, Any]] = []
+    for fact in facts:
+        value = str(fact.get("value") or "").strip()
+        if len(value) < _EVIDENCE_MIN_CHARS:
+            continue
+        evidence_id = None
+        found = False
+        for message_id, text in messages:
+            if value in (text or ""):
+                found = True
+                evidence_id = message_id
+        if not found:
+            continue
+        kept.append({**fact, "value": value, "evidence_message_id": evidence_id})
+    return kept
+
+
+def _compact_for_overlap(text: str) -> str:
+    return _OVERLAP_STRIP.sub("", text or "")
+
+
+def summary_overlaps_assistant(summary: str, assistant_texts: list[str]) -> bool:
+    """改了標點或空格仍算抄助理原文。窗口比逐字刪除更短，才抓得到改寫。"""
+    compact_summary = _compact_for_overlap(summary)
+    if len(compact_summary) < _OVERLAP_WINDOW:
+        return False
+    hits = 0
+    total = 0
+    step = max(1, _OVERLAP_WINDOW // 2)
+    for text in assistant_texts:
+        raw = _compact_for_overlap(text)
+        index = 0
+        while index + _OVERLAP_WINDOW <= len(raw):
+            total += 1
+            if raw[index : index + _OVERLAP_WINDOW] in compact_summary:
+                hits += 1
+            index += step
+    if total == 0:
+        return False
+    return (hits / total) >= _OVERLAP_REJECT
+
+
+def _fallback_summary(user_texts: list[str]) -> str:
+    joined = "；".join(text.strip() for text in user_texts if text and text.strip())
+    return joined[:SUMMARY_MAX_CHARS]
+
+
+def _accept_summary(summary: str, assistant_texts: list[str]) -> str | None:
+    text = (summary or "").strip()
+    if not text:
+        return None
+    if len(text) > SUMMARY_MAX_CHARS or summary_overlaps_assistant(text, assistant_texts):
+        return None
+    return text
+
+
+def _upsert_facts_generic(
+    db: Session,
+    user_id: int,
+    facts: list[dict[str, Any]],
+    *,
+    source_conversation_id: int | None,
+    source_message_id: int | None,
+) -> None:
+    """SQLite 測試沒有 Postgres 的 ON CONFLICT。行為與正式 upsert 相同。"""
+    for fact in facts:
+        evidence_id = fact.get("evidence_message_id", source_message_id)
+        if _fact_reinsert_blocked(db, user_id, fact["key"], evidence_id):
+            continue
+        row = (
+            db.query(UserFact)
+            .filter(UserFact.user_id == user_id, UserFact.key == fact["key"])
+            .one_or_none()
+        )
+        if row is not None and bool(getattr(row, "user_edited", False)):
+            continue
+        if row is None:
+            fields: dict[str, Any] = {
+                "user_id": user_id,
+                "key": fact["key"],
+                "value": fact["value"],
+                "confidence": fact["confidence"],
+                "source_conversation_id": source_conversation_id,
+                "source_message_id": evidence_id,
+            }
+            if db.get_bind().dialect.name == "sqlite":
+                fields["id"] = int(db.query(func.max(UserFact.id)).scalar() or 0) + 1
+            db.add(UserFact(**fields))
+        else:
+            row.value = fact["value"]
+            row.confidence = fact["confidence"]
+            row.source_conversation_id = source_conversation_id
+            row.source_message_id = evidence_id
+            row.updated_at = datetime.now(timezone.utc)
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def _parse_vec(raw: str | None) -> list[float]:
+    if not raw:
+        return []
+    text_value = str(raw).strip().strip("[]")
+    if not text_value:
+        return []
+    try:
+        return [float(part) for part in text_value.split(",") if part.strip()]
+    except ValueError:
+        return []
+
+
+def _summary_write_allowed(
+    db: Session,
+    existing: ConversationSummary | None,
+    conversation_id: int,
+    covered_message_id: int | None,
+    claim_token: str | None,
+) -> bool:
+    """舊的涵蓋範圍不能蓋掉新的。租約已換人時，同一範圍的舊結果也不寫。"""
+    incoming = covered_message_id or 0
+    if claim_token is not None:
+        lease = db.get(MemoryRefreshLease, conversation_id)
+        if lease is not None and lease.claim_token != claim_token:
+            live = int(lease.claimed_until or 0) > _now_epoch()
+            if live:
+                return False
+            if existing is not None and (existing.covered_message_id or 0) >= incoming:
+                return False
+    if existing is not None and (existing.covered_message_id or 0) > incoming:
+        return False
+    return True
+
+
+def save_conversation_summary(
+    db: Session,
+    *,
+    user_id: int,
+    conversation_id: int,
+    summary: str,
+    covered_message_id: int | None,
+    embedding: list[float] | None,
+    source_model: str | None,
+    native_dim: int | None,
+    is_encrypted: bool,
+    when: datetime | None = None,
+    claim_token: str | None = None,
+) -> ConversationSummary | None:
+    """寫入或覆蓋這一則對話的摘要。呼叫端決定何時 commit。
+
+    已有較新的 ``covered_message_id`` 時不覆蓋。``claim_token`` 對不上
+    目前租約時，同一範圍的舊結果也不寫。
+    """
+    now = when or datetime.now(timezone.utc)
+    existing = (
+        db.query(ConversationSummary)
+        .filter(ConversationSummary.conversation_id == conversation_id)
+        .one_or_none()
+    )
+    if not _summary_write_allowed(
+        db, existing, conversation_id, covered_message_id, claim_token
+    ):
+        return existing
+    vec_literal = _vec_to_pg_literal(embedding) if embedding else None
+    if db.get_bind().dialect.name == "postgresql":
+        # halfvec 不能靠 ORM 綁字串，跟訊息片段同一條 raw SQL。
+        embed_expr = "CAST(:vec AS halfvec)" if vec_literal else "NULL"
+        params: dict[str, Any] = {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "summary": summary,
+            "covered_message_id": covered_message_id,
+            "source_model": source_model,
+            "native_dim": native_dim,
+            "is_encrypted": is_encrypted,
+            "now": now,
+        }
+        if vec_literal:
+            params["vec"] = vec_literal
+        db.execute(
+            text(
+                f"""
+                INSERT INTO conversation_summaries
+                    (user_id, conversation_id, summary, covered_message_id,
+                     embedding, embedding_source_model, embedding_native_dim,
+                     is_encrypted, created_at, updated_at)
+                VALUES
+                    (:user_id, :conversation_id, :summary, :covered_message_id,
+                     {embed_expr}, :source_model, :native_dim,
+                     :is_encrypted, :now, :now)
+                ON CONFLICT (conversation_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    summary = EXCLUDED.summary,
+                    covered_message_id = EXCLUDED.covered_message_id,
+                    embedding = EXCLUDED.embedding,
+                    embedding_source_model = EXCLUDED.embedding_source_model,
+                    embedding_native_dim = EXCLUDED.embedding_native_dim,
+                    is_encrypted = EXCLUDED.is_encrypted,
+                    updated_at = EXCLUDED.updated_at
+                WHERE conversation_summaries.covered_message_id IS NULL
+                   OR conversation_summaries.covered_message_id
+                        <= EXCLUDED.covered_message_id
+                """
+            ),
+            params,
+        )
+        db.flush()
+        return (
+            db.query(ConversationSummary)
+            .filter(ConversationSummary.conversation_id == conversation_id)
+            .one()
+        )
+    row = existing
+    if row is None:
+        fields: dict[str, Any] = {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "summary": summary,
+            "covered_message_id": covered_message_id,
+            "embedding": vec_literal,
+            "embedding_source_model": source_model,
+            "embedding_native_dim": native_dim,
+            "is_encrypted": is_encrypted,
+            "created_at": now,
+            "updated_at": now,
+        }
+        if db.get_bind().dialect.name == "sqlite":
+            fields["id"] = int(
+                db.query(func.max(ConversationSummary.id)).scalar() or 0
+            ) + 1
+        row = ConversationSummary(**fields)
+        db.add(row)
+    else:
+        row.user_id = user_id
+        row.summary = summary
+        row.covered_message_id = covered_message_id
+        row.embedding = vec_literal
+        row.embedding_source_model = source_model
+        row.embedding_native_dim = native_dim
+        row.is_encrypted = is_encrypted
+        row.updated_at = now
+    db.flush()
+    return row
+
+
+_REFRESH_RETRY_NOTE = (
+    "上一則摘要不合格。請重寫：全文少於 600 字，"
+    "不得沿用助理原文，改標點、改寫或調整程式碼格式也不行。"
+    "只寫使用者要什麼、決定了什麼。"
+)
+
+
+async def _call_refresh_model(
+    db: Session,
+    target: tuple[str, str],
+    transcript: str,
+    *,
+    stricter: bool = False,
+) -> str:
+    model_name, base_url = target
+    url = join_upstream_path(base_url, "/v1/chat/completions")
+    try:
+        _guard_outbound(url)
+    except RuntimeError:
+        logger.warning("memory_service: refresh endpoint failed SSRF guard")
+        return ""
+    system_prompt = MEMORY_REFRESH_SYSTEM_PROMPT
+    if stricter:
+        system_prompt = f"{system_prompt}\n\n{_REFRESH_RETRY_NOTE}"
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": transcript},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 800,
+    }
+    db.commit()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except Exception:
+        logger.exception("memory_service: refresh LLM call failed")
+        return ""
+
+
+def _summary_from_model_text(raw: str, assistant_texts: list[str]) -> tuple[str | None, list[dict[str, Any]]]:
+    parsed = parse_memory_refresh_response(raw)
+    cleaned = remove_verbatim_assistant(parsed["summary"], assistant_texts)
+    return _accept_summary(cleaned, assistant_texts), list(parsed["facts"])
+
+
+async def _resolve_summary_text(
+    db: Session,
+    target: tuple[str, str],
+    transcript: str,
+    assistant_texts: list[str],
+    user_texts: list[str],
+) -> tuple[str, list[dict[str, Any]]]:
+    """超長或大量重疊助理原文時重問一次；仍不合格就改用使用者自己的話。"""
+    raw = await _call_refresh_model(db, target, transcript)
+    accepted, facts = _summary_from_model_text(raw, assistant_texts)
+    if accepted:
+        return accepted, facts
+    raw = await _call_refresh_model(db, target, transcript, stricter=True)
+    accepted, facts = _summary_from_model_text(raw, assistant_texts)
+    if accepted:
+        return accepted, facts
+    parsed = parse_memory_refresh_response(raw)
+    cleaned = remove_verbatim_assistant(parsed["summary"], assistant_texts).strip()
+    if cleaned and not summary_overlaps_assistant(cleaned, assistant_texts):
+        return cleaned[:SUMMARY_MAX_CHARS], list(parsed["facts"])
+    fallback = _fallback_summary(user_texts)
+    return fallback, list(parsed["facts"])
+
+
+async def refresh_conversation(
+    conversation_id: int, *, db: Session | None = None
+) -> None:
+    """整理一個對話的摘要與使用者事實。角色沒設就不打模型。"""
+    owns_session = db is None
+    if db is None:
+        db = SessionLocal()
+    token: str | None = None
+    try:
+        if not _memory_enabled(db):
+            return
+        conv = db.get(Conversation, conversation_id)
+        if conv is None:
+            return
+        if conversation_excluded_from_memory(conv):
+            _forget_excluded_conversation(db, conv.id)
+            return
+        messages = _messages_for_extract(db, conv)
+        turns = _turns_after_boundary(
+            _eligible_turns(messages),
+            _summary_tombstone_boundary(db, conv.id),
+        )
+        if not turns:
+            return
+        latest_id = int(turns[-1][1].id)
+        existing = (
+            db.query(ConversationSummary)
+            .filter(ConversationSummary.conversation_id == conv.id)
+            .one_or_none()
+        )
+        if existing is not None and (existing.covered_message_id or 0) >= latest_id:
+            return
+        target = _resolve_extraction_target(db)
+        if target is None:
+            return
+        user_messages = [(int(turn[0].id), turn[0].content or "") for turn in turns]
+        user_texts = [text for _message_id, text in user_messages]
+        assistant_texts = [turn[1].content or "" for turn in turns]
+        transcript = "\n\n".join(
+            f"使用者：{user}\n\n助理（只供理解結論，禁止逐字抄進摘要或當成事實）：{assistant}"
+            for user, assistant in zip(user_texts, assistant_texts)
+        )
+        if len(transcript.strip()) < _EXTRACT_MIN_CHARS:
+            return
+        token = claim_refresh_lease(db, conv.id)
+        if token is None:
+            return
+        db.commit()
+        existing = (
+            db.query(ConversationSummary)
+            .filter(ConversationSummary.conversation_id == conv.id)
+            .one_or_none()
+        )
+        if existing is not None and (existing.covered_message_id or 0) >= latest_id:
+            return
+        summary, raw_facts = await _resolve_summary_text(
+            db, target, transcript, assistant_texts, user_texts
+        )
+        if not summary:
+            return
+        facts = facts_safe_for_extraction(
+            facts_from_user_statements(
+                raw_facts,
+                user_texts,
+                assistant_texts,
+                user_messages=user_messages,
+            )
+        )
+        _upsert_facts_generic(
+            db,
+            conv.user_id,
+            facts,
+            source_conversation_id=conv.id,
+            source_message_id=latest_id,
+        )
+        embedding: list[float] | None = None
+        source_model: str | None = None
+        native_dim: int | None = None
+        try:
+            embedding, source_model, native_dim = await _embed(
+                db,
+                summary,
+                user_id=conv.user_id,
+                embedding_input_role="document",
+            )
+            if not _vector_is_finite(embedding):
+                embedding = None
+        except Exception:
+            logger.exception(
+                "memory_service: summary embed failed conv_id=%s", conv.id
+            )
+            embedding = None
+        save_conversation_summary(
+            db,
+            user_id=conv.user_id,
+            conversation_id=conv.id,
+            summary=summary,
+            covered_message_id=latest_id,
+            embedding=embedding,
+            source_model=source_model,
+            native_dim=native_dim,
+            is_encrypted=False,
+            claim_token=token,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "memory_service: refresh failed conv_id=%s", conversation_id
+        )
+    finally:
+        if token is not None:
+            try:
+                release_refresh_lease(db, conversation_id, token)
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "memory_service: release refresh lease failed conv_id=%s",
+                    conversation_id,
+                )
+        if owns_session:
+            db.close()
+
+
+async def search_conversation_summaries(
+    db: Session,
+    user_id: int,
+    query_text: str,
+    *,
+    exclude_conversation_id: int | None = None,
+    top_k: int | None = None,
+    min_cosine: float | None = None,
+) -> list[Any]:
+    """依相似度找這位使用者的對話摘要。不讀舊的訊息片段。"""
+    from types import SimpleNamespace
+
+    if not _memory_enabled(db) or not (query_text or "").strip():
+        return []
+    k = top_k if top_k is not None else int(get_setting(db, "memory.retrieve_top_k"))
+    threshold = (
+        min_cosine
+        if min_cosine is not None
+        else float(get_setting(db, "memory.retrieve_min_cosine"))
+    )
+    try:
+        embedding, source_model, _native = await _embed(
+            db,
+            query_text,
+            user_id=user_id,
+            embedding_input_role="query",
+        )
+    except Exception:
+        logger.exception("memory_service: embed failed during summary search")
+        return []
+    if not _vector_is_finite(embedding):
+        return []
+
+    hits: list[Any] = []
+    if db.get_bind().dialect.name == "postgresql":
+        vec_literal = _vec_to_pg_literal(embedding)
+        sql = text(
+            """
+            SELECT id, conversation_id, summary, is_encrypted,
+                   1 - (embedding <=> CAST(:vec AS halfvec)) AS cosine
+            FROM conversation_summaries
+            WHERE user_id = :user_id
+              AND embedding IS NOT NULL
+              AND lower(embedding_source_model) = lower(:source_model)
+              AND (:exclude_conv IS NULL OR conversation_id <> :exclude_conv)
+            ORDER BY embedding <=> CAST(:vec AS halfvec) ASC
+            LIMIT :k
+            """
+        )
+        try:
+            with db.begin_nested():
+                rows = db.execute(
+                    sql,
+                    {
+                        "vec": vec_literal,
+                        "user_id": user_id,
+                        "source_model": source_model,
+                        "exclude_conv": exclude_conversation_id,
+                        "k": k,
+                    },
+                ).fetchall()
+        except Exception:
+            logger.exception("memory_service: summary search failed")
+            return []
+        for row in rows:
+            cosine = float(row.cosine)
+            if cosine < threshold:
+                continue
+            hits.append(
+                SimpleNamespace(
+                    id=int(row.id),
+                    conversation_id=int(row.conversation_id),
+                    summary=str(row.summary),
+                    cosine=cosine,
+                    is_encrypted=bool(row.is_encrypted),
+                )
+            )
+        return _drop_excluded_summaries(db, hits)
+
+    rows = (
+        db.query(ConversationSummary)
+        .filter(
+            ConversationSummary.user_id == user_id,
+            ConversationSummary.embedding.isnot(None),
+        )
+        .all()
+    )
+    for row in rows:
+        if exclude_conversation_id is not None and row.conversation_id == exclude_conversation_id:
+            continue
+        if (row.embedding_source_model or "").lower() != (source_model or "").lower():
+            continue
+        cosine = _cosine(embedding, _parse_vec(row.embedding))
+        if cosine < threshold:
+            continue
+        hits.append(
+            SimpleNamespace(
+                id=int(row.id),
+                conversation_id=int(row.conversation_id),
+                summary=str(row.summary),
+                cosine=cosine,
+                is_encrypted=bool(row.is_encrypted),
+            )
+        )
+    hits.sort(key=lambda item: (-item.cosine, item.id))
+    return _drop_excluded_summaries(db, hits[:k])
+
+
+def _drop_excluded_summaries(db: Session, hits: list[Any]) -> list[Any]:
+    """分類或加密摘要不回傳。對話事後升密的，連同它抽出的事實一起刪。"""
+    visible: list[Any] = []
+    forgotten: set[int] = set()
+    for hit in hits:
+        conversation_id = int(hit.conversation_id)
+        conv = db.get(Conversation, conversation_id)
+        excluded = bool(getattr(hit, "is_encrypted", False)) or (
+            conversation_excluded_from_memory(conv)
+        )
+        if conversation_id in forgotten or excluded:
+            if conversation_id not in forgotten:
+                _forget_excluded_conversation(db, conversation_id)
+                forgotten.add(conversation_id)
+            continue
+        visible.append(hit)
+    return visible
+
+
+async def flush_idle_conversations() -> None:
     db = SessionLocal()
     try:
-        # §6-3：assistant 側在 embed／chunk 落庫前正規化（proxy 原文經此統一邊界）。
-        # ⚠ 必須在 session 開好之後 —— 開關 ``intl.zh_normalize`` 現在是每次
-        # 呼叫查一次 DB，而這條背景路徑的 session 本來就是它自己的（request
-        # scope 早已關閉）。順序不變：仍在任何 embed／INSERT 之前。
-        assistant_message, zh_changed = zh_normalize_service.prepare_message_content(
-            db, "assistant", assistant_message,
+        ids = conversations_due(
+            db, now=datetime.now(timezone.utc), force=False
         )
-        if assistant_message_id is not None:
-            zh_normalize_service.log_if_changed(assistant_message_id, zh_changed)
-        if assistant_message is None:
-            assistant_message = ""
-        try:
-            # Embed BOTH sides before staging either INSERT. ``_embed`` releases
-            # the pooled connection via commit(); if a user INSERT were already
-            # pending, that commit would make a lone user chunk durable and a
-            # later assistant-embed failure could no longer roll it back.
-            # Pair atomicity = both vectors ready → both INSERTs → one commit.
-            user_emb = (
-                await _embed(
-                    db,
-                    user_message,
-                    user_id=user_id,
-                    embedding_input_role="document",
-                )
-                if user_message.strip()
-                else None
-            )
-            asst_emb = (
-                await _embed(
-                    db,
-                    assistant_message,
-                    user_id=user_id,
-                    embedding_input_role="document",
-                )
-                if assistant_message.strip()
-                else None
-            )
-            if user_emb is not None:
-                embedding, source_model, native_dim = user_emb
-                _insert_chunk(
-                    db,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    message_id=user_message_id,
-                    role="user",
-                    content=user_message,
-                    is_encrypted=is_encrypted,
-                    embedding=embedding,
-                    source_model=source_model,
-                    native_dim=native_dim,
-                )
-            if asst_emb is not None:
-                embedding, source_model, native_dim = asst_emb
-                _insert_chunk(
-                    db,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    message_id=assistant_message_id,
-                    role="assistant",
-                    content=assistant_message,
-                    is_encrypted=is_encrypted,
-                    embedding=embedding,
-                    source_model=source_model,
-                    native_dim=native_dim,
-                )
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.exception(
-                "memory_service: chunk write failed user_id=%s conv_id=%s",
-                user_id,
-                conversation_id,
-            )
-            # Continue to extraction even if chunk write failed —
-            # facts and chunks are independent code paths.
-
-        try:
-            transcript = format_transcript_for_extraction(
-                user_message, assistant_message
-            )
-            facts = facts_safe_for_extraction(await _extract_facts(db, transcript))
-            if facts:
-                _upsert_facts(
-                    db,
-                    user_id,
-                    facts,
-                    source_conversation_id=conversation_id,
-                    source_message_id=user_message_id,
-                )
-                db.commit()
-        except Exception:
-            db.rollback()
-            logger.exception(
-                "memory_service: fact extraction failed user_id=%s conv_id=%s",
-                user_id,
-                conversation_id,
-            )
     finally:
         db.close()
+    for conversation_id in ids:
+        await refresh_conversation(conversation_id)
+
+
+async def flush_other_conversations(user_id: int, exclude_conversation_id: int) -> None:
+    """使用者另開對話時，把其餘還沒整理的對話補上摘要。"""
+    try:
+        db = SessionLocal()
+        try:
+            ids = conversations_due(
+                db,
+                now=datetime.now(timezone.utc),
+                user_id=user_id,
+                exclude_conversation_id=exclude_conversation_id,
+                force=True,
+            )
+        finally:
+            db.close()
+        for conversation_id in ids:
+            await refresh_conversation(conversation_id)
+    except Exception:
+        logger.exception("memory_service: flush on new conversation failed")
+
+
+def start_memory_idle_loop():
+    """每分鐘看一次誰閒置夠久。第一次先睡，避免啟動當下掃全表。"""
+    import asyncio
+
+    async def _loop() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await flush_idle_conversations()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("memory_service: idle refresh failed")
+
+    return asyncio.create_task(_loop())
 
 
 # ── P4.4: revoke memory when a conversation is upgraded ──────────────────────
@@ -902,7 +1801,12 @@ def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, in
         .filter(UserFact.source_conversation_id == conversation_id)
         .delete(synchronize_session=False)
     )
-    return {"chunks": int(chunks), "facts": int(facts)}
+    summaries = (
+        db.query(ConversationSummary)
+        .filter(ConversationSummary.conversation_id == conversation_id)
+        .delete(synchronize_session=False)
+    )
+    return {"chunks": int(chunks), "facts": int(facts), "summaries": int(summaries)}
 
 
 # ── PostgresMemoryAdapter — implements anila_core.memory.long_term.MemoryAdapter ─

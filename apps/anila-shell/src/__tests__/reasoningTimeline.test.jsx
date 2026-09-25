@@ -71,6 +71,18 @@ describe("瞬間完成的 Router 步驟", () => {
     expect(list.textContent).not.toMatch(/0\.0 秒/);
   });
 
+  it("搜尋過往對話即使很快也留在時間軸", () => {
+    const trace = [
+      { kind: "recall", label: "搜尋過往對話", detail: "", status: "ok", at: t0 },
+      { kind: "direct", label: "Router 直接回答", detail: "", status: "ok", at: t0 + 10 },
+    ];
+    render(
+      <ReasoningSummary trace={trace} reasoning={null} streaming={false} finishedAt={t0 + 5000} />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByText("搜尋過往對話")).toBeTruthy();
+  });
+
   it("串流中只留下進行中的思考步驟當一行進度", () => {
     render(<ReasoningSummary trace={instant} reasoning={null} streaming />);
     expect(screen.getByTestId("thinking-summary-headline").textContent).toMatch(/^思考中…/);

@@ -268,6 +268,7 @@ async def test_build_memory_block_scopes_chunks_too(world):
         only_conversation_id=convs["lm"].id,
     )
 
-    assert _contents(result.chunks) == ["content-lm"]
+    assert result.chunks == []
+    assert "content-lm" not in (result.block or "")
     assert "content-lm_other" not in (result.block or "")
     assert "content-ui" not in (result.block or "")

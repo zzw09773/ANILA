@@ -184,10 +184,10 @@ def test_update_message_content_user_verbatim(
     assert resp.json()["content"] == SIMPLIFIED
 
 
-def test_persist_turn_normalizes_assistant_chunk(
+def test_persist_turn_does_not_store_assistant_text(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """memory_service.persist_turn embeds/stores normalized assistant text."""
+    """記憶不再把助理回答存成片段，正規化後的原文也不落庫。"""
     monkeypatch.delenv("ANILA_ZH_NORMALIZE", raising=False)
     captured: dict = {}
 
@@ -228,11 +228,8 @@ def test_persist_turn_normalizes_assistant_chunk(
         )
     )
 
-    by_role = {c["role"]: c["content"] for c in captured["chunks"]}
-    assert by_role["user"] == SIMPLIFIED
-    assert by_role["assistant"] == EXPECTED_TW
-    # 落庫的是「被檢索的一方」＝ document 側。
-    assert captured["roles"] == ["document", "document"]
+    assert captured.get("chunks", []) == []
+    assert captured.get("roles", []) == []
 
 
 def test_write_chunk_adapter_normalizes_assistant(

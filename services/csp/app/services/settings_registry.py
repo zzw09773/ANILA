@@ -2,7 +2,7 @@
 """治理頁唯一的即時設定登錄表。
 
 本輪設定收斂後，這裡只宣告真正能在請求期間被消費、而且改完下一個
-請求就生效的十五顆 C 類設定。部署事實、秘密與程式常數不再假裝是
+請求就生效的十七顆 C 類設定。部署事實、秘密與程式常數不再假裝是
 平台設定，也不再由治理頁承諾「重啟後會生效」。
 """
 
@@ -158,7 +158,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_FLOAT,
         _closed_float_range(0.0, 1.0),
         0.4,
-        "記憶檢索的相似度門檻。允許 0–1（兩端都含）。",
+        "對話摘要搜尋的相似度門檻。允許 0–1（兩端都含）。",
     ),
     _spec(
         "memory.retrieve_top_k",
@@ -166,7 +166,23 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_INT,
         _closed_int_range(1, 100),
         3,
-        "記憶檢索取回的筆數。允許 1–100 筆。",
+        "對話摘要搜尋取回的筆數。允許 1–100 筆。",
+    ),
+    _spec(
+        "memory.enabled",
+        "MEMORY_ENABLED",
+        T_BOOL_NE_0,
+        _is_bool,
+        True,
+        "長期記憶總開關。關閉後不再注入事實、不再萃取，也不搜尋對話摘要。",
+    ),
+    _spec(
+        "memory.idle_minutes",
+        "MEMORY_IDLE_MINUTES",
+        T_INT,
+        _closed_int_range(1, 1440),
+        10,
+        "對話閒置幾分鐘後才萃取摘要與事實。允許 1–1440 分鐘。",
     ),
     _spec(
         "proxy.llm_timeout",

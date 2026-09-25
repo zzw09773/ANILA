@@ -200,6 +200,7 @@ const stepDurationMs = (steps, index, finishedAt) => {
 export const visibleTraceSteps = (trace, { streaming = false, finishedAt } = {}) => {
   const steps = Array.isArray(trace) ? trace : [];
   return steps.filter((_, i) => {
+    if (steps[i]?.kind === "recall") return true;
     if (streaming && i === steps.length - 1) return true;
     const dur = stepDurationMs(steps, i, finishedAt);
     if (dur == null) return true;

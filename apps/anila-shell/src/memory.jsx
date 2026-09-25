@@ -5,13 +5,14 @@ import { useConfirm, useToast } from "./confirm.jsx";
 import { IconTrash } from "./icons.jsx";
 import {
   REPLY_STYLE_KEY,
-  clearChunks as apiClearMemoryChunks,
   clearFacts as apiClearMemoryFacts,
   deleteFact as apiDeleteMemoryFact,
+  deleteSummary as apiDeleteMemorySummary,
   getPreference as apiGetPreference,
-  listChunks as apiListMemoryChunks,
   listFacts as apiListMemoryFacts,
+  listSummaries as apiListMemorySummaries,
   putPreference as apiPutPreference,
+  updateFact as apiUpdateMemoryFact,
 } from "./runtime/memory.js";
 
 /**
@@ -24,21 +25,22 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
   const confirm = useConfirm();
   const toast = useToast();
   const [factsState, setFactsState] = useState({ loading: true, error: null, facts: [], total: 0 });
-  const [chunksState, setChunksState] = useState({
-    loading: true, error: null, items: [],
-    total: 0, encrypted_total: 0, distinct_conversations: 0,
+  const [summariesState, setSummariesState] = useState({
+    loading: true, error: null, items: [], total: 0,
   });
+  const [editingId, setEditingId] = useState(null);
+  const [editingValue, setEditingValue] = useState("");
   const [prefText, setPrefText] = useState("");
   const [prefSaved, setPrefSaved] = useState("");
   const [prefBusy, setPrefBusy] = useState(false);
 
   const reload = useCallback(async () => {
     setFactsState((s) => ({ ...s, loading: true, error: null }));
-    setChunksState((s) => ({ ...s, loading: true, error: null }));
+    setSummariesState((s) => ({ ...s, loading: true, error: null }));
     try {
-      const [facts, chunks, pref] = await Promise.all([
+      const [facts, summaries, pref] = await Promise.all([
         apiListMemoryFacts(authRequest),
-        apiListMemoryChunks(authRequest, { limit: 25 }),
+        apiListMemorySummaries(authRequest),
         apiGetPreference(authRequest),
       ]);
       const text = typeof pref?.text === "string" ? pref.text : "";
@@ -49,17 +51,15 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
         loading: false, error: null,
         facts: listed, total: listed.length,
       });
-      setChunksState({
+      setSummariesState({
         loading: false, error: null,
-        items: chunks.items || [],
-        total: chunks.total || 0,
-        encrypted_total: chunks.encrypted_total || 0,
-        distinct_conversations: chunks.distinct_conversations || 0,
+        items: summaries.items || [],
+        total: summaries.total || 0,
       });
     } catch (err) {
       const msg = err?.message || "載入失敗";
       setFactsState((s) => ({ ...s, loading: false, error: msg }));
-      setChunksState((s) => ({ ...s, loading: false, error: msg }));
+      setSummariesState((s) => ({ ...s, loading: false, error: msg }));
     }
   }, [authRequest]);
 
@@ -113,22 +113,30 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
     }
   };
 
-  const onClearChunks = async () => {
-    if (chunksState.total === 0) return;
+  const onSaveFact = async (id) => {
+    const value = editingValue.trim();
+    if (!value) return;
+    try {
+      await apiUpdateMemoryFact(authRequest, id, value);
+      setEditingId(null);
+      await reload();
+    } catch (err) {
+      toast(err?.message || "儲存失敗", { tone: "error" });
+    }
+  };
+
+  const onDeleteSummary = async (id) => {
     if (!(await confirm({
-      title: "清空對話片段",
-      message:
-        `清空全部 ${chunksState.total} 段對話片段？\n` +
-        `這會抹除跨對話語意檢索的記憶（已記住的事實不受影響）。\n` +
-        `此動作無法復原。`,
-      confirmText: "清空",
+      title: "刪除摘要",
+      message: "刪除這則對話摘要？之後就不會再被搜尋到。此動作無法復原。",
+      confirmText: "刪除",
       tone: "danger",
     }))) return;
     try {
-      await apiClearMemoryChunks(authRequest);
+      await apiDeleteMemorySummary(authRequest, id);
       await reload();
     } catch (err) {
-      toast(err?.message || "清空失敗", { tone: "error" });
+      toast(err?.message || "刪除失敗", { tone: "error" });
     }
   };
 
@@ -137,8 +145,8 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
   return (
     <div style={{ display: "grid", gap: 18, fontSize: 13 }}>
       <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-        回覆偏好由你自己寫，下一則對話就會帶進模型。平台也會在每輪之後萃取穩定事實、
-        並把訊息向量化做跨對話檢索。所有資料只屬於你，不與其他人共享。
+        回覆偏好由你自己寫，下一則對話就會帶進模型。平台只固定附上事實與偏好；
+        過往對話要等你提到「延續上次」這類需求時才搜尋摘要。所有資料只屬於你。
       </div>
 
       <div style={{
@@ -228,7 +236,7 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
             {factsState.facts.map((f) => (
               <div key={f.id} style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(90px, 1fr) 2fr auto auto auto",
+                gridTemplateColumns: "minmax(90px, 1fr) 2fr auto auto auto auto",
                 gap: 10, alignItems: "center",
                 padding: "6px 8px",
                 background: "var(--bg-subtle)",
@@ -239,7 +247,22 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
                   {f.key}
                 </div>
                 <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {f.value}
+                  {editingId === f.id ? (
+                    <input
+                      data-testid={`memory-fact-value-${f.id}`}
+                      value={editingValue}
+                      onChange={(e) => setEditingValue(e.target.value)}
+                      style={{
+                        width: "100%",
+                        fontSize: 12,
+                        padding: "2px 4px",
+                        border: "1px solid var(--border)",
+                        borderRadius: 4,
+                        background: "var(--bg)",
+                        color: "var(--fg)",
+                      }}
+                    />
+                  ) : f.value}
                 </div>
                 {f.source_conversation_id ? (
                   <button
@@ -267,6 +290,30 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-subtle)" }}>
                   {(f.confidence * 100).toFixed(0)}%
                 </div>
+                {editingId === f.id ? (
+                  <button
+                    type="button"
+                    data-testid={`memory-fact-save-${f.id}`}
+                    onClick={() => onSaveFact(f.id)}
+                    style={{
+                      fontSize: 11, padding: "2px 6px",
+                      background: "transparent", border: "1px solid var(--border)",
+                      color: "var(--accent)", cursor: "pointer",
+                    }}
+                  >儲存</button>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid={`memory-fact-edit-${f.id}`}
+                    onClick={() => { setEditingId(f.id); setEditingValue(f.value); }}
+                    title="修改這筆事實"
+                    style={{
+                      fontSize: 11, padding: "2px 6px",
+                      background: "transparent", border: "none",
+                      color: "var(--fg-subtle)", cursor: "pointer",
+                    }}
+                  >修改</button>
+                )}
                 <button
                   type="button"
                   onClick={() => onDeleteFact(f.id, f.key)}
@@ -293,73 +340,62 @@ export function MemoryTab({ authRequest, onOpenConversation }) {
         borderRadius: "var(--radius)",
         padding: 12,
       }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-          <div style={{ fontWeight: 500 }}>
-            對話片段索引 <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>
-              · {chunksState.total} 段 / {chunksState.distinct_conversations} 個對話
-              {chunksState.encrypted_total > 0 && (
-                <span style={{ marginLeft: 8, color: "var(--warning, var(--accent))" }}>
-                  · {chunksState.encrypted_total} 段加密來源
-                </span>
-              )}
-            </span>
-          </div>
-          <button
-            type="button"
-            disabled={chunksState.total === 0 || chunksState.loading}
-            onClick={onClearChunks}
-            style={{
-              fontSize: 11, padding: "4px 10px", borderRadius: "var(--radius)",
-              background: "transparent", border: "1px solid var(--border)",
-              color: chunksState.total === 0 ? "var(--fg-subtle)" : "var(--danger)",
-              cursor: chunksState.total === 0 ? "default" : "pointer",
-            }}
-          >清空全部</button>
+        <div style={{ fontWeight: 500, marginBottom: 8 }}>
+          對話摘要 <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>· {summariesState.total}</span>
         </div>
-        {chunksState.loading && (
+        {summariesState.loading && (
           <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>載入中…</div>
         )}
-        {chunksState.error && (
-          <div style={{ fontSize: 11, color: "var(--danger)" }}>{chunksState.error}</div>
+        {summariesState.error && (
+          <div style={{ fontSize: 11, color: "var(--danger)" }}>{summariesState.error}</div>
         )}
-        {!chunksState.loading && !chunksState.error && chunksState.items.length === 0 && (
+        {!summariesState.loading && !summariesState.error && summariesState.items.length === 0 && (
           <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>
-            目前還沒有對話片段索引。對話幾輪之後再回來看。
+            目前還沒有對話摘要。一段對話閒置之後，或你另開新對話時，才會整理出來。
           </div>
         )}
-        {!chunksState.loading && chunksState.items.length > 0 && (
-          <div style={{ display: "grid", gap: 4, maxHeight: 240, overflowY: "auto" }}>
-            {chunksState.items.map((c) => (
-              <div key={c.id} style={{
-                fontSize: 11, padding: "4px 6px",
-                fontFamily: "var(--font-mono)",
-                color: c.is_encrypted ? "var(--fg)" : "var(--fg-muted)",
+        {!summariesState.loading && summariesState.items.length > 0 && (
+          <div style={{ display: "grid", gap: 6 }}>
+            {summariesState.items.map((item) => (
+              <div key={item.id} style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto",
+                gap: 10,
+                alignItems: "center",
+                padding: "6px 8px",
+                background: "var(--bg-subtle)",
+                borderRadius: "var(--radius)",
+                fontSize: 12,
               }}>
-                {onOpenConversation ? (
-                  <button
-                    type="button"
-                    data-testid={`memory-chunk-source-${c.id}`}
-                    onClick={() => onOpenConversation(c.conversation_id)}
-                    style={{
-                      display: "inline-block", minWidth: 70,
-                      color: "var(--accent)",
-                      background: "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                      padding: 0,
-                      fontFamily: "inherit",
-                      fontSize: "inherit",
-                    }}
-                  >
-                    {c.role === "user" ? "user" : "asst"} · #{c.conversation_id}
-                  </button>
-                ) : (
-                  <span style={{ display: "inline-block", minWidth: 70, color: "var(--fg-subtle)" }}>
-                    {c.role === "user" ? "user" : "asst"} · #{c.conversation_id}
-                  </span>
-                )}
-                {c.is_encrypted && <span style={{ marginRight: 4 }}>🔒</span>}
-                <span style={{ color: "var(--fg)" }}>{c.content}</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenConversation?.(item.conversation_id)}
+                  style={{
+                    textAlign: "left",
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--fg)",
+                    cursor: onOpenConversation ? "pointer" : "default",
+                    padding: 0,
+                    font: "inherit",
+                  }}
+                >
+                  {item.summary}
+                </button>
+                <button
+                  type="button"
+                  data-testid={`memory-summary-delete-${item.id}`}
+                  onClick={() => onDeleteSummary(item.id)}
+                  title="刪除這則摘要"
+                  style={{
+                    width: 22, height: 22, padding: 0,
+                    background: "transparent", border: "none",
+                    color: "var(--fg-subtle)", cursor: "pointer",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  <IconTrash size={12} />
+                </button>
               </div>
             ))}
           </div>

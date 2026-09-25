@@ -73,15 +73,16 @@ def add_fact(db, user, conv, marker):
 
 
 async def inject(db, user, conv):
-    """跑真正的注入路徑,回傳注入後的 system prompt(沒有就是空字串)。"""
+    """跑真正的注入路徑，回傳引用區塊（沒有就是空字串）。"""
     body = {"messages": [{"role": "user", "content": "今天要談什麼?"}]}
     await proxy._inject_memory(
         db, user.id, body, exclude_conversation_id=conv.id
     )
-    first = body["messages"][0]
-    if first.get("role") != "system":
-        return ""
-    return first.get("content") or ""
+    for message in body["messages"]:
+        content = message.get("content") if isinstance(message, dict) else ""
+        if isinstance(content, str) and "<quoted-memory>" in content:
+            return content
+    return ""
 
 
 # ── 規則的兩邊 ────────────────────────────────────────────────────────────────

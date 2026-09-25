@@ -69,7 +69,13 @@ from app.models.token_usage import TokenUsage
 from app.models.endpoint_author_grant import EndpointAuthorGrant
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User, UserModelPermission
-from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.models.user_memory import (
+    ConversationMemoryChunk,
+    ConversationSummary,
+    MemoryRefreshLease,
+    MemoryTombstone,
+    UserFact,
+)
 
 __all__ = [
     "Agent",
@@ -99,6 +105,9 @@ __all__ = [
     "Department",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
+    "ConversationSummary",
+    "MemoryRefreshLease",
+    "MemoryTombstone",
     "DocumentRelation",
     "EndpointAuthorGrant",
     "Handoff",

@@ -366,6 +366,10 @@ async def lifespan(app: FastAPI):
         provision_internal_service_clients_once,
         start_internal_service_client_provisioner,
     )
+    from app.services.memory_service import start_memory_idle_loop
+
+    memory_task = start_memory_idle_loop()
+
     provision_task = None
     if auto_provision_enabled():
         # Failures are recorded for /health. Startup continues so the
@@ -401,6 +405,7 @@ async def lifespan(app: FastAPI):
         ledger_task.cancel()
     if provision_task:
         provision_task.cancel()
+    memory_task.cancel()
     await close_pool()
 
 

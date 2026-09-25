@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import update
 from sqlalchemy.orm import Session, object_session
@@ -469,6 +469,7 @@ def list_conversations(
 @router.post("", response_model=ConversationOut, status_code=201)
 def create_conversation(
     body: ConversationCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -522,6 +523,10 @@ def create_conversation(
         router_model_id=selection.model_id if selection else None,
         router_selection_version=1 if selection else 0,
     )
+    # 開了新對話就把先前還沒整理的對話補上摘要。這件事不擋這次建立。
+    from app.services.memory_service import flush_other_conversations
+
+    background_tasks.add_task(flush_other_conversations, current_user.id, conv.id)
     return _conversation_out(db, current_user, conv)
 
 

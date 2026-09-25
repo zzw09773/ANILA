@@ -38,6 +38,8 @@ const EXPECTED = [
   ['institutional_kb.score_threshold', null],
   ['memory.retrieve_min_cosine', 'MEMORY_RETRIEVE_MIN_COSINE'],
   ['memory.retrieve_top_k', 'MEMORY_RETRIEVE_TOP_K'],
+  ['memory.enabled', 'MEMORY_ENABLED'],
+  ['memory.idle_minutes', 'MEMORY_IDLE_MINUTES'],
   ['proxy.llm_timeout', 'LLM_TIMEOUT'],
   ['proxy.embedding_timeout', 'EMBEDDING_TIMEOUT'],
   ['auth.access_token_expire_minutes', 'ACCESS_TOKEN_EXPIRE_MINUTES'],
@@ -72,8 +74,8 @@ function row(key, index = 0, overrides = {}) {
   }
 }
 
-test('registry and UI contract contain exactly the fifteen C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 15)
+test('registry and UI contract contain exactly the seventeen C settings', () => {
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 17)
   assert.equal(SECTION_DEFS.length, 3)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))

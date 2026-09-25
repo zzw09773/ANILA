@@ -11,7 +11,7 @@ that path has to keep:
   after the Session is reopened
 * ``POST /v1/sessions/{id}/answer`` resumes that pause (``anila.resumed``
   first) and returns the next routing-LLM answer
-* a reply that contains both a real ``DISPATCH:`` and an ``ASK:`` still dispatches
+* a reply whose first line is ``ASK:`` pauses, even if a later line is ``DISPATCH:``
 * prose that merely quotes ``ASK:`` is not a pause
 
 The directive is only recognised on the FIRST line; anything later is prose the
@@ -371,10 +371,10 @@ def _no_recompose(monkeypatch) -> None:
 
 
 @respx.mock
-def test_dispatch_wins_when_reply_also_contains_ask(
+def test_leading_ask_ignores_a_later_dispatch(
     db_path: Path, _no_recompose: None
 ) -> None:
-    """A real ``DISPATCH:`` line beats an ``ASK:`` in the same reply."""
+    """第一行 ASK 決定這一輪，後面的 DISPATCH 不算。"""
     agent_id = "ag"
     respx.get(CSP_AGENTS_URL).mock(
         return_value=httpx.Response(200, json=_agents_payload(agent_id))
@@ -407,8 +407,8 @@ def test_dispatch_wins_when_reply_also_contains_ask(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["anila_meta"]["route"]["decision"] == "dispatch"
-    assert "interrupt" not in body["anila_meta"]
+    assert body["anila_meta"]["route"]["decision"] == "ask"
+    assert "interrupt" in body["anila_meta"]
 
 
 def _visible_sse_text(body: str) -> str:

@@ -131,8 +131,10 @@ SECRET_KEY
 | key | 白話用途 | env 別名（若有） |
 |---|---|---|
 | `institutional_kb.score_threshold` | 院內規章檢索分數門檻 | —（只住 DB） |
-| `memory.retrieve_min_cosine` | 記憶相似度門檻 | `MEMORY_RETRIEVE_MIN_COSINE` |
-| `memory.retrieve_top_k` | 記憶取回筆數 | `MEMORY_RETRIEVE_TOP_K` |
+| `memory.retrieve_min_cosine` | 對話摘要搜尋的相似度門檻 | `MEMORY_RETRIEVE_MIN_COSINE` |
+| `memory.retrieve_top_k` | 對話摘要搜尋取回筆數 | `MEMORY_RETRIEVE_TOP_K` |
+| `memory.enabled` | 長期記憶總開關。關閉後不注入、不萃取、不搜尋 | `MEMORY_ENABLED` |
+| `memory.idle_minutes` | 對話閒置幾分鐘後才萃取摘要與事實 | `MEMORY_IDLE_MINUTES` |
 | `proxy.llm_timeout` | LLM 逾時（秒） | `LLM_TIMEOUT` |
 | `proxy.embedding_timeout` | 嵌入逾時（秒） | `EMBEDDING_TIMEOUT` |
 | `auth.access_token_expire_minutes` | access 有效分鐘 | `ACCESS_TOKEN_EXPIRE_MINUTES` |

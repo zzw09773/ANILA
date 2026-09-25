@@ -216,6 +216,28 @@ DISCLOSURE_RULE_EN = (
     "If asked how the platform works internally, give a user-level description."
 )
 
+# 跟不得外洩規則一樣附在組好的提示後面，不寫進治理中心可改的三段。
+RECALL_RULE_ZH = (
+    "需要先前對話裡的結論時，整段回覆的第一行就必須是 RECALL: 開頭，前面不得有任何字元。"
+    "格式為 RECALL:<用來搜尋的短語>。"
+    "例如使用者要延續上次的報告，就回 RECALL:上次的報告。"
+    "這一行只搜尋對話摘要，不會附上舊回答的原文。"
+    "每一則使用者訊息最多搜尋一次；搜尋結果會在下一輪提供，屆時直接回答，不要再輸出 RECALL:。"
+    "不需要舊對話時不要輸出這一行。後文提到 RECALL: 不會觸發搜尋。"
+)
+RECALL_RULE_EN = (
+    "When you need a conclusion from an earlier conversation, the first line of "
+    "the entire reply must be RECALL:, with nothing before it. "
+    "Form: RECALL:<short search phrase>. "
+    "For example, if the user wants to continue the previous report, reply "
+    "RECALL:previous report. "
+    "This line searches conversation summaries only and does not attach the old answer text. "
+    "Search at most once per user message. The next turn includes the results; "
+    "answer directly then and do not emit RECALL: again. "
+    "Do not emit this line when earlier conversations are not needed. "
+    "Mentioning RECALL: later does not search."
+)
+
 # 預覽改寫的是這兩種傳統 script src（全域 THREE），不是 ES module。
 # 不寫院內檔案位置。
 _PREVIEW_THREE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"

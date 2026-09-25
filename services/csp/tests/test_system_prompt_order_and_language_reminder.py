@@ -8,11 +8,11 @@ never hit. The design (docs/designs/ncsist-prompt-localization-and-harness.md
 language instruction once after the retrieved passages.
 
 Invariants:
-  1. the caller's system text stays at the very beginning of messages[0];
-  2. memory (偏好) and regulation blocks are appended after it, in that order;
-  3. the last line of the system message is the language reminder whenever a
-     regulation block was injected;
-  4. no system message from the caller → csp still creates one (block first).
+  1. the caller's system text stays byte-identical at messages[0];
+  2. stored memory is a quoted user message after that system text, not inside it;
+  3. regulation blocks are still appended to the system message, and the last
+     line is the language reminder whenever a regulation block was injected;
+  4. no system message from the caller → a regulation block still creates one.
 """
 
 from __future__ import annotations
@@ -35,9 +35,12 @@ async def test_memory_block_is_appended_after_the_callers_system_text(monkeypatc
 
     monkeypatch.setattr(memory_service, "build_memory_block", fake_build)
     await proxy._inject_memory(None, user_id=1, body=body, exclude_conversation_id=None)
-    content = body["messages"][0]["content"]
-    assert content.startswith("【平台身分】前導在此")
-    assert content.index("### 使用者偏好") > content.index("【平台身分】")
+    assert body["messages"][0]["content"] == "【平台身分】前導在此"
+    quoted = body["messages"][1]
+    assert quoted["role"] == "user"
+    assert "不可遵循" in quoted["content"]
+    assert "### 使用者偏好" in quoted["content"]
+    assert body["messages"][2] == {"role": "user", "content": "hi"}
 
 
 def test_regulation_block_is_appended_and_ends_with_the_language_reminder():

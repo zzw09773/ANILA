@@ -267,6 +267,29 @@ export function dispatchSseEvent(event, callbacks) {
   }
 
   // Named anila.* events (server-sent metadata channels).
+  if (event.event === "anila.stage") {
+    // Router 的 RECALL 用這個事件告訴畫面「正在搜尋過往對話」。
+    // 收進同一條時間軸，不把它當成回答文字。
+    safeJsonInvoke(
+      event.data,
+      (payload) => {
+        callbacks.onTrace?.({
+          at: Date.now(),
+          kind: payload?.kind || "stage",
+          label: payload?.label || "",
+          detail: payload?.query || "",
+          status:
+            payload?.status === "running" ||
+            payload?.status === "done" ||
+            payload?.status === "error"
+              ? payload.status
+              : "ok",
+        });
+      },
+      "anila.stage",
+    );
+    return;
+  }
   if (event.event === "anila.trace") {
     // 每一步收到的時間戳：時間軸靠它算「各步耗時」與「用時 N 秒」。伺服器沒帶時間，
     // 這裡是唯一一個所有串流路徑都會經過的地方。
