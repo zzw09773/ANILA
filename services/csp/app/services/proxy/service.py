@@ -8,6 +8,7 @@ live in the sibling modules of this package (headers / sse / usage / guard).
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -655,6 +656,25 @@ def build_default_anila_meta(
     return meta
 
 
+_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_SK_RE = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+
+
+def _redact_upstream_text(text: str, headers: dict | None) -> str:
+    """上游錯誤本文寫進 log 前先遮蔽金鑰。
+
+    有些模型閘道會在錯誤本文回顯請求標頭；本文若含這次送出的
+    Authorization 值、任何 Bearer token 或 sk- 金鑰，一律換成 ***。
+    """
+    out = text or ""
+    auth = (headers or {}).get("Authorization") or ""
+    token = auth.split(" ", 1)[-1].strip() if auth else ""
+    if len(token) >= 8:
+        out = out.replace(token, "***")
+    out = _BEARER_RE.sub("Bearer ***", out)
+    return _SK_RE.sub("sk-***", out)
+
+
 async def _proxy_request_impl(
     model: ModelRegistry,
     api_key_id: int,
@@ -684,6 +704,7 @@ async def _proxy_request_impl(
     usage_kind: str = "inference",
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
+    request_type_override: Optional[str] = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -715,11 +736,14 @@ async def _proxy_request_impl(
     )
     # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
     # sends "studio" so the usage dashboard can split 簡報製作 from chat.
-    request_type = (
+    # ``request_type_override`` 給平台內部呼叫（記憶、思考進度）標成 internal，
+    # 公開 /v1 不傳，分類規則維持原樣。
+    derived_request_type = (
         "embedding"
         if "embedding" in endpoint_path or model.model_type == "embedding"
         else ("studio" if usage_source == "studio" else "chat")
     )
+    request_type = (request_type_override or "").strip() or derived_request_type
 
     protocol = (getattr(model, "protocol", None) or "openai_compatible").strip()
     if protocol == "triton_grpc":
@@ -825,7 +849,7 @@ async def _proxy_request_impl(
             if response.status_code >= 500:
                 # Full upstream body stays server-side only; the client gets a
                 # generic message so internal errors / stack traces never leak.
-                last_error = f"後端回應 {response.status_code}: {response.text[:500]}"
+                last_error = f"後端回應 {response.status_code}: {_redact_upstream_text(response.text[:500], req_headers)}"
                 if attempt < tuning.max_retries - 1:
                     delay = tuning.retry_base_delay * (2 ** attempt)
                     logger.warning(
@@ -852,7 +876,7 @@ async def _proxy_request_impl(
                     "模型 %s 上游 %s: %s",
                     model.name,
                     response.status_code,
-                    response.text[:500],
+                    _redact_upstream_text(response.text[:500], req_headers),
                 )
                 body: object = None
                 try:
@@ -1079,6 +1103,7 @@ async def proxy_request(
     usage_kind: str = "inference",
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
+    request_type_override: Optional[str] = None,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -1123,6 +1148,7 @@ async def proxy_request(
             usage_kind=usage_kind,
             invocation_id=invocation_id,
             model_name_snapshot=model_name_snapshot,
+            request_type_override=request_type_override,
         )
     except HTTPException as exc:
         if task_run_id is not None:

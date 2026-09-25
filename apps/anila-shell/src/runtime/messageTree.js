@@ -103,6 +103,7 @@ export function applyServerPath(prevList, serverMapped, convId) {
         reasoning: m.reasoning,
         reasoningPersist: m.reasoningPersist,
         thinkingSummaries: m.thinkingSummaries,
+        thinkingStages: m.thinkingStages,
         thinkingStatus: m.thinkingStatus,
         thinkingElapsedMs: m.thinkingElapsedMs,
       });
@@ -153,6 +154,11 @@ export function applyServerPath(prevList, serverMapped, convId) {
       : [];
     if (liveSummaries.length > serverSummaries.length) {
       next.thinkingSummaries = liveSummaries;
+    }
+    const liveStages = Array.isArray(preserved.thinkingStages) ? preserved.thinkingStages : [];
+    const serverStages = Array.isArray(sm.thinkingStages) ? sm.thinkingStages : [];
+    if (liveStages.length > serverStages.length) {
+      next.thinkingStages = liveStages;
     }
     if (!next.thinkingStatus && preserved.thinkingStatus) {
       next.thinkingStatus = preserved.thinkingStatus;

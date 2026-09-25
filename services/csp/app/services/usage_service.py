@@ -18,6 +18,20 @@ from app.utils.time_helpers import get_time_range
 # / 第三方工具用,沒前端 JS 處理機會。
 _TPE_TZ = timezone(timedelta(hours=8))
 
+# 加總時排除、但列仍留在 token_usage。
+# router_transport 是轉運跳；platform 是平台替使用者做的背景推理
+# （記憶整理、思考進度）。兩者都不進使用者帳單，也不灌推理總量。
+_UNBILLED_USAGE_KINDS = ("router_transport", "platform")
+
+
+def _exclude_unbilled(query):
+    if hasattr(TokenUsage, "usage_kind"):
+        query = query.filter(
+            (TokenUsage.usage_kind.is_(None))
+            | (TokenUsage.usage_kind.notin_(_UNBILLED_USAGE_KINDS))
+        )
+    return query
+
 
 def _to_tpe_iso(dt: datetime | None) -> str:
     """Render `datetime` as `YYYY-MM-DDTHH:MM:SS+08:00` in Asia/Taipei.
@@ -103,12 +117,7 @@ def _apply_usage_filters(
     if model_type:
         model_ids = _get_model_ids_by_type(db, model_type)
         query = query.filter(TokenUsage.model_id.in_(model_ids))
-    # Transport hops are diagnostic only and must not inflate inference totals.
-    if hasattr(TokenUsage, "usage_kind"):
-        query = query.filter(
-            (TokenUsage.usage_kind.is_(None)) | (TokenUsage.usage_kind != "router_transport")
-        )
-    return query
+    return _exclude_unbilled(query)
 
 
 def get_usage_summary(
@@ -738,11 +747,7 @@ def _caller_usage_rows(db: Session, *, user_id: int, start_time: datetime):
         TokenUsage.user_id == user_id,
         TokenUsage.request_timestamp >= start_time,
     )
-    if hasattr(TokenUsage, "usage_kind"):
-        query = query.filter(
-            (TokenUsage.usage_kind.is_(None)) | (TokenUsage.usage_kind != "router_transport")
-        )
-    return query.all()
+    return _exclude_unbilled(query).all()
 
 
 def _sum_reasoning(rows) -> int:
@@ -835,11 +840,7 @@ def get_conversation_usage(
         TokenUsage.user_id == user_id,
         TokenUsage.conversation_id == str(conversation_id),
     )
-    if hasattr(TokenUsage, "usage_kind"):
-        query = query.filter(
-            (TokenUsage.usage_kind.is_(None)) | (TokenUsage.usage_kind != "router_transport")
-        )
-    rows = query.all()
+    rows = _exclude_unbilled(query).all()
     prompt = sum(int(row.prompt_tokens or 0) for row in rows)
     completion = sum(int(row.completion_tokens or 0) for row in rows)
     return {

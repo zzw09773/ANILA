@@ -5,26 +5,21 @@ dev 在開發者 guide 頁選一個 collection + 輸入初始構想 → 這裡�
 is_router_primary / 第一個 active llm) 產生一份可直接貼進 anila-agent
 ``prompts/system.md`` 的領域 system prompt。
 
-LLM 呼叫沿用 memory_service 的模式（registry 解析 endpoint + SSRF guard + httpx
-POST /v1/chat/completions），gateway 模式自動帶 MODEL_GATEWAY_API_KEY。
+LLM 呼叫走 ``internal_llm.complete_chat``：用主 LLM 那一列的加密金鑰，
+SSRF guard、逾時與路徑拼接都在 proxy。這是開發者主動要的產出，用量記入該使用者。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
-import httpx
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from sqlalchemy.orm import Session
 
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
-from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT = 120.0
 _MAX_IDEAS_CHARS = 4000
 _SAMPLE_DOCS = 8
 _MAX_TOKENS = 2048
@@ -41,8 +36,8 @@ _META_SYSTEM_PROMPT = (
 )
 
 
-def _resolve_primary_llm(db: Session) -> tuple[str, str]:
-    """回 (model_name, endpoint_url)：registry 內 is_router_primary 優先、否則第一個 active llm。"""
+def _resolve_primary_llm(db: Session) -> ModelRegistry:
+    """主 LLM：registry 內 is_router_primary 優先、否則第一個 active llm。"""
     row = (
         db.query(ModelRegistry)
         .filter(ModelRegistry.model_type == "llm", ModelRegistry.is_active.is_(True))
@@ -51,7 +46,7 @@ def _resolve_primary_llm(db: Session) -> tuple[str, str]:
     )
     if row is None:
         raise RuntimeError("model_registry 內沒有可用的 LLM（is_active 的 llm）")
-    return row.name, row.endpoint_url
+    return row
 
 
 def _strip_fence(text: str) -> str:
@@ -96,12 +91,7 @@ async def generate_system_prompt(
         )
     ]
 
-    model_name, base_url = _resolve_primary_llm(db)
-    endpoint = join_upstream_path(base_url, "/v1/chat/completions")
-    try:
-        validate_outbound_url(endpoint)
-    except UnsafeEndpointError as exc:
-        raise RuntimeError(f"LLM 端點未通過 SSRF guard：{exc}") from exc
+    model = _resolve_primary_llm(db)
 
     sample_block = "\n".join(f"- {t}" for t in titles) or "（此 collection 尚無文件）"
     user_msg = (
@@ -112,10 +102,8 @@ async def generate_system_prompt(
         "請依上述產生這個 agent 的領域 system prompt。"
     )
 
-    gateway_key = os.environ.get("MODEL_GATEWAY_API_KEY", "").strip()
-    headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else {}
     payload = {
-        "model": model_name,
+        "model": model.name,
         "messages": [
             {"role": "system", "content": _META_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
@@ -124,18 +112,21 @@ async def generate_system_prompt(
         "max_tokens": _MAX_TOKENS,
     }
 
-    # Release the pooled connection before the outbound LLM call (timeout 120s).
-    # All DB reads above are done; nothing after this await needs this Session.
-    db.commit()
+    from app.services.internal_llm import InternalCompletionError, complete_chat
 
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.post(endpoint, json=payload, headers=headers)
-            resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"].get("content") or ""
-    except httpx.HTTPError as exc:
-        logger.warning("prompt_gen: LLM 呼叫失敗: %s", exc)
-        raise RuntimeError(f"呼叫 LLM 失敗：{exc}") from exc
+        # 開發者自己按的產生，記入這位使用者，不是平台背景。
+        content = await complete_chat(
+            db,
+            model,
+            payload,
+            user_id=getattr(user, "id", None),
+            department_id=getattr(user, "department_id", None),
+            on_behalf_of_user=True,
+        )
+    except InternalCompletionError as exc:
+        logger.warning("prompt_gen: LLM 呼叫失敗 status=%s", exc.status_code)
+        raise RuntimeError("呼叫 LLM 失敗") from exc
 
     result = _strip_fence(content)
     if not result:

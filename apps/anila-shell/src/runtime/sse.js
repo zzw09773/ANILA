@@ -120,6 +120,8 @@ export async function streamChatCompletion({
   onFinishReason,
   // 思考用完輸出額度：Router 關掉思考再整理一次答案。
   onRescue,
+  // 階段標題。{index, title, status}，同一則訊息上一條清單。
+  onThinkingStage,
   // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
   // 已累積文字保留(onText 已即時寫入),中止不視為錯誤(回傳累積值)。
   signal,
@@ -221,6 +223,7 @@ export async function streamChatCompletion({
         onUnknownEvent,
         onFinishReason,
         onRescue,
+        onThinkingStage,
         onError: (payload) => {
           terminalError = payload;
           onError?.(payload);
@@ -267,6 +270,11 @@ export function dispatchSseEvent(event, callbacks) {
   }
 
   // Named anila.* events (server-sent metadata channels).
+  if (event.event === "anila.thinking_stage") {
+    // 模型自報的階段，或召回／救援插進同一條清單的那一步。
+    safeJsonInvoke(event.data, callbacks.onThinkingStage, "anila.thinking_stage");
+    return;
+  }
   if (event.event === "anila.stage") {
     // Router 的 RECALL 用這個事件告訴畫面「正在搜尋過往對話」。
     // 收進同一條時間軸，不把它當成回答文字。

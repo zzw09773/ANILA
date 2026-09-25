@@ -93,17 +93,28 @@ class _Scripted:
             async def __aexit__(self, *args):
                 return False
 
-            async def post(self, url, json):
+            async def post(self, url, json=None, headers=None):
                 outer.calls += 1
                 outer.seen.append(json)
                 content = outer.payloads.pop(0) if outer.payloads else "{}"
 
                 class _Resp:
+                    status_code = 200
+                    headers = {"content-type": "application/json"}
+                    text = content
+
                     def raise_for_status(self):
                         return None
 
                     def json(self):
-                        return {"choices": [{"message": {"content": content}}]}
+                        return {
+                            "choices": [{"message": {"content": content}}],
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 1,
+                                "total_tokens": 2,
+                            },
+                        }
 
                 return _Resp()
 
@@ -111,7 +122,11 @@ class _Scripted:
 
 
 def _install_model(monkeypatch, script, *, embed=True):
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", script.client())
+    import httpx
+
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "summary.test")
+    monkeypatch.setattr(httpx, "AsyncClient", script.client())
     monkeypatch.setattr(memory_service, "_guard_outbound", lambda url: None)
     if embed:
         async def fake_embed(db, text_input, **kwargs):
@@ -434,12 +449,16 @@ async def test_second_refresh_does_not_call_the_model_while_a_lease_is_held(
         async def __aexit__(self, *args):
             return False
 
-        async def post(self, url, json):
+        async def post(self, url, json=None, headers=None):
             script.calls += 1
             if script.calls == 1:
                 await memory_service.refresh_conversation(conv.id, db=db)
 
             class _Resp:
+                status_code = 200
+                headers = {"content-type": "application/json"}
+                text = "{}"
+
                 def raise_for_status(self):
                     return None
 
@@ -451,12 +470,21 @@ async def test_second_refresh_does_not_call_the_model_while_a_lease_is_held(
                                     "content": '{"summary":"使用者在雷達組。","facts":[]}'
                                 }
                             }
-                        ]
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
                     }
 
             return _Resp()
 
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
+    import httpx
+
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "summary.test")
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
     monkeypatch.setattr(memory_service, "_guard_outbound", lambda url: None)
 
     async def fake_embed(db, text_input, **kwargs):

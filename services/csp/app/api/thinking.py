@@ -39,7 +39,13 @@ async def summarize_thinking(
         if isinstance(item, dict)
     ]
     try:
-        text = await summarize_reasoning_batch(db, added=added, previous=previous)
+        text = await summarize_reasoning_batch(
+            db,
+            added=added,
+            previous=previous,
+            user_id=_user.id,
+            department_id=getattr(_user, "department_id", None),
+        )
     except Exception:
         text = None
     return ThinkingSummaryOut(summary=text)

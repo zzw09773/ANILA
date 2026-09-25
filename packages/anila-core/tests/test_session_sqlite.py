@@ -260,6 +260,9 @@ async def test_in_memory_db_isolated_per_instance() -> None:
 
     assert len(await a.get_items()) == 1
     assert await b.get_items() == []
+    # 名稱含 memory，會被 -k memory 單獨選到。不關連線的話 aiosqlite 執行緒
+    # 還在，pytest 跑完不會結束。
+    await close_all_connections()
 
 
 @pytest.mark.asyncio

@@ -103,6 +103,7 @@ import {
   thinkingSummaryHeadline,
   visibleReasoningText,
 } from "./runtime/thinkingSummary.js";
+import { THINKING_STAGE_MARK } from "./runtime/thinkingStages.js";
 import { visibleAskParts } from "./runtime/askTranscript.js";
 
 // ---- Trace Row + Routing Trace ----
@@ -258,6 +259,64 @@ export const StepTimeline = ({ trace, streaming, finishedAt }) => {
   );
 };
 
+/** 標題底下的階段。完成打勾、進行中顯示經過時間、失敗打叉、停止用方塊。 */
+function ThinkingStageList({ stages, streaming }) {
+  const running = Boolean(streaming && stages.some((row) => row?.status === "running"));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  return (
+    <ol
+      data-testid="thinking-stage-list"
+      aria-label="思考階段"
+      style={{
+        listStyle: "none",
+        margin: "4px 0 0",
+        padding: 0,
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+      }}
+    >
+      {stages.map((stage, index) => {
+        const status = THINKING_STAGE_MARK[stage?.status] ? stage.status : "done";
+        const elapsed = status === "running" && typeof stage?.startedAt === "number"
+          ? formatThinkingElapsed(Math.max(0, now - stage.startedAt))
+          : "";
+        return (
+          <li
+            key={stage?.index ?? index}
+            data-testid="thinking-stage"
+            data-status={status}
+            aria-current={status === "running" ? "step" : undefined}
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              gap: 6,
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--fg-muted)",
+            }}
+          >
+            <span aria-hidden="true" style={{ width: 12, textAlign: "center" }}>
+              {THINKING_STAGE_MARK[status]}
+            </span>
+            <span>{stage?.title}</span>
+            {elapsed ? (
+              <span data-testid="thinking-stage-elapsed" style={{ color: "var(--fg-subtle)" }}>
+                {elapsed}
+              </span>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 function useThinkingElapsed(startedAt, streaming, fixedMs) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -285,6 +344,7 @@ export const ReasoningSummary = ({
   thinkingStatus = null,
   thinkingElapsedMs = null,
   thinkingStartedAt = null,
+  thinkingStages = null,
   showThinkingOrb = null,
 }) => {
   const [open, setOpen] = useState(false);
@@ -299,7 +359,9 @@ export const ReasoningSummary = ({
   const persistNotice = streaming ? null : reasoningPersistNotice(reasoningPersist, reasoning);
   const summaries = Array.isArray(thinkingSummaries) ? thinkingSummaries : [];
   const hasSummaries = summaries.length > 0;
-  const summaryMode = Boolean(streaming || hasSummaries || thinkingStatus);
+  const stages = Array.isArray(thinkingStages) ? thinkingStages : [];
+  const hasStages = stages.length > 0;
+  const summaryMode = Boolean(streaming || hasSummaries || thinkingStatus || hasStages);
   const elapsedMs = useThinkingElapsed(thinkingStartedAt, streaming, thinkingElapsedMs);
   const persistWithoutBody =
     persistNotice
@@ -315,7 +377,7 @@ export const ReasoningSummary = ({
       </div>
     );
   }
-  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel && !hasSummaries && !thinkingStatus) return null;
+  if (!streaming && !hasTrace && !hasReasoning && !thinkingLocked && !hasUsageReasoning && !appliedLabel && !hasSummaries && !thinkingStatus && !hasStages) return null;
   if (!streaming && !hasTrace && !hasReasoning && thinkingLocked && !hasUsageReasoning && !appliedLabel && !hasSummaries) {
     return (
       <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
@@ -334,7 +396,7 @@ export const ReasoningSummary = ({
       : (streaming && traceFallback) || thinkingSummaryHeadline({ streaming, summaries }) || THINKING_SUMMARY_PENDING;
     const statusLine = thinkingStatus === "aborted"
       ? formatThinkingAborted(elapsedMs)
-      : (!streaming && (thinkingStatus === "complete" || hasSummaries)
+      : (!streaming && (thinkingStatus === "complete" || hasSummaries || hasStages)
         ? formatThinkingComplete(elapsedMs)
         : null);
     const liveElapsed = streaming ? formatThinkingElapsed(elapsedMs) : "";
@@ -400,6 +462,7 @@ export const ReasoningSummary = ({
             <AgentPill agent={routedAgent} size="sm" />
           )}
         </button>
+        {hasStages ? <ThinkingStageList stages={stages} streaming={streaming} /> : null}
         {thinkingLocked && !streaming && (
           <div style={{ fontSize: 12, color: "var(--fg-subtle)", marginTop: 2 }}>
             思考程度由管理員鎖定
@@ -1279,6 +1342,7 @@ export const MessageBubble = ({
             thinkingStatus={msg.thinkingStatus}
             thinkingElapsedMs={msg.thinkingElapsedMs}
             thinkingStartedAt={msg.thinkingStartedAt}
+            thinkingStages={msg.thinkingStages}
             showThinkingOrb={isLatestAssistant}
           />
         );

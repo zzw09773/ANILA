@@ -591,25 +591,40 @@ def test_memory_extract_url_both_conventions(monkeypatch, endpoint_url: str):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma")
     captured: dict[str, Any] = {}
+    model = SimpleNamespace(
+        id=1,
+        name="gemma4",
+        display_name="gemma4",
+        model_type="llm",
+        endpoint_url=endpoint_url,
+        api_version="v1",
+        protocol="openai_compatible",
+        api_key_secret_ref=None,
+        is_active=True,
+    )
+    monkeypatch.setattr(memory_service, "_summary_model", lambda db: model)
+    monkeypatch.setattr(memory_service, "_EXTRACT_MIN_CHARS", 1)
+    from app.services.proxy.service import ProxyTuning
 
     monkeypatch.setattr(
-        memory_service,
-        "_resolve_extraction_target",
-        lambda db: ("gemma4", endpoint_url.rstrip("/")),
+        "app.services.proxy.service.resolve_proxy_tuning",
+        lambda db: ProxyTuning.from_registry_defaults(),
     )
     monkeypatch.setattr(
-        memory_service,
-        "_guard_outbound",
-        lambda url: captured.setdefault("guarded", url),
+        "app.services.proxy.service._guard_outbound",
+        lambda url, endpoint_kind=None: captured.setdefault("guarded", url),
     )
-    monkeypatch.setattr(memory_service, "_EXTRACT_MIN_CHARS", 1)
 
     class _Resp:
-        def raise_for_status(self):
-            return None
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = "[]"
 
         def json(self):
-            return {"choices": [{"message": {"content": "[]"}}]}
+            return {
+                "choices": [{"message": {"content": "[]"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
 
     class _Client:
         def __init__(self, *a, **k):
@@ -625,7 +640,9 @@ def test_memory_extract_url_both_conventions(monkeypatch, endpoint_url: str):
             captured["url"] = url
             return _Resp()
 
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
     monkeypatch.setattr(memory_service, "parse_extraction_response", lambda raw: [])
     asyncio.run(
         memory_service._extract_facts(MagicMock(), "user said enough text here")
@@ -647,27 +664,60 @@ def test_memory_extract_url_both_conventions(monkeypatch, endpoint_url: str):
     ],
 )
 def test_prompt_gen_url_both_conventions(monkeypatch, endpoint_url: str):
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "primary")
     captured: dict[str, Any] = {}
+    model = SimpleNamespace(
+        id=1,
+        name="gemma4",
+        display_name="gemma4",
+        model_type="llm",
+        endpoint_url=endpoint_url,
+        api_version="v1",
+        protocol="openai_compatible",
+        api_key_secret_ref=None,
+        is_active=True,
+    )
+    monkeypatch.setattr(prompt_gen_service, "_resolve_primary_llm", lambda db: model)
+    from app.services.proxy.service import ProxyTuning
 
     monkeypatch.setattr(
-        prompt_gen_service,
-        "_resolve_primary_llm",
-        lambda db: ("gemma4", endpoint_url),
+        "app.services.proxy.service.resolve_proxy_tuning",
+        lambda db: ProxyTuning.from_registry_defaults(),
     )
     monkeypatch.setattr(
-        prompt_gen_service,
-        "validate_outbound_url",
-        lambda url: captured.setdefault("guarded", url),
+        "app.services.proxy.service._guard_outbound",
+        lambda url, endpoint_kind=None: captured.setdefault("guarded", url),
     )
 
-    class _Boom(Exception):
-        pass
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = "領域提示"
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "領域提示"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
 
     class _Client:
         def __init__(self, *a, **k):
-            raise _Boom("stop-before-network")
+            pass
 
-    monkeypatch.setattr(prompt_gen_service.httpx, "AsyncClient", _Client)
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
 
     col = SimpleNamespace(id=1, name="kb", description="", created_by=1)
     user = SimpleNamespace(id=1, role="admin")
@@ -686,12 +736,12 @@ def test_prompt_gen_url_both_conventions(monkeypatch, endpoint_url: str):
 
     db.query.side_effect = _query
 
-    with pytest.raises(_Boom):
-        asyncio.run(
-            prompt_gen_service.generate_system_prompt(db, 1, "ideas here", user)
-        )
+    asyncio.run(
+        prompt_gen_service.generate_system_prompt(db, 1, "ideas here", user)
+    )
 
-    assert captured["guarded"] == "http://primary:8000/v1/chat/completions"
+    assert captured["url"] == "http://primary:8000/v1/chat/completions"
+    assert captured["guarded"] == captured["url"]
 
 
 # ── site: health_checker probe paths ──────────────────────────────────────────

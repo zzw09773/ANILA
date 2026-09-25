@@ -68,6 +68,7 @@ from ..text.model_tokenize import tokenize_prompt
 from ..prompts.sampling import get_sampling
 from ..providers.guards import is_empty_reply
 from . import router_prompts
+from .thinking_stage import RESCUE_STAGE_TITLE, LiveThinkingStages
 from .events import RESCUE_REASON_REASONING_EXHAUSTED
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
@@ -346,18 +347,26 @@ def _recall_rule(language_source: str) -> str:
     return router_prompts.RECALL_RULE_EN
 
 
+def _stage_rule(language_source: str) -> str:
+    if _prompt_is_chinese(language_source):
+        return router_prompts.STAGE_RULE_ZH
+    return router_prompts.STAGE_RULE_EN
+
+
 def _stamp_router_today(prompt: str, language_source: str | None = None) -> str:
-    """日期、不得外洩與過往對話搜尋附在組好的系統提示後面。治理中心改提示刪不掉。"""
+    """日期、不得外洩、階段標題與過往對話搜尋附在組好的系統提示後面。治理中心改提示刪不掉。"""
     text = prompt if isinstance(prompt, str) else str(prompt)
     source = language_source if language_source is not None else text
     rule = _disclosure_rule(source)
     recall = _recall_rule(source)
+    stage = _stage_rule(source)
     line = _router_today_line(source)
     body = text.rstrip()
-    for suffix in (line, rule, recall):
+    # 由尾端往回剝，避免重複貼上。順序要跟下面組裝相反。
+    for suffix in (line, stage, rule, recall):
         if suffix and body.endswith(suffix):
             body = body[: -len(suffix)].rstrip()
-    chunks = [part for part in (body, recall, rule, line) if part]
+    chunks = [part for part in (body, recall, rule, stage, line) if part]
     return "\n\n".join(chunks)
 
 
@@ -1158,6 +1167,7 @@ async def _resume_router_ask(
                 if stream:
                     buf = ""
                     upstream_reasoning = ""
+                    live_stages = LiveThinkingStages()
                     async for ev in _stream_llm_sse(
                         caller_api_key,
                         routing_messages,
@@ -1167,6 +1177,10 @@ async def _resume_router_ask(
                     ):
                         kind = ev.get("type")
                         if kind == "rescue":
+                            for frame in _thinking_stage_frames(
+                                live_stages.open_named(RESCUE_STAGE_TITLE)
+                            ):
+                                yield frame
                             yield _make_event(
                                 "anila.rescue",
                                 {"reason": RESCUE_REASON_REASONING_EXHAUSTED},
@@ -1176,26 +1190,71 @@ async def _resume_router_ask(
                         if kind == "error":
                             err = ev.get("error", "LLM error")
                             _log_router_ask_resume_failure(err, ev.get("detail"))
+                            _reason_tail, _content_tail, stage_events = live_stages.flush()
+                            for frame in _thinking_stage_frames(stage_events):
+                                yield frame
+                            if _reason_tail:
+                                upstream_reasoning += _reason_tail
+                            if _content_tail:
+                                buf += _content_tail
+                            error_meta: dict[str, Any] = {"trace": [], "reasoning": None}
+                            for frame in _stages_on_meta(error_meta, live_stages, "error"):
+                                yield frame
                             for frame in _router_llm_outage_frames(err):
                                 yield frame
                             return
                         if kind == "reasoning":
-                            upstream_reasoning += ev["content"]
-                            yield _make_event(
-                                "anila.reasoning", {"delta": ev["content"]}
+                            visible_reason, stage_events = live_stages.feed_reasoning(
+                                ev["content"]
                             )
+                            for frame in _thinking_stage_frames(stage_events):
+                                yield frame
+                            if visible_reason:
+                                upstream_reasoning += visible_reason
+                                yield _make_event(
+                                    "anila.reasoning", {"delta": visible_reason}
+                                )
                             continue
                         if kind == "delta":
-                            buf += ev["content"]
+                            visible_delta, stage_events = live_stages.feed_content(
+                                ev["content"]
+                            )
+                            for frame in _thinking_stage_frames(stage_events):
+                                yield frame
+                            buf += visible_delta
                             continue
                         if kind == "done":
                             break
+                    reason_tail, content_tail, stage_events = live_stages.flush()
+                    for frame in _thinking_stage_frames(stage_events):
+                        yield frame
+                    if reason_tail:
+                        upstream_reasoning += reason_tail
+                        yield _make_event("anila.reasoning", {"delta": reason_tail})
+                    buf += content_tail
                     if _parse_recall(buf):
                         query = _parse_recall(buf) or ""
+                        for frame in _thinking_stage_frames(
+                            live_stages.open_named(_RECALL_STAGE_LABEL)
+                        ):
+                            yield frame
                         yield _recall_stage_event(query)
                         buf, recall_status = await _after_recall(buf)
                         if recall_status:
                             yield _recall_stage_event(query, status=recall_status)
+                            for frame in _thinking_stage_frames(
+                                live_stages.settle(
+                                    "error" if recall_status == "error" else "done"
+                                )
+                            ):
+                                yield frame
+                        if recall_status != "error":
+                            _kept, cleaned, cleaned_events = live_stages.absorb_turn(
+                                "", buf, rescued=False
+                            )
+                            for frame in _thinking_stage_frames(cleaned_events):
+                                yield frame
+                            buf = cleaned
                     try:
                         ask, follow = await _store_routing_reply(buf)
                     except Exception as exc:
@@ -1221,10 +1280,10 @@ async def _resume_router_ask(
                         )
                         if upstream_reasoning:
                             anila_meta["reasoning"] = upstream_reasoning
-                        yield _make_event(
-                            "anila.meta",
-                            {**anila_meta, "trace": [], "interrupt": payload},
-                        )
+                        ask_meta = {**anila_meta, "trace": [], "interrupt": payload}
+                        for frame in _stages_on_meta(ask_meta, live_stages, "done"):
+                            yield frame
+                        yield _make_event("anila.meta", ask_meta)
                         yield _make_chunk("", "anila-router", finish="stop")
                         yield "data: [DONE]\n\n"
                         return
@@ -1246,7 +1305,10 @@ async def _resume_router_ask(
                     )
                     if upstream_reasoning:
                         anila_meta["reasoning"] = upstream_reasoning
-                    yield _make_event("anila.meta", {**anila_meta, "trace": []})
+                    direct_meta = {**anila_meta, "trace": []}
+                    for frame in _stages_on_meta(direct_meta, live_stages, "done"):
+                        yield frame
+                    yield _make_event("anila.meta", direct_meta)
                     yield _make_chunk("", "anila-router", finish="stop")
                     yield "data: [DONE]\n\n"
                     return
@@ -1636,6 +1698,55 @@ def _make_chunk(
 
 def _make_event(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\n" + "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def _thinking_stage_frames(events: list[dict[str, Any]]) -> list[str]:
+    return [_make_event("anila.thinking_stage", event) for event in events]
+
+
+def _stages_on_meta(meta: dict[str, Any], live: LiveThinkingStages, status: str) -> list[str]:
+    """把還在跑的階段收成 status，並寫進這次要送出的 meta。"""
+    frames = _thinking_stage_frames(live.settle(status))
+    snap = live.snapshot()
+    if snap:
+        meta["thinking_stages"] = snap
+    return frames
+
+
+# 非串流的 _respond 與產生它的那一輪不在同一個函式裡，用這個把階段清單交過去。
+_REQUEST_STAGES: contextvars.ContextVar[LiveThinkingStages | None] = contextvars.ContextVar(
+    "anila_request_stages", default=None
+)
+
+
+def _stamp_request_stages(meta: dict[str, Any]) -> None:
+    live = _REQUEST_STAGES.get()
+    if live is None or meta.get("thinking_stages"):
+        return
+    status = "done"
+    route = meta.get("route")
+    if isinstance(route, dict) and route.get("decision") in {
+        "llm_error",
+        "dispatch_error",
+        "route_miss",
+    }:
+        status = "error"
+    _stages_on_meta(meta, live, status)
+
+
+def _absorb_llm_turn(response: dict[str, Any], text: str) -> str:
+    """拿掉這一輪的 STAGE 行，階段記在這次請求的清單上。沒有清單就只回原文。"""
+    live = _REQUEST_STAGES.get()
+    if live is None:
+        return text
+    reasoning, content, _events = live.absorb_turn(
+        str(response.get("reasoning") or ""),
+        text or "",
+        rescued=bool(response.get("rescued")),
+    )
+    response["reasoning"] = reasoning or None
+    response["content"] = content
+    return content
 
 
 def _make_full_response(content: str, model: str, anila_meta: dict[str, Any] | None = None) -> dict:
@@ -2309,6 +2420,8 @@ def create_router_app(
 
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(request: Request) -> StreamingResponse | JSONResponse:
+        # 上一筆非串流留下的階段清單不能跟著這個工作進來。
+        _REQUEST_STAGES.set(None)
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
@@ -2552,6 +2665,7 @@ def create_router_app(
 
         # Non-streaming LLM routing call (always — dispatch decision requires
         # full LLM output; see Wave B plan).
+        _REQUEST_STAGES.set(LiveThinkingStages())
         llm_response = await _call_llm_non_stream(
             caller_api_key,
             routing_messages,
@@ -2586,7 +2700,7 @@ def create_router_app(
                 compact_event=compact_event,
             )
 
-        llm_text = llm_response["content"]
+        llm_text = _absorb_llm_turn(llm_response, llm_response["content"] or "")
         dispatch = _dispatch_for_turn(llm_text, route_signal)
 
         # The ``reasoning`` field is NOT a dispatch signal. It used to be
@@ -2642,7 +2756,11 @@ def create_router_app(
                         compact_event=compact_event,
                     )
                 llm_response = second
-                llm_text = second.get("content") or ""
+                recall_live = _REQUEST_STAGES.get()
+                if recall_live is not None:
+                    recall_live.open_named(_RECALL_STAGE_LABEL)
+                    recall_live.settle("done")
+                llm_text = _absorb_llm_turn(second, second.get("content") or "")
                 if _parse_recall(llm_text):
                     llm_text = _strip_recall_syntax(llm_text)
             ask = _parse_ask(llm_text)
@@ -3097,6 +3215,7 @@ def create_router_app(
         the full content as a single chunk.
         """
         anila_meta = _attach_compact_event(anila_meta, compact_event)
+        _stamp_request_stages(anila_meta)
         if stream:
             async def _event_stream() -> AsyncIterator[str]:
                 for step in anila_meta["trace"]:
@@ -3165,6 +3284,7 @@ def create_router_app(
         """
         del ask
         anila_meta = _attach_compact_event(anila_meta, compact_event)
+        _stamp_request_stages(anila_meta)
         shown = prose.strip() if isinstance(prose, str) else ""
         interrupt_payload = _ask_event_payload(record)
         if stream:
@@ -3883,6 +4003,18 @@ async def _router_streaming_multi_turn(
 
     llm_text = llm_response["content"]
     router_reasoning = (llm_response.get("reasoning") or "").strip()
+    mt_stages = LiveThinkingStages()
+    stripped_reason, stripped_text, stage_events = mt_stages.absorb_turn(
+        router_reasoning,
+        llm_text or "",
+        rescued=bool(llm_response.get("rescued")),
+    )
+    for frame in _thinking_stage_frames(stage_events):
+        yield frame
+    router_reasoning = stripped_reason.strip()
+    llm_text = stripped_text
+    llm_response["reasoning"] = stripped_reason or None
+    llm_response["content"] = stripped_text
     dispatch = _dispatch_for_turn(llm_text, route_signal)
 
     if not dispatch:
@@ -3923,7 +4055,26 @@ async def _router_streaming_multi_turn(
                 yield "data: [DONE]\n\n"
                 return
             llm_response = second
-            llm_text = second.get("content") or ""
+            for frame in _thinking_stage_frames(mt_stages.open_named(_RECALL_STAGE_LABEL)):
+                yield frame
+            for frame in _thinking_stage_frames(mt_stages.settle("done")):
+                yield frame
+            second_reason, second_text, second_events = mt_stages.absorb_turn(
+                str(second.get("reasoning") or ""),
+                second.get("content") or "",
+                rescued=bool(second.get("rescued")),
+            )
+            for frame in _thinking_stage_frames(second_events):
+                yield frame
+            if second_reason.strip():
+                prior_reason = router_reasoning.strip()
+                extra_reason = second_reason.strip()
+                router_reasoning = (
+                    f"{prior_reason}\n\n{extra_reason}".strip() if prior_reason else extra_reason
+                )
+            llm_response["reasoning"] = second_reason or None
+            llm_response["content"] = second_text
+            llm_text = second_text
             if _parse_recall(llm_text):
                 llm_text = _strip_recall_syntax(llm_text)
         ask = _parse_ask(llm_text)
@@ -3984,7 +4135,10 @@ async def _router_streaming_multi_turn(
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
         _stamp_rescue_meta(anila_meta, llm_response)
-        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        direct_meta = {**anila_meta, "trace": []}
+        for frame in _stages_on_meta(direct_meta, mt_stages, "done"):
+            yield frame
+        yield _make_event("anila.meta", direct_meta)
         yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
         return
@@ -4223,7 +4377,10 @@ async def _router_streaming_multi_turn(
     )
     if router_reasoning:
         anila_meta["reasoning"] = router_reasoning
-    yield _make_event("anila.meta", {**anila_meta, "trace": []})
+    final_stage_meta = {**anila_meta, "trace": []}
+    for frame in _stages_on_meta(final_stage_meta, mt_stages, "done"):
+        yield frame
+    yield _make_event("anila.meta", final_stage_meta)
     yield _make_chunk("", "anila-router", finish="stop")
     yield "data: [DONE]\n\n"
 
@@ -4754,7 +4911,7 @@ def _apply_thinking_override(payload: dict[str, Any], override: str | None) -> N
 
 
 def _rescue_trace_step() -> dict[str, Any]:
-    return _make_trace_step("rescue", "整理答案", _RESCUE_TRACE_DETAIL)
+    return _make_trace_step("rescue", RESCUE_STAGE_TITLE, _RESCUE_TRACE_DETAIL)
 
 
 def _stamp_rescue_meta(meta: dict[str, Any], source: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -6456,6 +6613,8 @@ async def _router_streaming(
 
     buf = ""
     upstream_reasoning = ""
+    # 思考與正文的 STAGE 行共用這一條階段清單。半行先留在篩子裡，不進路由緩衝。
+    live_stages = LiveThinkingStages()
     state = "detecting"
     answer_emitted_up_to = 0
     dispatch: tuple[str, str, int, int] | None = None
@@ -6547,6 +6706,8 @@ async def _router_streaming(
         kind = ev.get("type")
         if kind == "rescue":
             rescue_reason = str(ev.get("reason") or RESCUE_REASON_REASONING_EXHAUSTED)
+            for frame in _thinking_stage_frames(live_stages.open_named(RESCUE_STAGE_TITLE)):
+                yield frame
             yield _make_event("anila.rescue", {"reason": rescue_reason})
             yield _make_event("anila.trace", _rescue_trace_step())
             continue
@@ -6554,6 +6715,14 @@ async def _router_streaming(
             err = ev.get("error", "LLM error")
             length_budget = _is_length_budget_error(err)
             empty_reply = _is_empty_reply_error(err)
+            reason_tail, content_tail, stage_events = live_stages.flush()
+            for frame in _thinking_stage_frames(stage_events):
+                yield frame
+            if reason_tail:
+                upstream_reasoning += reason_tail
+                yield _make_event("anila.reasoning", {"delta": reason_tail})
+            if content_tail:
+                buf += content_tail
             if state == "detecting" and buf.strip() and not _THOUGHT_PREFIX_RE.match(buf):
                 yield _make_chunk(buf, "anila-router")
                 answer_emitted_up_to = len(buf)
@@ -6587,7 +6756,10 @@ async def _router_streaming(
                 )
                 if upstream_reasoning:
                     anila_meta["reasoning"] = upstream_reasoning
-                yield _make_event("anila.meta", {**anila_meta, "trace": []})
+                failure_meta = {**anila_meta, "trace": []}
+                for frame in _stages_on_meta(failure_meta, live_stages, "error"):
+                    yield frame
+                yield _make_event("anila.meta", failure_meta)
                 # Empty harness notices are not truncations. Offering
                 # Continue here appends the same sentence on every click.
                 yield _make_chunk("", "anila-router", finish="length" if already else "stop")
@@ -6598,16 +6770,24 @@ async def _router_streaming(
                 _make_trace_step("direct", "LLM 無法回應", err, status="error"),
             )
             yield _make_chunk(_OUTAGE_FALLBACK, "anila-router")
-            yield _make_event("anila.meta", {"trace": [], "reasoning": None})
+            outage_meta: dict[str, Any] = {"trace": [], "reasoning": None}
+            for frame in _stages_on_meta(outage_meta, live_stages, "error"):
+                yield frame
+            yield _make_event("anila.meta", outage_meta)
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
             return
         if kind == "reasoning":
-            upstream_reasoning += ev["content"]
-            # Live-forward upstream reasoning tokens (gemma4 / gpt-oss
-            # class emit thought deltas on a separate `reasoning` field)
-            # so the caller's thinking fold grows in real time.
-            yield _make_event("anila.reasoning", {"delta": ev["content"]})
+            # 階段行留在篩子裡，不進原始思考。半行等下一個片段或串流結束。
+            visible_reason, stage_events = live_stages.feed_reasoning(ev["content"])
+            for frame in _thinking_stage_frames(stage_events):
+                yield frame
+            if visible_reason:
+                upstream_reasoning += visible_reason
+                # Live-forward upstream reasoning tokens (gemma4 / gpt-oss
+                # class emit thought deltas on a separate `reasoning` field)
+                # so the caller's thinking fold grows in real time.
+                yield _make_event("anila.reasoning", {"delta": visible_reason})
             continue
         if kind == "meta":
             downstream_meta = ev["anila_meta"]
@@ -6618,7 +6798,13 @@ async def _router_streaming(
         if kind != "delta":
             continue
 
-        buf += ev["content"]
+        # 階段行不進路由緩衝，避免 STAGE 被當成答案開頭，也避免擋住後面的協定行。
+        visible_delta, stage_events = live_stages.feed_content(ev["content"])
+        for frame in _thinking_stage_frames(stage_events):
+            yield frame
+        if not visible_delta:
+            continue
+        buf += visible_delta
 
         if state == "answering":
             if forced_plain:
@@ -6731,11 +6917,22 @@ async def _router_streaming(
         state = "answering"
 
     # --- stream ended ---
+    # 半行的 STAGE 在這裡定案，之後的 RECALL／ASK／DISPATCH 才看得到去掉標記的正文。
+    reason_tail, content_tail, stage_events = live_stages.flush()
+    for frame in _thinking_stage_frames(stage_events):
+        yield frame
+    if reason_tail:
+        upstream_reasoning += reason_tail
+        yield _make_event("anila.reasoning", {"delta": reason_tail})
+    if content_tail:
+        buf += content_tail
     # 第一行是 RECALL 時，先送階段事件、向 CSP 要摘要，再開一輪。協定字不進氣泡。
     if state == "recalling" or (
         state == "detecting" and _has_recall_signal(buf, route_signal, final=True)
     ):
         query = _parse_recall(buf) or ""
+        for frame in _thinking_stage_frames(live_stages.open_named(_RECALL_STAGE_LABEL)):
+            yield frame
         yield _recall_stage_event(query)
         conv_id = _conversation_id_from_headers(
             forwarded_headers if forwarded_headers is not None else router_llm_headers
@@ -6751,10 +6948,15 @@ async def _router_streaming(
             apply_thinking_tier=True,
             rescue_empty_length=True,
         )
+        recall_failed = bool(second.get("error"))
         yield _recall_stage_event(
-            query, status="error" if second.get("error") else "done"
+            query, status="error" if recall_failed else "done"
         )
-        if second.get("error"):
+        for frame in _thinking_stage_frames(
+            live_stages.settle("error" if recall_failed else "done")
+        ):
+            yield frame
+        if recall_failed:
             err = second["error"]
             length_budget = _is_length_budget_error(err)
             yield _make_event(
@@ -6767,11 +6969,23 @@ async def _router_streaming(
                 ),
             )
             yield _make_chunk(_visible_llm_fallback(err), "anila-router")
-            yield _make_event("anila.meta", {"trace": [], "reasoning": None})
+            recall_meta: dict[str, Any] = {"trace": [], "reasoning": None}
+            for frame in _stages_on_meta(recall_meta, live_stages, "error"):
+                yield frame
+            yield _make_event("anila.meta", recall_meta)
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
             return
-        recalled = second.get("content") or ""
+        second_reason, second_content, second_events = live_stages.absorb_turn(
+            str(second.get("reasoning") or ""),
+            second.get("content") or "",
+            rescued=bool(second.get("rescued")),
+        )
+        for frame in _thinking_stage_frames(second_events):
+            yield frame
+        second["reasoning"] = second_reason or None
+        second["content"] = second_content
+        recalled = second_content
         if _parse_recall(recalled):
             recalled = _strip_recall_syntax(recalled)
         recalled_ask = _parse_ask(recalled)
@@ -6798,10 +7012,10 @@ async def _router_streaming(
             if upstream_reasoning:
                 anila_meta["reasoning"] = upstream_reasoning
             _remember_rescue(anila_meta)
-            yield _make_event(
-                "anila.meta",
-                {**anila_meta, "trace": [], "interrupt": interrupt_payload},
-            )
+            ask_meta = {**anila_meta, "trace": [], "interrupt": interrupt_payload}
+            for frame in _stages_on_meta(ask_meta, live_stages, "done"):
+                yield frame
+            yield _make_event("anila.meta", ask_meta)
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
             return
@@ -6824,7 +7038,10 @@ async def _router_streaming(
             if extra and extra != prior:
                 anila_meta["reasoning"] = f"{prior}\n\n{extra}".strip() if prior else extra
         _remember_rescue(anila_meta)
-        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        direct_meta = {**anila_meta, "trace": []}
+        for frame in _stages_on_meta(direct_meta, live_stages, "done"):
+            yield frame
+        yield _make_event("anila.meta", direct_meta)
         yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
         return
@@ -6900,6 +7117,8 @@ async def _router_streaming(
                 anila_meta["reasoning"] = merged_reasoning
             _remember_rescue(anila_meta)
             anila_meta_evt = {**anila_meta, "trace": []}
+            for frame in _stages_on_meta(anila_meta_evt, live_stages, "done"):
+                yield frame
             yield _make_event("anila.meta", anila_meta_evt)
             yield _make_chunk(
                 "", "anila-router", finish="length" if stream_finish == "length" else "stop"
@@ -6940,6 +7159,8 @@ async def _router_streaming(
             anila_meta["reasoning"] = reasoning_text
         _remember_rescue(anila_meta)
         anila_meta_evt = {**anila_meta, "trace": []}
+        for frame in _stages_on_meta(anila_meta_evt, live_stages, "done"):
+            yield frame
         yield _make_event("anila.meta", anila_meta_evt)
         yield _make_chunk(
             "", "anila-router", finish="length" if stream_finish == "length" else "stop"
@@ -6970,7 +7191,10 @@ async def _router_streaming(
             )
             if upstream_reasoning:
                 anila_meta["reasoning"] = upstream_reasoning
-            yield _make_event("anila.meta", {**anila_meta, "trace": []})
+            plain_meta = {**anila_meta, "trace": []}
+            for frame in _stages_on_meta(plain_meta, live_stages, "done"):
+                yield frame
+            yield _make_event("anila.meta", plain_meta)
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
             return
@@ -6993,10 +7217,10 @@ async def _router_streaming(
         )
         if upstream_reasoning:
             anila_meta["reasoning"] = upstream_reasoning
-        yield _make_event(
-            "anila.meta",
-            {**anila_meta, "trace": [], "interrupt": interrupt_payload},
-        )
+        ask_meta = {**anila_meta, "trace": [], "interrupt": interrupt_payload}
+        for frame in _stages_on_meta(ask_meta, live_stages, "done"):
+            yield frame
+        yield _make_event("anila.meta", ask_meta)
         yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
         return
@@ -7029,7 +7253,10 @@ async def _router_streaming(
         )
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
-        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        miss_meta = {**anila_meta, "trace": []}
+        for frame in _stages_on_meta(miss_meta, live_stages, "error"):
+            yield frame
+        yield _make_event("anila.meta", miss_meta)
         yield _make_chunk("", "anila-router", finish="stop")
         yield "data: [DONE]\n\n"
         return
@@ -7219,13 +7446,13 @@ async def _router_streaming(
             )
         if known_usage is None and isinstance(downstream_meta, dict):
             known_usage = _trustworthy_usage(downstream_meta.get("usage"))
-        yield _make_event(
-            "anila.meta",
-            _failure_anila_meta(
-                classified=seen_classified,
-                usage=known_usage,
-            ),
+        failure_meta = _failure_anila_meta(
+            classified=seen_classified,
+            usage=known_usage,
         )
+        for frame in _stages_on_meta(failure_meta, live_stages, "error"):
+            yield frame
+        yield _make_event("anila.meta", failure_meta)
         # Terminal for the caller. Already-streamed text stays.
         # No chunk: the Shell's ``onError`` paints the message itself.
         yield _make_event("anila.error", {"message": safe})
@@ -7292,7 +7519,10 @@ async def _router_streaming(
     )
     if router_reasoning:
         final_meta["reasoning"] = router_reasoning
-    yield _make_event("anila.meta", {**final_meta, "trace": []})
+    dispatch_meta = {**final_meta, "trace": []}
+    for frame in _stages_on_meta(dispatch_meta, live_stages, "done"):
+        yield frame
+    yield _make_event("anila.meta", dispatch_meta)
     yield _make_chunk("", "anila-router", finish="stop")
     yield "data: [DONE]\n\n"
 

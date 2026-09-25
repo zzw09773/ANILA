@@ -158,6 +158,12 @@ import {
 import { visibleAskParts } from "./runtime/askTranscript.js";
 import { visibleReasoningText } from "./runtime/thinkingSummary.js";
 import {
+  applyThinkingStage,
+  mergeThinkingStages,
+  readThinkingStages,
+  settleThinkingStages,
+} from "./runtime/thinkingStages.js";
+import {
   Button,
   IconButton,
   Input,
@@ -904,6 +910,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
+  // 續答時把新階段的 index 接到既有清單後面。一般送出是 0。
+  const stageBaseRef = useRef(new Map());
   const streamInterruptRef = useRef(new Map());
   const streamSessionIdRef = useRef(new Map());
   const adoptInFlightRef = useRef(false);
@@ -934,7 +942,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     let lastStreamAcc = "";
     let interruptAt = null;
     try {
-      const result = await streamChatCompletion({
+      let result;
+      try {
+      result = await streamChatCompletion({
         // 對話已綁 Task 時所有後續 chat 呼叫(送出/編輯/重試)自動帶上;
         // 呼叫端可用 opts.taskId 覆寫(sendMessage 首回合的 state 尚未落地)。
         taskId: taskIdForConv(convId),
@@ -959,6 +969,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updateMsg(convId, assistantId, { rescueNotice: line });
           }
           streamOpts.onRescue?.(payload);
+        },
+        onThinkingStage: (event) => {
+          if (assistantId) {
+            const base = stageBaseRef.current.get(assistantId) || 0;
+            const row = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+            updateMsg(convId, assistantId, {
+              thinkingStages: applyThinkingStage(row?.thinkingStages, event, {
+                base,
+                now: Date.now(),
+              }),
+            });
+          }
+          streamOpts.onThinkingStage?.(event);
         },
         onSessionId: (sessionId) => {
           if (assistantId) {
@@ -1004,14 +1027,40 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           streamOpts.onResumed?.(payload);
         },
       });
+      } catch (err) {
+        if (
+          assistantId
+          && !controller.signal.aborted
+          && !userStoppedRef.current.has(convId)
+        ) {
+          const row = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+          updateMsg(convId, assistantId, {
+            thinkingStages: settleThinkingStages(row?.thinkingStages, "error", Date.now()),
+          });
+        }
+        throw err;
+      }
       return result;
     } finally {
+      // 使用者按停止時，進行中的階段改成 stopped，再讓呼叫端落庫。
+      if (
+        assistantId
+        && (controller.signal.aborted || userStoppedRef.current.has(convId))
+      ) {
+        const row = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+        updateMsg(convId, assistantId, {
+          thinkingStages: settleThinkingStages(row?.thinkingStages, "stopped", Date.now()),
+        });
+      }
       // error／abort 也要等已入列的 compact 寫完，不能只在成功路徑 await。
       try {
         await compactChain;
       } finally {
         streamAbortRef.current.delete(convId);
-        if (assistantId) streamSessionIdRef.current.delete(assistantId);
+        if (assistantId) {
+          streamSessionIdRef.current.delete(assistantId);
+          stageBaseRef.current.delete(assistantId);
+        }
       }
     }
   }
@@ -1342,6 +1391,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       reasoning: meta.reasoning || null,
       reasoningPersist: meta.reasoning_persist || null,
       thinkingSummaries: Array.isArray(meta.thinking_summaries) ? meta.thinking_summaries : [],
+      thinkingStages: readThinkingStages(meta),
       thinkingStatus: meta.thinking_status || null,
       thinkingElapsedMs: typeof meta.thinking_elapsed_ms === "number" ? meta.thinking_elapsed_ms : null,
       thinkingLocked: meta.thinking_locked === true,
@@ -2164,6 +2214,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
           interrupt: persistedInterrupt,
+          thinkingStages: drafted?.thinkingStages,
           ...thinkingSnap,
         },
       );
@@ -2424,6 +2475,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return;
     }
     const priorText = msg.text || "";
+    const stageBase = Array.isArray(msg.thinkingStages) ? msg.thinkingStages.length : 0;
     const priorTrace = Array.isArray(msg.trace) ? msg.trace : [];
     const seedSummaries = Array.isArray(msg.thinkingSummaries) ? msg.thinkingSummaries : [];
     const priorThinking = {
@@ -2498,6 +2550,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         resume_preface: row.prefaceText ?? null,
         ask_content_spans: Array.isArray(row.askContentSpans) ? row.askContentSpans : [],
       };
+      // 畫面上的階段在 row.thinkingStages。快照只抄 metadata 的話，重整會丟階段。
+      if (Array.isArray(row.thinkingStages) && row.thinkingStages.length > 0) {
+        metadata.thinking_stages = row.thinkingStages;
+      }
       const saved = await apiUpdateMessage(authRequest, convId, msg.dbId, {
         content: content ?? row.text ?? "",
         metadata,
@@ -2550,6 +2606,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           onRescue: (payload) => {
             const line = rescueStatusFromEvent(payload);
             if (line) updateMsg(convId, msg.id, { rescueNotice: line });
+          },
+          onThinkingStage: (event) => {
+            const row = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
+            updateMsg(convId, msg.id, {
+              thinkingStages: applyThinkingStage(row?.thinkingStages, event, {
+                base: stageBase,
+                now: Date.now(),
+              }),
+            });
           },
           onMeta: (metaFrame) => {
             finalMeta = metaFrame;
@@ -2617,12 +2682,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       if (!resumedIntoNewInterrupt) {
         streamInterruptRef.current.delete(msg.id);
       }
+      const stageRow = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
       updateMsg(convId, msg.id, {
         ...(resumedIntoNewInterrupt ? {} : { interrupt: answeredInterrupt }),
         interruptSubmitting: false,
         interruptPendingAnswer: null,
         interruptRestore: null,
         streaming: false,
+        thinkingStages: settleThinkingStages(stageRow?.thinkingStages, "done", Date.now()),
         reasoning: reasoningText || null,
         ...((accumulatedTrace.length > 0 || metaTrace.length > 0)
           ? { trace: traceForPersist, stageLabel: traceForPersist.at(-1)?.label }
@@ -2665,6 +2732,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const stopped = err?.name === "AbortError" || controller.signal.aborted || userStoppedRef.current.has(convId);
       const row = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
       const movedOn = Boolean(row?.interrupt?.interrupt_id && row.interrupt.interrupt_id !== interrupt.interrupt_id);
+      // 中止、失敗、以及中途又接到新 ASK 的兩種結束，都要收斂階段再寫快照。
+      const stageStatus = stopped ? "stopped" : "error";
+      const settledStages = settleThinkingStages(row?.thinkingStages, stageStatus, Date.now());
       if (!movedOn) {
         const pending = pendingInterrupt(interrupt, sessionId);
         const keepSplit = (row?.settledInterrupts || []).length > 0;
@@ -2674,6 +2744,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interruptSubmitting: false,
           interruptPendingAnswer: null,
           streaming: false,
+          thinkingStages: settledStages,
           error: stopped ? null : (err?.message || "續答失敗"),
           prefaceText: keepSplit ? preface : null,
           resumeText: keepSplit ? baseResume : null,
@@ -2690,14 +2761,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         } catch (persistErr) {
           setRuntimeError(persistErr?.message || "對話訊息儲存失敗");
         }
-      } else if (!stopped) {
+      } else {
         updateMsg(convId, msg.id, {
           streaming: false,
           interruptSubmitting: false,
-          error: err?.message || "續答失敗",
+          thinkingStages: settledStages,
+          ...(stopped ? {} : { error: err?.message || "續答失敗" }),
         });
-      } else {
-        updateMsg(convId, msg.id, { streaming: false, interruptSubmitting: false });
+        try {
+          const current = (messagesRef.current[convId] || []).find((m) => m.id === msg.id) || row;
+          await persistSnapshot(current?.text ?? "");
+        } catch (persistErr) {
+          setRuntimeError(persistErr?.message || "對話訊息儲存失敗");
+        }
       }
     } finally {
       userStoppedRef.current.delete(convId);
@@ -2746,6 +2822,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       usage: meta.usage || null,
       classified: meta.classified,
       ...reasoningPatch,
+      ...(Array.isArray(meta.thinking_stages) && meta.thinking_stages.length
+        ? { thinkingStages: mergeThinkingStages(current?.thinkingStages, meta.thinking_stages) }
+        : {}),
       thinkingLocked: meta.thinking_locked === true,
       ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
       // Display-only, but it was showing the wrong agent name on every
@@ -3259,6 +3338,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
           interrupt: persistedInterrupt,
+          thinkingStages: drafted?.thinkingStages,
           ...thinkingSnap,
         },
       );
@@ -3700,10 +3780,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           effectiveTarget,
           agents,
         );
+        const stageRow = (messagesRef.current[convId] || []).find((m) => m.id === placeholderId);
         const persistMeta = buildPersistMeta(finalMeta, {
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
           interrupt: interruptFromMessage(convId, placeholderId),
+          thinkingStages: stageRow?.thinkingStages,
           ...thinkingPump.snapshot({
             hadReasoning: accumulatedReasoning.length > 0,
           }),

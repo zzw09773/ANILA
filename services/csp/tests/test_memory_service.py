@@ -291,11 +291,10 @@ async def test_extract_facts_skips_http_when_summary_role_unset(
     memory_service.reset_summary_role_warning()
     _add_llm(db, "active-llm", "http://active:8000")
 
-    class _NoHTTPClient:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("unset summary role reached the HTTP client")
+    async def _no_model(*_args, **_kwargs):
+        raise AssertionError("unset summary role reached the HTTP client")
 
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _NoHTTPClient)
+    monkeypatch.setattr("app.services.internal_llm.complete_chat", _no_model)
 
     with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
         assert await memory_service._extract_facts(db, "a sufficiently long turn") == []

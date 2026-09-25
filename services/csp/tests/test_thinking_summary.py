@@ -9,9 +9,8 @@ import os
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
 
 from app.services.thinking_summary import (
@@ -73,47 +72,47 @@ def test_build_payload_disables_thinking_and_does_not_use_first_reasoning_line_a
 @pytest.mark.asyncio
 async def test_summarize_fail_open_on_http_error():
     db = MagicMock()
+    model = MagicMock()
+    model.name = "gemma4"
+
+    async def _fail(*_args, **_kwargs):
+        from app.services.internal_llm import InternalCompletionError
+
+        raise InternalCompletionError(401)
+
     with patch(
-        "app.services.thinking_summary._resolve_summary_target",
-        return_value=("gemma4", "http://llm.internal"),
+        "app.services.thinking_summary._summary_model",
+        return_value=model,
     ), patch(
-        "app.services.thinking_summary.httpx.AsyncClient"
-    ) as client_cls:
-        client = AsyncMock()
-        client.post.side_effect = httpx.HTTPError("boom")
-        client_cls.return_value.__aenter__.return_value = client
+        "app.services.internal_llm.complete_chat",
+        side_effect=_fail,
+    ):
         assert await summarize_reasoning_batch(db, added="x" * 80, previous=[]) is None
 
 
 @pytest.mark.asyncio
 async def test_summarize_returns_sanitized_content_only():
     db = MagicMock()
+    model = MagicMock()
+    model.name = "gemma4"
+    seen = {}
+
+    async def _ok(_db, _model, body, **_kwargs):
+        seen["body"] = body
+        return "正在整理暗物質與暗能量的差異"
+
     with patch(
-        "app.services.thinking_summary._resolve_summary_target",
-        return_value=("gemma4", "http://llm.internal"),
+        "app.services.thinking_summary._summary_model",
+        return_value=model,
     ), patch(
-        "app.services.thinking_summary.validate_outbound_url",
-        return_value=None,
-    ), patch(
-        "app.services.thinking_summary.httpx.AsyncClient"
-    ) as client_cls:
-        client = AsyncMock()
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.json.return_value = {
-            "choices": [{"message": {"content": "正在整理暗物質與暗能量的差異"}}]
-        }
-        client.post = AsyncMock(return_value=resp)
-        client_cls.return_value.__aenter__.return_value = client
+        "app.services.internal_llm.complete_chat",
+        side_effect=_ok,
+    ):
         out = await summarize_reasoning_batch(
             db, added="暗物質佔 27%，暗能量佔 68%。" * 4, previous=[]
         )
         assert out == "正在整理暗物質與暗能量的差異。"
-        kwargs = client.post.await_args.kwargs
-        sent = kwargs.get("json")
-        if sent is None and client.post.await_args.args:
-            sent = client.post.await_args.args[1] if len(client.post.await_args.args) > 1 else None
-        assert sent["chat_template_kwargs"]["enable_thinking"] is False
+        assert seen["body"]["chat_template_kwargs"]["enable_thinking"] is False
 
 
 def test_summarize_endpoint_is_authenticated_and_fail_open(client, db, monkeypatch):

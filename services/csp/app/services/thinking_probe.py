@@ -143,6 +143,8 @@ async def probe_thinking_effort(model_like: Any, level: str) -> ProbeResult:
         )
         return ProbeResult("unreachable", "端點未通過出向檢查，未探測")
 
+    # 要讀 400 內文判斷 reasoning_effort，不能走 complete_chat（4xx 會被收成失敗）。
+    # 金鑰仍用 proxy 的 resolve_model_gateway_key，不在這裡另做解密。
     headers = {"Content-Type": "application/json"}
     api_key = resolve_model_gateway_key(model_like)
     if api_key:

@@ -953,4 +953,134 @@ describe("ask_user interrupt — 主聊天流程", () => {
     fireEvent.click(screen.getByRole("button", { name: "原始思考" }));
     expect(screen.getByText("撰寫時的推理")).toBeTruthy();
   });
+
+  function assistantRow(backend) {
+    const convId = backend.conversationIds()[0];
+    return backend.storedMessages(convId).find((m) => m.role === "assistant");
+  }
+
+  async function startResume(sessionId) {
+    const backend = createFakeBackend()
+      .disableTitleGeneration()
+      .enqueueFrames(interruptFrames(), { sessionId })
+      .enqueueSessionAnswerManual();
+    const mounted = await mountOrchestrator({ backend });
+    await sendText("請幫我寫報告");
+    await screen.findByText("這份報告要多長？");
+    await waitForIdle();
+    await submitAsk(/重點摘要/);
+    await waitFor(() => expect(backend.sessionAnswers).toHaveLength(1));
+    await waitFor(() => expect(screen.getByLabelText("停止產生")).toBeTruthy());
+    return { backend, mounted };
+  }
+
+  async function reloadStages(mounted, title) {
+    mounted.unmount();
+    await mountOrchestrator({ backend: mounted.backend });
+    await selectConversation("請幫我寫報告");
+    expect(await screen.findByText(title)).toBeTruthy();
+  }
+
+  it("續答中止時，階段收成停止並寫進快照，重整後還在", async () => {
+    const { backend, mounted } = await startResume("sess-stage-stop");
+    await act(async () => {
+      backend.stream.push(namedEventFrame("anila.thinking_stage", {
+        index: 0,
+        title: "整理續答",
+        status: "running",
+      }));
+    });
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("running");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("停止產生"));
+    });
+    await waitFor(() => {
+      expect(assistantRow(backend)?.metadata?.thinking_stages).toEqual([
+        expect.objectContaining({ title: "整理續答", status: "stopped" }),
+      ]);
+    });
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("stopped");
+
+    mounted.backend = backend;
+    await reloadStages(mounted, "整理續答");
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("stopped");
+  });
+
+  it("續答失敗時，階段收成錯誤並寫進快照，重整後還在", async () => {
+    const { backend, mounted } = await startResume("sess-stage-err");
+    await act(async () => {
+      backend.stream.push(namedEventFrame("anila.thinking_stage", {
+        index: 0,
+        title: "整理續答",
+        status: "running",
+      }));
+      backend.stream.push(errorFrame({ message: "續答中斷" }));
+      backend.stream.close();
+    });
+    await waitFor(() => {
+      expect(assistantRow(backend)?.metadata?.thinking_stages).toEqual([
+        expect.objectContaining({ title: "整理續答", status: "error" }),
+      ]);
+    });
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("error");
+
+    mounted.backend = backend;
+    await reloadStages(mounted, "整理續答");
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("error");
+  });
+
+  it("續答又收到新問題時，中止或失敗仍結算階段並寫進快照", async () => {
+    const stopped = await startResume("sess-stage-moved-stop");
+    await act(async () => {
+      stopped.backend.stream.push(namedEventFrame("anila.thinking_stage", {
+        index: 0,
+        title: "整理續答",
+        status: "running",
+      }));
+      stopped.backend.stream.push(namedEventFrame("anila.interrupt_requested", FOLLOW_UP_INTERRUPT));
+    });
+    expect(await screen.findByText("還需要補充哪一項？")).toBeTruthy();
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("running");
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("停止產生"));
+    });
+    await waitFor(() => {
+      const row = assistantRow(stopped.backend);
+      expect(row?.metadata?.thinking_stages).toEqual([
+        expect.objectContaining({ title: "整理續答", status: "stopped" }),
+      ]);
+      expect(row?.metadata?.interrupt?.interrupt_id).toBe("int-ask-2");
+    });
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("stopped");
+    expect(screen.getByText("還需要補充哪一項？")).toBeTruthy();
+    stopped.mounted.backend = stopped.backend;
+    await reloadStages(stopped.mounted, "整理續答");
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("stopped");
+    expect(screen.getByText("還需要補充哪一項？")).toBeTruthy();
+
+    cleanup();
+    const failed = await startResume("sess-stage-moved-err");
+    await act(async () => {
+      failed.backend.stream.push(namedEventFrame("anila.thinking_stage", {
+        index: 0,
+        title: "整理續答",
+        status: "running",
+      }));
+      failed.backend.stream.push(namedEventFrame("anila.interrupt_requested", {
+        ...FOLLOW_UP_INTERRUPT,
+        interrupt_id: "int-ask-3",
+      }));
+      failed.backend.stream.push(errorFrame({ message: "續答中斷" }));
+      failed.backend.stream.close();
+    });
+    await waitFor(() => {
+      const row = assistantRow(failed.backend);
+      expect(row?.metadata?.thinking_stages).toEqual([
+        expect.objectContaining({ title: "整理續答", status: "error" }),
+      ]);
+      expect(row?.metadata?.interrupt?.interrupt_id).toBe("int-ask-3");
+    });
+    expect(screen.getByTestId("thinking-stage").getAttribute("data-status")).toBe("error");
+  });
 });

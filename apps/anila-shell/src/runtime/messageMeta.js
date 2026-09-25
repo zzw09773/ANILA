@@ -102,6 +102,10 @@ export function buildPersistMeta(finalMeta, messageState) {
   if (Array.isArray(state.thinkingSummaries) && state.thinkingSummaries.length > 0) {
     base.thinking_summaries = state.thinkingSummaries.slice(-24);
   }
+  // 現場清單帶著每步開始時間與停止狀態；沒有才留 meta 上的那份。
+  if (Array.isArray(state.thinkingStages) && state.thinkingStages.length > 0) {
+    base.thinking_stages = state.thinkingStages;
+  }
   if (state.thinkingStatus === "complete" || state.thinkingStatus === "aborted") {
     base.thinking_status = state.thinkingStatus;
   }

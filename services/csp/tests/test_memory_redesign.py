@@ -239,14 +239,16 @@ async def test_refresh_uses_summary_role_and_skips_when_unset(db, monkeypatch, c
     )
     memory_service.reset_summary_role_warning()
 
-    class _NoHTTP:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("unset summary role must not call a model")
+    async def _no_model(*_args, **_kwargs):
+        raise AssertionError("unset summary role must not call a model")
 
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _NoHTTP)
+    from app.services.internal_llm import complete_chat as real_complete_chat
+
+    monkeypatch.setattr("app.services.internal_llm.complete_chat", _no_model)
     with caplog.at_level(logging.WARNING, logger=memory_service.__name__):
         await memory_service.refresh_conversation(conv.id, db=db)
         await memory_service.refresh_conversation(conv.id, db=db)
+    monkeypatch.setattr("app.services.internal_llm.complete_chat", real_complete_chat)
     warnings = [
         record.getMessage()
         for record in caplog.records
@@ -282,11 +284,15 @@ async def test_refresh_uses_summary_role_and_skips_when_unset(db, monkeypatch, c
         async def __aexit__(self, *args):
             return False
 
-        async def post(self, url, json):
+        async def post(self, url, json=None, headers=None):
             captured["url"] = url
             captured["payload"] = json
 
             class _Resp:
+                status_code = 200
+                headers = {"content-type": "application/json"}
+                text = "{}"
+
                 def raise_for_status(self):
                     return None
 
@@ -303,7 +309,12 @@ async def test_refresh_uses_summary_role_and_skips_when_unset(db, monkeypatch, c
                                     )
                                 }
                             }
-                        ]
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                        },
                     }
 
             return _Resp()
@@ -312,7 +323,11 @@ async def test_refresh_uses_summary_role_and_skips_when_unset(db, monkeypatch, c
         captured["embedded"] = text_input
         return [1.0, 0.0], "embed-test", 2
 
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _Client)
+    import httpx
+
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "summary.test")
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
     monkeypatch.setattr(memory_service, "_embed", fake_embed)
     monkeypatch.setattr(memory_service, "_guard_outbound", lambda url: None)
     await memory_service.refresh_conversation(conv.id, db=db)
@@ -339,11 +354,11 @@ async def test_disabled_memory_omits_the_block_and_skips_refresh(db, monkeypatch
     _pair(db, conv, "我在雷達組", "好", metadata={"anila_stream": {"state": "complete"}})
     called = {"n": 0}
 
-    class _NoHTTP:
-        def __init__(self, *args, **kwargs):
-            called["n"] += 1
+    async def _no_model(*_args, **_kwargs):
+        called["n"] += 1
+        return ""
 
-    monkeypatch.setattr(memory_service.httpx, "AsyncClient", _NoHTTP)
+    monkeypatch.setattr("app.services.internal_llm.complete_chat", _no_model)
     await memory_service.refresh_conversation(conv.id, db=db)
     assert called["n"] == 0
 

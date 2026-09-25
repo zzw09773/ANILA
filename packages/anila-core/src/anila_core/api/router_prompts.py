@@ -216,6 +216,21 @@ DISCLOSURE_RULE_EN = (
     "If asked how the platform works internally, give a user-level description."
 )
 
+# 跟不得外洩、日期一樣附在組好的提示後面，不寫進治理中心可改的三段。
+# 中英說同一件事：換步驟時自己報一行短標題。
+STAGE_RULE_ZH = (
+    "工作進行中，每進入一個新步驟，先寫一行 STAGE:，後面接 10 到 20 字的階段標題。"
+    "正在思考時寫在思考裡；沒有思考內容時，寫在該段回答的開頭。"
+    "標題要短、給使用者看，不要寫內部細節。"
+)
+STAGE_RULE_EN = (
+    "While you are working, whenever you move to a new step, write one line "
+    "STAGE: followed by a stage title of 10 to 20 characters. "
+    "If you are reasoning, write that line in the reasoning; "
+    "if you are not, write it at the start of that part of the answer. "
+    "Keep the title short and user-facing, with no internal details."
+)
+
 # 跟不得外洩規則一樣附在組好的提示後面，不寫進治理中心可改的三段。
 RECALL_RULE_ZH = (
     "需要先前對話裡的結論時，整段回覆的第一行就必須是 RECALL: 開頭，前面不得有任何字元。"
@@ -364,6 +379,20 @@ _CDN_RE = re.compile(r"cdnjs|jsDelivr|jsdelivr|unpkg|threejs\.org", re.IGNORECAS
 _ENV_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
 
 
+def redact_internal_details(text: str) -> str:
+    """拿掉路徑、檔名、位址、主機與環境變數名稱。不含身分句子的改寫。"""
+    if not isinstance(text, str):
+        text = str(text)
+    text = _URL_RE.sub("", text)
+    text = _IPV4_RE.sub("", text)
+    text = _ABS_PATH_RE.sub("", text)
+    text = _FILENAME_RE.sub("", text)
+    text = _HOST_RE.sub("", text)
+    text = _CDN_RE.sub("", text)
+    text = _ENV_RE.sub("", text)
+    return text
+
+
 def redact_internal_model_context(text: str) -> str:
     """拿掉不該進模型上下文的內部細節。舊的治理中心覆寫也走這裡。"""
     if not isinstance(text, str):
@@ -373,14 +402,7 @@ def redact_internal_model_context(text: str) -> str:
     text = text.replace("本系統部署於隔離內網，服務於", "從事")
     text = _OLD_HTML_BLOCK_RE.sub("\n", text)
     text = text.replace("隔離內網", "")
-    text = _URL_RE.sub("", text)
-    text = _IPV4_RE.sub("", text)
-    text = _ABS_PATH_RE.sub("", text)
-    text = _FILENAME_RE.sub("", text)
-    text = _HOST_RE.sub("", text)
-    text = _CDN_RE.sub("", text)
-    text = _ENV_RE.sub("", text)
-    return text
+    return redact_internal_details(text)
 
 
 DEFAULTS: dict[str, str] = {

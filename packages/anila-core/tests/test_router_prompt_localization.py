@@ -7,6 +7,8 @@
 from anila_core.api.router_prompts import (
     HTML_PREVIEW_HINT_EN,
     HTML_PREVIEW_HINT_ZH,
+    STAGE_RULE_EN,
+    STAGE_RULE_ZH,
 )
 from anila_core.api.router_server import (
     _PLAIN_ASSISTANT_TEMPLATE,
@@ -101,6 +103,8 @@ def test_router_prompt_task_text_has_no_simplified_characters():
         _RECOMPOSE_SYSTEM_PROMPT,
         HTML_PREVIEW_HINT_ZH,
         HTML_PREVIEW_HINT_EN,
+        STAGE_RULE_ZH,
+        STAGE_RULE_EN,
     ):
         hits = sorted({ch for ch in text if ch in _SIMPLIFIED_ONLY})
         assert not hits, f"Router prompt 含簡體字：{hits}"

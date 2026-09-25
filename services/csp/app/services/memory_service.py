@@ -46,7 +46,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
-import httpx
 from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -85,7 +84,6 @@ from app.models.user_memory import (
 )
 from app.services import zh_normalize_service
 from app.services.platform_embedding import resolve_platform_embedding
-from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +165,10 @@ _OVERLAP_REJECT = 0.5
 _EVIDENCE_MIN_CHARS = 2
 # 認領租約。過期後別的 worker 才能接手，迴圈本身不忙等。
 _LEASE_SECONDS = 120
+# 模型失敗後把租約往後推。閒置迴圈每 60 秒掃一次，不能每輪都打。
+_REFRESH_FAILURE_BACKOFF_SECONDS = 600
+# 同一 key 合併後的值上限。記憶區塊本身還有總長限制，這裡先擋住單列。
+_FACT_VALUE_MAX_CHARS = 1000
 _OVERLAP_STRIP = re.compile(
     r"[\s，。、；：！？,.!?;:\"'「」『』（）()\[\]{}<>《》\-—_]+"
 )
@@ -211,19 +213,27 @@ def _resolve_endpoint(db: Session, model_name: str, model_type: str) -> str:
     return row.endpoint_url.rstrip("/")
 
 
-def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
-    """Resolve ``(model_name, base_url)`` for fact extraction.
-
-    The summary role is the only source. Unset or inactive returns
-    ``None`` — never another registered LLM and never a hard-coded name.
-    """
+def _summary_model(db: Session):
+    """摘要角色指向的啟用中模型。沒設或已停用回 None，不改挑別顆。"""
     from app.services.model_roles import resolve_role
 
     resolved = resolve_role(db, "summary")
     if resolved.status != "ok" or resolved.model is None:
         _warn_summary_role_once(resolved.message)
         return None
-    return resolved.model.name, resolved.model.endpoint_url.rstrip("/")
+    return resolved.model
+
+
+def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
+    """Resolve ``(model_name, base_url)`` for fact extraction.
+
+    The summary role is the only source. Unset or inactive returns
+    ``None`` — never another registered LLM and never a hard-coded name.
+    """
+    model = _summary_model(db)
+    if model is None:
+        return None
+    return model.name, (model.endpoint_url or "").rstrip("/")
 
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
@@ -614,22 +624,11 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
     if len(conversation_text.strip()) < _EXTRACT_MIN_CHARS:
         return []
 
-    target = _resolve_extraction_target(db)
-    if target is None:
+    model = _summary_model(db)
+    if model is None:
         return []
-    model_name, base_url = target
-    url = join_upstream_path(base_url, "/v1/chat/completions")
-    try:
-        _guard_outbound(url)
-    except RuntimeError:
-        logger.warning(
-            "memory_service: extraction endpoint failed SSRF guard — "
-            "fact extraction disabled",
-        )
-        return []
-
     payload = {
-        "model": model_name,
+        "model": model.name,
         "messages": [
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": conversation_text},
@@ -637,17 +636,17 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
         "temperature": 0.0,
         "max_tokens": 512,
     }
-    # ⚠ 逾時要在 ``commit()`` **之前**解析。那個 commit 是刻意把池化連線還回池子
-    # 再走出向 HTTP；commit 之後才查 ``platform_settings`` 會重新 checkout 一條
-    # 連線，並且一路握到 LLM 回應為止。
-    http_timeout = 30.0
-    # Release the pooled connection before the outbound LLM HTTP call.
-    db.commit()
+    from app.services.internal_llm import complete_chat
+
     try:
-        async with httpx.AsyncClient(timeout=http_timeout) as client:
-            r = await client.post(url, json=payload)
-            r.raise_for_status()
-        raw = r.json()["choices"][0]["message"]["content"]
+        # 這條舊抽取沒有使用者身分。token_usage.user_id 不能空，所以不記用量。
+        raw = await complete_chat(
+            db,
+            model,
+            payload,
+            user_id=None,
+            on_behalf_of_user=False,
+        )
     except Exception:
         logger.exception("memory_service: extractor LLM call failed")
         return []
@@ -747,6 +746,78 @@ async def _write_chunk(
     )
 
 
+def _canonical_fact_key(key: object) -> str:
+    """去掉前後與重複空白。不把自由 key 收成固定枚舉。
+
+    (user_id, key) 已是唯一鍵。同一 key 的多個值在寫入前合併即可。
+    硬塞進「單位／職責／專案技術選擇」會把對不上的事實（姓名等）擠在一起，
+    再次撞鍵。具體 key 由萃取提示要求；這裡只負責同一 key 不寫成兩列。
+    """
+    compact = re.sub(r"\s+", " ", str(key or "").strip())
+    return compact[:120]
+
+
+def _cap_joined_fact_value(values: list[str]) -> str:
+    joined = "；".join(values)
+    if len(joined) <= _FACT_VALUE_MAX_CHARS:
+        return joined
+    return joined[:_FACT_VALUE_MAX_CHARS].rstrip("；")
+
+
+def _merge_fact_batch(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """一批裡同一個 key 只留一筆。值去重、照出現順序接起來，並限制長度。"""
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for fact in facts:
+        key = _canonical_fact_key(fact.get("key"))
+        value = str(fact.get("value") or "").strip()
+        if not key or not value:
+            continue
+        try:
+            confidence = float(fact.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            confidence = 1.0
+        confidence = max(0.0, min(1.0, confidence))
+        bucket = grouped.get(key)
+        if bucket is None:
+            grouped[key] = {
+                "key": key,
+                "values": [value],
+                "confidence": confidence,
+                "evidence_message_id": fact.get("evidence_message_id"),
+            }
+            order.append(key)
+            continue
+        if value not in bucket["values"]:
+            bucket["values"].append(value)
+        if confidence > bucket["confidence"]:
+            bucket["confidence"] = confidence
+    merged: list[dict[str, Any]] = []
+    for key in order:
+        bucket = grouped[key]
+        item: dict[str, Any] = {
+            "key": key,
+            "value": _cap_joined_fact_value(bucket["values"]),
+            "confidence": bucket["confidence"],
+        }
+        if bucket.get("evidence_message_id") is not None:
+            item["evidence_message_id"] = bucket["evidence_message_id"]
+        if item["value"]:
+            merged.append(item)
+    return merged
+
+
+def _next_user_fact_id(db: Session) -> int:
+    """SQLite 要自己給主鍵。autoflush 關掉時，還沒 flush 的列也要算。"""
+    pending = [
+        int(obj.id)
+        for obj in db.new
+        if isinstance(obj, UserFact) and obj.id is not None
+    ]
+    stored = int(db.query(func.max(UserFact.id)).scalar() or 0)
+    return max([stored, *pending]) + 1
+
+
 def _upsert_facts(
     db: Session,
     user_id: int,
@@ -756,6 +827,16 @@ def _upsert_facts(
     source_message_id: int | None,
 ) -> None:
     """ON CONFLICT (user_id, key) DO UPDATE — newest extraction wins."""
+    facts = [
+        fact
+        for fact in _merge_fact_batch(facts)
+        if not _fact_reinsert_blocked(
+            db,
+            user_id,
+            fact["key"],
+            fact.get("evidence_message_id", source_message_id),
+        )
+    ]
     if not facts:
         return
     table = UserFact.__table__
@@ -780,6 +861,8 @@ def _upsert_facts(
             "source_message_id": stmt.excluded.source_message_id,
             "updated_at": text("CURRENT_TIMESTAMP"),
         },
+        # 使用者改過的列留著。WHERE 不成立時這次更新略過，不插第二列。
+        where=table.c.user_edited.is_(False),
     )
     db.execute(stmt)
 
@@ -1017,6 +1100,9 @@ def claim_refresh_lease(
     if updated.rowcount:
         db.flush()
         return token
+    # 租約還在別人手上。不要再插入同一列，否則 session 裡已有的那筆會撞身份。
+    if db.get(MemoryRefreshLease, conversation_id) is not None:
+        return None
     try:
         with db.begin_nested():
             db.add(
@@ -1030,6 +1116,29 @@ def claim_refresh_lease(
         return token
     except IntegrityError:
         return None
+
+
+def defer_refresh_retry(
+    db: Session, conversation_id: int, token: str, *, now: datetime | None = None
+) -> None:
+    """模型失敗時不寫摘要、不立墓碑，只把租約往後推。
+
+    閒置掃描仍會把這段對話列進來，但 ``claim_refresh_lease`` 在退避結束前
+    認領不到，所以不會緊縮重試。下一輪閒置在租約過期後再打一次。
+    """
+    until = _now_epoch(now) + _REFRESH_FAILURE_BACKOFF_SECONDS
+    db.execute(
+        text(
+            """
+            UPDATE memory_refresh_leases
+               SET claimed_until = :until
+             WHERE conversation_id = :cid
+               AND claim_token = :token
+            """
+        ),
+        {"until": until, "cid": conversation_id, "token": token},
+    )
+    db.flush()
 
 
 def release_refresh_lease(db: Session, conversation_id: int, token: str) -> None:
@@ -1178,11 +1287,6 @@ def summary_overlaps_assistant(summary: str, assistant_texts: list[str]) -> bool
     return (hits / total) >= _OVERLAP_REJECT
 
 
-def _fallback_summary(user_texts: list[str]) -> str:
-    joined = "；".join(text.strip() for text in user_texts if text and text.strip())
-    return joined[:SUMMARY_MAX_CHARS]
-
-
 def _accept_summary(summary: str, assistant_texts: list[str]) -> str | None:
     text = (summary or "").strip()
     if not text:
@@ -1201,7 +1305,7 @@ def _upsert_facts_generic(
     source_message_id: int | None,
 ) -> None:
     """SQLite 測試沒有 Postgres 的 ON CONFLICT。行為與正式 upsert 相同。"""
-    for fact in facts:
+    for fact in _merge_fact_batch(facts):
         evidence_id = fact.get("evidence_message_id", source_message_id)
         if _fact_reinsert_blocked(db, user_id, fact["key"], evidence_id):
             continue
@@ -1222,7 +1326,7 @@ def _upsert_facts_generic(
                 "source_message_id": evidence_id,
             }
             if db.get_bind().dialect.name == "sqlite":
-                fields["id"] = int(db.query(func.max(UserFact.id)).scalar() or 0) + 1
+                fields["id"] = _next_user_fact_id(db)
             db.add(UserFact(**fields))
         else:
             row.value = fact["value"]
@@ -1388,32 +1492,34 @@ def save_conversation_summary(
     return row
 
 
+# 重問仍走同一順序。若只寫「使用者要什麼」，模型會改記助理的建議，
+# 把使用者自己講的零件、尺寸、數字丟掉。
 _REFRESH_RETRY_NOTE = (
-    "上一則摘要不合格。請重寫：全文少於 600 字，"
+    "上一則摘要不合格。請重寫：全文最多 600 字，"
     "不得沿用助理原文，改標點、改寫或調整程式碼格式也不行。"
-    "只寫使用者要什麼、決定了什麼。"
+    "順序仍是：使用者的目標、使用者自己說的決定與限制"
+    "（零件名稱、尺寸、數字照原話保留）、未解問題或下一步、"
+    "最後才用一句話帶過助理提供了什麼。"
+    "事實只收使用者親口說的內容；專案決定的 key 用專案技術選擇。"
 )
 
 
 async def _call_refresh_model(
     db: Session,
-    target: tuple[str, str],
+    model,
     transcript: str,
     *,
+    user_id: int | None,
+    department_id: int | None,
     stricter: bool = False,
 ) -> str:
-    model_name, base_url = target
-    url = join_upstream_path(base_url, "/v1/chat/completions")
-    try:
-        _guard_outbound(url)
-    except RuntimeError:
-        logger.warning("memory_service: refresh endpoint failed SSRF guard")
-        return ""
+    from app.services.internal_llm import InternalCompletionError, complete_chat
+
     system_prompt = MEMORY_REFRESH_SYSTEM_PROMPT
     if stricter:
         system_prompt = f"{system_prompt}\n\n{_REFRESH_RETRY_NOTE}"
     payload = {
-        "model": model_name,
+        "model": model.name,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": transcript},
@@ -1421,14 +1527,19 @@ async def _call_refresh_model(
         "temperature": 0.0,
         "max_tokens": 800,
     }
-    db.commit()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception:
-        logger.exception("memory_service: refresh LLM call failed")
+        return await complete_chat(
+            db,
+            model,
+            payload,
+            user_id=user_id,
+            department_id=department_id,
+            on_behalf_of_user=False,
+        )
+    except InternalCompletionError as exc:
+        logger.warning(
+            "memory_service: refresh LLM call failed status=%s", exc.status_code
+        )
         return ""
 
 
@@ -1440,17 +1551,39 @@ def _summary_from_model_text(raw: str, assistant_texts: list[str]) -> tuple[str 
 
 async def _resolve_summary_text(
     db: Session,
-    target: tuple[str, str],
+    model,
     transcript: str,
     assistant_texts: list[str],
-    user_texts: list[str],
-) -> tuple[str, list[dict[str, Any]]]:
-    """超長或大量重疊助理原文時重問一次；仍不合格就改用使用者自己的話。"""
-    raw = await _call_refresh_model(db, target, transcript)
+    *,
+    user_id: int | None,
+    department_id: int | None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """超長或大量重疊助理原文時重問一次。仍不合格就不存。
+
+    模型沒回應時不再重問，也不改用使用者自己的話。
+    """
+    raw = await _call_refresh_model(
+        db,
+        model,
+        transcript,
+        user_id=user_id,
+        department_id=department_id,
+    )
+    if not raw:
+        return None, []
     accepted, facts = _summary_from_model_text(raw, assistant_texts)
     if accepted:
         return accepted, facts
-    raw = await _call_refresh_model(db, target, transcript, stricter=True)
+    raw = await _call_refresh_model(
+        db,
+        model,
+        transcript,
+        user_id=user_id,
+        department_id=department_id,
+        stricter=True,
+    )
+    if not raw:
+        return None, []
     accepted, facts = _summary_from_model_text(raw, assistant_texts)
     if accepted:
         return accepted, facts
@@ -1458,8 +1591,7 @@ async def _resolve_summary_text(
     cleaned = remove_verbatim_assistant(parsed["summary"], assistant_texts).strip()
     if cleaned and not summary_overlaps_assistant(cleaned, assistant_texts):
         return cleaned[:SUMMARY_MAX_CHARS], list(parsed["facts"])
-    fallback = _fallback_summary(user_texts)
-    return fallback, list(parsed["facts"])
+    return None, []
 
 
 async def refresh_conversation(
@@ -1470,6 +1602,10 @@ async def refresh_conversation(
     if db is None:
         db = SessionLocal()
     token: str | None = None
+    deferred = False
+    # 摘要先提交後，事實若失敗要把 covered 退回，閒置掃描才會在退避後再試。
+    summary_committed = False
+    previous_covered: int | None = None
     try:
         if not _memory_enabled(db):
             return
@@ -1494,14 +1630,23 @@ async def refresh_conversation(
         )
         if existing is not None and (existing.covered_message_id or 0) >= latest_id:
             return
-        target = _resolve_extraction_target(db)
-        if target is None:
+        model = _summary_model(db)
+        if model is None:
             return
+        from app.models.user import User
+
+        owner = db.get(User, conv.user_id)
+        department_id = getattr(owner, "department_id", None) if owner else None
         user_messages = [(int(turn[0].id), turn[0].content or "") for turn in turns]
         user_texts = [text for _message_id, text in user_messages]
         assistant_texts = [turn[1].content or "" for turn in turns]
+        # 助理段落不是這段對話的結論。標成「只供理解結論」時，模型會把助理的
+        # 建議寫進摘要，使用者自己講的零件、尺寸、數字就不會留下。
         transcript = "\n\n".join(
-            f"使用者：{user}\n\n助理（只供理解結論，禁止逐字抄進摘要或當成事實）：{assistant}"
+            "使用者："
+            f"{user}\n\n"
+            "助理（這不是使用者的決定或限制；摘要裡最多一句話帶過，"
+            f"禁止逐字抄寫，不可當成事實）：{assistant}"
             for user, assistant in zip(user_texts, assistant_texts)
         )
         if len(transcript.strip()) < _EXTRACT_MIN_CHARS:
@@ -1517,10 +1662,22 @@ async def refresh_conversation(
         )
         if existing is not None and (existing.covered_message_id or 0) >= latest_id:
             return
+        previous_covered = (
+            existing.covered_message_id if existing is not None else None
+        )
         summary, raw_facts = await _resolve_summary_text(
-            db, target, transcript, assistant_texts, user_texts
+            db,
+            model,
+            transcript,
+            assistant_texts,
+            user_id=conv.user_id,
+            department_id=department_id,
         )
         if not summary:
+            # 不寫摘要、不立墓碑。租約往後推，下一輪閒置再試。
+            defer_refresh_retry(db, conv.id, token)
+            db.commit()
+            deferred = True
             return
         facts = facts_safe_for_extraction(
             facts_from_user_statements(
@@ -1530,29 +1687,16 @@ async def refresh_conversation(
                 user_messages=user_messages,
             )
         )
-        _upsert_facts_generic(
+        # 嵌入前 session 必須是乾的。_embed 會 commit 把連線還回池子，
+        # 若事實還掛在同一個交易裡，這次 commit 會把半套列寫進去，
+        # 唯一鍵失敗時連摘要一起丟掉。
+        embedding, source_model, native_dim = await _embed(
             db,
-            conv.user_id,
-            facts,
-            source_conversation_id=conv.id,
-            source_message_id=latest_id,
+            summary,
+            user_id=conv.user_id,
+            embedding_input_role="document",
         )
-        embedding: list[float] | None = None
-        source_model: str | None = None
-        native_dim: int | None = None
-        try:
-            embedding, source_model, native_dim = await _embed(
-                db,
-                summary,
-                user_id=conv.user_id,
-                embedding_input_role="document",
-            )
-            if not _vector_is_finite(embedding):
-                embedding = None
-        except Exception:
-            logger.exception(
-                "memory_service: summary embed failed conv_id=%s", conv.id
-            )
+        if not _vector_is_finite(embedding):
             embedding = None
         save_conversation_summary(
             db,
@@ -1566,14 +1710,55 @@ async def refresh_conversation(
             is_encrypted=False,
             claim_token=token,
         )
+        # 摘要先提交。後面的事實寫入用另一個交易，失敗只丟事實。
+        db.commit()
+        summary_committed = True
+        _upsert_facts_generic(
+            db,
+            conv.user_id,
+            facts,
+            source_conversation_id=conv.id,
+            source_message_id=latest_id,
+        )
         db.commit()
     except Exception:
         db.rollback()
         logger.exception(
             "memory_service: refresh failed conv_id=%s", conversation_id
         )
-    finally:
+        if summary_committed:
+            # 摘要文字留下，但這次不算整理完成，退避結束後才再寫事實。
+            try:
+                db.execute(
+                    text(
+                        """
+                        UPDATE conversation_summaries
+                           SET covered_message_id = :covered
+                         WHERE conversation_id = :cid
+                        """
+                    ),
+                    {"covered": previous_covered, "cid": conversation_id},
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "memory_service: rewind summary coverage failed conv_id=%s",
+                    conversation_id,
+                )
         if token is not None:
+            try:
+                defer_refresh_retry(db, conversation_id, token)
+                db.commit()
+                deferred = True
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "memory_service: defer refresh retry failed conv_id=%s",
+                    conversation_id,
+                )
+    finally:
+        if token is not None and not deferred:
             try:
                 release_refresh_lease(db, conversation_id, token)
                 db.commit()
