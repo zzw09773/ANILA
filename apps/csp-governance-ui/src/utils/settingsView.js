@@ -1,4 +1,4 @@
-// 平台設定總覽的純函式。後端只回 C 類設定（目前十七顆）：每顆可編輯，
+// 平台設定總覽的純函式。後端只回 C 類設定（目前十九顆）：每顆可編輯，
 // 儲存後下一個請求直接讀到新值；這裡不再推導 boot、restart 或唯讀區。
 
 export const UNKNOWN_SECTION_ID = 'unknown-class'

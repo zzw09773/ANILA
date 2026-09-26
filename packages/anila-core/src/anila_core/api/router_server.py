@@ -68,7 +68,16 @@ from ..text.model_tokenize import tokenize_prompt
 from ..prompts.sampling import get_sampling
 from ..providers.guards import is_empty_reply
 from . import router_prompts
-from .thinking_stage import RESCUE_STAGE_TITLE, LiveThinkingStages
+from .continue_seam import ContinuationSeam, append_round
+from .thinking_stage import (
+    RESCUE_STAGE_TITLE,
+    LiveThinkingStages,
+    RoundHold,
+    StageSieve,
+    round_stage_title,
+    round_step_label,
+    split_trailing_round_marker,
+)
 from .events import RESCUE_REASON_REASONING_EXHAUSTED
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
@@ -110,11 +119,13 @@ _FORCED_ANSWER_TEMPLATE = router_prompts.DEFAULT_FORCED_ANSWER
 
 
 def reset_router_prompt_cache() -> None:
-    """Forget csp-provided prompts. Test-only / ops escape hatch."""
+    """Forget csp-provided prompts and the two live limits. Test-only / ops escape hatch."""
     with _router_prompt_lock:
         _router_prompt_state.update(
             {"prompts": dict(router_prompts.DEFAULTS), "source": "default", "at": 0.0}
         )
+    _router_limit_state["round_cap"] = router_prompts.ROUND_CAP_DEFAULT
+    _router_limit_state["call_budget"] = router_prompts.CALL_BUDGET_DEFAULT
 
 
 def current_router_prompts() -> dict[str, str]:
@@ -229,7 +240,9 @@ async def refresh_router_prompts() -> None:
                 response.status_code, router_prompts_source(),
             )
             return
-        incoming = (response.json() or {}).get("prompts") or {}
+        payload = response.json() or {}
+        incoming = payload.get("prompts") or {}
+        incoming_limits = payload.get("limits") or {}
     except Exception as exc:  # noqa: BLE001 — never break routing over this
         logger.warning(
             "Router prompts lookup errored (%s); keeping %s prompts",
@@ -237,6 +250,11 @@ async def refresh_router_prompts() -> None:
         )
         return
 
+    if isinstance(incoming_limits, dict):
+        apply_router_limits(
+            round_cap=incoming_limits.get(router_prompts.KEY_ROUND_CAP),
+            call_budget=incoming_limits.get(router_prompts.KEY_CALL_BUDGET),
+        )
     merged = current_router_prompts()
     for key in router_prompts.KEYS:
         text = incoming.get(key)
@@ -353,20 +371,27 @@ def _stage_rule(language_source: str) -> str:
     return router_prompts.STAGE_RULE_EN
 
 
+def _round_rule(language_source: str) -> str:
+    if _prompt_is_chinese(language_source):
+        return router_prompts.ROUND_RULE_ZH
+    return router_prompts.ROUND_RULE_EN
+
+
 def _stamp_router_today(prompt: str, language_source: str | None = None) -> str:
-    """日期、不得外洩、階段標題與過往對話搜尋附在組好的系統提示後面。治理中心改提示刪不掉。"""
+    """日期、不得外洩、階段、分輪與過往對話搜尋附在組好的系統提示後面。治理中心改提示刪不掉。"""
     text = prompt if isinstance(prompt, str) else str(prompt)
     source = language_source if language_source is not None else text
     rule = _disclosure_rule(source)
     recall = _recall_rule(source)
     stage = _stage_rule(source)
+    rounds = _round_rule(source)
     line = _router_today_line(source)
     body = text.rstrip()
     # 由尾端往回剝，避免重複貼上。順序要跟下面組裝相反。
-    for suffix in (line, stage, rule, recall):
+    for suffix in (line, rounds, stage, rule, recall):
         if suffix and body.endswith(suffix):
             body = body[: -len(suffix)].rstrip()
-    chunks = [part for part in (body, recall, rule, stage, line) if part]
+    chunks = [part for part in (body, recall, rule, stage, rounds, line) if part]
     return "\n\n".join(chunks)
 
 
@@ -1000,6 +1025,8 @@ async def _resume_router_ask(
     ``anila.resumed`` is the first event. A reply that is itself an ``ASK:``
     pauses again.
     """
+    # 續答是新的一則。按「繼續」也是。模型呼叫預算從零再算。
+    begin_model_call_budget()
     # This request is not ``chat_completions``, so it does not inherit that
     # endpoint's ContextVars. Without them ``current_router_model()`` falls
     # back to ``settings.model`` and CSP 404s a model it never registered.
@@ -1102,6 +1129,8 @@ async def _resume_router_ask(
 
         async def _store_routing_reply(
             text: str,
+            *,
+            allow_ask: bool = True,
         ) -> tuple[dict[str, Any] | None, InterruptRecord | None]:
             """Save the answer. A follow-up ASK counts only after its interrupt is pending.
 
@@ -1111,7 +1140,7 @@ async def _resume_router_ask(
             nonlocal committed, answer_written, followup_question
             if resume_message is None:
                 raise RuntimeError("resume message was not built")
-            ask = _parse_ask(text)
+            ask = _parse_ask(text) if allow_ask else None
             await session.add_items([resume_message])
             answer_written = True
             if ask is None:
@@ -1168,12 +1197,15 @@ async def _resume_router_ask(
                     buf = ""
                     upstream_reasoning = ""
                     live_stages = LiveThinkingStages()
-                    async for ev in _stream_llm_sse(
+                    followup_round = False
+                    stream_finish = "stop"
+                    async for ev in _emit_multi_round(
                         caller_api_key,
                         routing_messages,
                         forwarded_headers=router_llm_headers,
                         apply_thinking_tier=True,
                         rescue_empty_length=True,
+                        route_signal=route_signal,
                     ):
                         kind = ev.get("type")
                         if kind == "rescue":
@@ -1221,6 +1253,10 @@ async def _resume_router_ask(
                             ):
                                 yield frame
                             continue
+                        if kind == "round_followup":
+                            # 後續輪的協定行是正文，不再暫停或派工。
+                            followup_round = True
+                            continue
                         if kind == "delta":
                             # 續寫正文裡的 STAGE 行是範例，不要改記成思考階段。
                             if REQUEST_CONTINUE.get():
@@ -1234,6 +1270,7 @@ async def _resume_router_ask(
                             buf += visible_delta
                             continue
                         if kind == "done":
+                            stream_finish = str(ev.get("finish_reason") or "stop")
                             break
                     reason_tail, content_tail, stage_events = live_stages.flush()
                     for frame in _thinking_stage_frames(stage_events):
@@ -1242,7 +1279,7 @@ async def _resume_router_ask(
                         upstream_reasoning += reason_tail
                         yield _make_event("anila.reasoning", {"delta": reason_tail})
                     buf += content_tail
-                    if _parse_recall(buf):
+                    if not followup_round and _parse_recall(buf):
                         query = _parse_recall(buf) or ""
                         for frame in _thinking_stage_frames(
                             live_stages.open_named(_RECALL_STAGE_LABEL)
@@ -1266,7 +1303,9 @@ async def _resume_router_ask(
                                 yield frame
                             buf = cleaned
                     try:
-                        ask, follow = await _store_routing_reply(buf)
+                        ask, follow = await _store_routing_reply(
+                            buf, allow_ask=not followup_round
+                        )
                     except Exception as exc:
                         for frame in _followup_save_failed(exc):
                             yield frame
@@ -1316,10 +1355,15 @@ async def _resume_router_ask(
                     if upstream_reasoning:
                         anila_meta["reasoning"] = upstream_reasoning
                     direct_meta = {**anila_meta, "trace": []}
+                    _note_length_finish(direct_meta, stream_finish)
                     for frame in _stages_on_meta(direct_meta, live_stages, "done"):
                         yield frame
                     yield _make_event("anila.meta", direct_meta)
-                    yield _make_chunk("", "anila-router", finish="stop")
+                    yield _make_chunk(
+                        "",
+                        "anila-router",
+                        finish="length" if stream_finish == "length" else "stop",
+                    )
                     yield "data: [DONE]\n\n"
                     return
 
@@ -1336,6 +1380,15 @@ async def _resume_router_ask(
                     for frame in _router_llm_outage_frames(err):
                         yield frame
                     return
+                if not llm_response["error"]:
+                    llm_response = await _continue_rounds_nonstream(
+                        caller_api_key,
+                        routing_messages,
+                        llm_response,
+                        forwarded_headers=router_llm_headers,
+                        apply_thinking_tier=True,
+                        route_signal=route_signal,
+                    )
                 if llm_response.get("rescued"):
                     prior = llm_response.get("reasoning") or ""
                     if isinstance(prior, str) and prior:
@@ -1346,14 +1399,17 @@ async def _resume_router_ask(
                     )
                     yield _make_event("anila.trace", _rescue_trace_step())
                 llm_text = llm_response["content"]
-                if _parse_recall(llm_text):
+                if not llm_response.get("suppress_directives") and _parse_recall(llm_text):
                     query = _parse_recall(llm_text) or ""
                     yield _recall_stage_event(query)
                     llm_text, recall_status = await _after_recall(llm_text)
                     if recall_status:
                         yield _recall_stage_event(query, status=recall_status)
                 try:
-                    ask, follow = await _store_routing_reply(llm_text)
+                    ask, follow = await _store_routing_reply(
+                        llm_text,
+                        allow_ask=not bool(llm_response.get("suppress_directives")),
+                    )
                 except Exception as exc:
                     for frame in _followup_save_failed(exc):
                         yield frame
@@ -1373,7 +1429,12 @@ async def _resume_router_ask(
                 )
                 if visible:
                     yield _make_chunk(visible, "anila-router")
-                yield _make_chunk("", "anila-router", finish="stop")
+                resume_finish = (
+                    "length"
+                    if str(llm_response.get("finish_reason") or "") == "length"
+                    else "stop"
+                )
+                yield _make_chunk("", "anila-router", finish=resume_finish)
                 yield "data: [DONE]\n\n"
             finally:
                 await _abandon()
@@ -1794,7 +1855,10 @@ def _absorb_llm_turn(response: dict[str, Any], text: str) -> str:
     """拿掉這一輪的 STAGE 行，階段記在這次請求的清單上。沒有清單就只回原文。
 
     續寫的正文可能含 ``STAGE:`` 範例或程式。那一行是答案，原樣留下。
+    多輪已經收過階段時，這裡不再收一次。
     """
+    if response.get("stages_consumed"):
+        return text
     live = _REQUEST_STAGES.get()
     if live is None:
         return text
@@ -1859,6 +1923,87 @@ def _make_trace_step(
     if latency_ms is not None:
         step["latency_ms"] = latency_ms
     return step
+
+
+def _citation_identity(item: object) -> tuple:
+    if isinstance(item, dict) and item.get("id"):
+        return ("id", str(item["id"]))
+    if isinstance(item, dict):
+        return (
+            "fields",
+            str(item.get("title") or ""),
+            str(item.get("snippet") or ""),
+            str(item.get("document_id") or ""),
+        )
+    return ("raw", json.dumps(item, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def _hit_identity(item: object) -> tuple:
+    if isinstance(item, dict):
+        if item.get("id"):
+            return ("id", str(item["id"]))
+        return (
+            "fields",
+            str(item.get("collection_id") or ""),
+            str(item.get("document_id") or ""),
+            str(item.get("content") or ""),
+        )
+    return ("raw", json.dumps(item, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def _dedupe_keep_first(items: list, identity) -> list:
+    seen: set = set()
+    kept: list = []
+    for item in items:
+        key = identity(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept
+
+
+def merge_round_anila_meta(
+    prior: dict[str, Any] | None,
+    newer: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """合併各輪的院內規章來源。相同 citation id 留先出現的那一筆。"""
+    if not isinstance(prior, dict) or not prior:
+        return dict(newer) if isinstance(newer, dict) else prior
+    if not isinstance(newer, dict) or not newer:
+        return dict(prior)
+    merged = {**prior, **newer}
+    citations = _dedupe_keep_first(
+        list(prior.get("citations") or []) + list(newer.get("citations") or []),
+        _citation_identity,
+    )
+    hits = _dedupe_keep_first(
+        list(prior.get("kb_hits") or []) + list(newer.get("kb_hits") or []),
+        _hit_identity,
+    )
+    failed: list = []
+    for item in list(prior.get("kb_failed_collections") or []) + list(
+        newer.get("kb_failed_collections") or []
+    ):
+        if item not in failed:
+            failed.append(item)
+    merged["citations"] = citations
+    merged["kb_hits"] = hits
+    if failed or "kb_failed_collections" in prior or "kb_failed_collections" in newer:
+        merged["kb_failed_collections"] = failed
+    has_hits = bool(hits)
+    has_failures = bool(failed)
+    if has_hits and has_failures:
+        merged["kb_state"] = "partial_error"
+    elif has_hits:
+        merged["kb_state"] = "searched_hit"
+    else:
+        states = [prior.get("kb_state"), newer.get("kb_state")]
+        for candidate in ("search_error", "partial_error", "searched_miss", "not_searched"):
+            if candidate in states:
+                merged["kb_state"] = candidate
+                break
+    return merged
 
 
 def _normalize_anila_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
@@ -2490,6 +2635,8 @@ def create_router_app(
     async def chat_completions(request: Request) -> StreamingResponse | JSONResponse:
         # 上一筆非串流留下的階段清單不能跟著這個工作進來。
         _REQUEST_STAGES.set(None)
+        # 這一則的分輪、續寫、救援與過長重試共用一個呼叫預算。
+        begin_model_call_budget()
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
@@ -2760,6 +2907,15 @@ def create_router_app(
             apply_thinking_tier=True,
             rescue_empty_length=True,
         )
+        if not llm_response.get("error"):
+            llm_response = await _continue_rounds_nonstream(
+                caller_api_key,
+                routing_messages,
+                llm_response,
+                forwarded_headers=router_llm_headers,
+                apply_thinking_tier=True,
+                route_signal=route_signal,
+            )
         if llm_response.get("rescued"):
             base_trace.append(_rescue_trace_step())
         if llm_response["error"]:
@@ -2788,7 +2944,9 @@ def create_router_app(
             )
 
         llm_text = _absorb_llm_turn(llm_response, llm_response["content"] or "")
-        continue_answer = bool(REQUEST_CONTINUE.get())
+        continue_answer = bool(REQUEST_CONTINUE.get()) or bool(
+            llm_response.get("suppress_directives")
+        )
         # 續寫開頭的 DISPATCH／ASK／RECALL 是正文，不是新的一輪派工。
         dispatch = None if continue_answer else _dispatch_for_turn(llm_text, route_signal)
 
@@ -2849,8 +3007,19 @@ def create_router_app(
                 if recall_live is not None:
                     recall_live.open_named(_RECALL_STAGE_LABEL)
                     recall_live.settle("done")
+                second = await _continue_rounds_nonstream(
+                    caller_api_key,
+                    follow,
+                    second,
+                    forwarded_headers=router_llm_headers,
+                    apply_thinking_tier=True,
+                    route_signal=route_signal,
+                )
+                llm_response = second
                 llm_text = _absorb_llm_turn(second, second.get("content") or "")
-                if _parse_recall(llm_text):
+                if second.get("suppress_directives"):
+                    continue_answer = True
+                elif _parse_recall(llm_text):
                     llm_text = _strip_recall_syntax(llm_text)
             ask = None if continue_answer else _parse_ask(llm_text)
             if ask is not None:
@@ -3421,6 +3590,7 @@ def create_router_app(
 
     @app.post("/v1/conversations/compact")
     async def compact_conversation(request: Request) -> JSONResponse:
+        begin_model_call_budget()
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
         if not isinstance(body, dict):
@@ -3843,6 +4013,8 @@ async def _summarize_for_compact(
     if prior:
         transcript = f"先前摘要：{prior}\n\n{transcript}"
     if not transcript.strip():
+        return None
+    if not _reserve_model_call(note=False):
         return None
     payload = {
         "model": await resolve_summary_model_name(),
@@ -4877,6 +5049,143 @@ _EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可把思考調低再問�
 LENGTH_AUTO_CONTINUE_ROUNDS = 3
 _CONTINUE_PROMPT = "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。"
 _AUTO_CONTINUE_STAGE = "繼續撰寫"
+# 分輪上限與每則模型呼叫預算都在治理頁。這裡只留出廠預設，
+# refresh 從 CSP 讀回來之後改這份快取。不讀環境變數。
+_router_limit_state: dict[str, int] = {
+    "round_cap": router_prompts.ROUND_CAP_DEFAULT,
+    "call_budget": router_prompts.CALL_BUDGET_DEFAULT,
+}
+_ROUND_FOLLOWUP_LEAD = "請從剛才停下的地方接著寫，不要重複已經寫過的內容。"
+_BUDGET_NOTE = "（這次的模型呼叫已達上限，先停在這裡。可按「繼續」。）"
+_REQUEST_MODEL_CALLS: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "anila_router_model_calls", default=0
+)
+_BUDGET_HIT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "anila_router_budget_hit", default=False
+)
+
+
+def _clamp_limit(value: object, low: int, high: int, fallback: int) -> int:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+    if number < low:
+        return low
+    if number > high:
+        return high
+    return number
+
+
+def apply_router_limits(*, round_cap: object = None, call_budget: object = None) -> None:
+    """寫入這一進程目前用的兩顆上限。超過硬上限就夾住。"""
+    if round_cap is not None:
+        _router_limit_state["round_cap"] = _clamp_limit(
+            round_cap, 1, router_prompts.ROUND_CAP_MAX, router_prompts.ROUND_CAP_DEFAULT
+        )
+    if call_budget is not None:
+        _router_limit_state["call_budget"] = _clamp_limit(
+            call_budget,
+            1,
+            router_prompts.CALL_BUDGET_MAX,
+            router_prompts.CALL_BUDGET_DEFAULT,
+        )
+
+
+def round_safety_cap() -> int:
+    """這一則回答最多幾輪。預設 6，硬上限 10。"""
+    return _router_limit_state["round_cap"]
+
+
+def model_call_budget() -> int:
+    """這一則回答最多打幾次模型。預設 12，硬上限 30。"""
+    return _router_limit_state["call_budget"]
+
+
+def begin_model_call_budget() -> None:
+    """新的一則使用者回合。按「繼續」也走這裡，所以預算重新計算。"""
+    _REQUEST_MODEL_CALLS.set(0)
+    _BUDGET_HIT.set(False)
+
+
+def _reserve_model_call(*, note: bool = True) -> bool:
+    """佔用一次上游模型呼叫。額度用完就回絕，不再送出。
+
+    ``note`` 為假時是可略過的摘要：這次不打，也不把整則回答標成已達上限。
+    """
+    used = _REQUEST_MODEL_CALLS.get()
+    if used >= model_call_budget():
+        if note:
+            _BUDGET_HIT.set(True)
+        return False
+    _REQUEST_MODEL_CALLS.set(used + 1)
+    return True
+
+
+def _another_model_call_allowed() -> bool:
+    """還能再打一次模型才回真。已經用完就記下，讓外層附上上限註記。"""
+    if _BUDGET_HIT.get():
+        return False
+    if _REQUEST_MODEL_CALLS.get() >= model_call_budget():
+        _BUDGET_HIT.set(True)
+        return False
+    return True
+
+
+def _text_without_stage_lines(text: str) -> str:
+    """控制行判斷前先拿掉 STAGE 行，跟畫面上看到的正文同一條規則。"""
+    cleaned, _titles = StageSieve().feed(text or "", final=True)
+    return cleaned
+
+
+def _with_budget_note(text: str) -> str:
+    if _BUDGET_NOTE in (text or ""):
+        return text or ""
+    return _append_cap_note(text or "", _BUDGET_NOTE)
+
+
+def _budget_exhausted_result() -> dict[str, Any]:
+    return {
+        "content": "",
+        "reasoning": None,
+        "anila_meta": None,
+        "raw": None,
+        "error": None,
+        "finish_reason": "length",
+        "budget_exhausted": True,
+    }
+
+
+def _round_followup_instruction(step: str) -> str:
+    text = _ROUND_FOLLOWUP_LEAD
+    cleaned = " ".join((step or "").split())
+    if cleaned:
+        text += "\n下一步：" + cleaned
+    return text
+
+
+def _round_cap_note(step: str) -> str:
+    label = round_step_label(step)
+    if label:
+        return f"（已達這次回合上限，先停在這裡。下一步：{label}。可按「繼續」。）"
+    return "（已達這次回合上限，先停在這裡。可按「繼續」。）"
+
+
+def _append_cap_note(body: str, note: str) -> str:
+    if not body:
+        return note
+    if body.endswith("\n"):
+        return body + note
+    return body + "\n" + note
+
+
+def _answer_is_control(text: str, route_signal: str) -> bool:
+    """這一輪是 ASK、RECALL 或 DISPATCH 時，不再為了標記往下開輪。"""
+    if _opening_turn(text, route_signal) != "answer":
+        return True
+    return _dispatch_for_turn(text, route_signal) is not None
 
 
 def _is_length_budget_error(err: object) -> bool:
@@ -5094,6 +5403,8 @@ async def _rescue_non_stream_answer(
         thinking_override="none",
         rescue_empty_length=False,
     )
+    if result.get("budget_exhausted"):
+        return result
     if result.get("effort_rejected"):
         logger.info("router reasoning rescue retry effort=off")
         result = await _call_llm_non_stream(
@@ -5104,6 +5415,8 @@ async def _rescue_non_stream_answer(
             thinking_override="off",
             rescue_empty_length=False,
         )
+        if result.get("budget_exhausted"):
+            return result
     if result.get("error") or is_empty_reply(result.get("content")):
         return None
     prior = reasoning.strip() if isinstance(reasoning, str) else ""
@@ -5146,6 +5459,9 @@ async def _rescue_stream_answer(
             yield _empty_length_stream_error()
             return
         if kind == "done":
+            if ev.get("budget_exhausted"):
+                yield ev
+                return
             done_ev = ev
             continue
         if kind == "delta":
@@ -5172,6 +5488,9 @@ async def _rescue_stream_answer(
                 yield _empty_length_stream_error()
                 return
             if kind == "done":
+                if ev.get("budget_exhausted"):
+                    yield ev
+                    return
                 done_ev = ev
                 continue
             if kind == "delta":
@@ -5234,6 +5553,8 @@ async def _call_llm_non_stream(
             if k.lower() in ("authorization", "content-type"):
                 continue
             headers[k] = v
+    if not _reserve_model_call():
+        return _budget_exhausted_result()
     try:
         # OPT-1: shared client
         client = get_http_client()
@@ -5336,8 +5657,11 @@ async def _call_llm_non_stream(
                 result["reasoning"] = (
                     (prior + "\n\n" + extra_reason).strip() if prior else extra_reason
                 )
-            if more.get("anila_meta"):
-                result["anila_meta"] = more["anila_meta"]
+            if more.get("anila_meta") or result.get("anila_meta"):
+                result["anila_meta"] = merge_round_anila_meta(
+                    result.get("anila_meta") if isinstance(result.get("anila_meta"), dict) else None,
+                    more.get("anila_meta") if isinstance(more.get("anila_meta"), dict) else None,
+                )
             if more.get("raw") is not None:
                 result["raw"] = more["raw"]
             # 續寫失敗又沒有新正文時，維持截斷，外層才知道還沒寫完。
@@ -5553,6 +5877,9 @@ async def _stream_llm_sse(
     remaining = (
         LENGTH_AUTO_CONTINUE_ROUNDS if _auto_continue_left is None else _auto_continue_left
     )
+    if not _reserve_model_call():
+        yield {"type": "done", "finish_reason": "length", "budget_exhausted": True}
+        return
     try:
         # OPT-1: shared client
         client = get_http_client()
@@ -5717,6 +6044,244 @@ async def _stream_llm_sse(
     except Exception as exc:
         logger.exception("LLM stream failed unexpectedly")
         yield {"type": "error", "error": f"LLM unexpected: {type(exc).__name__}", "detail": str(exc)}
+
+
+def _take_round_text(response: dict[str, Any]) -> str:
+    """這一輪的可見正文。有階段清單就把 STAGE 行收進去。"""
+    text = response.get("content") or ""
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    if _REQUEST_STAGES.get() is None:
+        return text
+    return _absorb_llm_turn(response, text)
+
+
+def _merge_round_reasoning(prior: object, extra: object) -> str | None:
+    prior_text = prior.strip() if isinstance(prior, str) else ""
+    extra_text = extra.strip() if isinstance(extra, str) else ""
+    if prior_text and extra_text:
+        return f"{prior_text}\n\n{extra_text}"
+    return extra_text or prior_text or None
+
+
+def _rounds_cancelled() -> bool:
+    task = asyncio.current_task()
+    if task is None:
+        return False
+    cancelling = getattr(task, "cancelling", None)
+    return bool(cancelling and cancelling())
+
+
+async def _continue_rounds_nonstream(
+    caller_api_key: str,
+    messages: list[dict],
+    first: dict[str, Any],
+    *,
+    forwarded_headers: dict[str, str] | None,
+    apply_thinking_tier: bool,
+    route_signal: str,
+) -> dict[str, Any]:
+    """非串流的多輪。第一輪若是協定行就停；否則看到標記就再寫，接到同一則。"""
+    if first.get("error"):
+        return first
+    text = _take_round_text(first)
+    body, nxt = split_trailing_round_marker(text)
+    consumed = _REQUEST_STAGES.get() is not None
+    if _answer_is_control(text, route_signal):
+        first["content"] = body
+        if consumed:
+            first["stages_consumed"] = True
+        return first
+    joined = body
+    reasoning = first.get("reasoning")
+    index = 1
+    cap = round_safety_cap()
+    suppress = False
+    while nxt is not None and index < cap:
+        if _rounds_cancelled():
+            break
+        if not _another_model_call_allowed():
+            break
+        index += 1
+        _open_stage_once(_REQUEST_STAGES.get(), round_stage_title(index, nxt))
+        follow_messages = list(messages)
+        if joined:
+            follow_messages.append({"role": "assistant", "content": joined})
+        follow_messages.append(
+            {"role": "user", "content": _round_followup_instruction(nxt)}
+        )
+        more = await _call_llm_non_stream(
+            caller_api_key,
+            follow_messages,
+            forwarded_headers=forwarded_headers,
+            apply_thinking_tier=apply_thinking_tier,
+            rescue_empty_length=True,
+        )
+        if more.get("budget_exhausted"):
+            break
+        suppress = True
+        if more.get("error") and not (more.get("content") or "").strip():
+            first["finish_reason"] = "length"
+            nxt = None
+            break
+        more_text = _take_round_text(more)
+        more_body, nxt = split_trailing_round_marker(more_text)
+        joined = append_round(joined, more_body)
+        reasoning = _merge_round_reasoning(reasoning, more.get("reasoning"))
+        if more.get("rescued"):
+            first["rescued"] = True
+        if more.get("anila_meta") or first.get("anila_meta"):
+            first["anila_meta"] = merge_round_anila_meta(
+                first.get("anila_meta") if isinstance(first.get("anila_meta"), dict) else None,
+                more.get("anila_meta") if isinstance(more.get("anila_meta"), dict) else None,
+            )
+        if more.get("raw") is not None:
+            first["raw"] = more["raw"]
+        first["finish_reason"] = str(more.get("finish_reason") or "stop")
+        if _BUDGET_HIT.get():
+            break
+    if _BUDGET_HIT.get():
+        joined = _with_budget_note(joined)
+        first["finish_reason"] = "length"
+    elif nxt is not None and index >= cap:
+        joined = _append_cap_note(joined, _round_cap_note(nxt))
+        first["finish_reason"] = "length"
+    first["content"] = joined
+    first["reasoning"] = reasoning
+    first["suppress_directives"] = suppress
+    if consumed:
+        first["stages_consumed"] = True
+    return first
+
+
+async def _emit_multi_round(
+    caller_api_key: str,
+    messages: list[dict],
+    *,
+    forwarded_headers: dict[str, str] | None = None,
+    apply_thinking_tier: bool = False,
+    thinking_override: str | None = None,
+    rescue_empty_length: bool = False,
+    route_signal: str = "",
+) -> AsyncIterator[dict[str, Any]]:
+    """串流的多輪。每一輪仍走救援與長度自動續寫；標記不進正文。
+
+    後續輪先送 ``round_followup``，呼叫端就不再把 ASK／DISPATCH／RECALL 當協定。
+    第一輪本身若是協定行，先把標記拿掉就結束，不開下一輪。
+    """
+    messages_now = list(messages)
+    visible = ""
+    sources: dict[str, Any] | None = None
+    cap = round_safety_cap()
+
+    def _stop_for_budget() -> str:
+        noted = _with_budget_note(visible)
+        return noted[len(visible) :]
+
+    for index in range(1, cap + 1):
+        if index > 1 and _rounds_cancelled():
+            yield {"type": "done", "finish_reason": "stop"}
+            return
+        if index > 1 and not _another_model_call_allowed():
+            addition = _stop_for_budget()
+            if addition:
+                visible += addition
+                yield {"type": "delta", "content": addition}
+            yield {"type": "done", "finish_reason": "length"}
+            return
+        hold = RoundHold()
+        seam = ContinuationSeam(visible) if index > 1 else None
+        finish = "stop"
+        async for ev in _stream_llm_sse(
+            caller_api_key,
+            messages_now,
+            forwarded_headers=forwarded_headers,
+            apply_thinking_tier=apply_thinking_tier,
+            thinking_override=thinking_override,
+            rescue_empty_length=rescue_empty_length,
+        ):
+            kind = ev.get("type")
+            if kind == "delta" and isinstance(ev.get("content"), str) and ev["content"]:
+                piece = ev["content"]
+                if seam is not None:
+                    piece = seam.feed(piece)
+                    if not piece:
+                        continue
+                released = hold.feed(piece)
+                if released:
+                    visible += released
+                    yield {"type": "delta", "content": released}
+                continue
+            if kind == "done":
+                finish = str(ev.get("finish_reason") or "stop")
+                continue
+            if kind == "error":
+                yield ev
+                return
+            if kind == "meta":
+                incoming = ev.get("anila_meta")
+                sources = merge_round_anila_meta(
+                    sources,
+                    incoming if isinstance(incoming, dict) else None,
+                )
+                if isinstance(sources, dict):
+                    yield {"type": "meta", "anila_meta": sources}
+                continue
+            yield ev
+        if seam is not None:
+            extra = seam.finish()
+            if extra:
+                released = hold.feed(extra)
+                if released:
+                    visible += released
+                    yield {"type": "delta", "content": released}
+        tail, nxt = hold.finish()
+        if tail:
+            visible += tail
+            yield {"type": "delta", "content": tail}
+        # 第一輪的 ASK／RECALL／DISPATCH 優先於下一輪，也優先於預算註記。
+        if (
+            index == 1
+            and not REQUEST_CONTINUE.get()
+            and _answer_is_control(_text_without_stage_lines(visible), route_signal)
+        ):
+            yield {"type": "done", "finish_reason": finish or "stop"}
+            return
+        if _BUDGET_HIT.get():
+            addition = _stop_for_budget()
+            if addition:
+                visible += addition
+                yield {"type": "delta", "content": addition}
+            yield {"type": "done", "finish_reason": "length"}
+            return
+        if not nxt or index >= cap:
+            if nxt and index >= cap:
+                note = _round_cap_note(nxt)
+                addition = _append_cap_note(visible, note)[len(visible) :]
+                if addition:
+                    visible += addition
+                    yield {"type": "delta", "content": addition}
+                yield {"type": "done", "finish_reason": "length"}
+            else:
+                yield {"type": "done", "finish_reason": finish or "stop"}
+            return
+        if not _another_model_call_allowed():
+            addition = _stop_for_budget()
+            if addition:
+                visible += addition
+                yield {"type": "delta", "content": addition}
+            yield {"type": "done", "finish_reason": "length"}
+            return
+        title = round_stage_title(index + 1, nxt)
+        _open_stage_once(_REQUEST_STAGES.get(), title)
+        yield {"type": "thinking_stage", "title": title}
+        yield {"type": "round_followup"}
+        messages_now = list(messages)
+        if visible:
+            messages_now.append({"role": "assistant", "content": visible})
+        messages_now.append(
+            {"role": "user", "content": _round_followup_instruction(nxt)}
+        )
 
 
 # ``ASK*:`` is its own keyword. ``ASK`` is a prefix of both forms, and
@@ -6855,7 +7420,7 @@ async def _router_streaming(
     # ``router_llm_headers`` = the relayed audit headers *plus* the answer-channel
     # marker. Plain ``forwarded_headers`` stays for the recompose call at the end
     # of the dispatch branch, which must not carry the marker.
-    async for ev in _stream_llm_sse(
+    async for ev in _emit_multi_round(
         caller_api_key,
         routing_messages,
         forwarded_headers=(
@@ -6863,6 +7428,7 @@ async def _router_streaming(
         ),
         apply_thinking_tier=True,
         rescue_empty_length=True,
+        route_signal=route_signal,
     ):
         kind = ev.get("type")
         if kind == "rescue":
@@ -6963,6 +7529,11 @@ async def _router_streaming(
                 _open_stage_once(live_stages, str(ev.get("title") or ""))
             ):
                 yield frame
+            continue
+        if kind == "round_followup":
+            # 這一輪之後的文字是接著寫，不再當成 ASK／DISPATCH／RECALL。
+            if state == "detecting":
+                state = "answering"
             continue
         if kind != "delta":
             continue
@@ -7112,12 +7683,13 @@ async def _router_streaming(
         )
         hits = await _fetch_recall_hits(caller_api_key, query, conv_id)
         follow = _messages_with_recall(routing_messages, hits)
+        recall_headers = (
+            router_llm_headers if router_llm_headers is not None else forwarded_headers
+        )
         second = await _call_llm_non_stream(
             caller_api_key,
             follow,
-            forwarded_headers=(
-                router_llm_headers if router_llm_headers is not None else forwarded_headers
-            ),
+            forwarded_headers=recall_headers,
             apply_thinking_tier=True,
             rescue_empty_length=True,
         )
@@ -7129,6 +7701,19 @@ async def _router_streaming(
             live_stages.settle("error" if recall_failed else "done")
         ):
             yield frame
+        if not recall_failed:
+            stage_token = _REQUEST_STAGES.set(live_stages)
+            try:
+                second = await _continue_rounds_nonstream(
+                    caller_api_key,
+                    follow,
+                    second,
+                    forwarded_headers=recall_headers,
+                    apply_thinking_tier=True,
+                    route_signal=route_signal,
+                )
+            finally:
+                _REQUEST_STAGES.reset(stage_token)
         if recall_failed:
             err = second["error"]
             length_budget = _is_length_budget_error(err)
@@ -7149,19 +7734,24 @@ async def _router_streaming(
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
             return
-        second_reason, second_content, second_events = live_stages.absorb_turn(
-            str(second.get("reasoning") or ""),
-            second.get("content") or "",
-            rescued=bool(second.get("rescued")),
-        )
+        if second.get("stages_consumed"):
+            second_reason = str(second.get("reasoning") or "")
+            second_content = second.get("content") or ""
+            second_events = []
+        else:
+            second_reason, second_content, second_events = live_stages.absorb_turn(
+                str(second.get("reasoning") or ""),
+                second.get("content") or "",
+                rescued=bool(second.get("rescued")),
+            )
         for frame in _thinking_stage_frames(second_events):
             yield frame
         second["reasoning"] = second_reason or None
         second["content"] = second_content
         recalled = second_content
-        if _parse_recall(recalled):
+        if not second.get("suppress_directives") and _parse_recall(recalled):
             recalled = _strip_recall_syntax(recalled)
-        recalled_ask = _parse_ask(recalled)
+        recalled_ask = None if second.get("suppress_directives") else _parse_ask(recalled)
         if recalled_ask is not None and session is not None:
             record = await _persist_router_ask(
                 session,
@@ -7212,10 +7802,16 @@ async def _router_streaming(
                 anila_meta["reasoning"] = f"{prior}\n\n{extra}".strip() if prior else extra
         _remember_rescue(anila_meta)
         direct_meta = {**anila_meta, "trace": []}
+        recall_finish = str(second.get("finish_reason") or "")
+        _note_length_finish(direct_meta, recall_finish)
         for frame in _stages_on_meta(direct_meta, live_stages, "done"):
             yield frame
         yield _make_event("anila.meta", direct_meta)
-        yield _make_chunk("", "anila-router", finish="stop")
+        yield _make_chunk(
+            "",
+            "anila-router",
+            finish="length" if recall_finish == "length" else "stop",
+        )
         yield "data: [DONE]\n\n"
         return
 

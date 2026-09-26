@@ -42,4 +42,8 @@ def read_router_prompts(
         value, where = resolve_setting(db, key)
         prompts[key] = value
         source[key] = where
-    return {"prompts": prompts, "source": source}
+    limits: dict[str, int] = {}
+    for key in (rp.KEY_ROUND_CAP, rp.KEY_CALL_BUDGET):
+        value, _where = resolve_setting(db, key)
+        limits[key] = int(value)
+    return {"prompts": prompts, "source": source, "limits": limits}

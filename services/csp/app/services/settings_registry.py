@@ -2,7 +2,7 @@
 """治理頁唯一的即時設定登錄表。
 
 本輪設定收斂後，這裡只宣告真正能在請求期間被消費、而且改完下一個
-請求就生效的十七顆 C 類設定。部署事實、秘密與程式常數不再假裝是
+請求就生效的十九顆 C 類設定。部署事實、秘密與程式常數不再假裝是
 平台設定，也不再由治理頁承諾「重啟後會生效」。
 """
 
@@ -279,6 +279,22 @@ SETTINGS: tuple[SettingSpec, ...] = (
         _non_blank_text,
         _router_prompts.DEFAULT_FORCED_ANSWER,
         "Router 強制自答模板（使用者要求「你自己依院內規章回答」時的 system prompt）。誰改＝平台管理員；情境＝營運期調整回答口氣／派工準則；為何不能等改版＝prompt 調優是高頻營運動作（擁有者 2026-08-22 裁定）。儲存後 router 在 30 秒內生效（不需重建、不需 recreate）。「重設為出貨預設」＝把出貨全文存回去。",
+    ),
+    _spec(
+        _router_prompts.KEY_ROUND_CAP,
+        None,
+        T_INT,
+        _closed_int_range(1, _router_prompts.ROUND_CAP_MAX),
+        _router_prompts.ROUND_CAP_DEFAULT,
+        "一則回答最多分幾輪。誰改＝平台管理員；情境＝模型自己決定要不要再寫一輪，這裡只防無限循環；為何不能等改版＝線上要能收緊或放寬。允許 1–10 輪，預設 6。儲存後 router 在 30 秒內生效。",
+    ),
+    _spec(
+        _router_prompts.KEY_CALL_BUDGET,
+        None,
+        T_INT,
+        _closed_int_range(1, _router_prompts.CALL_BUDGET_MAX),
+        _router_prompts.CALL_BUDGET_DEFAULT,
+        "一則回答最多打幾次模型。誰改＝平台管理員；情境＝分輪、自動續寫、救援與過長重試共用這一個預算；為何不能等改版＝線上要能擋住單次成本。允許 1–30 次，預設 12。按「繼續」重新計算。儲存後 router 在 30 秒內生效。",
     ),
 )
 

@@ -53,6 +53,9 @@ const EXPECTED = [
   ['router.prompt.system', null],
   ['router.prompt.plain', null],
   ['router.prompt.forced', null],
+  // 多輪上限與每次提問的模型呼叫預算（2026-09-26）
+  ['limits.router_round_cap', null],
+  ['limits.router_model_call_budget', null],
 ]
 
 function row(key, index = 0, overrides = {}) {
@@ -74,8 +77,8 @@ function row(key, index = 0, overrides = {}) {
   }
 }
 
-test('registry and UI contract contain exactly the seventeen C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 17)
+test('registry and UI contract contain exactly the nineteen C settings', () => {
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 19)
   assert.equal(SECTION_DEFS.length, 3)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))
@@ -86,6 +89,8 @@ test('registry and UI contract contain exactly the seventeen C settings', () => 
       'router.prompt.system': /_router_prompts\.KEY_SYSTEM/u,
       'router.prompt.plain': /_router_prompts\.KEY_PLAIN/u,
       'router.prompt.forced': /_router_prompts\.KEY_FORCED/u,
+      'limits.router_round_cap': /_router_prompts\.KEY_ROUND_CAP/u,
+      'limits.router_model_call_budget': /_router_prompts\.KEY_CALL_BUDGET/u,
     }
     const keyPattern = CONSTANT_KEYS[key] ?? new RegExp(key.replaceAll('.', '\\.'), 'u')
     assert.match(registrySource, keyPattern)

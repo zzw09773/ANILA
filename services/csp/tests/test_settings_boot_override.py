@@ -30,8 +30,8 @@ def test_startup_security_guards_keep_their_order_before_migrations():
     assert all(position < migration for position in positions)
 
 
-def test_only_seventeen_c_settings_are_declared():
+def test_only_nineteen_c_settings_are_declared():
     from app.services.settings_registry import EDITABLE_CLASSES, SETTINGS, SettingClass
 
-    assert len(SETTINGS) == 17
+    assert len(SETTINGS) == 19
     assert EDITABLE_CLASSES == frozenset({SettingClass.C})

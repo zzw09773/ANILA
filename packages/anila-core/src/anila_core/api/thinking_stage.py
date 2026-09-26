@@ -358,3 +358,193 @@ class LiveThinkingStages:
 
     def snapshot(self) -> list[dict[str, Any]]:
         return self.book.snapshot()
+
+
+# 多輪標記只認整輪最後一行的裸標記。清單符號、星號或反引號包住的
+# 是正文，不當控制行。程式碼區塊與引用裡的也不算。
+_ROUND_LINE_RE = re.compile(
+    r"^[ \t]*ROUND:[ \t]*CONTINUE(?![A-Za-z0-9_])"
+    r"(?:[ \t]+(.*?))?"
+    r"[ \t]*$"
+)
+_ROUND_OPEN_RE = re.compile(r"ROUND:[ \t]*CONTINUE(?![A-Za-z0-9_])")
+_ROUND_PARTIAL_RE = re.compile(
+    r"ROUND:[ \t]*(?:C(?:O(?:N(?:T(?:I(?:N(?:U(?:E)?)?)?)?)?)?)?)?$"
+)
+
+
+def round_step_label(step: str) -> str:
+    """給階段標題與上限註記用的下一步。空的就回空字串。"""
+    return _clean_title(step or "")
+
+
+def round_stage_title(index: int, step: str) -> str:
+    """下一輪在畫面上的階段，例如「第 2 輪：計算總價」。"""
+    label = round_step_label(step)
+    if label:
+        return f"第 {index} 輪：{label}"
+    return f"第 {index} 輪"
+
+
+def parse_round_continue_line(line: str) -> str | None:
+    """是最後一行的繼續標記就回下一步（可以是空字串）；不是就回 None。"""
+    body = line.rstrip("\r\n")
+    if body.lstrip(" \t").startswith(">"):
+        return None
+    matched = _ROUND_LINE_RE.match(body)
+    if matched is None:
+        return None
+    return (matched.group(1) or "").strip()
+
+
+def _round_head_status(text: str) -> str:
+    if not text:
+        return "hold"
+    if _ROUND_OPEN_RE.match(text):
+        return "open"
+    if _ROUND_PARTIAL_RE.match(text) or "ROUND:".startswith(text):
+        return "hold"
+    return "no"
+
+
+def round_intro_status(fragment: str) -> str:
+    """未完成的這一行還會不會變成裸的 ROUND: CONTINUE。
+
+    星號、反引號開頭的是清單或行內程式碼，直接送出。
+    """
+    if not fragment:
+        return "hold"
+    index = 0
+    limit = len(fragment)
+    while index < limit and fragment[index] in " \t":
+        index += 1
+    if index == limit:
+        return "hold"
+    rest = fragment[index:]
+    if rest[0] in "`*":
+        return "no"
+    return _round_head_status(rest)
+
+
+class RoundHold:
+    """串流時留住可能是最後一行的繼續標記，其餘文字先送出。
+
+    只有整輪結束、而且該行不在程式碼區塊或引用裡，才把它拿掉。
+    """
+
+    def __init__(self) -> None:
+        self.pending = ""
+        self.passthrough = False
+        self.held = ""
+        self.fence_char = ""
+        self.fence_len = 0
+
+    def _in_fence(self) -> bool:
+        return self.fence_len > 0
+
+    def _note_fence(self, raw_line: str) -> None:
+        body = raw_line.rstrip("\r\n")
+        if self._in_fence():
+            if _closes_fence(body, self.fence_char, self.fence_len):
+                self.fence_char = ""
+                self.fence_len = 0
+            return
+        opened = _opening_fence(body)
+        if opened is not None:
+            self.fence_char, self.fence_len = opened
+
+    def _release_held(self, visible: list[str]) -> None:
+        if not self.held:
+            return
+        visible.append(self.held)
+        self._note_fence(self.held)
+        self.held = ""
+
+    def _should_hold(self, fragment: str) -> bool:
+        if self._in_fence():
+            return _could_be_closing_fence(fragment, self.fence_char, self.fence_len)
+        if _could_be_opening_fence(fragment):
+            return True
+        return round_intro_status(fragment) != "no"
+
+    def _take_line(self, raw_line: str, visible: list[str]) -> None:
+        self._release_held(visible)
+        if not self._in_fence() and parse_round_continue_line(raw_line) is not None:
+            self.held = raw_line
+            return
+        self._note_fence(raw_line)
+        visible.append(raw_line)
+
+    def feed(self, chunk: str) -> str:
+        if chunk:
+            self.pending += chunk
+        visible: list[str] = []
+        while True:
+            if self.passthrough:
+                end = _newline_end(self.pending, final=False)
+                if end is None:
+                    if self.pending:
+                        visible.append(self.pending)
+                        self.pending = ""
+                    break
+                raw_line = self.pending[:end]
+                self.pending = self.pending[end:]
+                self.passthrough = False
+                self._note_fence(raw_line)
+                visible.append(raw_line)
+                continue
+            end = _newline_end(self.pending, final=False)
+            if end is not None:
+                raw_line = self.pending[:end]
+                self.pending = self.pending[end:]
+                self._take_line(raw_line, visible)
+                continue
+            if self.held and self.pending:
+                self._release_held(visible)
+            if self.pending and not self._should_hold(self.pending):
+                visible.append(self.pending)
+                self.pending = ""
+                self.passthrough = True
+                continue
+            break
+        return "".join(visible)
+
+    def finish(self) -> tuple[str, str | None]:
+        """回傳還沒送出的正文，以及下一步；沒有標記時下一步是 None。"""
+        visible: list[str] = []
+        if self.passthrough and self.pending:
+            self._note_fence(self.pending)
+            visible.append(self.pending)
+            self.pending = ""
+            self.passthrough = False
+        if self.held and self.pending:
+            self._release_held(visible)
+        if self.held and not self.pending:
+            step = None if self._in_fence() else parse_round_continue_line(self.held)
+            line = self.held
+            self.held = ""
+            if step is not None:
+                return "".join(visible), step
+            self._note_fence(line)
+            visible.append(line)
+            return "".join(visible), None
+        if self.pending:
+            step = None if self._in_fence() else parse_round_continue_line(self.pending)
+            if step is not None:
+                self.pending = ""
+                return "".join(visible), step
+            self._note_fence(self.pending)
+            visible.append(self.pending)
+            self.pending = ""
+        return "".join(visible), None
+
+
+def split_trailing_round_marker(text: str) -> tuple[str, str | None]:
+    """整段文字拿掉結尾的繼續標記。沒有標記就原樣退回。"""
+    if not text:
+        return text or "", None
+    hold = RoundHold()
+    released = hold.feed(text)
+    tail, step = hold.finish()
+    return released + tail, step
+

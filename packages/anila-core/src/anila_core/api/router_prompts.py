@@ -17,6 +17,14 @@ KEY_PLAIN = "router.prompt.plain"
 KEY_FORCED = "router.prompt.forced"
 KEYS: tuple[str, ...] = (KEY_SYSTEM, KEY_PLAIN, KEY_FORCED)
 
+# 治理頁的兩顆上限。不走環境變數；Router 跟三段提示一起在 TTL 內讀回來。
+KEY_ROUND_CAP = "limits.router_round_cap"
+KEY_CALL_BUDGET = "limits.router_model_call_budget"
+ROUND_CAP_DEFAULT = 6
+ROUND_CAP_MAX = 10
+CALL_BUDGET_DEFAULT = 12
+CALL_BUDGET_MAX = 30
+
 # ``{agent_list}`` is substituted per request with the live agent registry.
 # A stored system prompt that lost the placeholder (or grew another brace)
 # cannot be formatted; both CSP (on write) and the router (on read) refuse it.
@@ -229,6 +237,28 @@ STAGE_RULE_EN = (
     "If you are reasoning, write that line in the reasoning; "
     "if you are not, write it at the start of that part of the answer. "
     "Keep the title short and user-facing, with no internal details."
+)
+
+# 跟階段標題一樣附在組好的提示後面，不寫進治理中心可改的三段。
+# 簡單的問題不要分輪；要分輪時，只有該輪自己的最後一行才寫標記。
+ROUND_RULE_ZH = (
+    "需要分好幾步的任務（先分析、再計算、再給建議，或一份較長的結構化交付）可以分輪進行。"
+    "每一輪回答的最後一行，若還有下一步，就寫 ROUND: CONTINUE，空一格，再寫下一步要做什麼；"
+    "這一輪已經做完就不要寫任何標記。"
+    "沒有這一行代表做完了。"
+    "簡單的問題不要用。"
+    "這一行必須是該輪自己的最後一行，不要寫在程式碼區塊或引用裡。"
+)
+ROUND_RULE_EN = (
+    "For a task that needs several steps "
+    "(analysis, then calculation, then a recommendation, "
+    "or a long structured deliverable), you may work in rounds. "
+    "On your own last line of a round, write ROUND: CONTINUE "
+    "followed by a space and what you will do next, or write nothing. "
+    "No marker means you are done. "
+    "Never use this on a simple question. "
+    "That line must be the round's own last line, "
+    "not inside a code fence or a quotation."
 )
 
 # 跟不得外洩規則一樣附在組好的提示後面，不寫進治理中心可改的三段。

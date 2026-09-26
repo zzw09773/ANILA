@@ -169,6 +169,44 @@ def test_non_admin_cannot_read_or_write_prompt_text(client, db):
 # ── service-to-service endpoint (what the router reads) ────────────────────
 
 
+def test_router_limits_are_console_settings_without_env(client, db):
+    """輪數上限與每則呼叫預算在治理頁，不靠環境變數。"""
+    cap = REGISTRY[rp.KEY_ROUND_CAP]
+    budget = REGISTRY[rp.KEY_CALL_BUDGET]
+    assert cap.env_name is None
+    assert budget.env_name is None
+    assert cap.default == 6
+    assert budget.default == 12
+    assert cap.domain_fn(1) and cap.domain_fn(10) and not cap.domain_fn(11)
+    assert budget.domain_fn(1) and budget.domain_fn(30) and not budget.domain_fn(31)
+    assert "平台管理員" in cap.description
+    assert "平台管理員" in budget.description
+
+    token = _router_token(db)
+    resp = client.get(S2S, headers={"X-CSP-Service-Token": token})
+    assert resp.status_code == 200, resp.text
+    limits = resp.json()["limits"]
+    assert limits[rp.KEY_ROUND_CAP] == 6
+    assert limits[rp.KEY_CALL_BUDGET] == 12
+
+    headers = _admin(client, db)
+    updated = client.put(
+        f"/api/platform-settings/{rp.KEY_ROUND_CAP}",
+        json={"value": "4"},
+        headers=headers,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["effective"] == 4
+    again = client.get(S2S, headers={"X-CSP-Service-Token": token})
+    assert again.json()["limits"][rp.KEY_ROUND_CAP] == 4
+    rejected = client.put(
+        f"/api/platform-settings/{rp.KEY_CALL_BUDGET}",
+        json={"value": "31"},
+        headers=headers,
+    )
+    assert rejected.status_code == 400
+
+
 def test_router_service_token_reads_effective_prompts(client, db):
     token = _router_token(db)
     resp = client.get(S2S, headers={"X-CSP-Service-Token": token})
