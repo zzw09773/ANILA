@@ -62,7 +62,7 @@ def _mock_primary(*, api_key: str | None) -> None:
     }
     if api_key is not None:
         payload["api_key"] = api_key
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(200, json=payload)
     )
 
@@ -93,13 +93,13 @@ async def test_csp_designated_key_reaches_the_wire():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_env_key_used_when_csp_designates_no_key():
-    """本地 decoder 的那筆通常沒掛金鑰 —— 不可以因此把憑證清空。"""
+async def test_missing_console_credential_is_not_filled_from_env():
+    """治理中心沒給憑證時，不准改用環境變數裡的另一把。"""
     _mock_primary(api_key=None)
     s = _settings(ASR_DECODE_PROTOCOL="openai", ASR_DECODE_API_KEY=ENV_KEY)
     client = OpenAIDecodeClient(ENV_URL, ENV_KEY, model="whisper-1")
     await refresh_decode_endpoint(s, decode_client=client, force=True)
-    assert current_decode_credential(s) == ENV_KEY
+    assert current_decode_credential(s) == ""
     await client.aclose()
 
 
@@ -132,11 +132,11 @@ async def test_designated_key_is_dropped_when_designation_goes_away():
     await refresh_decode_endpoint(s, decode_client=client, force=True)
     assert current_decode_credential(s) == CSP_KEY
 
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(404, json={"detail": "尚未指定主語音辨識模型"})
     )
     await refresh_decode_endpoint(s, decode_client=client, force=True)
-    assert current_decode_credential(s) == ENV_KEY
+    assert current_decode_credential(s) == ""
     await client.aclose()
 
 
@@ -169,7 +169,7 @@ def test_health_never_echoes_the_credential():
 @respx.mock
 def test_health_reports_the_protocol_in_force():
     """協定要看得見 —— 選錯的症狀在別的欄位上長得像網路問題。"""
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(404, json={"detail": "none"})
     )
     respx.get(f"{ENV_URL}/health").mock(return_value=Response(200, json={"ok": True}))
@@ -184,7 +184,8 @@ def test_health_reports_the_protocol_in_force():
     with TestClient(app) as client:
         body = client.get("/asr/health").json()
     assert body["decode_protocol"] == "native"
-    assert body["decode_credential_source"] == "env"
+    assert body["decode_credential_source"] == "none"
+    assert body["reason"] == "not_configured"
 
 
 @pytest.mark.asyncio
@@ -195,7 +196,7 @@ async def test_csp_endpoint_failing_the_guard_is_not_adopted():
     PROVE RED:拿掉 decode_endpoint 裡的 guard_decode_url(raw) → gateway 會
     把麥克風指向 169.254.169.254,這條紅。
     """
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={"endpoint_url": "https://169.254.169.254/latest",

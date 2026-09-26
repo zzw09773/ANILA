@@ -57,7 +57,7 @@ async def test_uses_csp_address_when_asr_primary_set():
     ``_state["url"] = None`` (ignore csp_url) → this fails because
     current_decode_url would stay on ENV_URL.
     """
-    route = respx.get("http://csp.test/api/models/asr-primary").mock(
+    route = respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={
@@ -84,20 +84,18 @@ async def test_uses_csp_address_when_asr_primary_set():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_uses_env_when_csp_has_no_asr_primary():
-    """PROVE RED: on 404, set ``_state["url"] = CSP_URL`` instead of None →
-    current_decode_url would not equal ENV_URL.
-    """
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+async def test_unconfigured_speech_does_not_fall_back_to_env():
+    """治理中心說沒有語音時，不准改去 ASR_DECODE_URL。"""
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(404, json={"detail": "尚未指定主語音辨識模型"})
     )
     s = _settings()
     client = DecodeClient(ENV_URL, "t")
     await refresh_decode_endpoint(s, decode_client=client, force=True)
 
-    assert current_decode_url(s) == ENV_URL.rstrip("/")
-    assert client.base_url == ENV_URL.rstrip("/")
-    assert decode_url_source() == "env"
+    assert current_decode_url(s) == ""
+    assert client.base_url == ""
+    assert decode_url_source() == "unconfigured"
     await client.aclose()
 
 
@@ -113,7 +111,7 @@ async def test_csp_unreachable_keeps_last_known_and_marks_stale():
     """
     s = _settings()
     client = DecodeClient(ENV_URL, "t")
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={"endpoint_url": CSP_URL, "name": "asr-gpu", "id": 1,
@@ -124,7 +122,7 @@ async def test_csp_unreachable_keeps_last_known_and_marks_stale():
     await refresh_decode_endpoint(s, decode_client=client, force=True)
     assert decode_url_source() == "csp_registry"
 
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         side_effect=ConnectionError("csp down")
     )
     await refresh_decode_endpoint(s, decode_client=client, force=True)
@@ -141,17 +139,17 @@ async def test_csp_unreachable_keeps_last_known_and_marks_stale():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_csp_unreachable_at_boot_falls_back_to_env_visibly():
-    """Never had a CSP URL → keep env, but error must be visible (not silent)."""
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+async def test_csp_unreachable_at_boot_does_not_fall_back_to_env():
+    """從來沒讀到過治理中心時，連不上就關語音，不改指環境變數。"""
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         side_effect=ConnectionError("csp down")
     )
     s = _settings()
     client = DecodeClient(ENV_URL, "t")
     await refresh_decode_endpoint(s, decode_client=client, force=True)
 
-    assert current_decode_url(s) == ENV_URL.rstrip("/")
-    assert decode_url_source() == "env"
+    assert current_decode_url(s) == ""
+    assert decode_url_source() == "unconfigured"
     from app.decode_endpoint import decode_url_refresh_meta
     assert decode_url_refresh_meta()["last_refresh_error"]
     await client.aclose()
@@ -164,7 +162,7 @@ async def test_csp_unreachable_at_boot_falls_back_to_env_visibly():
 def test_health_reports_decode_url_source():
     """PROVE RED: remove ``decode_url_source`` from the health JSON → KeyError.
     """
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={"endpoint_url": CSP_URL, "name": "asr-gpu", "id": 1,
@@ -199,7 +197,7 @@ async def test_address_change_takes_effect_on_force_refresh():
     """
     s = _settings()
     client = DecodeClient(ENV_URL, "t")
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={"endpoint_url": CSP_URL, "name": "asr-a", "id": 1,
@@ -210,7 +208,7 @@ async def test_address_change_takes_effect_on_force_refresh():
     await refresh_decode_endpoint(s, decode_client=client, force=True)
     assert client.base_url == CSP_URL.rstrip("/")
 
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={"endpoint_url": CSP_URL_B, "name": "asr-b", "id": 2,
@@ -232,7 +230,7 @@ async def test_does_not_silently_fall_back_to_env_while_csp_designation_stands()
     """Once CSP named a decoder, a later 500 must NOT switch to ENV_URL."""
     s = _settings()
     client = DecodeClient(ENV_URL, "t")
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={"endpoint_url": CSP_URL, "name": "asr-gpu", "id": 1,
@@ -242,7 +240,7 @@ async def test_does_not_silently_fall_back_to_env_while_csp_designation_stands()
     )
     await refresh_decode_endpoint(s, decode_client=client, force=True)
 
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(500, json={"detail": "boom"})
     )
     await refresh_decode_endpoint(s, decode_client=client, force=True)

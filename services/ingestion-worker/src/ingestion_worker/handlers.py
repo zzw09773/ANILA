@@ -31,6 +31,7 @@ from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from ingestion_worker.embedder import Embedder
+from ingestion_worker.docling_source import refresh_document_parser
 from ingestion_worker.parsers import extract_text
 from ingestion_worker.settings import settings
 
@@ -1199,6 +1200,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         await _update_document_status(pool, document_id, "parsing")
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
         await _bind_pdf_ocr_if_enabled()
+        await refresh_document_parser(pool)
         with open(storage_path, "rb") as f:
             blob = f.read()
         text, parse_meta, images = extract_text(
@@ -1593,6 +1595,7 @@ async def reresolve_collection_relations(
 
     docs: list[tuple[int, str]] = []
     await _bind_pdf_ocr_if_enabled()
+    await refresh_document_parser(pool)
     for r in rows:
         sp = r["storage_path"]
         if not sp or not os.path.exists(sp):

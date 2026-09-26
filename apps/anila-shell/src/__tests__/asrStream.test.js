@@ -16,6 +16,8 @@ import {
   makeResampler,
   floatToInt16,
   probeAsrAvailable,
+  speechStatusAllowsMic,
+  watchSpeechStatus,
   createAsrSession,
   CLOSE_AUTH_FAILED,
   CLOSE_SESSION_TIMEOUT,
@@ -105,17 +107,57 @@ describe('probeAsrAvailable', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
-  it('/asr/health 回 200 → 可用', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+  it('治理中心回 enabled+healthy 才可用，而且只打狀態端點', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, healthy: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
     expect(await probeAsrAvailable()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/external-services/speech/status',
+      { credentials: 'same-origin' },
+    );
   });
-  it('回 503(gateway 活著但 cache 沒 ready)→ 不可用', async () => {
+  it('啟用但不健康 → 不可用', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, healthy: false }),
+    }));
+    expect(await probeAsrAvailable()).toBe(false);
+  });
+  it('未啟用 → 不可用', async () => {
+    expect(speechStatusAllowsMic({ enabled: false, healthy: false })).toBe(false);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: false, healthy: false }),
+    }));
+    expect(await probeAsrAvailable()).toBe(false);
+  });
+  it('狀態端點失敗或連不上 → 不可用,不拋例外', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
     expect(await probeAsrAvailable()).toBe(false);
-  });
-  it('連不上(profile 沒開 → 502/網路錯)→ 不可用,不拋例外', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network')));
     expect(await probeAsrAvailable()).toBe(false);
+  });
+});
+
+describe('watchSpeechStatus', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  it('載入時問一次，聚焦再問，時間過去也不會自己再問', () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const stop = watchSpeechStatus(run);
+    expect(run).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event('focus'));
+    expect(run).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(120_000);
+    expect(run).toHaveBeenCalledTimes(2);
+    stop();
+    window.dispatchEvent(new Event('focus'));
+    expect(run).toHaveBeenCalledTimes(2);
   });
 });
 

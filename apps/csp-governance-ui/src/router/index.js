@@ -79,6 +79,12 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
+        path: 'external-services',
+        name: 'ExternalServices',
+        component: () => import('../views/ExternalServicesView.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'audit-logs',
         name: 'AuditLogs',
         component: () => import('../views/AuditLogsView.vue'),

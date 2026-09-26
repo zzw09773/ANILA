@@ -67,6 +67,7 @@ from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
 from app.models.endpoint_author_grant import EndpointAuthorGrant
+from app.models.external_service import ExternalService
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User, UserModelPermission
 from app.models.user_memory import (
@@ -110,6 +111,7 @@ __all__ = [
     "MemoryTombstone",
     "DocumentRelation",
     "EndpointAuthorGrant",
+    "ExternalService",
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",

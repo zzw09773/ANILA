@@ -23,6 +23,7 @@ from app.api.service_access_grants import router as service_access_grants_router
 from app.api.service_clients import router as service_clients_router
 from app.api.services import router as services_router
 from app.api.trusted_hosts import router as trusted_hosts_router
+from app.api.external_services import router as external_services_router
 from app.api.ingestion import (
     collections_router as ingestion_collections_router,
     credentials_router as ingestion_credentials_router,
@@ -74,6 +75,7 @@ api_router.include_router(ingestion_relations_router)
 api_router.include_router(ingestion_search_router)
 api_router.include_router(ingestion_image_blob_router)
 api_router.include_router(trusted_hosts_router)
+api_router.include_router(external_services_router)
 api_router.include_router(tasks_router)
 api_router.include_router(policy_decisions_router)
 api_router.include_router(proxy_router)

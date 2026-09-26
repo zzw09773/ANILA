@@ -178,13 +178,7 @@
               >
                 ★ 主圖像
               </span>
-              <span
-                v-if="model.is_asr_primary"
-                class="primary-pill"
-                title="asr-gateway 以此為主語音辨識 decoder"
-              >
-                ★ 主語音
-              </span>
+
               <span
                 v-if="model.is_slides_primary && model.name !== 'anila-router'"
                 class="primary-pill"
@@ -199,7 +193,7 @@
               >
                 ★ 主 embedding
               </span>
-              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_asr_primary && !model.is_slides_primary && !model.is_platform_embedding" class="cell-meta">—</span>
+              <span v-if="!model.is_router_primary && !model.is_image_primary && !model.is_slides_primary && !model.is_platform_embedding" class="cell-meta">—</span>
               <div v-if="canEditAudience(model)" class="audience-link">
                 <button type="button" class="term-action" @click="openEditModal(model, { focusGrants: true })">可使用對象</button>
               </div>
@@ -275,22 +269,11 @@
                   >
                     取消主圖像
                   </button>
-                  <button
-                    v-if="model.model_type === 'asr' && !model.is_asr_primary"
+                  <router-link
+                    v-if="model.model_type === 'asr'"
                     class="term-action"
-                    :disabled="!model.is_active || settingAsrPrimaryId === model.id"
-                    @click="handleSetAsrPrimary(model.id)"
-                  >
-                    {{ settingAsrPrimaryId === model.id ? '設定中…' : '設為主語音辨識' }}
-                  </button>
-                  <button
-                    v-if="model.is_asr_primary"
-                    class="term-action"
-                    :disabled="settingAsrPrimaryId === model.id"
-                    @click="handleUnsetAsrPrimary(model.id)"
-                  >
-                    取消主語音
-                  </button>
+                    to="/external-services"
+                  >語音位址在外部服務</router-link>
                   <button
                     v-if="model.model_type === 'embedding' && !model.is_platform_embedding"
                     class="term-action"
@@ -373,10 +356,7 @@
           />
         </TermField>
         <p v-if="form.model_type === 'asr'" class="field-note">
-          asr-gateway 會呼叫 <code>{此位址}/transcribe</code>，請填 decoder 根位址（例如
-          <code>http://asr-decoder:9000</code>），不要加 <code>/v1</code>（模型登錄慣例的
-          <code>/v1</code> 在這裡會變成 404）。共享密鑰 <code>ASR_DECODER_TOKEN</code> 不進本登錄；
-          換到新的 GPU 主機時，該主機必須以相同 token 部署，否則每句都會 401。
+          語音解碼位址與憑證在「外部服務」。這張模型表上的位址不會被拿去辨識。
         </p>
         <TermField
           label="內部"
@@ -766,7 +746,6 @@ const purgingId = ref(null)
 const settingPrimaryId = ref(null)
 const settingImagePrimaryId = ref(null)
 const settingSlidesPrimaryId = ref(null)
-const settingAsrPrimaryId = ref(null)
 const settingEmbedId = ref(null)
 // P4.6 — 整批帶入 modal 狀態
 const showImportModal = ref(false)
@@ -1158,7 +1137,7 @@ const endpointUrlHint = computed(() => {
     return 'Triton gRPC：填 grpc://host:port 或 grpcs://host:port（不要加 /v1 路徑）；cleartext grpc 需 ANILA_ALLOW_GRPC_ENDPOINT=1'
   }
   if (form.value.model_type === 'asr') {
-    return 'decoder 根位址（呼叫 {base}/transcribe）；勿加 /v1'
+    return '語音解碼位址在「外部服務」，不在這張模型表'
   }
   if (addressOnlyEditor.value) return '獲授權開發者僅可變更端點位址'
   return '登錄／變更端點位址需擁有者或獲授權開發者身分'
@@ -1166,7 +1145,7 @@ const endpointUrlHint = computed(() => {
 const endpointUrlPlaceholder = computed(() => {
   if (endpointFieldLocked.value) return '— 無權設定位址 —'
   if (form.value.protocol === 'triton_grpc') return 'grpc://172.16.120.35:9001'
-  if (form.value.model_type === 'asr') return 'http://asr-decoder:9000'
+  if (form.value.model_type === 'asr') return '請到外部服務填位址'
   return 'http://gemma4:8000/v1'
 })
 
@@ -1399,21 +1378,6 @@ async function handleUnsetImagePrimary(id) {
   try { await modelsStore.unsetImagePrimary(id) }
   catch (e) { toast(extractError(e, '取消主圖像模型失敗'), { tone: 'error' }) }
   finally { settingImagePrimaryId.value = null }
-}
-async function handleSetAsrPrimary(id) {
-  settingAsrPrimaryId.value = id
-  try {
-    await modelsStore.setAsrPrimary(id)
-    toast('已設為主語音辨識。新主機須部署相同 ASR_DECODER_TOKEN；位址請為 decoder 根路徑（非 /v1）。', { tone: 'ok' })
-  } catch (e) { toast(extractError(e, '設定主語音辨識失敗'), { tone: 'error' }) }
-  finally { settingAsrPrimaryId.value = null }
-}
-async function handleUnsetAsrPrimary(id) {
-  if (!(await confirm({ message: '取消主語音辨識？在你指定新的主語音模型前，asr-gateway 將改用環境變數 ASR_DECODE_URL。共享密鑰 ASR_DECODER_TOKEN 仍只在環境變數，不會寫進模型登錄。', confirmText: '取消主語音', danger: true }))) return
-  settingAsrPrimaryId.value = id
-  try { await modelsStore.unsetAsrPrimary(id) }
-  catch (e) { toast(extractError(e, '取消主語音辨識失敗'), { tone: 'error' }) }
-  finally { settingAsrPrimaryId.value = null }
 }
 function platformEmbedTitle(model) {
   const dim = model.embedding_native_dim

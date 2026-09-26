@@ -28,23 +28,19 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketState
 
-from anila_core.security.url_guard import UnsafeEndpointError
-
 from app import auth as auth_mod
 from app.config import Settings, settings as default_settings
 from app.decode_client import (
-    PROTOCOL_OPENAI,
     DecodeClient,
-    env_credential,
     make_decode_client,
-    normalise_protocol,
 )
 from app.decode_endpoint import (
     current_decode_credential,
+    current_decode_protocol,
     current_decode_url,
+    current_openai_model,
     decode_url_refresh_meta,
     decode_url_source,
-    guard_decode_url,
     refresh_decode_endpoint,
     reset_decode_endpoint_cache,
 )
@@ -81,49 +77,12 @@ def _configure_logging(app_settings: Settings) -> None:
 
 
 def _validate_settings(s: Settings) -> None:
-    """prod fail-loud(對齊 csp / studio / router):缺值直接停,不留 fallback。"""
-    # 協定先驗:值不合法時後面每一項檢查的語意都會跟著錯(要哪一把憑證、
-    # 探針走哪條路、URL 怎麼接),與其帶著錯的假設繼續,不如當場停。
-    try:
-        protocol = normalise_protocol(s.ASR_DECODE_PROTOCOL)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
+    """解碼位址與憑證在治理中心，開機不再要求 ASR_DECODE_*。
 
-    if not s.ASR_DECODE_URL.strip():
-        raise RuntimeError("ASR_DECODE_URL must be set")
-    if protocol == PROTOCOL_OPENAI:
-        if not s.ASR_DECODE_API_KEY.strip():
-            raise RuntimeError(
-                "ASR_DECODE_PROTOCOL=openai 時必須設 ASR_DECODE_API_KEY;"
-                "沒有金鑰的話遠端會對每一句話回 401,而麥克風看起來是好的"
-            )
-        if not s.ASR_OPENAI_MODEL.strip():
-            raise RuntimeError("ASR_OPENAI_MODEL must be set when ASR_DECODE_PROTOCOL=openai")
-    elif not s.ASR_DECODER_TOKEN.strip():
-        raise RuntimeError("ASR_DECODER_TOKEN must be set")
-
-    url = s.ASR_DECODE_URL.strip()
-    if not url.startswith(("http://", "https://")):
-        raise RuntimeError(f"ASR_DECODE_URL must be http(s): {url!r}")
-    # 出向檢查(SSRF)。以前這條環境變數路徑**任何一層都沒驗** —— 解碼端還在
-    # 同一台機器時被「operator 自己設的」擋著,一旦位址可以指到院外,它就會
-    # 是平台唯一跳過 guard 的模型呼叫。
-    # Pure http is accepted here the same way the governance console accepts
-    # model endpoints under ANILA_ALLOW_HTTP_ENDPOINT (P0.2). The two doors
-    # must agree; refusing env while accepting CSP was confusing, not safer
-    # on an air-gapped network —— 現在是**同一道門**,不再是兩份各自實作。
-    try:
-        guard_decode_url(url)
-    except UnsafeEndpointError as exc:
-        hint = ""
-        if exc.fixable_by_trust_host:
-            hint = (
-                f";若 {exc.host!r} 是本站台刻意要連的解碼端,"
-                "把它加進 ANILA_TRUSTED_HOSTS"
-            )
-        raise RuntimeError(
-            f"ASR_DECODE_URL 未通過出向檢查({exc.reason}): {exc}{hint}"
-        ) from exc
+    採用位址時才做出向檢查（``guard_decode_url``）。協定不對是那次
+    讀取失敗，不是整台 gateway 起不來。
+    """
+    del s
 
 
 class SessionRegistry:
@@ -188,7 +147,7 @@ def create_app(
             await cache.start(app)
             # Read CSP's asr-primary at boot so the first session already
             # uses the governance-selected decoder (no-op without a token).
-            await refresh_decode_endpoint(
+            app.state.decode_client = await refresh_decode_endpoint(
                 app.state.settings, decode_client=app.state.decode_client
             )
             # ⚠ 只記位址、來源與協定 —— **不記憑證**。
@@ -196,7 +155,7 @@ def create_app(
                 "ASR decode URL = %s (source=%s, protocol=%s)",
                 strip_url_userinfo(current_decode_url(app.state.settings)),
                 decode_url_source(),
-                app.state.settings.ASR_DECODE_PROTOCOL,
+                current_decode_protocol(),
             )
         try:
             yield
@@ -257,8 +216,8 @@ async def _compose_health_status(
         return await probe_decode_target(
             url,
             decoder_token,
-            protocol=settings.ASR_DECODE_PROTOCOL,
-            openai_model=settings.ASR_OPENAI_MODEL,
+            protocol=current_decode_protocol(),
+            openai_model=current_openai_model(),
             timeout_seconds=settings.ASR_PROBE_TIMEOUT_SECONDS,
             connect_timeout_seconds=settings.ASR_PROBE_CONNECT_TIMEOUT_SECONDS,
         )
@@ -271,30 +230,28 @@ async def _compose_health_status(
             None,
         )
 
-    # CSP transport failed and we never confirmed a designation → using the
-    # env fallback may be a different machine than the console selected.
-    # Prefer voice off over a green mic aimed at the wrong box.
-    if (
-        service_token_configured
-        and source == "env"
-        and refresh_error
-        and "CSP_SERVICE_TOKEN unset" not in refresh_error
-        and (
+    # 沒有治理中心位址就不探針、也不改指環境變數裡的機器。
+    if not decode_url or source == "unconfigured":
+        if refresh_error and (
             "lookup errored" in refresh_error
             or "lookup failed" in refresh_error
-            or "unusable endpoint_url" in refresh_error
-        )
-    ):
+            or "unusable" in refresh_error
+            or "未通過出向檢查" in refresh_error
+        ):
+            return (
+                "unavailable",
+                "csp_unreachable",
+                refresh_error,
+                None,
+            )
         return (
             "unavailable",
-            "csp_unreachable",
-            (
-                "CSP asr-primary unreachable; refusing env fallback so the "
-                "microphone is not aimed at a machine the operator did not choose. "
-                f"refresh_error={refresh_error}"
-            ),
+            "not_configured",
+            "治理中心尚未啟用語音辨識",
             None,
         )
+
+    del service_token_configured
 
     if source == "csp_registry_stale":
         # Still probe so detail shows whether the last-known box is up, but
@@ -331,7 +288,9 @@ def _register_routes(app: FastAPI) -> None:
         200 / status==ok. A buried field is not enough.
         """
         s: Settings = app.state.settings
-        await refresh_decode_endpoint(s, decode_client=app.state.decode_client)
+        app.state.decode_client = await refresh_decode_endpoint(
+            s, decode_client=app.state.decode_client
+        )
         if app.state.skip_upstreams:
             ready = True
         else:
@@ -364,18 +323,19 @@ def _register_routes(app: FastAPI) -> None:
             "decode_url_source": source,
             # 哪一種傳輸在生效要看得見 —— 協定選錯的症狀(每句話 404/401)
             # 在別的欄位上長得像網路問題。
-            "decode_protocol": s.ASR_DECODE_PROTOCOL,
-            # 憑證來自治理中心還是環境變數。**只說來源,不說值。**
+            "decode_protocol": current_decode_protocol(),
+            # 只說有沒有治理中心憑證，不說值，也不再有環境變數退路。
             "decode_credential_source": (
-                "csp_registry"
-                if current_decode_credential(s) != env_credential(s)
-                else "env"
+                "csp_registry" if current_decode_credential(s) else "none"
             ),
             "decode_url_last_refresh_error": meta["last_refresh_error"],
             "decode_url_last_refresh_at": meta["last_refresh_at"],
             "decoder_probe": probe,
         }
-        return JSONResponse(body, status_code=200 if status == "ok" else 503)
+        # 沒設定語音時行程本身是好的，healthcheck 不要因此重啟。
+        # 設了但解碼端壞了仍是 503。
+        http_status = 200 if status == "ok" or reason == "not_configured" else 503
+        return JSONResponse(body, status_code=http_status)
 
     @app.websocket("/asr/stream")
     async def stream(websocket: WebSocket) -> None:
@@ -384,7 +344,9 @@ def _register_routes(app: FastAPI) -> None:
         await websocket.accept()
         # TTL refresh so a governance change of decoder address takes effect
         # on the next session without restarting the gateway.
-        await refresh_decode_endpoint(s, decode_client=app.state.decode_client)
+        app.state.decode_client = await refresh_decode_endpoint(
+            s, decode_client=app.state.decode_client
+        )
 
         token = auth_mod.extract_token(websocket)
         if not token:

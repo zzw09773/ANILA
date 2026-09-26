@@ -16,6 +16,9 @@ from starlette.websockets import WebSocketDisconnect
 from app import auth as auth_mod
 from app.auth import AuthError, AuthUnavailable, CurrentUserIdentity
 from app.config import Settings
+from anila_core.security.url_guard import UnsafeEndpointError
+
+from app.decode_endpoint import guard_decode_url
 from app.main import (
     CLOSE_AUTH_FAILED,
     CLOSE_AUTH_UNAVAILABLE,
@@ -211,15 +214,9 @@ def test_malformed_control_frame_does_not_kill_the_session(monkeypatch):
 # ── 設定 fail-loud ──────────────────────────────────────────────────────
 
 
-def test_missing_decode_url_fails_loud():
-    with pytest.raises(RuntimeError, match="ASR_DECODE_URL"):
-        _validate_settings(Settings(ASR_DECODE_URL="", ASR_DECODER_TOKEN="t"))
-
-
-def test_missing_decoder_token_fails_loud():
-    with pytest.raises(RuntimeError, match="ASR_DECODER_TOKEN"):
-        _validate_settings(Settings(ASR_DECODE_URL="https://d:9000",
-                                    ASR_DECODER_TOKEN=""))
+def test_missing_decode_env_does_not_block_boot():
+    _validate_settings(Settings(ASR_DECODE_URL="", ASR_DECODER_TOKEN=""))
+    _validate_settings(Settings(ASR_DECODE_URL="https://d:9000", ASR_DECODER_TOKEN=""))
 
 
 def test_internal_service_name_over_http_accepted(intranet_guard_env):
@@ -235,8 +232,7 @@ def test_internal_service_name_over_http_accepted(intranet_guard_env):
     trusted hosts。fixture 只是把部署時的環境在測試裡明說出來,**不是**放寬
     檢查:反向那一半在下面兩條。
     """
-    _validate_settings(Settings(ASR_DECODE_URL="http://asr-decoder:9000",
-                                ASR_DECODER_TOKEN="t"))
+    guard_decode_url("http://asr-decoder:9000")
 
 
 def test_internal_service_name_refused_when_not_trusted(monkeypatch):
@@ -247,9 +243,8 @@ def test_internal_service_name_refused_when_not_trusted(monkeypatch):
     """
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "")
-    with pytest.raises(RuntimeError, match="未通過出向檢查"):
-        _validate_settings(Settings(ASR_DECODE_URL="http://asr-decoder:9000",
-                                    ASR_DECODER_TOKEN="t"))
+    with pytest.raises(UnsafeEndpointError):
+        guard_decode_url("http://asr-decoder:9000")
 
 
 @pytest.mark.parametrize("url", [
@@ -260,7 +255,7 @@ def test_internal_service_name_refused_when_not_trusted(monkeypatch):
 def test_external_host_over_http_accepted_without_flag(url, intranet_guard_env):
     """環境變數門與治理中心門一致:純 http 由 ANILA_ALLOW_HTTP_ENDPOINT 一個
     旗標決定,不再有 ASR 專屬的第二個(ASR_ALLOW_HTTP_DECODER 已退役)。"""
-    _validate_settings(Settings(ASR_DECODE_URL=url, ASR_DECODER_TOKEN="t"))
+    guard_decode_url(url)
 
 
 def test_external_host_over_http_refused_without_flag(monkeypatch):
@@ -270,11 +265,8 @@ def test_external_host_over_http_refused_without_flag(monkeypatch):
     行為也必須一樣。
     """
     monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
-    with pytest.raises(RuntimeError, match="未通過出向檢查"):
-        _validate_settings(
-            Settings(ASR_DECODE_URL="http://gpu-host.example.test:9000",
-                     ASR_DECODER_TOKEN="t")
-        )
+    with pytest.raises(UnsafeEndpointError):
+        guard_decode_url("http://gpu-host.example.test:9000")
 
 
 @pytest.mark.parametrize("url", [
@@ -292,16 +284,14 @@ def test_loopback_metadata_and_private_ip_decoders_are_refused(url, monkeypatch)
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "")
-    with pytest.raises(RuntimeError, match="未通過出向檢查"):
-        _validate_settings(Settings(ASR_DECODE_URL=url, ASR_DECODER_TOKEN="t"))
+    with pytest.raises(UnsafeEndpointError):
+        guard_decode_url(url)
 
 
 def test_https_accepted_for_external():
-    _validate_settings(Settings(ASR_DECODE_URL="https://gpu.example.test:9000",
-                                ASR_DECODER_TOKEN="t"))
+    guard_decode_url("https://gpu.example.test:9000")
 
 
 def test_non_http_scheme_is_rejected():
-    with pytest.raises(RuntimeError, match="must be http"):
-        _validate_settings(Settings(ASR_DECODE_URL="ftp://x/y",
-                                    ASR_DECODER_TOKEN="t"))
+    with pytest.raises(UnsafeEndpointError):
+        guard_decode_url("ftp://x/y")

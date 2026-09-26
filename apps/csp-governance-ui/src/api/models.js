@@ -59,8 +59,7 @@ export const setImagePrimary = (id) =>
 export const unsetImagePrimary = (id) =>
   client.post(`/api/models/${id}/unset-image-primary`)
 
-// 主語音辨識 decoder（asr-primary）— 比照 image-primary；位址進 registry，
-// 共享密鑰 ASR_DECODER_TOKEN 仍只在 gateway／decoder 環境變數。
+// 舊的主語音旗標。解碼位址已改在「外部服務」，畫面不再呼叫這兩支。
 export const setAsrPrimary = (id) =>
   client.post(`/api/models/${id}/set-asr-primary`)
 

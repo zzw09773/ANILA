@@ -49,7 +49,7 @@ def _mock_decoder_down(base: str) -> None:
 
 
 def _mock_csp_primary(url: str) -> None:
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(
             200,
             json={
@@ -126,7 +126,7 @@ def test_health_degraded_when_decoder_token_rejected():
 @respx.mock
 def test_health_unavailable_when_csp_down_and_on_env_fallback():
     """Console may have designated another machine; env is not trusted here."""
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         side_effect=ConnectionError("csp down")
     )
     _mock_decoder_ok(ENV_URL)  # env decoder would work — still refuse
@@ -137,7 +137,7 @@ def test_health_unavailable_when_csp_down_and_on_env_fallback():
     body = resp.json()
     assert body["status"] == "unavailable"
     assert body["reason"] == "csp_unreachable"
-    assert body["decode_url_source"] == "env"
+    assert body["decode_url_source"] == "unconfigured"
     assert body["decode_url_last_refresh_error"]
 
 
@@ -154,7 +154,7 @@ def test_health_degraded_when_csp_stale():
         assert ok.status_code == 200, ok.text
         assert ok.json()["decode_url_source"] == "csp_registry"
 
-        respx.get("http://csp.test/api/models/asr-primary").mock(
+        respx.get("http://csp.test/api/internal/external-services/speech").mock(
             side_effect=ConnectionError("csp down")
         )
         resp = client.get("/asr/health")
@@ -171,7 +171,7 @@ def test_health_degraded_when_csp_stale():
 @respx.mock
 def test_operator_can_tell_voice_off_from_decoder_broken():
     # voice off
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         side_effect=ConnectionError("csp down")
     )
     s = _settings()
@@ -206,18 +206,21 @@ def test_health_ok_when_csp_designation_and_decoder_ready():
 
 
 @respx.mock
-def test_health_ok_when_csp_has_no_primary_and_env_decoder_ready():
-    """404 = intentional env fallback — not the same as CSP unreachable."""
-    respx.get("http://csp.test/api/models/asr-primary").mock(
-        return_value=Response(404, json={"detail": "尚未指定主語音辨識模型"})
+def test_health_not_configured_when_speech_is_off():
+    """沒啟用語音時行程仍健康，但不把麥克風指向環境變數裡的解碼器。"""
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
+        return_value=Response(200, json={"configured": False, "enabled": False})
     )
     _mock_decoder_ok(ENV_URL)
     s = _settings()
     with TestClient(_app(s)) as client:
         resp = client.get("/asr/health")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "ok"
-    assert resp.json()["decode_url_source"] == "env"
+    body = resp.json()
+    assert body["status"] == "unavailable"
+    assert body["reason"] == "not_configured"
+    assert body["decode_url_source"] == "unconfigured"
+    assert body["decode_url"] == ""
 
 
 # ── userinfo stripped; host kept ────────────────────────────────────────────
@@ -265,7 +268,7 @@ def test_websocket_path_refreshes_decode_url():
     s = _settings(ASR_DECODE_URL_TTL=0.0)
     decode = DecodeClient(ENV_URL, "shared-token")
     # First: no primary → env
-    respx.get("http://csp.test/api/models/asr-primary").mock(
+    respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(404, json={"detail": "none"})
     )
     app = create_app(app_settings=s, decode_client=decode, skip_upstreams=True)
@@ -288,7 +291,7 @@ def test_websocket_path_refreshes_decode_url():
         with TestClient(app) as client:
             # Prime cache on env
             client.get("/asr/health")
-            assert decode.base_url == ENV_URL.rstrip("/")
+            assert decode.base_url == ""
 
             # Operator designates a new decoder; TTL=0 so next refresh adopts it
             _mock_csp_primary(CSP_URL)
@@ -312,7 +315,7 @@ async def test_ttl_comes_from_settings_not_year_long_default():
     """
     import asyncio
 
-    route = respx.get("http://csp.test/api/models/asr-primary").mock(
+    route = respx.get("http://csp.test/api/internal/external-services/speech").mock(
         return_value=Response(404, json={"detail": "none"})
     )
     s = _settings(ASR_DECODE_URL_TTL=0.05)

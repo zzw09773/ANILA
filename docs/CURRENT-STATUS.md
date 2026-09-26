@@ -70,6 +70,18 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 
 這次沒有刪除主機上的 Docker volume。舊的 `anila-platform_gitlab_data` 還在主機上，之後由擁有者自行移除。
 
+## 外部服務（2026-09-26）
+
+文件解析（Docling）與語音辨識的位址在治理中心「外部服務」，不在 `.env`。
+
+1. 以管理員打開治理中心的「外部服務」。
+2. 文件解析：填遠端 Docling 的位址、需要的話填憑證、打開啟用。不要把帳密寫進網址。沒啟用時，畫面寫明擷取走內建原生解析器。啟用之後服務中斷，擷取工作會失敗，不會改回原生解析器。
+3. 語音辨識：填遠端解碼器位址、選 native 或 openai、憑證可留空、打開啟用。健康由 CSP 背景探測，畫面只顯示上次結果，不會因為重新整理就把憑證送出去。Shell 與 ANILA LM 只在這一列是啟用且健康時顯示麥克風。頁面載入與回到視窗時各問一次，未啟用時不會去打解碼器。
+4. 要讓瀏覽器連得到語音串流，平台還要帶 `--profile asr` 把 asr-gateway 拉起來。gateway 只負責切句與轉送，位址向 CSP 讀。沒有本機 whisper。
+5. 若部署前 `.env` 裡還有 `DOC_PARSER=docling` 與 `DOCLING_URL`，CSP 第一次啟動會匯入一次（日誌只記主機名）。確認畫面有位址之後，從 `.env` 刪掉 `DOC_PARSER`、`DOCLING_URL`、`DOCLING_SERVICE_TOKEN`，以及 `ASR_DECODE_URL`、`ASR_DECODER_TOKEN`、`ASR_DECODE_PROTOCOL`、`ASR_DECODE_API_KEY`、`ASR_OPENAI_MODEL`。指到 `asr-decoder` 這個舊本機名字的位址不會匯入。
+
+憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
+
 ## 尚未當成上線完成的項目
 
 - P2.6 打 tag／重打包

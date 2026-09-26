@@ -54,6 +54,11 @@ os.environ["ANILA_AUTH_MODE"] = "password"
 # this on would publish tokens during every TestClient startup.
 os.environ["ANILA_SERVICE_CLIENT_AUTO_PROVISION"] = "0"
 os.environ["ANILA_SERVICE_CLIENT_DIR"] = str(Path(_TEST_DB_DIR) / "service-clients")
+# 外部服務憑證的專用金鑰。測試不寫進 /var，也不啟動背景探測。
+os.environ["ANILA_EXTERNAL_SERVICE_KEY_FILE"] = str(
+    Path(_TEST_DB_DIR) / "external-service.key"
+)
+os.environ["ANILA_EXTERNAL_SERVICE_PROBE"] = "0"
 
 from app.database import Base, engine as _session_local_engine, get_db
 from app.main import app

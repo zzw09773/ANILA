@@ -37,6 +37,7 @@ row has been re-encrypted, ops can use the helper script in
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 
@@ -148,6 +149,29 @@ def decrypt_credential(ciphertext: bytes, nonce: bytes, tag: bytes) -> str:
         _legacy_fallback_count,
     )
     return plaintext
+
+
+# 與 CSP ``service_token_envelope`` / 模型 API key 同一套 ``enc::v1::`` 外殼。
+# 前綴放在這裡，ingestion-worker 與 CSP 才不會各寫一份解法。
+ENVELOPE_PREFIX = "enc::v1::"
+
+
+def unpack_credential_envelope(stored: str | None) -> str | None:
+    """解開 ``enc::v1::`` 外殼。空值回 ``None``。
+
+    前綴不對或長度不夠就 ``ValueError``。主鑰不對由
+    ``decrypt_credential`` 丟 ``InvalidTag``。明文不會寫進例外訊息。
+    """
+    if not stored:
+        return None
+    if not stored.startswith(ENVELOPE_PREFIX):
+        raise ValueError("credential envelope 缺少 enc::v1:: 前綴")
+    blob = stored[len(ENVELOPE_PREFIX):]
+    raw = base64.urlsafe_b64decode(blob.encode("ascii"))
+    if len(raw) < 12 + 16:
+        raise ValueError("credential envelope 過短")
+    nonce, tag, ct = raw[:12], raw[12:28], raw[28:]
+    return decrypt_credential(ct, nonce, tag)
 
 
 def legacy_fallback_count() -> int:

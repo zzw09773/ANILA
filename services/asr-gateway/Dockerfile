@@ -65,7 +65,9 @@ from anila_core.security.upstream_urls import join_upstream_path; print('url_gua
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Run as non-root for defence-in-depth
-RUN useradd --create-home --uid 10001 anila \
+RUN groupadd --gid 10006 anila-asr-tokens \
+ && useradd --create-home --uid 10001 anila \
+ && usermod -aG anila-asr-tokens anila \
  && chown -R anila:anila /app \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila

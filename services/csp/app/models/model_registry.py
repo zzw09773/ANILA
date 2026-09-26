@@ -35,10 +35,8 @@ class ModelRegistry(Base):
     # is_router_primary for flux2-dev-agent / anila-studio's primary image
     # model (partial unique index in migration r1_0022).
     is_image_primary = Column(Boolean, nullable=False, default=False)
-    # ASR decoder designation (migration r1_0031): asr-gateway reads the
-    # endpoint of the row marked is_asr_primary via /api/models/asr-primary.
-    # Partial unique index enforces at most one. Shared decoder token stays
-    # in the gateway/decoder environment — never on this row.
+    # 舊的模型列標記。語音解碼位址改由 external_services（治理中心「外部服務」）
+    # 決定，asr-gateway 不再讀這一欄。
     is_asr_primary = Column(Boolean, nullable=False, default=False)
     # 主簡報模型：anila-studio 寫簡報與做視覺 QA 用的 LLM，由管理員在模型頁指定。
     # 同一時間最多一筆為 true（partial unique index，見 r1_0037）。

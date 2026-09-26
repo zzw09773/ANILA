@@ -57,6 +57,7 @@ from anila_core.storage.adapters.pg_pool import PgPool
 
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.judge import JudgeCredential, load_judge_credential, score_one
+from ingestion_worker.docling_source import refresh_document_parser
 from ingestion_worker.parsers import extract_text
 
 
@@ -307,6 +308,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # a doc was skipped — silently swallowing them previously hid
         # missing-parser-stack failures behind a generic "0 chunks" error.
         docs = await _load_sample_docs(pool, sample_doc_ids, run_collection_id)
+        await refresh_document_parser(pool)
         parsed_docs: dict[int, tuple[str, dict]] = {}
         parse_errors: dict[int, str] = {}
         for d in docs:

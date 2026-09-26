@@ -247,16 +247,20 @@ services:
       # 幫 csp 補上視覺端點,也不會順手把 OCR 開進 request 路徑。
       # 差異寫在 .env.example 與 services/ingestion-worker/README.md。
       PDF_OCR_FALLBACK: "false"
-      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────────────
-      # csp 也消費 anila_core 的 parser(附件解析 attachment_service.py:163、
-      # chunking preview.py:68),DOC_PARSER=docling 時走 HTTP 端點。平台映像
-      # 不帶 docling/torch/easyocr,只有 httpx client。未設時 native。
-      DOC_PARSER: "${DOC_PARSER:-native}"
-      DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
-      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
+      # 文件解析位址在治理中心「外部服務」。下面三行只給第一次啟動匯入舊 .env，
+      # 匯入後請從 .env 刪掉。執行期不再用它們決定要打哪一台。
+      DOC_PARSER: "${DOC_PARSER:-}"
+      DOCLING_URL: "${DOCLING_URL:-}"
       DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
+      DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
+      # 語音解碼位址同樣只在第一次啟動匯入。本機 asr-decoder 不會被匯入。
+      ASR_DECODE_URL: "${ASR_DECODE_URL:-}"
+      ASR_DECODER_TOKEN: "${ASR_DECODER_TOKEN:-}"
+      ASR_DECODE_PROTOCOL: "${ASR_DECODE_PROTOCOL:-}"
+      ASR_DECODE_API_KEY: "${ASR_DECODE_API_KEY:-}"
+      ASR_OPENAI_MODEL: "${ASR_OPENAI_MODEL:-}"
       # 快速起步站台 profile（非祕密：csp_base_url、選填 csp_ca_file）。
       # 讀的是掛載目錄裡的 profile.json，不是把單一檔案 bind 到
       # /app/anila-quickstart-profile.json：檔案不存在時 Docker 會在 host
@@ -286,6 +290,8 @@ services:
       # 空 volume 第一次掛上時，繼承映像裡 /run/anila/service-clients 的
       # 10001:10002 與 mode 2750。改過 uid 之後要重建 csp 與 router 映像。
       - anila-service-credentials:/run/anila/service-clients
+      # 外部服務憑證的金鑰。只掛在 CSP。worker 沒有這一卷，也沒有 SECRET_KEY 以外的解法。
+      - anila-csp-local-secrets:/var/anila/csp-local-secrets
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
@@ -387,18 +393,10 @@ services:
       # ⚠ 內建頁數上限不要在程式裡任意調大;超過上限的頁連原生抽到的文字都會被取代掉。
       PDF_OCR_FALLBACK: "${PDF_OCR_FALLBACK:-false}"
       PDF_OCR_CONCURRENCY: "${PDF_OCR_CONCURRENCY:-4}"
-      # Docling is an ingestion-worker deployment choice.  The parser and
-      # language list are consumed by anila-core directly, not by CSP's
-      # platform-settings table.
-      DOC_PARSER: "${DOC_PARSER:-native}"
+      # 文件解析位址向 CSP 問。用上面那份憑證檔，不讀設定表。
+      CSP_BASE_URL: http://csp:8000
+      # OCR 語言與逾時仍是部署參數。
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
-      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────
-      # DOC_PARSER=docling 時,parser 改走 HTTP 端點(remote-compute 同 ASR);
-      # 平台映像不帶 docling/torch/easyocr,只有 httpx client。未設時 native。
-      # ⚠ DOCLING_URL 的單標籤 docker 服務名(docling)被 anila_core guard
-      # 擋,靠下面 ANILA_TRUSTED_HOSTS 點名放行(operator 機制,不關檢查)。
-      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
-      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
       # 出向 SSRF allow-list:single-label docker 服務名預設被擋,列進這條才
@@ -774,14 +772,14 @@ services:
     logging: *anila-logging
 
   # ── ASR gateway (串流語音輸入的 WS 端點) ─────────────────────────────────
-  # 瀏覽器麥克風 → WSS /asr/stream → 這裡切句 → asr-decoder (GPU) → 文字。
+  # 瀏覽器麥克風 → WSS /asr/stream → 這裡切句 → 治理中心設定的遠端解碼器 → 文字。
   # 純 CPU、無 DB、無 GPU。語音與辨識結果都不落地 —— 只當鍵盤。
+  # 解碼位址不在這份 compose，在治理中心「外部服務」。
   #
   # ⚠ profiles: 預設不啟動。要開:COMPOSE_PROFILES=asr
   #   (nginx 端已用變數式 proxy_pass,沒開也不會讓 nginx 起不來)。
   asr-gateway:
-    # "asr"        = 現行的本地全套(gateway + decoder),指令不變。
-    # "asr-remote" = 只起 gateway;解碼交給算力中心的端點(見下面 depends_on)。
+    # asr 與 asr-remote 都只起這支 gateway。本機解碼器已移除。
     profiles: ["asr", "asr-remote"]
     build:
       # ⚠ context 是 repo 根目錄(不是 services/asr-gateway):Dockerfile 要複製
@@ -792,46 +790,22 @@ services:
       - "8200"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
-      # Fallback when CSP has no asr-primary designation. Governance console
-      # can override at runtime (asr-gateway refreshes /api/models/asr-primary
-      # on a TTL); shared secret ASR_DECODER_TOKEN stays env-only.
-      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
-      # 不用 :? 硬性要求 —— compose 的變數插值在**解析階段**就會跑,即使這個服務
-      # 在 profiles: ["asr"] 後面根本不會啟動。用 :? 會讓「不想開語音的人連平台都起不來」
-      # (2026-07-30 實際中招:up -d 整個失敗)。改成空字串預設,由服務自己在啟動時
-      # fail-loud —— 缺 token 的 asr-gateway 會拒絕開機,而沒開 asr profile 的人不受影響。
-      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-}
-      # ── 本地 or 外部:兩條都要能連 ────────────────────────────────────
-      # native = 本地 services/asr-decoder(裸 PCM + X-Token,氣隙 bundle 帶的
-      #          就是它);openai = 算力中心的 /v1/audio/transcriptions
-      #          (multipart WAV + Bearer)。
-      # ⚠ 認不得的值會讓 asr-gateway 開不了機 —— 選錯協定的症狀是每句話
-      #   404/401 而麥克風看起來正常,那種靜默失敗不准再多一條。
-      ASR_DECODE_PROTOCOL: ${ASR_DECODE_PROTOCOL:-native}
-      ASR_DECODE_API_KEY: ${ASR_DECODE_API_KEY:-}
-      ASR_OPENAI_MODEL: ${ASR_OPENAI_MODEL:-whisper-1}
-      # ── 出向檢查(SSRF guard)────────────────────────────────────────
-      # asr-gateway 現在跟 csp 用同一個 anila_core guard 驗解碼位址。
-      # ⚠ 尾巴的 `,asr-decoder` 是**必要的**:本地 decoder 是 docker 服務名
-      #   (單標籤),guard 一律擋單標籤主機名,靠 trusted hosts 點名放行 ——
-      #   那是 guard 文件寫明給 operator 的機制,不是把檢查關掉。少了它,
-      #   本地語音會在啟動時就 fail-loud(而不是安靜地不能用)。
+      # 解碼位址與憑證在治理中心。這支服務用自己的憑證檔去讀那一列。
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/asr-gateway/token
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},asr-decoder"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-}"
       # ── 健康探針 timeout ─────────────────────────────────────────────
       # 舊值(2.0s/1.0s,寫死在程式裡)是「decoder 在同一台」調出來的。解碼端
       # 在 WAN 另一頭時會誤報 decoder_unreachable,把一支能用的麥克風藏起來。
       ASR_PROBE_TIMEOUT_SECONDS: ${ASR_PROBE_TIMEOUT_SECONDS:-8}
       ASR_PROBE_CONNECT_TIMEOUT_SECONDS: ${ASR_PROBE_CONNECT_TIMEOUT_SECONDS:-3}
-      ASR_DECODE_URL_TTL: ${ASR_DECODE_URL_TTL:-60}
       ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
       ASR_BEAM_SIZE: ${ASR_BEAM_SIZE:-5}
       ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
       ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
       ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
       CSP_BASE_URL: http://csp:8000
-      # 重新啟用前必須改讀專屬憑證檔。共用服務權杖已退役，這裡不再注入。
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       JWT_KID: anila-v1
@@ -843,28 +817,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # Local bootstrap: wait for the compose-local decoder before claiming
-      # healthy. /asr/health now also probes whichever address is in force
-      # (CSP asr-primary or ASR_DECODE_URL), so a console-selected remote
-      # decoder that is down yields status≠ok and hides the microphone.
-      #
-      # `required: false` = 遠端部署不需要本機 decoder:
-      #   本地(現行不變)  docker compose --profile asr        up -d
-      #   遠端(無 decoder)docker compose --profile asr-remote up -d
-      #
-      # ⚠ 訂正(2026-08-05 用 Compose v2.36.2 最小重現):**做事的只有
-      #   `required: false` 這一行**。相依的服務不在啟用的 profile 裡時:
-      #     有 required:false → gateway 單獨起得來;
-      #     沒有             → `service "gw" depends on undefined service "dec":
-      #                        invalid compose project` —— 硬錯誤,連 up 都進不去。
-      #   asr-decoder 的 "asr-local" **不是**「只起 gateway」的必要條件,原本
-      #   寫成一組條件是錯的因果。它真正的用途是給「只想起本機 decoder」那個
-      #   情境一個名字(`--profile asr-local`),那個情境實測也成立。
-      # ⚠ 這取代了原本那條 `--no-deps` 的口頭約定 —— `--no-deps` 會連 csp /
-      #   redis 的等待一起跳過,那兩個是真的需要等的。
-      asr-decoder:
-        condition: service_healthy
-        required: false
+    volumes:
+      - anila-service-credentials:/run/anila/service-clients:ro
     networks:
       - default
       - anila-models-net
@@ -881,90 +835,10 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
-  # ── ASR decoder (faster-whisper,GPU) ────────────────────────────────────
-  # 內部版:decoder 與平台同機,只掛在 anila-net,不開 host port —— 唯一的
-  # 呼叫方是 asr-gateway(ASR_DECODE_URL 預設 http://asr-decoder:9000)。
-  # 無狀態:切句/認證/WS 全在 gateway,這裡只是「收 PCM、回文字」。
-  # 音訊只在記憶體流轉,不寫檔、不進 log(services/asr-decoder/app/main.py)。
-  #
-  # ⚠ 跟 infra/models/docker-compose.yml 的 asr-decoder(profiles: ["intranet"],
-  #   掛在 anila-models-net)是**同一個東西的兩種擺法**,不要同時開:gateway
-  #   同時連著兩張網,兩邊都有 `asr-decoder` 這個 DNS 名字時解析結果不確定。
-  #   decoder 要跑在別台 GPU 主機時,用 services/asr-decoder/docker-compose.standalone.yml
-  #   並把 ASR_DECODE_URL 指過去。
-  #
-  # ⚠ **GPU 保留已從這裡移出**(2026-08-05)。原本的 `deploy.resources.
-  #   reservations.devices: nvidia` 會讓沒有 nvidia container runtime 的機器
-  #   `up` 直接以 "could not select device driver nvidia" 失敗 —— 那在「平台
-  #   本來就有 GPU」的年代是刻意的 fail-loud,但平台正在搬到**沒有 GPU** 的
-  #   CPU 主機(2× EPYC 9334 / 755 GB),那條保留會變成「整批 up 起不來」。
-  #   GPU 主機請疊 `infra/compose/asr-gpu.yml`(釘卡設定原封不動搬過去);
-  #   CPU 主機疊 `infra/compose/asr-cpu.yml` 換小模型,或乾脆用
-  #   `--profile asr-remote` 只起 gateway、解碼交給算力中心。
-  #   ⚠ 沒疊**任何**覆蓋檔時 ASR_DEVICE 仍預設 cuda —— 容器會在載模型時
-  #   fail-loud(而不是悄悄用 CPU 跑 large-v3 得到 RTF>1 的假可用),但那個
-  #   fail-loud 跟搬家前**不一樣**:不再是 `up` 當場失敗,而是 asr-decoder
-  #   起得來→載模型時死→重啟迴圈,asr-gateway 卡在下面的
-  #   `condition: service_healthy` 最多 20 × 30s ≈ 10 分鐘才放棄,訊息只在
-  #   decoder 的日誌裡。要語音就選一邊疊:asr-gpu.yml / asr-cpu.yml /
-  #   `--profile asr-remote`。
-  asr-decoder:
-    # "asr" 保留 = 現行 `--profile asr` 指令不變(gateway + decoder 一起起);
-    # "asr-local" 讓「只想起本機 decoder」也有名字可用。
-    profiles: ["asr", "asr-local"]
-    build:
-      context: ../../services/asr-decoder
-      dockerfile: Dockerfile
-    image: ${ANILA_IMAGE_ASR_DECODER:-anila/asr-decoder:0.1.0}
-    expose:
-      - "9000"
-    environment:
-      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
-      TZ: ${TZ:-Asia/Taipei}
-      # 同 asr-gateway:不用 :?。compose 的變數插值在解析階段就跑,即使本服務
-      # 在 profiles: ["asr"] 之後根本不會啟動 —— 用 :? 會讓「不想開語音的人連
-      # 平台都起不來」。缺 token 由服務自己 fail-loud(app/main.py:_require_token)。
-      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-}
-      # ASR_MODEL_DIR 內若直接有 model.bin 就當模型路徑用(air-gap bundle 的
-      # 轉檔目錄);否則當 HuggingFace 快取根目錄,仍以 ASR_MODEL_SIZE 解析。
-      # 兩種都吃同一個掛載點,見 app/model.py:_resolve_model_ref。
-      ASR_MODEL_DIR: /var/anila/asr-models
-      ASR_MODEL_SIZE: ${ASR_MODEL_SIZE:-large-v3}
-      # 1 = 禁止任何對 HuggingFace 的出向請求。權重缺了就 fail loud,而不是
-      # 卡在 DNS timeout 讓 health 永遠 not ready。內網一定要 1;要在有網路的
-      # 機器上暖權重快取,見 docs/runbooks/asr-voice-input.md。
-      ASR_LOCAL_FILES_ONLY: ${ASR_LOCAL_FILES_ONLY:-1}
-      HF_HUB_OFFLINE: ${ASR_LOCAL_FILES_ONLY:-1}
-      TRANSFORMERS_OFFLINE: ${ASR_LOCAL_FILES_ONLY:-1}
-      ASR_DEVICE: ${ASR_DEVICE:-cuda}
-      # ⚠ V100(Volta)用 float16:Volta 沒有 int8 tensor core,int8 省 VRAM
-      # 但更慢。int8 的價值要 Turing 之後。
-      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    volumes:
-      # :ro —— decoder 只讀權重,沒有任何理由寫進去。
-      # 預設值落在 models/model/ 底下,那整個目錄已被 .gitignore(權重不入 git)。
-      - ${ASR_MODEL_HOST_DIR:-../../models/model/asr-models}:/var/anila/asr-models:ro
-    networks:
-      - default
-    # ⚠ GPU 保留搬到 infra/compose/asr-gpu.yml(見上面區塊註解)。這裡刻意
-    # 不留空的 deploy: —— asr-cpu.yml 用 `deploy: !reset null` 覆蓋它,留一個
-    # 空殼只會讓兩個覆蓋檔的語意變模糊。
-    healthcheck:
-      # 模型是背景載入的,ready 之前回 503。large-v3 冷啟動是分鐘級,
-      # retries × interval 要蓋得住(20 × 30s = 10 分鐘)。
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    restart: unless-stopped
-    logging: *anila-logging
 
   docling:
-    # 遠端 docling 文件解析(2026-08-17 擁有者裁決:GPU 工作一律走上 HTTP 端點,
-    # 不進平台映像)。只有 `--profile docling-local` 才起,與 asr-decoder 的
-    # asr-local 同定位——平台 host(CPU-only)永遠不起它。
+    # 遠端 docling 文件解析。只有 `--profile docling-local` 才起。
+    # 平台預設不跑它；位址在治理中心「外部服務」。
     profiles: ["docling-local"]
     build:
       context: ../../services/docling-service
@@ -975,7 +849,7 @@ services:
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
       TZ: ${TZ:-Asia/Taipei}
-      # 同 asr-decoder:不用 :?。compose 變數插值在解析階段就跑,即使本服務在
+      # 不要用 :?。compose 變數插值在解析階段就跑,即使本服務在
       # profiles 之後根本不會啟動。缺 token 由服務自己 fail-loud
       # (app/main.py:_require_token)。
       DOCLING_SERVICE_TOKEN: ${DOCLING_SERVICE_TOKEN:-}
@@ -1022,6 +896,7 @@ volumes:
   redis-data:
   router-sessions:
   anila-service-credentials:
+  anila-csp-local-secrets:
   anila-studio-flux-cache:
   anila-studio-artifacts:
   # cold-stored — 對應上面 commented service。volume 名稱保留可以避免

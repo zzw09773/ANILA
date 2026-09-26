@@ -115,6 +115,7 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 #   10002 anila-svc-tokens        router（uid 1000）
 #   10003 anila-studio-tokens     anila-studio
 #   10004 anila-worker-tokens     ingestion-worker
+#   10006 anila-asr-tokens        asr-gateway
 # 子目錄擁有者是 uid 10005（csp-credential-dirs.sh），不是 10001。
 # CSP 要加入每一個群組才能在目錄裡建檔。router 只在 10002。
 # 改 gid 時連同腳本、對應 Dockerfile，以及 compose 的
@@ -136,13 +137,16 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 RUN addgroup -g 10002 -S anila-svc-tokens \
  && addgroup -g 10003 -S anila-studio-tokens \
  && addgroup -g 10004 -S anila-worker-tokens \
+ && addgroup -g 10006 -S anila-asr-tokens \
  && addgroup -g 10001 anila \
  && adduser -D -u 10001 -G anila anila \
  && adduser anila anila-svc-tokens \
  && adduser anila anila-studio-tokens \
  && adduser anila anila-worker-tokens \
- && mkdir -p /app/logs /run/anila/service-clients \
- && chown -R anila:anila /app/logs \
+ && adduser anila anila-asr-tokens \
+ && mkdir -p /app/logs /run/anila/service-clients /var/anila/csp-local-secrets \
+ && chown -R anila:anila /app/logs /var/anila/csp-local-secrets \
+ && chmod 0700 /var/anila/csp-local-secrets \
  && chown 10001:10002 /run/anila/service-clients \
  && chmod 2750 /run/anila/service-clients \
  && pip uninstall -y ecdsa \

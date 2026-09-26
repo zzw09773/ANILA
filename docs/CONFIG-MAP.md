@@ -35,6 +35,7 @@ compose 引用的名字總數不是「管理員要設的鍵數」：compose 自�
 2. **部署參數的**（改 `.env` → **`docker compose up -d`**）：`.env.example` 裡 §0 第一條指令數到的鍵，大部分屬此。
    `docker restart` 不重載 `.env`（本平台親踩）。改完 `up -d`。
 3. **即時生效的**（治理中心「平台設定」頁，顆數用 §0 的 `_spec` 指令）：存在 DB。一般鍵每請求重讀；三份 Router prompt 由 Router 以 TTL 向 CSP 取（預設 30 秒，`ANILA_ROUTER_PROMPTS_TTL`）。§3 詳列。
+   文件解析與語音辨識不在那張設定表：治理中心「外部服務」改位址與憑證，下一個擷取工作與下一次頁面聚焦會跟上（約 30 秒快取）。
 
 ---
 
@@ -55,12 +56,12 @@ compose 引用的名字總數不是「管理員要設的鍵數」：compose 自�
 ⚠ 不在上面≠設錯無聲：`CSP_DB_PASSWORD`／`CSP_APP_DB_PASSWORD` 在連 DB 那刻爆；`MODEL_GATEWAY_API_KEY` 在出向呼叫時才用。
 
 ### 2c. 其餘部署參數（一句一句，白話）
-- `ASR_*`＝語音辨識服務的指向 URL／token／模型大小／逾時／暫存。
+- `ASR_PROBE_*`／`ASR_PARTIALS_ENABLED`／`ASR_MAX_SESSION_SECONDS`／`ASR_OPENCC_MODE`＝語音 gateway 的探針與切句行為。解碼位址不在 `.env`。
 - `EMBEDDING_*`／`LOCAL_EMBEDDING_*`／`LOCAL_LLM_*`／`GEMMA4_BASE_URL`＝第一次啟動時登錄模型用的端點。平台自己用哪一顆（主路由、嵌入、簡報、視覺、摘要、知識庫對話）在治理中心「模型角色」指定，不寫在 `.env`。
 - `FLUX_BACKEND_URL`／`FLUX_AGENT_BASE_URL`／`N8N_*`＝簡報／流程編排服務指向。
 - `ANILA_ALLOW_{HTTP,GRPC,PRIVATE,HTTP_AGENT}_ENDPOINT`＝「放行哪些非 https 模型端點」的四面。
 - `ALLOWED_HOSTS`／`ANILA_HOST`／`ANILA_ENV`／`ANILA_TRUSTED_HOSTS`＝主機／環境／信任主機名。
-- 登入／code server／文件解析開關（`CARD_*`／`CODESERVER_*`／`DOC_PARSER`／`ENABLE_IMAGE_CAPTIONS`／`PDF_OCR_FALLBACK`）。
+- 登入／code server（`CARD_*`／`CODESERVER_*`／`ENABLE_IMAGE_CAPTIONS`／`PDF_OCR_FALLBACK`）。文件解析與語音位址在治理中心「外部服務」。
 
 全文逐鍵在附 1。
 
@@ -82,16 +83,7 @@ ANILA_QUERY_EXPANSION
 ANILA_REMOTE_MODELS
 ANILA_TRUSTED_HOSTS
 ANILA_ZH_NORMALIZE
-ASR_COMPUTE_TYPE
-ASR_DECODE_API_KEY
-ASR_DECODE_PROTOCOL
-ASR_DECODER_TOKEN
-ASR_DECODE_URL
-ASR_DECODE_URL_TTL
-ASR_GPU
 ASR_MAX_SESSION_SECONDS
-ASR_MODEL_SIZE
-ASR_OPENAI_MODEL
 ASR_OPENCC_MODE
 ASR_PARTIALS_ENABLED
 ASR_PROBE_CONNECT_TIMEOUT_SECONDS
@@ -101,7 +93,6 @@ CODESERVER_PASSWORD
 CODESERVER_WORKSPACE
 CSP_APP_DB_PASSWORD
 CSP_DB_PASSWORD
-DOC_PARSER
 EMBEDDING_BATCH_SIZE
 EMBEDDING_TIMEOUT
 EMBEDDING_TIMEOUT_SECONDS
@@ -160,7 +151,6 @@ SECRET_KEY
 
 | 鍵 | 全樹命中（消費層） | 判 |
 |---|---|---|
-| `ASR_GPU` | 僅 standalone yml，無 Py 正本 | 死鍵候選 |
 | `FLUX_AGENT_BASE_URL` | 0 程式正本 | 死鍵候選 |
 | `N8N_NODE_FUNCTION_ALLOW_BUILTIN` | 0 | 死鍵候選 |
 | `N8N_NODE_FUNCTION_ALLOW_EXTERNAL` | 0 | 死鍵候選 |

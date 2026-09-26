@@ -36,7 +36,7 @@ def test_csp_image_derives_from_compose_project_name():
 
 # ── 2026-09-02 fresh-install rehearsal, two more stops on a CPU host ─────────
 
-CPU_OVERLAY = REPO / "infra/compose/asr-cpu.yml"
+
 
 
 def test_gitlab_is_absent_while_n8n_and_codeserver_stay():
@@ -74,10 +74,11 @@ def test_gitlab_is_absent_while_n8n_and_codeserver_stay():
     assert nginx.count("location /codeserver") == 2
 
 
-def test_cpu_overlay_forces_a_cpu_compute_type():
-    """asr-decoder crash-looped: .env.example ships ASR_COMPUTE_TYPE=float16 (for
-    the GPU hosts) and the CPU overlay only defaulted when unset, so float16 won
-    and ctranslate2 refused. On the CPU host the overlay must decide."""
-    text = CPU_OVERLAY.read_text(encoding="utf-8")
-    assert "ASR_COMPUTE_TYPE: int8" in text
-    assert "${ASR_COMPUTE_TYPE" not in text
+def test_platform_compose_has_no_local_asr_decoder():
+    """語音解碼器在遠端。平台 compose 不再帶 asr-local、也不再疊 cpu/gpu overlay。"""
+    assert not (REPO / "infra/compose/asr-cpu.yml").exists()
+    assert not (REPO / "infra/compose/asr-gpu.yml").exists()
+    platform = (REPO / "infra/compose/platform.yml").read_text(encoding="utf-8")
+    assert "asr-decoder:" not in platform
+    assert "asr-local" not in platform
+    assert "asr-gateway:" in platform

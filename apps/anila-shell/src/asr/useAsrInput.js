@@ -10,29 +10,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createAsrSession, probeAsrAvailable } from './asrStream.js';
+import { createAsrSession, probeAsrAvailable, watchSpeechStatus } from './asrStream.js';
 
 export { appendTranscript } from './asrStream.js';
-
-/**
- * 麥克風可用性的重探間隔(毫秒)。**與 anilalm 那份同值同語意。**
- *
- * 為什麼需要重探:原本只在掛載時探一次(`useEffect(..., [])`),所以解碼端
- * 「在開頁前」就掛掉會正確地把按鈕藏起來,「開頁之後」才掛掉卻留著一顆按了
- * 就壞的按鈕 —— 那是本專案定義的最糟失效模式(靜默成功)。而這一支是**首頁
- * 聊天室**在用的 hook:解碼端搬到算力中心之後,端點斷斷續續的機率遠高於本機
- * 容器,「麥克風永遠在、按下去永遠失敗」會是使用者最常遇到的那個畫面。
- *
- * 為什麼是 60 秒、而且只在分頁看得見的時候跑:
- *   * /asr/health 會**真的**向解碼端送一次探測請求(openai 協定是 100ms 靜音的
- *     辨識)。太密等於拿使用者的分頁去打算力中心。
- *   * 60s × 只算可見分頁 → 每個實際在看的分頁 1 次/分鐘。docker healthcheck
- *     另外 2 次/分鐘。
- *   * 代價:解碼端掛掉之後按鈕最多多留 60 秒,那 60 秒內按下去會拿到明確的
- *     錯誤訊息(WS 連不上),不是靜默。
- * 另外在 WebSocket 出錯時**立刻**重探一次,所以「錄到一半斷線」不用等滿 60 秒。
- */
-const AVAILABILITY_REPROBE_MS = 60_000;
 
 /**
  * @param {object}   opts
@@ -59,48 +39,24 @@ export function useAsrInput({ appendText, busy }) {
   const appendRef = useRef(appendText);
   appendRef.current = appendText;
 
-  // 掛載時探一次,之後每 AVAILABILITY_REPROBE_MS 重探;分頁被切走就停,
-  // 切回來立刻補一次(離開期間解碼端掛掉的話,回來就會看到正確的狀態)。
+  // 載入時問一次治理中心；聚焦或回到前景再問。沒有每分鐘的定時器。
+  // 錄音中不改 available，避免按鈕在說話時消失。
   const probeRef = useRef(() => {});
   useEffect(() => {
     let alive = true;
 
     const runProbe = () => {
       if (!alive) return;
-      // 錄音中不動 available —— 見 stateRef 的說明。
       if (stateRef.current !== 'idle') return;
       void probeAsrAvailable().then((ok) => {
         if (alive && stateRef.current === 'idle') setAvailable(ok);
       });
     };
     probeRef.current = runProbe;
-
-    runProbe();
-    let timer = null;
-    const start = () => {
-      if (timer === null) timer = setInterval(runProbe, AVAILABILITY_REPROBE_MS);
-    };
-    const stop = () => {
-      if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        runProbe();
-        start();
-      } else {
-        stop();
-      }
-    };
-
-    if (document.visibilityState === 'visible') start();
-    document.addEventListener('visibilitychange', onVisibility);
+    const stop = watchSpeechStatus(runProbe);
     return () => {
       alive = false;
       stop();
-      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 

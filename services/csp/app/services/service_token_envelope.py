@@ -41,12 +41,10 @@ import hashlib
 import secrets
 
 from anila_core.security.credential_crypto import (
-    decrypt_credential,
+    ENVELOPE_PREFIX,
     encrypt_credential,
+    unpack_credential_envelope,
 )
-
-
-ENVELOPE_PREFIX = "enc::v1::"
 
 BOOTSTRAP_TOKEN_PREFIX = "bsk-"
 SERVICE_TOKEN_PREFIX = "csk-"
@@ -96,18 +94,7 @@ def decode_service_token_envelope(stored: str | None) -> str | None:
     envelope; raises ``cryptography.exceptions.InvalidTag`` on a wrong
     master key.
     """
-    if not stored:
-        return None
-    if not stored.startswith(ENVELOPE_PREFIX):
-        raise ValueError(
-            "service_token_envelope 缺少 enc::v1:: 前綴，疑似資料損毀或未加密 row"
-        )
-    blob = stored[len(ENVELOPE_PREFIX):]
-    raw = base64.urlsafe_b64decode(blob.encode("ascii"))
-    if len(raw) < 12 + 16:
-        raise ValueError("service_token_envelope 過短，疑似已損毀")
-    nonce, tag, ct = raw[:12], raw[12:28], raw[28:]
-    return decrypt_credential(ct, nonce, tag)
+    return unpack_credential_envelope(stored)
 
 
 def compute_lookup_hash(plaintext: str) -> str:

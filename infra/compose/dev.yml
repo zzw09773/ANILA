@@ -132,17 +132,18 @@ services:
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to the studio-owned flux cache volume.
-      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────────────
-      # csp 也消費 anila_core 的 parser(附件解析 attachment_service、chunking
-      # preview),DOC_PARSER=docling 時走 HTTP 端點。平台映像不帶 docling/torch/
-      # easyocr,只有 httpx client。未設時 native。dev 之 http 旗標上面已硬寫 1,
-      # 所以 DOCLING_URL 的 http://docling:9100 在 dev 可直接過 guard。
-      DOC_PARSER: "${DOC_PARSER:-native}"
+      # 只供第一次啟動把舊 .env 匯入治理中心。空值不會被當成已設定。
+      DOC_PARSER: "${DOC_PARSER:-}"
+      DOCLING_URL: "${DOCLING_URL:-}"
+      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
-      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
-      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-dev-docling-token}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
+      ASR_DECODE_URL: "${ASR_DECODE_URL:-}"
+      ASR_DECODER_TOKEN: "${ASR_DECODER_TOKEN:-}"
+      ASR_DECODE_PROTOCOL: "${ASR_DECODE_PROTOCOL:-}"
+      ASR_DECODE_API_KEY: "${ASR_DECODE_API_KEY:-}"
+      ASR_OPENAI_MODEL: "${ASR_OPENAI_MODEL:-}"
       # 與 platform.yml 相同：掛目錄，不把缺席的 profile.json 做成目錄。
       # dev 用 share-dev，不撞 live stack 的 share/quickstart。
       ANILA_QUICKSTART_PROFILE: /app/anila-quickstart-profile/profile.json
@@ -168,6 +169,8 @@ services:
       - "../../share-dev/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       - ../../share-dev/attachments:/app/data/attachments
       - anila-service-credentials-dev:/run/anila/service-clients
+      # 外部服務憑證的金鑰只在 CSP。dev 用另一個 volume，不跟 live stack 共用。
+      - anila-csp-local-secrets-dev:/var/anila/csp-local-secrets
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -219,6 +222,7 @@ services:
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/ingestion-worker/token
+      CSP_BASE_URL: http://csp:8000
       EMBEDDING_DIM: "4000"
       UPLOAD_DIR: "${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       # Keep certificate verification enabled; this is only the optional CA
@@ -244,13 +248,7 @@ services:
       RELATION_LLM_MODEL: "${RELATION_LLM_MODEL:-gemma4}"
       RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
-      DOC_PARSER: "${DOC_PARSER:-native}"
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
-      # ── 遠端 docling（2026-08-17 擁有者裁決）─────────────────
-      # DOC_PARSER=docling 時,parser 改走 HTTP 端點(remote-compute 同 ASR)。
-      # docling 是 compose 內部服務,單標籤 host 由 ANILA_TRUSTED_HOSTS 點名放行。
-      DOCLING_URL: "${DOCLING_URL:-http://docling:9100}"
-      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-dev-docling-token}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},docling"
@@ -379,16 +377,10 @@ services:
       - "8200"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
-      ASR_DECODE_URL: ${ASR_DECODE_URL:-http://asr-decoder:9000}
-      ASR_DECODER_TOKEN: ${ASR_DECODER_TOKEN:-dev-asr-token}
-      ASR_DECODE_PROTOCOL: ${ASR_DECODE_PROTOCOL:-native}
-      ASR_DECODE_API_KEY: ${ASR_DECODE_API_KEY:-}
-      ASR_OPENAI_MODEL: ${ASR_OPENAI_MODEL:-whisper-1}
-      # 出向檢查(SSRF)。dev 的本機 decoder 一樣是單標籤 docker 服務名 ——
-      # 尾巴的 `,asr-decoder` 少了會在啟動時 fail-loud。
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/asr-gateway/token
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-1}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},asr-decoder"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-}"
       ASR_PROBE_TIMEOUT_SECONDS: ${ASR_PROBE_TIMEOUT_SECONDS:-8}
       ASR_PROBE_CONNECT_TIMEOUT_SECONDS: ${ASR_PROBE_CONNECT_TIMEOUT_SECONDS:-3}
       ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
@@ -397,7 +389,6 @@ services:
       ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
       ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
       CSP_BASE_URL: http://csp:8000
-      # 重新啟用前必須改讀專屬憑證檔。共用服務權杖已退役，這裡不再注入。
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       JWT_KID: anila-v1
@@ -409,13 +400,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - anila-service-credentials-dev:/run/anila/service-clients:ro
     networks:
       - default
       - anila-models-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
       interval: 15s
-      timeout: 5s
+      timeout: 12s
       retries: 6
       start_period: 30s
     restart: unless-stopped
@@ -515,6 +508,7 @@ networks:
 
 volumes:
   anila-service-credentials-dev:
+  anila-csp-local-secrets-dev:
   csp-pgdata-dev:
   redis-data-dev:
   anila-studio-flux-cache-dev:

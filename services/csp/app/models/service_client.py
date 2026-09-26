@@ -21,6 +21,7 @@ helper module (``service_token_envelope``) covers both.
 * ``admin_tool``    — future surface for ops scripts that need to call
                       CSP s2s endpoints without holding admin JWT
                       (e.g. backup helpers, on-call runbooks).
+* ``asr``           — asr-gateway。只用來讀外部服務的解碼位址與憑證。
 
 Multi-replica
 -------------

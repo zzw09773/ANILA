@@ -93,31 +93,21 @@ def test_normalise_protocol_refuses_anything_else(raw):
         normalise_protocol(raw)
 
 
-def test_bad_protocol_fails_at_startup():
-    """假控制項防線:設錯的旋鈕不准悄悄退回預設。
+def test_bad_protocol_is_rejected():
+    """假控制項防線:設錯的旋鈕不准悄悄退回預設。"""
+    with pytest.raises(ValueError):
+        normalise_protocol("openai-compatible")
 
-    PROVE RED:把 normalise_protocol 的 raise 換成 `return PROTOCOL_NATIVE`
-    → 這條紅(而且 openai 端點會被當成 native 打,每句話 404)。
-    """
-    with pytest.raises(RuntimeError, match="ASR_DECODE_PROTOCOL"):
-        _validate_settings(
-            Settings(
-                ASR_DECODE_URL="https://gpu.example.test:9000",
-                ASR_DECODER_TOKEN="t",
-                ASR_DECODE_PROTOCOL="openai-compatible",
-            )
+
+def test_openai_without_api_key_does_not_block_boot():
+    """憑證改在治理中心，可空。開機不再要求 ASR_DECODE_API_KEY。"""
+    _validate_settings(
+        Settings(
+            ASR_DECODE_URL=REMOTE,
+            ASR_DECODE_PROTOCOL="openai",
+            ASR_DECODE_API_KEY="",
         )
-
-
-def test_openai_without_api_key_fails_at_startup():
-    with pytest.raises(RuntimeError, match="ASR_DECODE_API_KEY"):
-        _validate_settings(
-            Settings(
-                ASR_DECODE_URL=REMOTE,
-                ASR_DECODE_PROTOCOL="openai",
-                ASR_DECODE_API_KEY="",
-            )
-        )
+    )
 
 
 def test_openai_does_not_require_the_native_shared_secret():

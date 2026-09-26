@@ -34,6 +34,7 @@ install_dir() {
 install_dir router-primary 10002
 install_dir anila-studio 10003
 install_dir ingestion-worker 10004
+install_dir asr-gateway 10006
 
 # find -type f 不會選到符號連結。先覆寫再刪，硬連結也不留舊明文。
 olds=$(find "$root" -maxdepth 1 -type f -name '*.token' || true)

@@ -39,11 +39,9 @@ cd "$REPO_ROOT"
 # (docs/runbooks/intranet-image-bundle.md §5.1)。設 1 才帶 --profile asr。
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila}"
 INCLUDE_ASR="${INCLUDE_ASR:-0}"
-# .15 是 CPU 主機(2× EPYC 9334),所以預設疊 CPU overlay,避免 ASR_DEVICE 落回
-# cuda 造成 decoder crash-loop。GPU 主機請設 ASR_OVERLAY=infra/compose/asr-gpu.yml;
-# ASR_OVERLAY= 空字串表示不疊 overlay,由操作者自行承擔組態責任。
-# overlay 只在 INCLUDE_ASR=1 時用得到。
-ASR_OVERLAY="${ASR_OVERLAY-infra/compose/asr-cpu.yml}"
+# 本機 decoder 與 cpu/gpu overlay 已移除。語音解碼位址在治理中心「外部服務」。
+# 舊的 ASR_OVERLAY 若還指著已刪的檔，下面的存在檢查會停下來。
+ASR_OVERLAY="${ASR_OVERLAY-}"
 if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ] && [ ! -f "$ASR_OVERLAY" ]; then
   die "ASR overlay 檔案不存在: $ASR_OVERLAY"
 fi

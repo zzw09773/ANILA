@@ -175,23 +175,22 @@ docker compose --env-file .env -p anila \
 
 預設沒這兩樣。殼上麥克風不畫、匯入走 native parser。缺 GPU／權重／端點時不要先起服務。
 
-**語音**(解碼端與權重已就緒之後):
+**語音**(遠端解碼器已就緒之後):
 
 ```bash
 # 映像不在包內時,先回有外網的機器 INCLUDE_ASR=1 重包並 load。
-INCLUDE_ASR=1 ASR_OVERLAY=infra/compose/asr-cpu.yml \
+INCLUDE_ASR=1 \
   bash infra/deployment/intranet/intranet-deploy.sh /path/to/image-bundle
 # 或手動(映像已 load):
 # docker compose --env-file .env -p anila \
-#   -f compose.yaml -f intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr \
+#   -f compose.yaml -f intranet-image-overrides.yml --profile asr \
 #   up -d --no-build
-# GPU 主機把 asr-cpu.yml 換成 asr-gpu.yml,或拿掉 overlay。
 docker compose -p anila exec nginx nginx -s reload
 ```
 
-細節與 token、協定選錯會拒開機:`docs/runbooks/asr-voice-input.md`。
+然後到治理中心「外部服務」填解碼位址。沒有本機 overlay。細節:`docs/runbooks/asr-voice-input.md`。
 
-**docling**:平台側維持 `DOC_PARSER=native`,直到 GPU 主機四件套全綠。
+**docling**:到位址填進治理中心「外部服務」之前，擷取用內建原生解析器。
 **不要**在平台 `up` 加 `--profile docling-local`。閘門與步驟:
 `services/docling-service/README.md`。連不上不准靜默退回 native。
 

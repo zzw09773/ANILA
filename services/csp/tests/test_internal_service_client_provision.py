@@ -254,7 +254,9 @@ def test_configured_router_primary_keeps_its_own_file_gid():
         '{"client_name":"router-primary","client_type":"router","file_gid":10002}]'
     )
     by_name = {spec.client_name: spec for spec in specs}
-    assert set(by_name) == {"ingestion-worker", "router-primary", "anila-studio"}
+    assert set(by_name) == {
+        "ingestion-worker", "router-primary", "anila-studio", "asr-gateway",
+    }
     assert by_name["router-primary"].client_type == "router"
     assert by_name["router-primary"].file_gid == 10002
     assert by_name["ingestion-worker"].file_gid == 10001
@@ -1222,6 +1224,7 @@ def test_credential_dir_init_is_not_owned_by_the_runtime_uid():
     assert "install_dir router-primary 10002" in text
     assert "install_dir anila-studio 10003" in text
     assert "install_dir ingestion-worker 10004" in text
+    assert "install_dir asr-gateway 10006" in text
     assert "2770" in text
 
 

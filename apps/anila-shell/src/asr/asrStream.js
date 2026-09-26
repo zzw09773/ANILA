@@ -432,20 +432,42 @@ export function appendTranscript(draft, addition) {
 }
 
 /**
- * ASR 有沒有部署。
+ * 治理中心說語音有啟用而且健康，麥克風才出現。
  *
- * 不用 build-time 旗標(VITE_ASR_ENABLED 之類):那會讓「有/無 ASR」變成兩顆
- * 內容不同的前端 image,跟 platform.yml 鎖 image content ID 的走向打架。
- * asr-gateway 是 profile-gated 的 —— 沒開時 nginx 打不到它,直接 502/404,
- * probe 一下就知道,連旗標都不需要。
+ * 這一支只問 CSP 的輕量狀態，不打解碼器。未啟用時後端也不探測。
+ * 頁面載入與回到分頁各問一次，不再每分鐘問。
  */
+export function speechStatusAllowsMic(body) {
+  return Boolean(body && body.enabled && body.healthy);
+}
+
 export async function probeAsrAvailable() {
   try {
-    const resp = await fetch('/asr/health', { credentials: 'same-origin' });
-    // 200 = 可用;503 = gateway 活著但 revocation cache 沒 ready(fail-closed,
-    // 此時 WS 一律被拒)→ 兩者都不該顯示按鈕以外的樣子。只有 200 才顯示。
-    return resp.ok;
+    const resp = await fetch('/api/external-services/speech/status', {
+      credentials: 'same-origin',
+    });
+    if (!resp.ok) return false;
+    return speechStatusAllowsMic(await resp.json());
   } catch {
     return false;
   }
+}
+
+/**
+ * 載入時問一次，視窗聚焦或分頁回到前景再問一次。沒有定時器。
+ * @param {() => void} run
+ * @returns {() => void} 解除監聽
+ */
+export function watchSpeechStatus(run) {
+  const onFocus = () => run();
+  const onVisibility = () => {
+    if (document.visibilityState === 'visible') run();
+  };
+  window.addEventListener('focus', onFocus);
+  document.addEventListener('visibilitychange', onVisibility);
+  run();
+  return () => {
+    window.removeEventListener('focus', onFocus);
+    document.removeEventListener('visibilitychange', onVisibility);
+  };
 }

@@ -302,7 +302,7 @@ class IntranetExportDoclingTests(unittest.TestCase):
         self.assertIn("INCLUDE_ASR=0", text)
         self.assertIn("開機後第二步", text)
         self.assertIn(
-            "intranet-image-overrides.yml -f infra/compose/asr-cpu.yml --profile asr",
+            "intranet-image-overrides.yml --profile asr",
             text,
         )
         default_up = (

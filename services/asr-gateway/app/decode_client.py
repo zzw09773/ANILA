@@ -315,6 +315,33 @@ def env_credential(settings) -> str:
     return (settings.ASR_DECODER_TOKEN or "").strip()
 
 
+def align_decode_client(
+    client: _BaseDecodeClient | None,
+    *,
+    base_url: str,
+    credential: str,
+    protocol: str,
+    openai_model: str,
+) -> _BaseDecodeClient:
+    """把治理中心這次的位址、憑證、協定套到 client 上。
+
+    協定沒變就改原物件（測試與進行中的連線拿的是同一個）。
+    協定變了才換類別，並沿用原來的 httpx client，避免多一條連線池。
+    """
+    kind = normalise_protocol(protocol or PROTOCOL_NATIVE)
+    model = (openai_model or "whisper-1").strip() or "whisper-1"
+    if client is not None and getattr(client, "protocol", None) == kind:
+        client.set_base_url(base_url)
+        client.set_credential(credential)
+        if hasattr(client, "_model"):
+            client._model = model
+        return client
+    http = getattr(client, "_client", None) if client is not None else None
+    if kind == PROTOCOL_OPENAI:
+        return OpenAIDecodeClient(base_url, credential, model=model, client=http)
+    return DecodeClient(base_url, credential, client=http)
+
+
 def make_decode_client(settings, *, client: httpx.AsyncClient | None = None):
     """依 `ASR_DECODE_PROTOCOL` 建對應的傳輸。值不合法直接 raise。"""
     protocol = normalise_protocol(settings.ASR_DECODE_PROTOCOL)

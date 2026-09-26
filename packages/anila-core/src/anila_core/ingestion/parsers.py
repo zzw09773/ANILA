@@ -129,6 +129,9 @@ def extract_text(
             # Structured parser refusals (e.g. binary-as-text) must not be
             # collapsed into E_PARSE_CORRUPT by the generic handler below.
             raise
+        except RemoteParseError:
+            # 控制面讀不到、或已設定的遠端服務故障。不是檔案壞了。
+            raise
         except ValueError as e:
             # Unsupported extension — plain sentence for users; full
             # registry listing stays in structured details only.

@@ -43,4 +43,11 @@ export function createAsrSession(options: AsrSessionOptions): AsrSession
 
 export function appendTranscript(draft: string, addition: string): string
 
+export function speechStatusAllowsMic(body: {
+  enabled?: boolean
+  healthy?: boolean
+} | null | undefined): boolean
+
 export function probeAsrAvailable(): Promise<boolean>
+
+export function watchSpeechStatus(run: () => void): () => void

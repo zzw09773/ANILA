@@ -828,6 +828,41 @@ class RemoteDoclingParser:
 # Env-driven factory
 # ──────────────────────────────────────────────────────────────────────
 
+def build_remote_docling_parser(base_url: str, token: str) -> RemoteDoclingParser:
+    """用治理中心給的位址組一個遠端 parser。逾時與 OCR 語言仍讀環境變數。
+
+    位址與憑證不從這裡讀 ``DOCLING_URL`` / ``DOCLING_SERVICE_TOKEN``。
+    """
+    langs = [s.strip() for s in DEFAULT_OCR_LANGS.split(",") if s.strip()]
+    raw_langs = os.getenv("DOCLING_OCR_LANGS", "").strip()
+    if raw_langs:
+        langs = [s.strip() for s in raw_langs.split(",") if s.strip()] or langs
+
+    def _env_float(name: str, default: str) -> float:
+        raw = os.getenv(name, default)
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            raise ParseError.bad_config(
+                user_message="文件解析服務的設定值不合法，請聯絡平台管理員。",
+                details={"setting": name, "value": raw},
+            ) from None
+
+    return RemoteDoclingParser(
+        base_url=base_url,
+        token=token,
+        ocr_langs=langs,
+        enable_picture_description=os.getenv(
+            "DOCLING_PICTURE_DESCRIPTION", "false"
+        ).lower() == "true",
+        do_table_structure=os.getenv(
+            "DOCLING_TABLE_STRUCTURE", "true"
+        ).lower() == "true",
+        timeout=_env_float("DOCLING_TIMEOUT_SECONDS", "120"),
+        connect_timeout=_env_float("DOCLING_CONNECT_TIMEOUT_SECONDS", "5"),
+    )
+
+
 def build_docling_parser_from_env() -> Optional[RemoteDoclingParser]:
     """Construct a remote Docling parser when ``DOC_PARSER=docling``, else None.
 
@@ -848,37 +883,7 @@ def build_docling_parser_from_env() -> Optional[RemoteDoclingParser]:
     """
     if os.getenv("DOC_PARSER", "native").lower() != "docling":
         return None
-    langs = [s.strip() for s in DEFAULT_OCR_LANGS.split(",") if s.strip()]
-    raw_langs = os.getenv("DOCLING_OCR_LANGS", "").strip()
-    if raw_langs:
-        langs = [s.strip() for s in raw_langs.split(",") if s.strip()] or langs
-
-    def _env_float(name: str, default: str) -> float:
-        raw = os.getenv(name, default)
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            # 設定手誤(如 DOCLING_TIMEOUT_SECONDS=abc)不能讓裸 ValueError 掉進
-            # parsers.py 的「不支援副檔名」分支,把組態錯說成檔案格式錯。
-            # 結構化、terminal;body 不帶內部變數名與值(使用者不會去修 .env、
-            # 也不該看到內部組態名)——設定名只進 details(=log),維運看得到。
-            raise ParseError.bad_config(
-                user_message=(
-                    "文件解析服務的設定值不合法,請聯絡平台管理員。"
-                ),
-                details={"setting": name, "value": raw},
-            ) from None
-
-    return RemoteDoclingParser(
-        base_url=os.getenv("DOCLING_URL", ""),
-        token=os.getenv("DOCLING_SERVICE_TOKEN", ""),
-        ocr_langs=langs,
-        enable_picture_description=os.getenv(
-            "DOCLING_PICTURE_DESCRIPTION", "false"
-        ).lower() == "true",
-        do_table_structure=os.getenv(
-            "DOCLING_TABLE_STRUCTURE", "true"
-        ).lower() == "true",
-        timeout=_env_float("DOCLING_TIMEOUT_SECONDS", "120"),
-        connect_timeout=_env_float("DOCLING_CONNECT_TIMEOUT_SECONDS", "5"),
+    return build_remote_docling_parser(
+        os.getenv("DOCLING_URL", ""),
+        os.getenv("DOCLING_SERVICE_TOKEN", ""),
     )

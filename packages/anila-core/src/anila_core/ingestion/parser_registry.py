@@ -1548,22 +1548,62 @@ class ParserRegistry:
 
     @classmethod
     def _get_docling_parser(cls):
-        """Return the cached Docling parser, or None when DOC_PARSER!=docling.
+        """已註冊治理中心來源時，只聽那個來源。
 
-        The env var is consulted on every call (cheap) so switching it off
-        immediately takes effect, but the parser instance is constructed at
-        most once per process. Since docling went remote (2026-08) that
-        instance is a ``RemoteDoclingParser`` (an HTTP client) or ``None`` —
-        the in-process ``DoclingParser`` class is reference-only and is never
-        built here.
+        沒註冊（anila-core 自己的測試、尚未接上的行程）才看 ``DOC_PARSER``。
+        治理中心說沒設定才回 ``None``（原生解析器）。已設定卻讀不到、
+        或啟用了但沒有位址，都不會改走原生解析器。
         """
+        from anila_core.ingestion.docling_source import (
+            DoclingMisconfigured,
+            DoclingSourceUnavailable,
+            docling_source_registered,
+            resolve_docling_endpoint,
+        )
+        from anila_core.ingestion.errors import ParseError, RemoteParseError
+
+        if docling_source_registered():
+            try:
+                endpoint = resolve_docling_endpoint()
+            except DoclingMisconfigured as exc:
+                raise ParseError.bad_config(
+                    "文件解析服務已啟用，但位址不完整。"
+                    "請到治理中心的外部服務補上。"
+                    "這份文件不會改用內建解析器。",
+                    details={"reason": "misconfigured"},
+                ) from exc
+            except DoclingSourceUnavailable as exc:
+                raise RemoteParseError.endpoint_unavailable(
+                    "目前讀不到文件解析設定，這份文件沒有送去解析。請稍後重試。",
+                    details={"reason": "source_unavailable"},
+                ) from exc
+            if endpoint is None:
+                cls._docling_parser = None
+                cls._docling_initialised = True
+                return None
+            current = cls._docling_parser
+            wanted_url = endpoint.base_url.rstrip("/")
+            wanted_token = endpoint.token or ""
+            if (
+                current is not None
+                and getattr(current, "_base_url", None) == wanted_url
+                and getattr(current, "_token", "") == wanted_token
+            ):
+                return current
+            from .docling_parser import build_remote_docling_parser
+            cls._docling_parser = build_remote_docling_parser(
+                wanted_url, wanted_token
+            )
+            cls._docling_initialised = True
+            return cls._docling_parser
+
         if os.getenv("DOC_PARSER", "native").lower() != "docling":
             return None
         if not cls._docling_initialised:
             from .docling_parser import build_docling_parser_from_env
             # ⚠ 2026-08-17:失敗不再是「fallback 到 native」。DOC_PARSER=docling
             # 是擁有者明示的選用──選了它、建構失敗卻靜默退回較差的 native 解析,
-            # 等於拿一個綠燈換一台被關掉的 docling。讓錯誤往上冒,operatator 才會
+            # 等於拿一個綠燈換一台被關掉的 docling。讓錯誤往上冒,operator 才會
             # 看見。RemoteDoclingParser 的建構子刻意不 raise(缺 DOCLING_URL 是延遲
             # 到 parse() 才驗),所以會走到這裡 raise 的只有壞設定(如過時 timeout)。
             cls._docling_parser = build_docling_parser_from_env()

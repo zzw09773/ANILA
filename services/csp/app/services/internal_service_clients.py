@@ -64,7 +64,7 @@ _LOCK = threading.RLock()
 # cannot look the same as a healthy boot.
 _provision_failed: tuple[str, ...] | None = None
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,98}$")
-_CLIENT_TYPES = frozenset({"router", "worker", "admin_tool", "studio"})
+_CLIENT_TYPES = frozenset({"router", "worker", "admin_tool", "studio", "asr"})
 _CREDENTIALS = frozenset({"service_token", "api_key"})
 _UNSET = object()
 
@@ -81,6 +81,7 @@ TOKEN_DIR_OWNER_UID = 10005
 ROUTER_FILE_GID = 10002
 STUDIO_FILE_GID = 10003
 WORKER_FILE_GID = 10004
+ASR_FILE_GID = 10006
 DEFAULT_ROTATE_AFTER = timedelta(days=30)
 DEFAULT_GRACE = timedelta(hours=24)
 _MIN_PROVISION_INTERVAL_SECONDS = 60
@@ -122,6 +123,12 @@ DEFAULT_INTERNAL_SERVICE_CLIENTS: tuple[InternalServiceClientSpec, ...] = (
         description="ingestion-worker 系統帳號的 API key；明文只寫憑證檔",
         file_gid=WORKER_FILE_GID,
         credential="api_key",
+    ),
+    InternalServiceClientSpec(
+        client_name="asr-gateway",
+        client_type="asr",
+        description="asr-gateway 讀取語音解碼位址；憑證由 CSP 核發",
+        file_gid=ASR_FILE_GID,
     ),
 )
 
@@ -237,6 +244,8 @@ def _with_required_clients(
         kept.append(_builtin("anila-studio"))
     if "ingestion-worker" not in saw:
         kept.append(_builtin("ingestion-worker"))
+    if "asr-gateway" not in saw:
+        kept.append(_builtin("asr-gateway"))
     return tuple(kept)
 
 

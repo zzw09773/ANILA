@@ -344,6 +344,26 @@ async def lifespan(app: FastAPI):
         _db.close()
     trusted_host_service.register_with_url_guard()
 
+    # 外部服務：舊環境變數只匯入一次，之後 parser 讀這張表。
+    from app.services.external_services import (
+        import_legacy_env_once,
+        register_document_parser_source,
+        rewrap_legacy_credentials,
+        start_external_service_probe,
+    )
+    _ext = _SessionLocal()
+    try:
+        import_legacy_env_once(_ext)
+        rewrap_legacy_credentials(_ext)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "external_services: 環境變數匯入失敗"
+        )
+    finally:
+        _ext.close()
+    register_document_parser_source()
+    external_probe_task = await start_external_service_probe()
+
     # Start background tasks
     from app.services.alert_detectors import start_alert_detectors
     from app.services.audit_ledger import start_audit_checkpointer
@@ -405,6 +425,8 @@ async def lifespan(app: FastAPI):
         ledger_task.cancel()
     if provision_task:
         provision_task.cancel()
+    if external_probe_task:
+        external_probe_task.cancel()
     memory_task.cancel()
     await close_pool()
 
