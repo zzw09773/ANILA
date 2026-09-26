@@ -62,12 +62,6 @@ FLOOR_RULES = (
         "Arq 0.26 is the first release with the Pydantic v2-compatible JobResult model.",
     ),
     (
-        "services/flux2-dev/requirements.txt",
-        "diffusers",
-        "0.36.0",
-        "FLUX.2-dev requires Flux2Pipeline, introduced at the 0.36 line.",
-    ),
-    (
         "services/asr-decoder/pyproject.toml",
         "faster-whisper",
         "1.0",

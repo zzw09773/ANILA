@@ -33,10 +33,9 @@
    存在就 no-op。**沒有這個修補,內網首次部署的 DB 會壞**(本版已含)。
 5. **內網 `.env` 維持 strict**:`ANILA_ALLOW_DEV_SECRET=0`、`ANILA_ALLOW_HTTP_ENDPOINT=0`
    (模型走 https gateway)、真密碼。**別把外網 dev 機放寬過的 `.env` 帶進內網。**
-6. **第一版 gateway-only**:模型走 .12 gateway,不跑本地模型/權重。`.env.example` 已配:
-   `LLM_MODEL=openai/gpt-oss-20b`、embedding `nvidia/nv-embed-v2`、`GEMMA4_BASE_URL=`/
-   `FLUX_AGENT_BASE_URL=` 留空(auto_seed 自動跳過,不需本地權重)。**你只需在 .12 簽
-   發後填 `MODEL_GATEWAY_API_KEY`**。權重日後到了再開 gemma4/flux 即可,架構不變。
+6. **第一版 gateway-only**:模型走 .12 gateway,不跑本地模型/權重。`.env.example` 已配
+   gateway 的 LLM 與 embedding。`GEMMA4_BASE_URL=` 留空時不註冊本機 gemma4。**你只需在 .12 簽
+   發後填 `MODEL_GATEWAY_API_KEY`**。簡報配圖在治理中心指定生圖模型；沒設就不配生成圖片。本機不跑生圖服務。
 7. **JWT 簽章金鑰(2026-06-15 live 預演抓到)**:csp 用 RSA 私鑰簽登入 access token
    並對 anila-studio 等發 JWKS。production runtime **不自動生 key**;
    缺這把 → csp `/.well-known/jwks.json` 回 500、**登入發不了 token、anila-studio
@@ -155,7 +154,7 @@ cd /home/aia/c1147259/ANILA
 # 基本款 (純 gateway 架構,平台主機不跑模型):
 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 
-# 要在內網本機跑模型 (FLUX 繪圖 / gemma4) 就連 image + 權重一起:
+# 要在內網本機跑 LLM / embedding 就連 image + 權重一起:
 WITH_MODELS=1 WITH_WEIGHTS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 ```
 
@@ -165,8 +164,8 @@ WITH_MODELS=1 WITH_WEIGHTS=1 bash infra/deployment/intranet/build-and-export-for
 01-anila-built.tar.gz       (csp / ingestion-worker / router / anilalm / anila-ui / pptx-renderer)
 02-base.tar.gz              (pgvector / redis / nginx)
 03-cold.tar.gz              (codeserver / n8n — nginx 鎖死但保留；GitLab 已於 2026-09-26 撤下)
-04-models.tar.gz            (WITH_MODELS=1:含 flux2-dev / anila-flux-agent / vllm-gemma4 等,數十 GB)
-05-weights-*.tar            (WITH_WEIGHTS=1:預設 FLUX.2-dev 166G + gemma4 59G + assistant 0.9G)
+04-models.tar.gz            (WITH_MODELS=1:vllm-gemma4 / tensorrt / triton / embedding-proxy,數十 GB)
+05-weights-*.tar            (WITH_WEIGHTS=1:預設 gemma-4-31B-it 與 assistant)
 INTRANET-LOAD.sh            (內網一鍵 import,含 sha256 驗檔 + 權重解壓)
 MANIFEST.txt / CHECKSUMS.sha256
 intranet-image-overrides.yml   (compose up 時將 pinned image 改為已 load 的 tag-only)
@@ -211,8 +210,8 @@ intranet-image-overrides.yml   (compose up 時將 pinned image 改為已 load �
 > 網頁拖拉容易斷且無校驗,不建議。
 
 **批次 A(進場必要,≈ 0.8 TB ≈ 1~1.5 天 quota)**:平台 image tar.gz(§1.2)
-+ 本機既有權重(gemma-4-31B-it 59G + assistant 0.9G + NV-Embed-v2 30G +
-FLUX.2-dev 166G)+ 需下載的 H100 運行模型(gemma-4-12B 22G + 26B-A4B 48G +
++ 本機既有權重(gemma-4-31B-it 59G + assistant 0.9G + NV-Embed-v2 30G)+
+需下載的 H100 運行模型(gemma-4-12B 22G + 26B-A4B 48G +
 gpt-oss-120b 182G)+ toolkit ~100G(超日上限就順延隔天)。
 
 **批次 B(B200 期貨等,≈ 2.3 TB,之後分天傳)**:Maverick bf16/w4a16/FP8、
@@ -263,7 +262,7 @@ bash infra/deployment/intranet/unpack-chunks.sh /transfer/gemma-4-26B-A4B.manife
 清單 (12 repo,**instruct 定案 2026-06-10**):Llama-4 Maverick bf16(748G)+
 w4a16(201G,H100 用)+FP8(388G,B200 用)/Scout-**Instruct**(202G)、gemma-4
 26B-A4B/E4B/12B(48/15/22G)、gpt-oss-120b(182G)、Mistral-Medium-3.5(249G)/
-Small-4(225G)、FLUX.2-dev(165G,本機已有)/klein-4B(22G)。
+Small-4(225G)。生圖權重不在進場清單。
 **gemma-4-31B-it(58G)本機已有不下載**,直接 pack-chunks 上傳。
 
 > **量化策略** (H100 現在 / B200 未來):
@@ -458,10 +457,9 @@ MODEL_GATEWAY_API_KEY=<在 aiagent2 平台簽發>
 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
 GEMMA4_BASE_URL=                  # 空 = 內網無 gemma4,auto_seed 跳過
-# 主路由、簡報、視覺、摘要、知識庫對話：部署後到治理中心「模型 → 模型角色」指定。
+# 主路由、簡報、生圖、視覺、摘要、知識庫對話：部署後到治理中心「模型 → 模型角色」指定。
 # 不要在 .env 寫 LLM_MODEL / ANILALM_DEFAULT_CHAT_MODEL / VISION_MODEL。
-FLUX_AGENT_BASE_URL=              # 空 = 無 FLUX,繪圖 agent 不註冊
-FLUX_BACKEND_URL=                 # 空 = studio 圖像 pipeline 停用
+# 本機不再跑生圖服務。沒設生圖角色時，簡報不配生成圖片。
 ENABLE_IMAGE_CAPTIONS=false       # 內網無 VLM,文件圖片以 [image] 處理
 ```
 
@@ -504,7 +502,7 @@ docker compose -p anila \
 
 ```bash
 # owner 登入(卡片,或 break-glass 帳密)拿 token 後:
-for h in nv-embed-proxy gemma4 gpt-oss-20b flux2-dev-agent; do
+for h in nv-embed-proxy gemma4 gpt-oss-20b; do
   curl -sk -X POST https://localhost/api/trusted-hosts \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
     -d "{\"host\":\"$h\",\"note\":\"本機模型容器\"}"
@@ -900,7 +898,7 @@ docker compose -p anila exec csp python -c "import socket; print(socket.gethostb
 ### 4.3 確認 model 註冊
 
 `/models` 應看到 **`openai/gpt-oss-20b`** (LLM) + **`nvidia/nv-embed-v2`** (embedding),健康綠。
-**不應**看到 gemma4 或 image-generator (空 endpoint 已被 auto_seed 跳過;出現 = .env 沒設空)。
+**不應**看到本機 image-generator。簡報配圖在治理中心「模型角色」指定，不靠 auto_seed。gemma4 只在 `GEMMA4_BASE_URL` 有值時註冊。
 
 ### 4.4 端到端驗收
 
@@ -910,12 +908,12 @@ docker compose -p anila exec csp python -c "import socket; print(socket.gethostb
 
 ---
 
-## 4.5 (選配) 本機模型混合模式 — FLUX 繪圖 / gemma4 回歸
+## 4.5 (選配) 本機模型混合模式 — gemma4 回歸
 
-**前提:平台主機有 GPU**(FLUX 要 2 張、gemma4 要 1 張,見 `infra/models/docker-compose.yml`
-的 `device_ids`,依內網主機 GPU 配置調整)。
+**前提:平台主機有 GPU**（gemma4 要 1 張,見 `infra/models/docker-compose.yml`
+的 `device_ids`,依內網主機 GPU 配置調整）。本機不再跑生圖模型。
 
-架構:LLM/embedding 繼續走 aiagent2 gateway,FLUX(+gemma4)在本機跑。
+架構:LLM/embedding 繼續走 aiagent2 gateway。簡報配圖用治理中心的生圖角色。
 
 ```bash
 # 1. 權重放 <repo>/models/model (= ANILA_HF_DIR 預設;INTRANET-LOAD/rsync
@@ -923,21 +921,16 @@ docker compose -p anila exec csp python -c "import socket; print(socket.gethostb
 
 # 2. 起模型 stack (獨立 compose project;腳本會自動 source .env + 建 network)
 cd /opt/anila
-bash infra/deployment/intranet/model-serve.sh up flux2-dev flux2-dev-agent  # 要 gemma4 就加上
 # 內網 H100 完整組 (gemma4/A4B/12B/120B/nv-embed) 一鍵:
 # bash infra/deployment/intranet/model-serve.sh up intranet
 
-# 3. 平台 .env 把對應變數從「空字串」改回「不設」(刪掉或註解),
-#    讓 compose 預設的 docker DNS 名生效:
-#    FLUX_AGENT_BASE_URL=   → 刪除該行 (恢復 http://flux2-dev-agent:8000)
-#    FLUX_BACKEND_URL=      → 刪除該行 (恢復 http://flux2-dev:8000)
-#    GEMMA4_BASE_URL=       → 跑了 gemma4 才刪;同時可開回:
+# 3. 跑了 gemma4 才把 GEMMA4_BASE_URL 從空字串拿掉，並可開回:
 #    ENABLE_IMAGE_CAPTIONS=true
-#    圖說與 PDF OCR 用治理中心的「視覺模型」角色，不設 VISION_MODEL
+#    圖說與 PDF OCR 用治理中心的「視覺模型」角色，不設 VISION_MODEL。
+#    簡報配圖在治理中心指定「生圖模型」（類型 image）。沒設就不配生成圖片。
 
 # 4. 重建平台 csp 讓 auto_seed 重新註冊
 cd /opt/anila && docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
-# /models 應出現 image-generator (圖像繪製);對話輸入「畫一張…」驗證 dispatch
 ```
 
 ---
@@ -986,7 +979,7 @@ NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p 
 | 全部 GPU 容器 `CUDA error 803: unsupported display driver / cuda driver combination`,host `nvidia-smi` 卻正常 | driver 升級後舊版 userspace 庫殘留(不屬任何套件),container toolkit 注入到舊檔 | `dpkg -S /usr/lib/x86_64-linux-gnu/libcuda.so.<舊版號>` 查無歸屬即孤兒 → `sudo find /usr/lib/x86_64-linux-gnu -name '*<舊版號>*' -delete && sudo ldconfig` |
 | 清完孤兒庫後新容器 create 直接炸 `failed to fulfil mount request` | CDI spec 是開機時舊狀態生成的快取 | `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml` |
 | 修完 toolkit 後容器照樣 803 | 既有容器的 mount spec 在 create 時就固定了 | `docker start` 沒用,必須 **recreate**(`compose up -d --force-recreate`) |
-| 模型容器 healthy 但推論才炸 GPU 錯 | lazy-load 服務(如 FLUX)health check 不碰 CUDA | healthy ≠ GPU 可用,進場驗收一定要打一次真推論 |
+| 模型容器 healthy 但推論才炸 GPU 錯 | health check 不碰 CUDA | healthy ≠ GPU 可用,進場驗收一定要打一次真推論 |
 
 ### 6.2 模型不通 (本次新拓撲最常見)
 

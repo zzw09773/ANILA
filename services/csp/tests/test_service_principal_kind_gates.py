@@ -75,21 +75,6 @@ def _plant_router_primary(db) -> ModelRegistry:
     return model
 
 
-def _plant_image_primary(db) -> ModelRegistry:
-    model = ModelRegistry(
-        name="kindgate-image",
-        display_name="kindgate-image",
-        model_type="image",
-        endpoint_url="https://flux.example.internal/generate",
-        is_active=True,
-        is_image_primary=True,
-    )
-    db.add(model)
-    db.commit()
-    db.refresh(model)
-    return model
-
-
 def _plant_asr_primary(db) -> ModelRegistry:
     model = ModelRegistry(
         name="kindgate-asr",
@@ -110,13 +95,11 @@ def _plant_asr_primary(db) -> ModelRegistry:
     [
         ("GET /api/auth/revocations", "revocations"),
         ("GET /api/models/router-primary", "router"),
-        ("GET /api/models/image-primary", "image"),
         ("GET /api/models/asr-primary", "asr"),
     ],
     ids=[
         "revocations",
         "router-primary",
-        "image-primary",
         "asr-primary",
     ],
 )
@@ -137,9 +120,6 @@ def test_a1_agent_kind_rejected_on_each_platform_endpoint(
     elif setup == "router":
         _plant_router_primary(db)
         resp = client.get("/api/models/router-primary", headers=headers)
-    elif setup == "image":
-        _plant_image_primary(db)
-        resp = client.get("/api/models/image-primary", headers=headers)
     else:
         _plant_asr_primary(db)
         resp = client.get("/api/models/asr-primary", headers=headers)

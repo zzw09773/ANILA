@@ -87,7 +87,7 @@ services:
       # 啟動時拒絕自動 alembic upgrade。預設 0＝仍遷移。沒有這一行,.env 寫了到不了容器。
       ANILA_SKIP_STARTUP_MIGRATIONS: "${ANILA_SKIP_STARTUP_MIGRATIONS:-0}"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
-      # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
+      # docker-internal http endpoints (e.g. http://gemma4:8000), so
       # register + health-check would otherwise fail "scheme must be https".
       # Hardcoded "1" overrides .env (which keeps 0); prod compose still reads
       # .env=0 → stays strict (https + no private).
@@ -100,10 +100,8 @@ services:
       ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
       # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
       ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
-      # flux2-dev-agent added: the image-generator agent + image model use this
-      # docker service name (single-label), which the URL guard blocks unless
-      # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent},docling,router"
+      # 單標籤 docker 服務名要列在這裡才過得了 URL guard。
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy},docling,router"
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
       ANILA_AUTH_MODE: "${ANILA_AUTH_MODE:-password}"
@@ -116,23 +114,17 @@ services:
       ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
       ANILA_SERVICE_CLIENT_FILE_GID: "10002"
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"http://gemma4:8000","api_version":"v1","description":"On-prem gemma4 vLLM (anila-models-net) — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"http://gemma4:8000","api_version":"v1","description":"On-prem gemma4 vLLM (anila-models-net) — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
       # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
       AUTO_REGISTER_AGENTS: >-
-        [{"name":"image-generator","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
+        []
       # Dev 用獨立 seed key，跟 prod sk-test-user-api-key 區隔開——避免你拿 dev key
       # 不小心打到 prod CSP，或反過來。
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":["image-generator"]}]
-      # FLUX image-gen for ANILALM studio pptx pipeline — wires
-      # studio.image_provider.FluxImageProvider; empty BACKEND_URL
-      # would make get_flux_provider() return None (toggle OFF).
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL:-http://flux2-dev:8000}
-      FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
-      FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
-      # FLUX_CACHE_DIR defaults to the studio-owned flux cache volume.
-      # 只供第一次啟動把舊 .env 匯入治理中心。空值不會被當成已設定。
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":[]}]
+      # 文件解析位址在治理中心「外部服務」。下面三行只給第一次啟動匯入舊 .env，
+      # 匯入後請從 .env 刪掉。執行期不再用它們決定要打哪一台。空值不會被當成已設定。
       DOC_PARSER: "${DOC_PARSER:-}"
       DOCLING_URL: "${DOCLING_URL:-}"
       DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
@@ -231,7 +223,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-prod}
       ANILA_ALLOW_DEV_SECRET: "1"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
-      # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
+      # docker-internal http endpoints (e.g. http://gemma4:8000), so
       # register + health-check would otherwise fail "scheme must be https".
       # Hardcoded "1" overrides .env (which keeps 0); prod compose still reads
       # .env=0 → stays strict (https + no private).
@@ -316,7 +308,7 @@ services:
     logging: *anila-logging
 
   # ── anila-studio (Studio extraction Phase 2 skeleton) ───────────────────
-  # The deck generation service (FLUX images + RAG + PPTX) extracted out of
+  # The deck generation service (RAG + PPTX) extracted out of
   # csp. Reads JWKS + token revocation events from csp via HTTP/Redis so
   # cross-service auth works without sharing private keys.
   anila-studio:
@@ -330,11 +322,7 @@ services:
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/anila-studio/token
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      FLUX_BACKEND_URL: http://flux2-dev:8000
-      # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
-      # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
-      # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
-      FLUX_CACHE_DIR: /var/anila/anila-studio-flux-cache
+      # 簡報配圖走治理中心的生圖角色，經 CSP 代理。
       # report / mindmap / infographic / datatable 4 種 artifact 的持久化目錄。
       # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
@@ -349,12 +337,11 @@ services:
       pptx-renderer:
         condition: service_healthy
     volumes:
-      - anila-studio-flux-cache-dev:/var/anila/anila-studio-flux-cache
       - anila-studio-artifacts-dev:/var/anila/anila-studio-artifacts
       - anila-service-credentials-dev:/run/anila/service-clients:ro
     networks:
       - default
-      - anila-models-net  # flux2-dev sits here
+      - anila-models-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
@@ -511,5 +498,4 @@ volumes:
   anila-csp-local-secrets-dev:
   csp-pgdata-dev:
   redis-data-dev:
-  anila-studio-flux-cache-dev:
   anila-studio-artifacts-dev:

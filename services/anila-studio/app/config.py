@@ -20,26 +20,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # csp (control plane) HTTP base — used by csp_client for RAG, model
-    # registry, LLM proxy, revocations cold-start sync, and (2026-07-06)
-    # flux_image_primary's runtime image-primary fetcher.
+    # roles, LLM proxy, image generation, and revocations cold-start sync.
     CSP_BASE_URL: str = "http://csp:8000"
-    # Service-to-service shared secret (legacy) — eventually agent-credential
-    # bearer will replace this. Same env name as csp side. Sent as
-    # ``X-CSP-Service-Token`` by job_reporting.py / revocation_cache.py, and
-    # (2026-07-06) reused as-is by flux_image_primary.get_image_primary() —
-    # no separate service-token env was introduced for the image-primary
-    # fetcher.
+    # Service-to-service shared secret (legacy). Sent as
+    # ``X-CSP-Service-Token`` by job_reporting.py / revocation_cache.py.
     CSP_SERVICE_TOKEN: str = ""
-
-    # FLUX 圖像生成 — OpenAI 相容 Images API(POST {base}/v1/images/generations)。
-    # base URL 指到伺服器根或含 /v1 皆可(client 會自動補版本段)。
-    # 注意:studio_render.get_flux_provider() / get_active_flux_provider()
-    # 直接讀 os.environ,這裡的欄位僅作文件用途;另有 FLUX_MODEL /
-    # FLUX_API_KEY / FLUX_MAX_CONCURRENT / FLUX_TIMEOUT_SECONDS 只在 env、
-    # 不在本檔。這組 env 現在是「csp image-primary 未設定時」的 fallback —
-    # get_active_flux_provider() 執行期優先向 csp 拉 admin 標記的主圖像模型
-    # (見 app/services/flux_image_primary.py),csp 沒設定才落回這裡。
-    FLUX_BACKEND_URL: str = "http://flux2-dev:8000"
 
     # pptx-renderer HTTP base (Node.js service)
     RENDERER_BASE_URL: str = "http://pptx-renderer:7100"
@@ -64,9 +49,6 @@ class Settings(BaseSettings):
     # csp itself defaults LLM_TIMEOUT=300 internally — production stack
     # must override that env to ≥300 alongside this setting.
     INTERNAL_LLM_TIMEOUT_SECONDS: float = 300.0
-
-    # FLUX cache dir — local volume on the anila-studio container.
-    FLUX_CACHE_DIR: str = "/var/anila/anila-studio-flux-cache"
 
     # Persistence root for non-PPTX artifacts (report HTML/PDF/DOCX, mindmap
     # SVG, infographic HTML/PNG, datatable CSV/XLSX/HTML). Each job writes

@@ -1,6 +1,6 @@
 # ANILA models — 推論模型獨立 compose
 
-> 與平台 stack **生命週期解耦**的獨立 compose project（`name: anila-models`），收容 ANILA 的推論工作負載：本地 LLM、embedding、以及 FLUX 圖像生成。全部 air-gapped、僅內網可達（不開 host port），跨 stack 走 external network `anila-models-net` 的 docker DNS。
+> 與平台 stack **生命週期解耦**的獨立 compose project（`name: anila-models`），收容 ANILA 的推論工作負載：本地 LLM 與 embedding。全部 air-gapped、僅內網可達（不開 host port），跨 stack 走 external network `anila-models-net` 的 docker DNS。簡報配圖不在這份 compose。
 
 > 中文為主版；English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
@@ -10,7 +10,7 @@
 
 ## 定位
 
-`infra/models/` 收容一份 `docker-compose.yml`（project `anila-models`）與非 FLUX 服務的 build context（`src/`）。它與平台 stack（`anila`，見根 `compose.yaml` → `infra/compose/platform.yml`）是**兩個獨立 project**：
+`infra/models/` 收容一份 `docker-compose.yml`（project `anila-models`）與服務的 build context（`src/`）。它與平台 stack（`anila`，見根 `compose.yaml` → `infra/compose/platform.yml`）是**兩個獨立 project**：
 
 - 在 repo 根跑 `docker compose down` 只會停平台，**不會誤殺**這裡的模型容器。
 - 兩個 project 靠共用的 external network `anila-models-net` 互通；CSP／Router／Studio 以 docker DNS（如 `http://gemma4:8000`）連上模型，host port 完全沒開。
@@ -28,8 +28,6 @@
 | `gemma4` | vLLM（gemma-4-31B-it + MTP 投機解碼，`served-model-name=gemma4`） | `["3"]` | `expose 8000` |
 | `nv-embed-triton` | Triton（NV-Embed-v2 後端） | `["0"]` | **無 expose／port**（純 cluster-internal） |
 | `nv-embed-proxy` | OpenAI `/v1/embeddings` shim（`build ./src/embedding_proxy`，橋接 Triton） | — | `expose 8000` |
-| `flux2-dev` | FLUX.2-dev 文生圖後端 | `["1","2"]` | `expose 8000` |
-| `flux2-dev-agent` | 圖像繪製 agent 包裝層（OpenAI chat 相容） | — | `expose 8000` |
 
 **`--profile intranet` 組** — 內網 H100 新增（generic vLLM image，GPU 以 env 覆寫）：
 
@@ -39,7 +37,7 @@
 | `gemma-4-12b` | ~22G bf16 | `${GEMMA_12B_GPU:-2}` |
 | `gpt-oss-120b` | 原生 MXFP4 ~63G | `${GPT_OSS_120B_GPU:-3}` |
 
-> FLUX 兩服務的合約、環境變數、測試與授權細節**不在本文件展開**，見各自 README：[`services/flux2-dev`](../../services/flux2-dev/README.md)（`/generate` 推論後端）與 [`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.md)（agent shim；build context 在 `services/`，本 compose 以 `../../services/flux2-dev*` 引用）。
+> 本機生圖服務已移除。簡報配圖改由治理中心的生圖角色，經 CSP 代理。
 
 ---
 
@@ -47,8 +45,8 @@
 
 ```
 infra/models/
-├── docker-compose.yml   # project anila-models（LLM / embedding / FLUX）
-└── src/                 # 非 FLUX 服務的 build context / 設定
+├── docker-compose.yml   # project anila-models（LLM / embedding）
+└── src/                 # 服務的 build context / 設定
     ├── tensorrtllm-1.2.0rc5-openai-gpt-oss-20b/   # trtllm serve 設定 + encodings + 壓測
     ├── tritonserver-25.04-nv-embed-v2/            # Triton model repository + export
     └── embedding_proxy/                           # nv-embed-proxy FastAPI（app.py + Dockerfile）
@@ -72,11 +70,11 @@ docker network create anila-models-net
 docker compose up -d csp            # 於 repo 根，經 root shim compose.yaml；csp 加入 anila-models-net
 
 # 日常操作（於 repo 根）
-bash infra/deployment/intranet/model-serve.sh up trial          # 現役組：gpt-oss-20b gemma4 nv-embed flux
+bash infra/deployment/intranet/model-serve.sh up trial          # 現役組：gpt-oss-20b gemma4 nv-embed
 bash infra/deployment/intranet/model-serve.sh up intranet       # H100 組：gemma4 26b-a4b 12b 120b nv-embed
 bash infra/deployment/intranet/model-serve.sh up gemma4         # 單一服務（up 一定要給 group 或服務名）
 bash infra/deployment/intranet/model-serve.sh status            # 全部 health 一覽
-bash infra/deployment/intranet/model-serve.sh logs flux2-dev    # tail -f
+bash infra/deployment/intranet/model-serve.sh logs gemma4       # tail -f
 bash infra/deployment/intranet/model-serve.sh down              # 全停（只動模型，平台不受影響）
 ```
 
@@ -84,7 +82,7 @@ bash infra/deployment/intranet/model-serve.sh down              # 全停（只�
 
 ```bash
 docker compose -f infra/models/docker-compose.yml --profile intranet up -d gemma4
-docker compose -f infra/models/docker-compose.yml logs -f flux2-dev
+docker compose -f infra/models/docker-compose.yml logs -f gemma4
 docker compose -f infra/models/docker-compose.yml down
 ```
 
@@ -96,7 +94,7 @@ docker compose -f infra/models/docker-compose.yml down
 
 CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs/04-model-gateway-design.md)）** 才是「註冊、路由、per-model API Key、5-state 健康、`ANILA_ENV` http fail-closed、分類限制、usage trace」的所在。本 compose 只**提供上游端點**，兩件事分層：
 
-- **同機 docker DNS 上游（本 compose）**：`gpt-oss-20b` / `gemma4` / `nv-embed-proxy`（`model_type` 三種）與 `image-generator`（`model_type=agent`，端點 `flux2-dev-agent:8000`）由平台 seed 註冊進 CSP model registry；同網內免 API Key。`nv-embed-triton` 與 `flux2-dev` **不直接註冊**——前者只由 `nv-embed-proxy` 內部連、後者只由 agent／Studio 以 URL 直打。
+- **同機 docker DNS 上游（本 compose）**：`gpt-oss-20b` / `gemma4` / `nv-embed-proxy` 由平台 seed 註冊進 CSP model registry；同網內免 API Key。`nv-embed-triton` 不直接註冊，只由 `nv-embed-proxy` 內部連。生圖模型在治理中心指定，不在這份 compose。
 - **跨機模型（doc 04 的主場景）**：不同內網主機（如 `.12` gateway）的模型走 HTTPS + per-model API Key，由 CSP Model Gateway 代理——那條路徑的憑證／健康／fail-closed 治理在 CSP，不在本 compose。
 
 ---
@@ -106,15 +104,14 @@ CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs
 | 變數 | 預設 | 說明 |
 |------|------|------|
 | `ANILA_HF_DIR` | `../../models/model` | 權重根目錄（相對本 compose 檔） |
-| `ANILA_MODELSRC_DIR` | `./src` | 非 FLUX 服務設定／build context |
+| `ANILA_MODELSRC_DIR` | `./src` | 服務設定／build context |
 | `VLLM_IMAGE` | `vllm/vllm-openai:v0.22.1-cu129-ubuntu2404` | intranet profile 的 generic vLLM image |
 | `GEMMA_A4B_GPU` / `GEMMA_12B_GPU` / `GPT_OSS_120B_GPU` | `1` / `2` / `3` | intranet profile 各模型 GPU |
-| `INTERNAL_PLATFORM_API_KEY` | （必填） | 帶入 `flux2-dev-agent` 的 `CSP_API_KEY`（翻譯 callback；缺值 fail-loud） |
+| `INTERNAL_PLATFORM_API_KEY` | （視部署） | 不再灌進本機生圖服務 |
 
 ---
 
 ## 相關文件
 
-- FLUX 服務：[`services/flux2-dev`](../../services/flux2-dev/README.md)、[`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.md) · FLUX 規格與授權：[`ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)（§9 授權雷區：FLUX.2-dev 為 BFL Non-Commercial，klein-4B 為 Apache-2.0 的乾淨替代）
 - 重設計文件：[`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、[`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
 - 部署腳本：`infra/deployment/intranet/model-serve.sh`（模型生命週期）、`infra/deployment/scripts/deploy-prod.sh`（平台生命週期） · 平台整體：[`../../README.md`](../../README.md)

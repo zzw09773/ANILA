@@ -39,7 +39,7 @@
 #   CSP_SERVICE_TOKEN         service-to-service token,csp/router/anila-studio/
 #                             ingestion-worker 都用同一把
 #   INTERNAL_PLATFORM_API_KEY 內部 system worker API key,ingestion-worker /
-#                             flux2-dev-agent 用
+#                             模型 stack 用
 #   SECRET_KEY                JWT signing key + agent credential AES key
 #
 # 環境變數(可選,有合理 default):
@@ -54,8 +54,8 @@
 #   2. Docker daemon running
 #   3. docker compose v2 可用
 #   4. anila-models-net network 已存在(模型 stack 先起來)
-#   5. 模型服務(gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy)healthy
-#   6. share/uploads/flux 目錄存在(flux2-dev-agent 寫圖檔用)
+#   5. 模型服務(gemma4 / nv-embed-proxy)healthy
+#   6. share/pki 目錄存在(內網模型憑證)
 #   7. 必要 env 已設且非 dev fallback
 # ============================================================================
 set -euo pipefail
@@ -200,13 +200,13 @@ check_models_stack() {
     err "anila-models-net network 不存在"
     fatal "請先起模型 stack:
        bash infra/deployment/intranet/model-serve.sh up trial
-       (確認 gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy 都 healthy)
+       (確認 gemma4 / nv-embed-proxy 都 healthy)
        模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
   fi
   ok "anila-models-net network 存在"
 
   # 列必要的 model service,讓 user 看到 health
-  local need=(anila-model-gemma4 anila-model-nv-embed-proxy anila-model-flux2-dev-agent)
+  local need=(anila-model-gemma4 anila-model-nv-embed-proxy)
   local degraded=0
   for c in "${need[@]}"; do
     local status
@@ -226,7 +226,7 @@ check_models_stack() {
 
 check_dirs() {
   # share/pki:內網模型 https 的內部 CA PEM 放置處 (csp 掛 /etc/anila/pki)。
-  local dirs=(share/uploads/flux share/pki)
+  local dirs=(share/pki)
   for d in "${dirs[@]}"; do
     if [[ ! -d "$d" ]]; then
       log "建立缺漏目錄: $d"

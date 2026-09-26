@@ -38,6 +38,13 @@ _UNSET = {
     "vision": "視覺模型尚未在治理中心設定",
 }
 
+# 生圖是可選的。沒設、不健康、或暫時連不上，簡報照出、只是不配生成圖片。
+# 不沿用過期的成功值：連不上就當成這次沒有生圖模型。
+_IMAGE_ROLE = "image_generation"
+_IMAGE_HEALTH_OK = frozenset({"healthy", "online"})
+_image_model: str | None = None
+_image_checked_at = 0.0
+
 
 class _Slot:
     def __init__(self) -> None:
@@ -160,6 +167,42 @@ async def _refresh(role: str) -> None:
         _remember_transient(slot, role, now)
 
 
+async def resolve_image_generation() -> str | None:
+    """生圖角色的模型名稱。已設定且健康才回；否則 None，不丟例外。"""
+    global _image_model, _image_checked_at
+    now = time.time()
+    if _image_checked_at and now - _image_checked_at < ROLE_TTL_SECONDS:
+        return _image_model
+    async with _lock:
+        now = time.time()
+        if _image_checked_at and now - _image_checked_at < ROLE_TTL_SECONDS:
+            return _image_model
+        url = f"{settings.CSP_BASE_URL.rstrip('/')}/api/models/roles/{_IMAGE_ROLE}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=_headers())
+            if resp.status_code in (401, 403):
+                reload_service_token(True)
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, headers=_headers())
+        except Exception as exc:  # noqa: BLE001 — 生圖失敗不擋簡報
+            logger.warning("model-role %s: 連線 csp 失敗（%s）", _IMAGE_ROLE, exc)
+            _image_model = None
+            _image_checked_at = now
+            return None
+        name: str | None = None
+        if resp.status_code == 200:
+            body = resp.json() if resp.content else {}
+            if isinstance(body, dict):
+                raw = str(body.get("name") or "").strip()
+                health = str(body.get("health_status") or "").strip()
+                if raw and health in _IMAGE_HEALTH_OK:
+                    name = raw
+        _image_model = name
+        _image_checked_at = time.time()
+        return name
+
+
 async def require_role_model(role: str) -> str:
     """角色目前的模型名稱。沒有就 HTTPException，detail 給使用者看。"""
     if role not in _slots:
@@ -187,12 +230,15 @@ async def resolve_model_name(requested: str | None, default: str) -> str:
 
 
 def _reset_for_tests() -> None:
+    global _image_model, _image_checked_at
     for slot in _slots.values():
         slot.model = None
         slot.status = "unknown"
         slot.message = None
         slot.succeeded_at = 0.0
         slot.retry_after = 0.0
+    _image_model = None
+    _image_checked_at = 0.0
 
 
 def _expire_for_tests() -> None:

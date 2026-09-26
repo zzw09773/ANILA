@@ -582,8 +582,8 @@ SCAN_SCRIPT="${SCAN_SCRIPT:-$REPO_ROOT/infra/deployment/scripts/scan-image-artif
 [ -f "$SCAN_SCRIPT" ] || die "找不到掃描腳本:$SCAN_SCRIPT"
 
 # 進 bundle 的貨**全部**要過這一關,不是只有 compose 那批。
-# MODEL_IMAGES 是 WITH_MODELS=1 時 Phase 4 會 save 的六張(其中 embedding-proxy、
-# anila-flux-agent 是本專案自建的),原本完全不經過掃描 —— 那等於留了一條
+# MODEL_IMAGES 是 WITH_MODELS=1 時 Phase 4 會 save 的模型映像(其中 embedding-proxy
+# 是本專案自建的),原本完全不經過掃描 —— 那等於留了一條
 # 「換個旗標就能把髒映像送出門」的路。定義寫在這裡當單一真相來源,Phase 4 直接用。
 # 掃在 save **之前**:一發現髒就停,不要先寫了 1.5GB 的 tar 再說。
 MODEL_IMAGES=(
@@ -591,8 +591,6 @@ MODEL_IMAGES=(
     vllm-gemma4:latest
     tritonserver:25.04-nv-embed-v2
     embedding-proxy:migration
-    flux2-dev:bf16
-    anila-flux-agent:latest
 )
 
 SCAN_INPUTS=()
@@ -802,7 +800,7 @@ echo
 # ── Phase 4b: HF 權重 ───────────────────────────────────────────────────
 if [ "${WITH_WEIGHTS:-0}" = "1" ]; then
     HF_DIR="${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
-    WEIGHTS_LIST="${WEIGHTS_LIST:-FLUX.2-dev gemma-4-31B-it gemma-4-31B-it-assistant}"
+    WEIGHTS_LIST="${WEIGHTS_LIST:-gemma-4-31B-it gemma-4-31B-it-assistant}"
     echo "  • 05-weights-*.tar (WITH_WEIGHTS=1,來源 $HF_DIR)"
     WEIGHT_MISSING=()
     for w in $WEIGHTS_LIST; do

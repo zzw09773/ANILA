@@ -3,8 +3,7 @@
 > ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
 
 Runtime data for the ANILA nginx container. `/static/*` is served publicly;
-`/uploads/` is allowlisted so only `/uploads/flux/*` is reachable (everything
-else under `/uploads/` returns 404). Both subdirectories are git-ignored —
+`/uploads/` is not public (nginx returns 404). Both subdirectories are git-ignored —
 the contents are workflow-specific assets and user uploads, not source code.
 
 ## Layout
@@ -17,12 +16,11 @@ share/
 │   ├── icons/           ← service icons (mlsteam.png / gitlab.png / ...); brought in
 │   │                      from the prod source by the "Migrating" step below, empty initially
 │   └── ...              ← any other static assets the workflows reference
-├── uploads/   # bind-mounted rw; nginx only serves /uploads/flux/*
+├── uploads/   # bind-mounted rw; nginx does not serve this tree
 │   ├── ingestion/      ← raw upload blobs + parse artifacts from CSP; mounted as the
 │   │                     ingestion-worker UPLOAD_DIR (/var/anila/ingestion-uploads);
 │   │                     captioned images land in anila-images/<doc_id>/;
 │   │                     NOT served by nginx (404)
-│   ├── flux/           ← FLUX image-generation output cache (PUBLIC_URL_PREFIX)
 │   └── mock_11406/     ← finance sample xlsx test data (NOT served)
 ├── pki/                # certificate / key material (runtime; contents git-ignored)
 └── codeserver-sandbox/ # code-server sandbox workspace (git-ignored; only .gitkeep kept)
@@ -35,9 +33,8 @@ share/
 - `uploads/` is `:rw` mounted — services that are actually running can write here. n8n is **not** in the default ship (`COMPOSE_PROFILES=ops`). Don't
   put anything you can't afford to lose; back up out-of-band.
 
-nginx (`infra/nginx/anila.conf`) serves these: `/static/` uses `try_files =404`
-with `expires 1y, immutable`; `/uploads/flux/` uses `expires 1h`; bare
-`/uploads/` and other subtrees return 404 (no SPA fallback).
+nginx (`infra/nginx/anila.conf`) serves `/static/` with `try_files =404`
+and `expires 1y, immutable`. `/uploads/` returns 404.
 
 ## Migrating from My-OpenAI-Frontend
 

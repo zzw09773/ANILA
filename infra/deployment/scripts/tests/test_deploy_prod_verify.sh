@@ -124,7 +124,7 @@ EOS
 make_repo() {
   local root="$1"
   mkdir -p "$root/bin" "$root/repo/infra/deployment/scripts" \
-    "$root/repo/share/uploads/flux" "$root/repo/share/pki"
+    "$root/repo/share/pki"
   cp "$REAL_SCRIPT" "$root/repo/infra/deployment/scripts/deploy-prod.sh"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/repo/infra/deployment/scripts/fix-runtime-ownership.sh"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/repo/infra/deployment/scripts/check-departments.sh"

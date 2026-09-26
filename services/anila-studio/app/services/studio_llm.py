@@ -76,12 +76,9 @@ def build_generation_prompt(
 ) -> tuple[str, str]:
     """Compose (system, user) prompts for the slide-deck LLM call.
 
-    ``illustrations_enabled=False`` (no FLUX provider resolvable in this
-    deployment) removes every instruction about generated illustrations
-    (``image_prompt`` / ``image_kind='illustration'``): the hydration layer
-    would only drop those fields again, and on 2026-09-02 that produced a
-    one-line "流程圖" slide because the model spent the slide on a picture
-    that could never exist. Graphviz diagrams stay — they need no FLUX.
+    ``illustrations_enabled=False``（生圖角色沒設或不健康）會拿掉
+    生成插畫的指示（``image_prompt`` / ``image_kind='illustration'``）。
+    否則模型會把整張投影片花在一張不會出現的圖上。Graphviz 圖表仍保留。
 
     ``retrieval_failed=True`` means the retrieval call errored rather
     than returning nothing. An empty ``chunks`` list then does NOT mean
@@ -299,9 +296,9 @@ def build_generation_prompt(
                     "  **後備規則 / 即時生成（Studio Fix 2 拆兩種）**：若「可用圖」清單為空、",
                     "  或全部都不夠相關，但該 slide 主題明顯需要視覺輔助，依內容選一種模式：",
                     "    (A) 情境插畫、無文字 → image_kind='illustration' + image_prompt",
-                    "        （英文 50-500 字，主體/場景/構圖/風格），走 FLUX。",
+                    "        （英文、最多 240 字，只寫主體／風格／構圖的抽象視覺描述，不要檔名、網址、條文或引用），由生圖模型產生。",
                     "    (B) 含 label 的圖示（架構/流程/ER）→ image_kind='diagram' + diagram_dot",
-                    "        （Graphviz DOT，最多 3000 字），走 graphviz。**FLUX 畫不出可讀文字**。",
+                    "        （Graphviz DOT，最多 3000 字），走 graphviz。**生圖模型畫不出可讀文字**。",
                     "  **每張 slide 只能設 image_ref / illustration / diagram 其一，三者互斥**。",
                 ]
                 if illustrations_enabled
@@ -376,10 +373,10 @@ def build_generation_prompt(
             *(
                 [
                     "  (A) **illustration** — 情境插畫、概念意象、**無文字**的視覺輔助。",
-                    "      設 image_kind='illustration' + image_prompt（**英文** 50-500 字，",
-                    "      含主體 / 場景 / 構圖 / 風格）。走 FLUX.2-dev 即時生成。",
+                    "      設 image_kind='illustration' + image_prompt（**英文**、最多 240 字，",
+                    "      只寫主體／風格／構圖的抽象視覺描述，不要檔名、網址、條文或引用）。由治理中心指定的生圖模型產生。",
                     "      適合：主題情境（如「山地戰術部隊」「無人機巡邏」）、抽象概念、",
-                    "      氣氛圖。**注意：FLUX 無法畫出可讀的文字**，所以不要叫它畫架構圖。",
+                    "      氣氛圖。**注意：生圖模型畫不出可讀的文字**，所以不要叫它畫架構圖。",
                     "",
                 ]
                 if illustrations_enabled
@@ -404,7 +401,7 @@ def build_generation_prompt(
                 [
                     "  **每張 slide 只能選一種模式**：image_ref / image_kind='illustration' /",
                     "  image_kind='diagram'，三者互斥。含 label 的圖示**一定走 diagram**，",
-                    "  不要丟給 FLUX 畫，否則 label 會變亂碼。",
+                    "  不要丟給生圖模型畫，否則 label 會變亂碼。",
                 ]
                 if illustrations_enabled
                 else [
@@ -465,7 +462,7 @@ def build_generation_prompt(
             "若全部圖都不夠相關，請忽略這份清單、不要硬塞。"
             + (
                 "若該 slide 需要圖但此清單無合適現有圖，layout_kind='image_focus' 下兩種模式擇一："
-                "（A）image_kind='illustration' + image_prompt（英文 50-500 字描述，FLUX 即時生成情境插畫）；"
+                "（A）image_kind='illustration' + image_prompt（英文、最多 240 字的抽象視覺描述，由生圖模型產生情境插畫）；"
                 "（B）image_kind='diagram' + diagram_dot（Graphviz DOT，最多 3000 字，graphviz 渲染含 label 的架構/流程圖）。"
                 "image_ref / illustration / diagram 三者互斥，一張 slide 只設其一；含文字 label 的圖一律走 diagram。"
                 if illustrations_enabled

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""模型角色：一個 API 涵蓋六個角色，新角色預設未設定。"""
+"""模型角色：一個 API 涵蓋七個角色，新角色預設未設定。"""
 from __future__ import annotations
 
 import os
@@ -58,6 +58,7 @@ def test_list_leaves_new_roles_unset_and_keeps_existing_flags(client, db):
         "router_primary",
         "platform_embedding",
         "slides",
+        "image_generation",
         "vision",
         "summary",
         "knowledge_chat",
@@ -66,11 +67,61 @@ def test_list_leaves_new_roles_unset_and_keeps_existing_flags(client, db):
     assert by_role["router_primary"]["model"]["name"] == "router-llm"
     assert by_role["platform_embedding"]["status"] == "ok"
     assert by_role["platform_embedding"]["model"]["name"] == "embed-a"
-    for role in ("slides", "vision", "summary", "knowledge_chat"):
+    for role in ("slides", "image_generation", "vision", "summary", "knowledge_chat"):
         assert by_role[role]["status"] == "unset"
         assert by_role[role]["model"] is None
         assert "尚未在治理中心設定" in by_role[role]["message"]
     assert db.query(ModelRole).count() == 0
+
+
+def test_image_generation_role_accepts_only_image_models(client, db, service_token_header):
+    """生圖角色用既有的 image 類型，並用終端使用者自己的憑證呼叫。"""
+    headers = _admin(client, db, username="image-role-admin")
+    chat = _llm(db, "chat-not-image", model_type="llm")
+    painter = _llm(db, "painter", model_type="image")
+    painter.health_status = "healthy"
+    db.commit()
+
+    listed = client.get("/api/models/roles", headers=headers)
+    assert listed.status_code == 200, listed.text
+    by_role = {row["role"]: row for row in listed.json()["roles"]}
+    role = by_role["image_generation"]
+    assert role["label"] == "生圖模型"
+    assert role["description"] == (
+        "簡報與資訊圖表配圖使用的生圖模型；未設定時簡報不配生成圖片"
+    )
+    assert role["accepted_types"] == ["image"]
+    assert role["end_user_credential"] is True
+    assert role["status"] == "unset"
+    assert role["model"] is None
+
+    wrong = client.put(
+        "/api/models/roles/image_generation",
+        json={"model_id": chat.id},
+        headers=headers,
+    )
+    assert wrong.status_code == 400
+    assert "生圖模型" in wrong.json()["detail"]
+
+    assigned = client.put(
+        "/api/models/roles/image_generation",
+        json={"model_id": painter.id},
+        headers=headers,
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["status"] == "ok"
+    assert assigned.json()["model"]["name"] == "painter"
+    assert assigned.json()["end_user_credential"] is True
+
+    resolved = client.get(
+        "/api/models/roles/image_generation",
+        headers=service_token_header,
+    )
+    assert resolved.status_code == 200, resolved.text
+    body = resolved.json()
+    assert body["name"] == "painter"
+    assert body["model_type"] == "image"
+    assert body["health_status"] == "healthy"
 
 
 def test_set_vision_requires_active_compatible_model_and_audits(client, db):
@@ -306,7 +357,7 @@ def test_end_user_roles_report_whether_the_model_is_granted_to_everyone(client, 
 
     listed = client.get("/api/models/roles", headers=headers).json()["roles"]
     by_role = {row["role"]: row for row in listed}
-    for role in ("knowledge_chat", "summary", "slides", "vision"):
+    for role in ("knowledge_chat", "summary", "slides", "vision", "image_generation"):
         assert by_role[role]["end_user_credential"] is True
     for role in ("router_primary", "platform_embedding"):
         assert by_role[role]["end_user_credential"] is False

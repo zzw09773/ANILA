@@ -65,10 +65,13 @@ def _tracked_files() -> tuple[Path, ...]:
             f"git ls-files unavailable for {REPO_ROOT}: {type(exc).__name__}: {exc}"
         ) from exc
 
+    # 索引還留著、工作區已刪掉的檔不會進映像。docker build 看的是工作區。
     return tuple(
-        REPO_ROOT / Path(os.fsdecode(raw_path))
+        path
         for raw_path in result.stdout.split(b"\0")
         if raw_path
+        for path in (REPO_ROOT / Path(os.fsdecode(raw_path)),)
+        if path.is_file()
     )
 
 

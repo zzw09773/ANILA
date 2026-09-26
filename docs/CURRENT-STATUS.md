@@ -48,7 +48,7 @@ CSP 在啟動時，以及之後每個週期（預設一小時），為內建名�
 
 自動核發開啟時（正式環境的預設），舊的共用 `CSP_SERVICE_TOKEN` 不再是任何服務身分，就算資料庫列上還留著那把祕密也一樣。這不靠環境變數裡還有沒有那把祕密。長效 `agent_credentials` 已退役（代理用 5 分鐘派工 JWT）；遷移 `r1_0048` 撤銷仍有效的列並清掉寬限複本，驗證路徑也不再接受那些列。自動核發關掉時，測試仍可用環境變數後援。
 
-`asr-gateway` 與 `flux2-dev-agent` 的 compose 不再注入 `CSP_SERVICE_TOKEN`。程式裡的舊讀取路徑還在，重新啟用前必須改讀專屬憑證檔。`flux2-dev-agent` 的 `CSP_API_KEY` 仍來自 `.env` 的 `INTERNAL_PLATFORM_API_KEY`，跟 worker 無關。
+`asr-gateway` 的 compose 不再注入 `CSP_SERVICE_TOKEN`。程式裡的舊讀取路徑還在，重新啟用前必須改讀專屬憑證檔。本機生圖服務已刪除，不再讀 `INTERNAL_PLATFORM_API_KEY`。
 
 緊急吊銷服務憑證：治理中心「服務客戶端」按吊銷。CSP 不會把已吊銷的列重新核發，並刪掉憑證檔。要恢復時，刪掉那筆已吊銷的 `service_clients` 列，然後重啟 CSP（或等下一個週期）。worker 的 key 不在那個畫面：把名為 `ingestion-worker-system-key` 的 API key 停用後，CSP 不會再核發，並刪掉憑證檔；要恢復就刪掉那些已停用的 key 列再重啟 CSP。
 
@@ -58,11 +58,17 @@ CSP 在啟動時，以及之後每個週期（預設一小時），為內建名�
 
 - `CSP_SERVICE_TOKEN=...`
 
-不要刪 `INTERNAL_PLATFORM_API_KEY`，除非模型 stack 的 `flux2-dev-agent` 也不再使用它。worker 已經不讀 `INTERNAL_PLATFORM_API_KEY`、`EMBEDDING_API_KEY`、`VISION_API_KEY`、`RELATION_LLM_API_KEY`。
+worker 已經不讀 `INTERNAL_PLATFORM_API_KEY`、`EMBEDDING_API_KEY`、`VISION_API_KEY`、`RELATION_LLM_API_KEY`。本機生圖服務也不再讀它。
 
 同時要重建 csp、router、anila-studio、ingestion-worker 映像（群組 10002／10003／10004），再用更新後的 compose 啟動。憑證 volume 仍是 `anila-service-credentials`（dev 是 `anila-service-credentials-dev`）。不要再把 `CSP_BOOTSTRAP_TOKEN` 灌進 router。
 
 `.env.example` 已拿掉的鍵：`CSP_SERVICE_TOKEN`。
+
+## 生圖（2026-09-26：不部署本機模型）
+
+治理中心「模型角色」多了「生圖模型」（`image_generation`，類型用既有的 `image`）。有設且健康時，Studio 經 CSP `POST /v1/images/generations` 配圖，不直連模型主機。沒設、不健康或請求失敗時，簡報仍用版面、圖示、圖表、表格，以及知識庫文件裡已有的圖，不留空的配圖框。
+
+本機 `flux2-dev`／`flux2-dev-agent`、compose 服務、`/uploads/flux` 與 `FLUX_*` 環境變數已從這棵樹拿掉。這次沒有刪除主機上的 Docker volume。若先前起過 Studio，具名 volume `anila_anila-studio-flux-cache` 與 `anila-platform-dev_anila-studio-flux-cache-dev` 可能還在，由擁有者自行移除。`share/uploads/flux` 若還在磁碟上，同樣先留著。
 
 ## GitLab（2026-09-26 先拿掉）
 

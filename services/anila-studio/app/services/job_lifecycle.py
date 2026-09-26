@@ -311,7 +311,12 @@ async def _finalize(
                 metadata=metadata or None,
             )
             if result:
-                artifact_id = result.get("artifact_id")
+                # CSP returns the artifact id as a number; Studio's job
+                # schemas carry it as a string.
+                raw_artifact_id = result.get("artifact_id")
+                artifact_id = (
+                    str(raw_artifact_id) if raw_artifact_id is not None else None
+                )
                 classification_level = result.get("classification_level")
                 ctx.artifact_id = artifact_id
                 ctx.classification_level = classification_level

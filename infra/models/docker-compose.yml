@@ -26,7 +26,7 @@
 #     docker compose -f infra/models/docker-compose.yml up -d ...
 #
 # Profiles:
-#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed / flux
+#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed
 #     --profile intranet  內網 H100 新增組:gemma-4-26b-a4b / gemma-4-12b /
 #                         gpt-oss-120b（generic vLLM image,權重走 ANILA_HF_DIR）。
 #                         語音解碼不在這份 compose，位址在治理中心「外部服務」。
@@ -229,108 +229,12 @@ services:
     healthcheck:
       # embedding-proxy image 沒有 curl — 之前用 curl 導致 exit 127,
       # 「unhealthy 四週」其實是誤報(R2 演練 2026-06-11 查明,服務一直正常)。
-      # 照 flux2-dev-agent 的 python urllib 寫法。
+      # 映像沒有 curl，用 python urllib。
       test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/v1/models', timeout=5).status == 200 else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
-
-  # ── Image generation: FLUX.2-dev on GPU 1 + GPU 2 ─────────────────────────
-  # bf16 dual-H100 via diffusers Flux2Pipeline (device_map="balanced").
-  # No host port — agent shim is the only client. Soldier-facing UX
-  # never sees this service directly; chat 走 router → DISPATCH:image-generator
-  # → CSP proxy → flux2-dev-agent → flux2-dev.
-  #
-  # License caveat: black-forest-labs/FLUX.2-dev is BFL Non-Commercial.
-  # Confirm authorization before enabling in production.
-  flux2-dev:
-    image: flux2-dev:bf16
-    container_name: anila-model-flux2-dev
-    build:
-      context: ../../services/flux2-dev
-    environment:
-      TZ: Asia/Taipei
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      FLUX_MODEL_PATH: /workspace/model/FLUX.2-dev
-      FLUX_DEVICE_MAP: balanced
-      FLUX_NUM_STEPS: "28"
-      FLUX_GUIDANCE_SCALE: "3.5"
-    volumes:
-      - ${ANILA_HF_DIR:-../../models/model}/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
-    expose:
-      - "8000"
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["1", "2"]
-              capabilities: [gpu]
-    shm_size: 32g
-    ipc: host
-    ulimits:
-      memlock: -1
-      stack: 67108864
-    networks: [models]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health > /dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 300s
-
-  # ── Image generation agent shim (OpenAI compat front for flux2-dev) ───────
-  # CSP registers THIS as the agent endpoint (model_type=agent). When
-  # gemma4 emits DISPATCH:image-generator:..., CSP forwards the request
-  # here. Shim handles prompt translation (zh→en via gemma4 callback)
-  # and image persistence; binds /share/flux from share/uploads/flux.
-  flux2-dev-agent:
-    image: anila-flux-agent:latest
-    container_name: anila-model-flux2-dev-agent
-    build:
-      context: ../../services/flux2-dev-agent
-    environment:
-      TZ: Asia/Taipei
-      FLUX_BACKEND_URL: http://flux2-dev:8000
-      CSP_BASE_URL: http://csp:8000
-      # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
-      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
-      # 重新啟用前必須改讀專屬憑證檔。共用服務權杖已退役，這裡不再注入。
-      # image-primary 熱抓取在改完之前會 401，fetcher 沿用 FLUX_BACKEND_URL。
-      GEMMA_MODEL: gemma4
-      ENABLE_PROMPT_TRANSLATION: "1"
-      SHARE_DIR: /share/flux
-      PUBLIC_URL_PREFIX: /uploads/flux
-      DEFAULT_ASPECT_RATIO: "16:9"
-      FLUX_TIMEOUT_SECONDS: "240"
-    volumes:
-      # 相對路徑以本 compose 檔所在目錄 (infra/models/) 解析 →
-      # repo 一起搬就通,不用再釘 host 絕對路徑。
-      - ../../share/uploads/flux:/share/flux
-    expose:
-      - "8000"
-    depends_on:
-      flux2-dev:
-        condition: service_healthy
-    restart: unless-stopped
-    networks: [models]
-    healthcheck:
-      # Agent image is python:3.11-slim and has no curl in PATH. Use urllib.
-      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-
-  # ════════════════════════════════════════════════════════════════════════
-  # 內網 H100 新增組 (profile: intranet) — 2026-06 模型清單
-  # 統一用 generic vLLM image (toolkit 帶進去的 v0.22.1-cu129),權重從
-  # ANILA_HF_DIR 掛。GPU 編號用 env 覆寫對應內網主機的實際配置。
-  # 起法: bash infra/deployment/intranet/model-serve.sh up intranet
-  # ════════════════════════════════════════════════════════════════════════
 
   # ── gemma-4-26B-A4B (MoE, ~48G bf16, 單卡) ────────────────────────────────
   gemma-4-26b-a4b:

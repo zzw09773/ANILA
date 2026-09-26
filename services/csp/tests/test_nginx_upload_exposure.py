@@ -22,8 +22,6 @@ def _upload_blocks(conf: str) -> list[str]:
     pattern = re.compile(
         r"location \^~ /uploads/ingestion/\s*\{[^}]+\}"
         r".*?"
-        r"location /uploads/flux/\s*\{[^}]+\}"
-        r".*?"
         r"location /uploads/\s*\{\s*return 404;\s*\}",
         re.DOTALL,
     )
@@ -44,9 +42,9 @@ def test_anilalm_listeners_proxy_instead_of_503() -> None:
 def test_nginx_uploads_allowlist_shape() -> None:
     conf = _nginx_conf()
 
-    # Pin the allowlist SHAPE, not a substring that also matches the deny-all.
-    assert "location /uploads/flux/" in conf, "flux alias must exist"
-    assert "alias /usr/share/nginx/share-files/uploads/flux/" in conf
+    # /uploads 不公開。本機生圖拿掉之後，不再有 /uploads/flux/。
+    assert "location /uploads/flux/" not in conf
+    assert "alias /usr/share/nginx/share-files/uploads/flux/" not in conf
     assert re.search(
         r"location /uploads/\s*\{\s*return 404;\s*\}", conf
     ), "location /uploads/ must return 404 (not a public alias)"
@@ -54,11 +52,6 @@ def test_nginx_uploads_allowlist_shape() -> None:
     # Must NOT reopen the old public alias of the whole uploads tree.
     assert "alias /usr/share/nginx/share-files/uploads/;" not in conf, (
         "public /uploads/ alias must stay closed"
-    )
-
-    # Do not use ^~ on flux — that skips ``location ~ /\\.`` and serves dotfiles.
-    assert "location ^~ /uploads/flux/" not in conf, (
-        "^~ on /uploads/flux/ would bypass the dotfile deny"
     )
 
     blocks = _upload_blocks(conf)
@@ -70,9 +63,8 @@ def test_nginx_uploads_allowlist_shape() -> None:
     )
 
     deny = conf.find("location ^~ /uploads/ingestion/")
-    flux = conf.find("location /uploads/flux/")
     catch_m = re.search(r"location /uploads/\s*\{\s*return 404;", conf)
-    assert deny != -1 and flux != -1 and catch_m is not None
-    assert deny < flux < catch_m.start(), (
-        "order must be: ingestion deny → flux alias → /uploads/ 404"
+    assert deny != -1 and catch_m is not None
+    assert deny < catch_m.start(), (
+        "order must be: ingestion deny → /uploads/ 404"
     )

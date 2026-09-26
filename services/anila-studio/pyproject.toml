@@ -1,7 +1,7 @@
 [project]
 name = "anila-studio"
 version = "0.1.0"
-description = "ANILA Studio service — RAG-driven slide deck generation with FLUX image candidates, extracted from myCSPPlatform/backend."
+description = "ANILA Studio service — RAG-driven slide deck generation. Generated images use the governance-center image role via CSP."
 requires-python = ">=3.11"
 authors = [
   { name = "ANILA Platform" },
@@ -22,7 +22,7 @@ dependencies = [
   # 結論一致;要往上動之前請重跑,不要假設。
   "starlette>=1.3.1,<1.7",
   "uvicorn[standard]>=0.27,<0.53",
-  # HTTP client → csp / flux2-dev / pptx-renderer
+  # HTTP client → csp / pptx-renderer
   "httpx>=0.27,<1.0",
   # JWT verify (asymmetric RS256, JWKS)
   "python-jose[cryptography]>=3.3,<3.6",
@@ -35,7 +35,7 @@ dependencies = [
   "cachetools>=5.3,<7.2",
   # 簡體 → 繁體轉換 (studio_text_normalizer)
   "opencc-python-reimplemented>=0.1.7,<0.1.8",
-  # flux_quality_gate FFT analysis for striping detection
+  # matplotlib 的數值依賴；釘下限避免氣隙 wheelhouse 凍進過舊版
   "numpy>=1.26,<2.6",
   # PPTX 生成路徑用,留給後續 phase 搬程式時即可 import
   # NOTE: python-pptx 不會用到 (PPTX 由 pptx-renderer Node service 渲染)

@@ -21,3 +21,11 @@ def _default_platform_roles(monkeypatch, request):
         "app.services.studio_model_primary.require_role_model",
         _role,
     )
+
+    async def _no_image_role() -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _no_image_role,
+    )

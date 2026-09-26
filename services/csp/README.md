@@ -187,7 +187,7 @@ docker compose up -d csp                                 # prod（platform.yml�
 # 內網卡登 bootstrap：infra/deployment/intranet/intranet-deploy.sh
 ```
 
-CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若不存在：`docker network create anila-models-net`。
+CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy`）。第一次啟動若不存在：`docker network create anila-models-net`。
 
 後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_KID`、`ADMIN_PASSWORD`、`ANILA_AUTH_MODE`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（部署姿態；自 PLAN.md P0.2 起不再影響 model http 判定）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_PUBLIC_SHARE`。JWT PEM 路徑固定為 `secrets/jwt-{private,public}.pem`。詳見 [`.env.example`](./.env.example)。
 

@@ -50,7 +50,7 @@
 | `services/anila-studio` | artifact 生成服務 | FastAPI；不共用 CSP DB，透過 HTTP/JWKS/Redis 與 CSP 協作；處理 slides/reports/mindmaps/infographics/datatables。 |
 | `apps/anilalm` | knowledge-base + Studio SPA | React/TS/Vite；另有 `services/pptx-renderer` Node renderer，前端不直接打 renderer，由 `anila-studio` server-to-server 呼叫。 |
 | `apps/anila-shell` | runtime chat UI | React/Vite；cookie + CSRF；串 CSP `/api`, `/v1` 與 Router `/router`。 |
-| `infra/models` | 獨立模型 stack | `anila-models` compose（`infra/models/docker-compose.yml` + `infra/models/src`；權重在 `models/model` 不搬）；LLM/embedding/FLUX/image-agent shim 走 external network `anila-models-net`，不開 host port。FLUX 服務源碼在 `services/flux2-dev{,-agent}`。 |
+| `infra/models` | 獨立模型 stack | `anila-models` compose（`infra/models/docker-compose.yml` + `infra/models/src`；權重在 `models/model` 不搬）；LLM/embedding 走 external network `anila-models-net`，不開 host port。本機生圖服務已移除。 |
 | `runtime_logic` | 參考資料 | reference-only；gitignored source tree 不能當 runtime import 或 deployment source。 |
 
 ## 3. 分支模型
@@ -122,9 +122,7 @@ Studio / Artifact：
 
 Image generation：
 
-- Router dispatch `image-generator` -> CSP proxy -> `flux2-dev-agent` -> `flux2-dev /generate`。
-- `flux2-dev-agent` 本身無 auth，必須只放在內網/CSP 後面，不得直接對外。
-- FLUX.2-dev README 標示 Non-Commercial license；production 前需法務確認。
+- 簡報配圖用治理中心的 `image_generation` 角色。有設且健康時 Studio 經 CSP `/v1/images/generations` 要圖，不直連模型主機。沒設就不配生成圖片。
 
 ## 6. Auth / Security
 
@@ -152,8 +150,7 @@ Image generation：
 | `apps/anilalm` | `cd apps/anilalm && npm run typecheck && npm run build`；schema 變更後先 `npm run gen:studio-types`。 |
 | `services/pptx-renderer` | `cd services/pptx-renderer && npm test`。`jszip` 是直接依賴（`3.10.1`）。 |
 | `services/anila-studio` | `cd services/anila-studio && pip install -e '.[dev]' && pytest`。 |
-| `services/flux2-dev` | `cd services/flux2-dev && pip install -e '.[test]' && pytest`；測試用 mock pipeline，不載大型權重。 |
-| `services/flux2-dev-agent` | `cd services/flux2-dev-agent && pip install -e '.[test]' && pytest`。 |
+
 | 整合 stack | `docker compose -f compose.dev.yaml up -d --build` 或 root `docker compose up -d --build`；再測 `/api/health`, `/router/health`, login, `/v1/chat/completions`, agent dispatch, ingestion upload -> search。 |
 | prod | `bash infra/deployment/scripts/deploy-prod.sh preflight`, `... deploy`, `... verify`。 |
 
@@ -171,7 +168,7 @@ Image generation：
 - GitLab 已於 2026-09-26 從 compose、nginx `/gitlab` 與 `GITLAB_*` 拿掉。n8n 與 code-server 仍在。不要把 `/gitlab` 加回導覽或 smoke。主機 volume `anila-platform_gitlab_data` 沒刪，見 `docs/CURRENT-STATUS.md`。
 - `infra/deployment/scripts/phase1-e2e.sh` 仍測 `/codeserver/`，對目前 `prod-public-passwd` 是過時殘留，不可當 prod 驗證依據。
 - `apps/anila-shell` 的 `BASE_PATH` / nginx `/anila/` routing 曾被 README 提到，但 root/dev compose 主要只傳 CSP/Router build args。重建 UI 前先確認資產路徑。
-- `services/flux2-dev-agent` volume 目前偏向 `share-dev/uploads/flux`，但 prod deploy 腳本檢查 `share/uploads/flux`。prod 啟用 image-generator 前確認落地路徑與 nginx `/uploads/flux` 一致。
+- 本機 FLUX 已移除。若主機上還留著 `anila_anila-studio-flux-cache` 這類 volume，不要在這次變更裡刪，記在 `docs/CURRENT-STATUS.md`。
 - Router state 預設 `/var/lib/anila-router`；若使用 state-file/bootstrap token，要確認容器 user、volume 與權限，避免寫檔失敗。
 - `.doc` parser 可能依賴系統 `antiword`；若 worker image 沒裝會失敗。
 - `DispatchIdentityMiddleware`（`packages/anila-core/src/anila_core/api/middleware/dispatch_auth.py`）在 production 不可放行空的派工設定；`dev_mode=False` 且沒指到平台時要 fail-closed。

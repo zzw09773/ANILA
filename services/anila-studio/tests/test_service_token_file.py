@@ -72,16 +72,22 @@ def test_reread_when_the_file_changes(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.real_model_roles
 @respx.mock
-async def test_image_primary_rereads_once_after_401(tmp_path, monkeypatch):
+async def test_image_role_rereads_token_once_after_401(tmp_path, monkeypatch):
+    """生圖角色解析在 401 後重讀憑證檔，再問一次。"""
     path = tmp_path / "anila-studio.token"
     path.write_text("csk-stale\n", encoding="utf-8")
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
     monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-legacy-env", raising=False)
     _reload()
-    import app.services.flux_image_primary as mod
+    from app.services.studio_model_primary import (
+        _reset_for_tests,
+        resolve_image_generation,
+    )
 
-    url = f"{settings.CSP_BASE_URL.rstrip('/')}/api/models/image-primary"
+    _reset_for_tests()
+    url = f"{settings.CSP_BASE_URL.rstrip('/')}/api/models/roles/image_generation"
     calls = {"n": 0}
 
     def respond(request):
@@ -92,17 +98,12 @@ async def test_image_primary_rereads_once_after_401(tmp_path, monkeypatch):
         assert request.headers["x-csp-service-token"] == "csk-fresh"
         return httpx.Response(
             200,
-            json={
-                "endpoint_url": "https://gw.example/v1",
-                "name": "flux.2-pro",
-            },
+            json={"name": "painter", "health_status": "healthy"},
         )
 
     respx.get(url).mock(side_effect=respond)
-    endpoint, model = await mod.get_image_primary()
+    assert await resolve_image_generation() == "painter"
     assert calls["n"] == 2
-    assert endpoint == "https://gw.example/v1"
-    assert model == "flux.2-pro"
 
 
 def test_health_reports_token_source_without_the_secret(tmp_path, monkeypatch):

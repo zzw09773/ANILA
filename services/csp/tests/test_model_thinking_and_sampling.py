@@ -327,7 +327,6 @@ def test_build_response_includes_override_fields():
         api_version="v1",
         is_active=True,
         is_router_primary=False,
-        is_image_primary=False,
         is_asr_primary=False,
         is_slides_primary=False,
         is_platform_embedding=False,

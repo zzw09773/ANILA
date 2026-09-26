@@ -1,10 +1,11 @@
 """平台模型角色的單一讀寫點。
 
-六個角色：
+七個角色：
 
 * ``router_primary``／``platform_embedding``／``slides`` 沿用
   ``model_registry`` 上既有的旗標（資料留在原欄，不搬）。
-* ``vision``／``summary``／``knowledge_chat`` 存在 ``model_roles``。
+* ``vision``／``summary``／``knowledge_chat``／``image_generation`` 存在
+  ``model_roles``。生圖角色的類型用登錄表既有的 ``image``，不另開一種。
 
 一個角色最多一個模型。模型必須啟用，且類型符合該角色。沒設、或指到
 已停用／已刪除的模型，呼叫端拿到的訊息都點名角色，不猜模型名稱。
@@ -71,6 +72,14 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         accepted_types=frozenset({"llm"}),
         storage="flag",
         column="is_slides_primary",
+        end_user_credential=True,
+    ),
+    "image_generation": RoleSpec(
+        role="image_generation",
+        label="生圖模型",
+        description="簡報與資訊圖表配圖使用的生圖模型；未設定時簡報不配生成圖片",
+        accepted_types=frozenset({"image"}),
+        storage="table",
         end_user_credential=True,
     ),
     "vision": RoleSpec(

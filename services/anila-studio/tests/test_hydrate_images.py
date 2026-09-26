@@ -17,17 +17,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.api.studio import _hydrate_images
-from app.schemas.studio import ImageUseCase
-from app.services.flux_image_provider import FluxBackendError, GeneratedImage
 
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _BEARER = "test-bearer-token"
-
-
-def _gen(seed: int = 0) -> list[GeneratedImage]:
-    """A one-candidate result list matching the contract-3.4 return type."""
-    return [GeneratedImage(png_bytes=_PNG, seed=seed, accepted=True)]
 
 
 @pytest.fixture
@@ -73,117 +66,137 @@ async def test_hydrate_image_ref_unchanged_behavior(existing_image, fetch_blob_m
 
 
 @pytest.mark.asyncio
-async def test_hydrate_image_prompt_calls_flux(existing_image, fetch_blob_mock):
-    flux = AsyncMock()
-    flux.get_or_generate.return_value = _gen()
+async def test_role_set_requests_slide_images_via_csp(monkeypatch, fetch_blob_mock):
+    """生圖角色有設定時，配圖打 CSP 的 images 代理，不打模型主機。"""
+    import base64
 
-    # Slide index 1 (not the cover) so the legacy image_prompt path runs.
+    import httpx
+    import respx
+
+    from app.config import settings
+
+    async def _ready() -> str:
+        return "painter"
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _ready,
+        raising=False,
+    )
+    png_b64 = base64.b64encode(_PNG).decode("ascii")
     spec = {"slides": [
-        {"title": "cover", "bullets": ["x"]},
-        {"title": "Y", "bullets": ["b"], "image_prompt": "a tank"},
+        {"title": "封面", "bullets": ["x"]},
+        {
+            "title": "Y",
+            "bullets": ["b"],
+            "image_prompt": "a tank",
+            "image_kind": "illustration",
+            "layout_kind": "image_focus",
+        },
     ]}
-    result = await _hydrate_images(
-        spec, existing_image, bearer=_BEARER, flux_provider=flux, default_aspect="16:9"
-    )
-
-    s = result["slides"][1]
-    assert "image_data" in s
-    assert s["image_data"].startswith("data:image/png;base64,")
-    # Legacy path now uses the contract-3.4 keyword signature; no deck seed
-    # passed → legacy_seed defaults to 0, CONTENT_ILLUSTRATION aspect.
-    flux.get_or_generate.assert_awaited_once_with(
-        "a tank",
-        use_case=ImageUseCase.CONTENT_ILLUSTRATION,
-        seed=0,
-        num_candidates=1,
-    )
-
-
-@pytest.mark.asyncio
-async def test_cover_hero_path_generates_via_rewriter(fetch_blob_mock):
-    """FLUX Stage 1 cover hero: slide index 0 with deck_base_seed + llm →
-    rewriter produces a prompt, provider generates, image_gen_meta filled."""
-    flux = AsyncMock()
-    flux.get_or_generate.return_value = _gen(seed=12345)
-
-    llm = AsyncMock()
-
-    spec = {"slides": [{"title": "韌性網路", "bullets": ["a", "b"]}]}
-
-    with patch(
-        "app.services.flux_prompt_rewriter.derive_flux_prompt",
-        new=AsyncMock(return_value="a resilient lattice of light, soft glow, flat style"),
-    ) as mock_rw:
+    with respx.mock:
+        route = respx.post(f"{settings.CSP_BASE_URL}/v1/images/generations").mock(
+            return_value=httpx.Response(
+                200, json={"data": [{"b64_json": png_b64}]}
+            )
+        )
         result = await _hydrate_images(
-            spec, {}, bearer=_BEARER,
-            flux_provider=flux, default_aspect="16:9",
-            deck_base_seed=1000, llm=llm,
+            spec, {}, bearer=_BEARER, default_aspect="16:9",
         )
 
-    s = result["slides"][0]
-    assert s["image_data"].startswith("data:image/png;base64,")
-    assert s["image_gen_meta"]["use_case"] == "cover_hero"
-    assert s["image_gen_meta"]["seed"] == 12345
-    assert s["image_gen_meta"]["style_id"] == "default"
-    assert "flux_prompt" in s["image_gen_meta"]
-    mock_rw.assert_awaited_once()
-    # Provider called with COVER_HERO + deterministic seed (base + index 0).
-    _, kwargs = flux.get_or_generate.call_args
-    assert kwargs["use_case"] == ImageUseCase.COVER_HERO
-    assert kwargs["seed"] == 1000
+    assert route.called
+    body = route.calls[-1].request
+    sent = body.read() if hasattr(body, "read") else body.content
+    import json
+    payload = json.loads(sent)
+    assert payload["model"] == "painter"
+    assert "a tank" in payload["prompt"]
+    assert str(route.calls[-1].request.url).startswith(settings.CSP_BASE_URL)
+    assert "flux" not in str(route.calls[-1].request.url)
+    auth = route.calls[-1].request.headers.get("authorization", "")
+    assert auth == f"Bearer {_BEARER}"
+    slide = result["slides"][1]
+    assert slide["image_data"].startswith("data:image/png;base64,")
+    assert "image_prompt" not in slide
+    assert slide.get("layout_kind") == "image_focus"
 
 
 @pytest.mark.asyncio
-async def test_cover_hero_skipped_without_seed_or_llm(fetch_blob_mock):
-    """No deck_base_seed / llm → cover-hero path is inert; legacy behaviour."""
-    flux = AsyncMock()
-    flux.get_or_generate.return_value = _gen()
+async def test_role_unset_leaves_no_image_frames(fetch_blob_mock):
+    """沒設生圖角色時，不留空的配圖框，也不留佔位文字。"""
+    spec = {"slides": [
+        {
+            "title": "封面",
+            "bullets": ["重點"],
+            "layout_kind": "image_focus",
+            "image_prompt": "hero scene",
+            "image_kind": "illustration",
+        },
+        {
+            "title": "內文",
+            "bullets": ["一", "二"],
+            "layout_kind": "image_focus",
+            "image_prompt": "a scene",
+            "image_kind": "illustration",
+        },
+    ]}
+    result = await _hydrate_images(
+        spec, {}, bearer=_BEARER, flux_provider=None, default_aspect="16:9",
+    )
+    for slide in result["slides"]:
+        assert "image_data" not in slide
+        assert "image_prompt" not in slide
+        assert slide.get("image_kind") != "illustration"
+        assert slide.get("layout_kind") != "image_focus"
+        text = " ".join(
+            str(slide.get(key) or "")
+            for key in ("title", "bullets", "speaker_notes")
+        )
+        assert "placeholder" not in text.lower()
+        assert "待補" not in text
+        assert "（圖片）" not in text
 
+
+@pytest.mark.asyncio
+async def test_cover_without_image_request_stays_text(fetch_blob_mock):
+    """封面沒有 image_prompt 時，不主動生圖。"""
     spec = {"slides": [{"title": "cover", "bullets": ["a"]}]}
     result = await _hydrate_images(
-        spec, {}, bearer=_BEARER, flux_provider=flux, default_aspect="16:9",
+        spec, {}, bearer=_BEARER, default_aspect="16:9",
     )
-    # No image_prompt and no cover-hero wiring → nothing generated.
     assert "image_data" not in result["slides"][0]
-    flux.get_or_generate.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_image_ref_wins_over_image_prompt(existing_image, fetch_blob_mock):
     """If both set, prefer image_ref (existing curated content)."""
-    flux = AsyncMock()
-
     spec = {"slides": [{
         "title": "Z", "bullets": ["c"],
         "image_ref": "img-abc",
         "image_prompt": "should not be called",
     }]}
     result = await _hydrate_images(
-        spec, existing_image, bearer=_BEARER, flux_provider=flux, default_aspect="16:9"
+        spec, existing_image, bearer=_BEARER, default_aspect="16:9"
     )
 
     assert result["slides"][0]["image_data"].startswith("data:image/png;base64,")
-    flux.get_or_generate.assert_not_called()
+    assert "image_prompt" not in result["slides"][0]
 
 
 @pytest.mark.asyncio
-async def test_flux_failure_drops_image_prompt(existing_image, fetch_blob_mock):
-    """When FLUX fails, drop image_prompt so renderer falls back to
-    standard layout — same fallback as a bad image_ref."""
-    flux = AsyncMock()
-    flux.get_or_generate.side_effect = FluxBackendError("boom")
-
+async def test_unset_role_drops_image_prompt(existing_image, fetch_blob_mock):
+    """沒有生圖角色時，image_prompt 不會留在規格裡。"""
     spec = {"slides": [{
         "title": "W", "bullets": ["d"],
         "image_prompt": "this will fail",
     }]}
     result = await _hydrate_images(
-        spec, existing_image, bearer=_BEARER, flux_provider=flux, default_aspect="16:9"
+        spec, existing_image, bearer=_BEARER, default_aspect="16:9"
     )
 
     s = result["slides"][0]
     assert "image_data" not in s
-    assert "image_prompt" not in s  # popped
+    assert "image_prompt" not in s
 
 
 @pytest.mark.asyncio
@@ -195,7 +208,7 @@ async def test_no_provider_skips_image_prompt(existing_image, fetch_blob_mock):
         "image_prompt": "no provider available",
     }]}
     result = await _hydrate_images(
-        spec, existing_image, bearer=_BEARER, flux_provider=None, default_aspect="16:9"
+        spec, existing_image, bearer=_BEARER, default_aspect="16:9"
     )
 
     s = result["slides"][0]
@@ -277,22 +290,220 @@ async def test_diagram_render_failure_drops_dot(existing_image, fetch_blob_mock)
 
 
 @pytest.mark.asyncio
-async def test_mixed_slides_all_resolved(existing_image, fetch_blob_mock):
-    """A spec with one image_ref slide, one image_prompt slide, and
-    one no-image slide — all three resolved correctly."""
-    flux = AsyncMock()
-    flux.get_or_generate.return_value = _gen()
+async def test_image_request_failure_drops_frames_and_keeps_kb_images(
+    existing_image, fetch_blob_mock, monkeypatch,
+):
+    """生圖失敗時不留空框；知識庫裡已有的圖仍嵌進去。"""
+    import httpx
+    import respx
 
-    spec = {"slides": [
-        {"title": "A", "bullets": ["a"], "image_ref": "img-abc"},
-        {"title": "B", "bullets": ["b"], "image_prompt": "new image"},
-        {"title": "C", "bullets": ["c"]},
-    ]}
-    result = await _hydrate_images(
-        spec, existing_image, bearer=_BEARER, flux_provider=flux, default_aspect="16:9"
+    from app.config import settings
+
+    async def _ready() -> str:
+        return "painter"
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _ready,
+        raising=False,
     )
+    spec = {"slides": [
+        {"title": "A", "bullets": ["a"], "image_ref": "img-abc", "layout_kind": "image_focus"},
+        {
+            "title": "B",
+            "bullets": ["b"],
+            "image_prompt": "new image",
+            "image_kind": "illustration",
+            "layout_kind": "image_focus",
+        },
+    ]}
+    with respx.mock:
+        respx.post(f"{settings.CSP_BASE_URL}/v1/images/generations").mock(
+            return_value=httpx.Response(400, json={"detail": "生圖失敗"})
+        )
+        result = await _hydrate_images(
+            spec, existing_image, bearer=_BEARER, default_aspect="16:9",
+        )
 
-    assert "image_data" in result["slides"][0]
-    assert "image_data" in result["slides"][1]
-    assert "image_data" not in result["slides"][2]
-    flux.get_or_generate.assert_awaited_once()
+    assert result["slides"][0]["image_data"].startswith("data:image/png;base64,")
+    failed = result["slides"][1]
+    assert "image_data" not in failed
+    assert "image_prompt" not in failed
+    assert failed.get("layout_kind") != "image_focus"
+    assert "待補" not in str(failed.get("bullets"))
+
+
+def test_outbound_image_prompt_matches_router_filter_and_drops_kb_text():
+    from anila_core.api.router_prompts import redact_internal_details
+
+    from app.services.image_prompt import outbound_image_prompt, redact_image_prompt_details
+
+    sample = (
+        "wide shot of a ridge at dusk https://csp.internal/x "
+        "ANILA_DB_PASSWORD /var/anila/secrets/jwt.py"
+    )
+    assert redact_image_prompt_details(sample) == redact_internal_details(sample)
+    cleaned = outbound_image_prompt(sample)
+    assert cleaned is not None
+    assert "ridge" in cleaned
+    assert "https://" not in cleaned
+    assert "ANILA_DB_PASSWORD" not in cleaned
+    assert outbound_image_prompt("a tank on a ridge") == "a tank on a ridge"
+    leaked = "來源：規章.pdf chunk leaf-00002 第 3 條 " + ("申訴期限內提出。" * 20)
+    assert outbound_image_prompt(leaked) is None
+    assert outbound_image_prompt("a calm ridge " * 40) is None
+
+
+@pytest.mark.asyncio
+async def test_raw_kb_prompt_is_not_sent(monkeypatch):
+    import httpx
+    import respx
+
+    from app.config import settings
+
+    async def _ready() -> str:
+        return "painter"
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _ready,
+        raising=False,
+    )
+    spec = {"slides": [{
+        "title": "內文",
+        "bullets": ["一"],
+        "image_prompt": "來源：規章.pdf 第 3 條 " + ("機密內文" * 30),
+        "image_kind": "illustration",
+        "layout_kind": "image_focus",
+    }]}
+    with respx.mock:
+        route = respx.post(f"{settings.CSP_BASE_URL}/v1/images/generations").mock(
+            return_value=httpx.Response(200, json={"data": [{"b64_json": "aaaa"}]})
+        )
+        result = await _hydrate_images(spec, {}, bearer=_BEARER, default_aspect="16:9")
+    assert not route.called
+    assert "image_data" not in result["slides"][0]
+
+
+@pytest.mark.asyncio
+async def test_image_request_carries_task_id_and_redacts_prompt(monkeypatch):
+    import base64
+    import json
+
+    import httpx
+    import respx
+
+    from app.config import settings
+
+    async def _ready() -> str:
+        return "painter"
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _ready,
+        raising=False,
+    )
+    png_b64 = base64.b64encode(_PNG).decode("ascii")
+    spec = {"slides": [{
+        "title": "內文",
+        "bullets": ["一"],
+        "image_prompt": "wide shot of a ridge at dusk https://csp.internal/secret",
+        "image_kind": "illustration",
+        "layout_kind": "image_focus",
+    }]}
+    with respx.mock:
+        route = respx.post(f"{settings.CSP_BASE_URL}/v1/images/generations").mock(
+            return_value=httpx.Response(200, json={"data": [{"b64_json": png_b64}]})
+        )
+        await _hydrate_images(
+            spec, {}, bearer=_BEARER, default_aspect="16:9", task_id="42",
+        )
+    assert route.called
+    sent = json.loads(route.calls[-1].request.content)
+    assert "https://" not in sent["prompt"]
+    assert "ridge" in sent["prompt"]
+    assert route.calls[-1].request.headers["x-anila-task-id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_generated_image_keeps_jpeg_mime_and_drops_garbage(monkeypatch):
+    import base64
+
+    import httpx
+    import respx
+
+    from app.config import settings
+
+    async def _ready() -> str:
+        return "painter"
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _ready,
+        raising=False,
+    )
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+    jpeg_b64 = base64.b64encode(jpeg).decode("ascii")
+    spec = {"slides": [
+        {
+            "title": "封面",
+            "bullets": ["x"],
+            "image_prompt": "a ridge at dusk",
+            "image_kind": "illustration",
+        },
+        {
+            "title": "內文",
+            "bullets": ["y"],
+            "image_prompt": "a calm harbor",
+            "image_kind": "illustration",
+        },
+    ]}
+    with respx.mock:
+        route = respx.post(f"{settings.CSP_BASE_URL}/v1/images/generations").mock(
+            side_effect=[
+                httpx.Response(200, json={"data": [{"b64_json": jpeg_b64}]}),
+                httpx.Response(
+                    200,
+                    json={"data": [{"b64_json": base64.b64encode(b"NOT-AN-IMAGE").decode()}]},
+                ),
+            ]
+        )
+        result = await _hydrate_images(spec, {}, bearer=_BEARER, default_aspect="16:9")
+    assert route.call_count == 2
+    assert result["slides"][0]["image_data"].startswith("data:image/jpeg;base64,")
+    assert "image_data" not in result["slides"][1]
+
+
+@pytest.mark.asyncio
+async def test_decoded_image_over_the_cap_is_dropped(monkeypatch):
+    import base64
+
+    import httpx
+    import respx
+
+    from app.clients import csp_client
+    from app.config import settings
+
+    monkeypatch.setattr(csp_client, "MAX_DECODED_IMAGE_BYTES", 16, raising=False)
+
+    async def _ready() -> str:
+        return "painter"
+
+    monkeypatch.setattr(
+        "app.services.studio_model_primary.resolve_image_generation",
+        _ready,
+        raising=False,
+    )
+    png_b64 = base64.b64encode(_PNG).decode("ascii")
+    spec = {"slides": [{
+        "title": "封面",
+        "bullets": ["x"],
+        "image_prompt": "a ridge at dusk",
+        "image_kind": "illustration",
+    }]}
+    with respx.mock:
+        respx.post(f"{settings.CSP_BASE_URL}/v1/images/generations").mock(
+            return_value=httpx.Response(200, json={"data": [{"b64_json": png_b64}]})
+        )
+        result = await _hydrate_images(spec, {}, bearer=_BEARER, default_aspect="16:9")
+    assert "image_data" not in result["slides"][0]

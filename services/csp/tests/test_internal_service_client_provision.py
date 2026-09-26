@@ -1260,7 +1260,7 @@ def test_fleet_secret_is_not_a_service_identity_when_files_are_in_use(
             model_type="image",
             endpoint_url="https://flux.example.internal/v1",
             is_active=True,
-            is_image_primary=True,
+            is_slides_primary=True,
             is_router_primary=True,
         )
     )
@@ -1274,7 +1274,7 @@ def test_fleet_secret_is_not_a_service_identity_when_files_are_in_use(
     assert rejected.status_code == 401, rejected.text
     image = _asgi_get(
         db_engine,
-        "/api/models/image-primary",
+        "/api/models/slides-primary",
         headers={"X-CSP-Service-Token": legacy},
     )
     assert image.status_code == 401, image.text
@@ -1315,14 +1315,14 @@ def test_fleet_secret_is_not_a_service_identity_when_files_are_in_use(
     studio = (directory / "anila-studio.token").read_text(encoding="utf-8").strip()
     admitted = _asgi_get(
         db_engine,
-        "/api/models/image-primary",
+        "/api/models/slides-primary",
         headers={"X-CSP-Service-Token": studio},
     )
     assert admitted.status_code == 200, admitted.text
     assert admitted.json()["name"] == "fleet-image"
     still_rejected = _asgi_get(
         db_engine,
-        "/api/models/image-primary",
+        "/api/models/slides-primary",
         headers={"X-CSP-Service-Token": legacy},
     )
     assert still_rejected.status_code == 401, still_rejected.text
@@ -1491,9 +1491,9 @@ def test_missing_private_directory_refuses_flat_publish_and_degrades_readiness(
 
 
 def test_dormant_callers_are_not_injected_with_the_retired_fleet_token():
-    """asr-gateway 與 flux2-dev-agent 的 compose 不再注入共用權杖。
+    """asr-gateway 的 compose 不再注入共用權杖。本機生圖服務已刪除。
 
-    程式路徑留著，但重新啟用前必須改讀專屬憑證檔。
+    語音閘道的舊讀取路徑留著，重新啟用前必須改讀專屬憑證檔。
     """
     root = Path(__file__).resolve().parents[3]
     for rel in (
@@ -1503,11 +1503,10 @@ def test_dormant_callers_are_not_injected_with_the_retired_fleet_token():
     ):
         text = (root / rel).read_text(encoding="utf-8")
         assert "CSP_SERVICE_TOKEN:" not in text, rel
+        assert "flux2-dev" not in text, rel
     for rel in (
         "services/asr-gateway/app/decode_endpoint.py",
         "services/asr-gateway/app/services/revocation_cache.py",
-        "services/flux2-dev-agent/app/main.py",
-        "services/flux2-dev-agent/app/image_primary_fetcher.py",
     ):
         text = (root / rel).read_text(encoding="utf-8")
         assert "重新啟用" in text, rel

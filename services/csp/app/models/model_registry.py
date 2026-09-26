@@ -31,10 +31,6 @@ class ModelRegistry(Base):
     is_router_primary = Column(Boolean, nullable=False, default=False)
     # Distinct from is_router_primary (campus default only).
     router_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
-    # Slice 8b (doc 2026-07-06-flux-image-primary-design.md §1): mirrors
-    # is_router_primary for flux2-dev-agent / anila-studio's primary image
-    # model (partial unique index in migration r1_0022).
-    is_image_primary = Column(Boolean, nullable=False, default=False)
     # 舊的模型列標記。語音解碼位址改由 external_services（治理中心「外部服務」）
     # 決定，asr-gateway 不再讀這一欄。
     is_asr_primary = Column(Boolean, nullable=False, default=False)

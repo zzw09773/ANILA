@@ -8,6 +8,18 @@ import { eligibleRoleModels, roleWarning } from '../src/utils/modelRoles.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
+test('image models are eligible for the image generation role', () => {
+  const models = [
+    { id: 1, name: 'painter', model_type: 'image', is_active: true },
+    { id: 2, name: 'chat', model_type: 'llm', is_active: true },
+    { id: 3, name: 'off', model_type: 'image', is_active: false },
+  ]
+  assert.deepEqual(
+    eligibleRoleModels(models, ['image']).map((m) => m.name),
+    ['painter'],
+  )
+})
+
 test('dropdown only lists active models of the role type', () => {
   const models = [
     { id: 1, name: 'off', model_type: 'llm', is_active: false },
@@ -42,6 +54,8 @@ test('models page mounts the role panel', () => {
   assert.match(panel, /listModelRoles/)
   assert.match(panel, /assignModelRole/)
   assert.match(panel, /clearModelRole/)
+  assert.match(panel, /role\.label/)
+  assert.match(panel, /role\.description/)
   assert.match(panel, /roleWarning/)
   assert.match(panel, /roleAudience/)
   assert.match(panel, /grantModelRoleAllUsers/)

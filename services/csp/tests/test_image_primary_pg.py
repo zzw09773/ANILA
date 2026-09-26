@@ -1,9 +1,9 @@
 """Slice 8b — alembic r1_0022 upgrade/downgrade on real PostgreSQL.
 
-Creates a throwaway database, runs the full chain to head (including
-r1_0022), asserts ``is_image_primary`` + partial unique index, then
-downgrades to r1_0020 and confirms clean removal. Never touches the
-live ``csp`` database name.
+Creates a throwaway database, runs the full chain to head, and confirms
+``r1_0051`` removed ``is_image_primary`` and its partial unique index.
+A separate case upgrades only to ``r1_0022`` and downgrades to
+``r1_0020``. Never touches the live ``csp`` database name.
 
 Skipped unless ``ANILA_TEST_PG_DSN`` is set (or ``/tmp/anila-test-pg-dsn``).
 """
@@ -175,7 +175,7 @@ def test_r1_0022_column_and_partial_unique(migrated_pg):
                AND column_name = 'is_image_primary'
             """
         )
-        assert cur.fetchone(), "missing model_registry.is_image_primary"
+        assert cur.fetchone() is None, "is_image_primary should be gone at head"
 
         cur.execute(
             """
@@ -183,7 +183,7 @@ def test_r1_0022_column_and_partial_unique(migrated_pg):
              WHERE indexname = 'uq_model_registry_image_primary'
             """
         )
-        assert cur.fetchone(), "partial unique index missing"
+        assert cur.fetchone() is None, "image primary index should be gone at head"
     finally:
         cur.close()
         conn.close()

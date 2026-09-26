@@ -80,12 +80,12 @@ services/anila-studio/
 │   ├── schemas/            # studio.py report.py mindmap.py infographic.py datatable.py
 │   ├── services/           # 30 模組（見下方分組）
 │   └── templates/          # infographic/base.html.j2 + report/*.html.j2
-└── tests/                  # 41 個 test 檔；511 收集、508 綠、3 個既有 FLUX 紅（見「測試」）
+└── tests/                  # pytest；不需 docker
 ```
 
 `services/` 分組（30 個模組）：
 - **Slide 管線**：`studio_config` / `studio_retrieval` / `studio_llm` / `studio_render` / `studio_vision_qa` / `studio_layout` / `studio_job_service` / `studio_text_normalizer`（簡轉繁 s2twp + 清理）/ `llm_json`（lenient JSON 解析）。
-- **FLUX 生圖**：`flux_image_provider` / `flux_prompt_rewriter` / `flux_quality_gate`（VLM ranking + FFT striping）/ `flux_style` / `diagram_renderer`（Graphviz dot→PNG）/ `geometric_qa`。
+- **圖**：`diagram_renderer`（Graphviz dot→PNG）/ `geometric_qa`。生成配圖走 CSP，不在本機模型。
 - **其他 artifact**：`report_job_service` / `report_renderer` / `report_runner`、`mindmap_job_service` / `mindmap_renderer`、`infographic_job_service` / `infographic_renderer`、`datatable_job_service` / `datatable_exporter`。
 - **跨切面 job 協調**：`job_lifecycle`（`JobReportContext` + `*JobUpdater` 協調）/ `job_store`（Redis `PersistedJob`）/ `job_reporting`（CSP artifact 回報）。不再上傳 span。
 - **Auth / infra**：`jwks_client`（拉 csp JWKS + cache）/ `revocation_cache`（Redis pub/sub + cold-start，fail-closed）。
@@ -112,15 +112,15 @@ services/anila-studio/
 cd services/anila-studio
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest                                    # test（不需 docker）
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100     # 需 csp:8000 / redis / flux2-dev / pptx-renderer
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100     # 需 csp:8000 / redis / pptx-renderer
 # 或（於 repo 根）：docker compose up -d --build anila-studio   # → infra/compose/platform.yml
 ```
 
 Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anila-studio","version":"0.1.0","ready":true,"deps":{"revocation_cache":true}}`。Lifespan startup 期間回 503 + `ready=false`（status `"degraded"`），等 JWKS + revocation cache cold-start 完才綠燈。JobStore 為 best-effort，不影響 readiness。
 
-### 測試（511 收集 · 508 綠 · 3 既有紅）
+### 測試
 
-`.venv/bin/python -m pytest` 收集 **511** 個 test（41 檔），**508 通過**、**3 個既有 FLUX 紅**——全在 `tests/test_hydrate_images.py`（`test_hydrate_image_prompt_calls_flux` / `test_cover_hero_path_generates_via_rewriter` / `test_mixed_slides_all_resolved`），為既有已知失敗、非本次 regression。測試不需 docker（csp / redis 皆以 respx / fakeredis mock）。
+`PYTHONPATH=$PWD python3 -m pytest -q`。csp / redis 以 respx / fakeredis 模擬，不需 docker。生圖角色有設時打 CSP `/v1/images/generations`；沒設則不留配圖框。
 
 ---
 
@@ -135,10 +135,12 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `POST /api/ingestion/collections/{id}/images/search` | RAG image 檢索 |
 | `GET /api/ingestion/images/{id}/blob` | 原始 image bytes |
 | `POST /v1/chat/completions` | LLM（走 csp proxy 維持計費；**無 `/api/proxy` 前綴**） |
+| `GET /api/models/roles/image_generation` | 生圖角色；健康才配圖 |
+| `POST /v1/images/generations` | 經 CSP 生圖（使用者憑證） |
 | `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact 回報（Slice 8b，fire-and-forget） |
 
 
-另直連下游 `pptx-renderer`（`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`）與 FLUX 後端。CSP 回報 / trace 的認證沿用使用者 bearer JWT（CSP 以 RS256 + JWKS 重驗，維持代理語意）；若設有 legacy `CSP_SERVICE_TOKEN` 則另帶 `X-CSP-Service-Token`。
+另直連下游 `pptx-renderer`（`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`）。生圖不直連模型主機。CSP 回報 / trace 的認證沿用使用者 bearer JWT（CSP 以 RS256 + JWKS 重驗，維持代理語意）；若設有 legacy `CSP_SERVICE_TOKEN` 則另帶 `X-CSP-Service-Token`。
 
 ### Redis pub/sub
 
@@ -157,13 +159,13 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `JWT_KID` / `JWT_ALGORITHMS` / `JWT_LEEWAY_SECONDS` | `anila-v1` / `("RS256",)` / `60` | JWT 設定 |
 | `JWKS_REFRESH_SECONDS` / `REVOCATION_CACHE_TTL_SECONDS` | `3600` / `2592000`（30 天） | JWKS 重抓 / 撤銷 deny-list TTL |
 | `INTERNAL_TIMEOUT_SECONDS` / `INTERNAL_TIMEOUT_CONNECT` / `INTERNAL_LLM_TIMEOUT_SECONDS` | `30.0` / `5.0` / `300.0` | csp_client 讀 / 連線 / LLM 長逾時 |
-| `FLUX_BACKEND_URL` / `RENDERER_BASE_URL` | `http://flux2-dev:8000` / `http://pptx-renderer:7100` | FLUX 後端（OpenAI 相容 Images API base URL，伺服器根或含 `/v1` 皆可）/ pptx renderer |
-| `FLUX_CACHE_DIR` | `/var/anila/anila-studio-flux-cache` | FLUX cache |
+| `RENDERER_BASE_URL` | `http://pptx-renderer:7100` | pptx renderer |
+| 生圖 | 治理中心 `image_generation` | 有設且健康才經 CSP `/v1/images/generations` 配圖 |
 | `ARTIFACTS_DIR` | `/var/anila/anila-studio-artifacts` | **report/mindmap/infographic/datatable 產出持久化根目錄**；download endpoint 由此讀回 |
 | `JOB_STORE_KEY_PREFIX` / `JOB_STORE_TTL_SECONDS` | `anila-studio:jobs:` / `604800`（7 天） | Redis JobStore key 前綴 / TTL |
 | `STUDIO_ARTIFACT_REPORTING` | `true` | CSP artifact-job / artifact / trace span 回報總開關 |
 
-> 注意：部分渲染路徑直接讀 `os.environ`（`geometric_qa.py` 讀 `RENDERER_BASE_URL`、`studio_render.py` 用 `FLUX_BACKEND_URL`）；另有四個 FLUX 旋鈕**只在 env、不在 config.py**：`FLUX_MODEL`（Images API 的 model 欄位，預設 `flux.2-dev`）、`FLUX_API_KEY`（有值才帶 Bearer）、`FLUX_MAX_CONCURRENT`、`FLUX_TIMEOUT_SECONDS`。compose 內 `FLUX_BACKEND_URL` 空字串 → studio 生圖停用（內網無 FLUX）。2026-07 起 FLUX 呼叫走 OpenAI 相容 `POST {base}/v1/images/generations`（`{model, prompt, n, size, response_format:"b64_json"}` → `{created, data:[{b64_json}]}`）。
+> 生圖不讀本機位址。角色健康時，Studio 用呼叫者的憑證打 CSP `POST /v1/images/generations`。沒設就不配生成圖片。`geometric_qa.py` 仍直接讀 `RENDERER_BASE_URL`。
 
 ---
 
@@ -189,5 +191,4 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 ## 相關文件
 
 - 重構設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`09-api-event-contracts.md` artifact / trace 合約、`02-system-architecture.md` JobStore 失效模型）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
-- Studio / FLUX 主規格：[`../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)
 - 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）

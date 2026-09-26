@@ -122,10 +122,9 @@ LEGITIMATE_HOSTS = [
         "csp:8000",
         "router / anila-studio / asr-gateway CSP_BASE_URL=http://csp:8000 and "
         "ingestion-worker EMBEDDING_BASE_URL=http://csp:8000/v1 "
-        "(infra/compose/platform.yml); also flux2-dev-agent from the "
-        "separate anila-models project (infra/models/docker-compose.yml) and "
+        "(infra/compose/platform.yml) and "
         "the revocation ping in infra/deployment/scripts/deploy-prod.sh — "
-        "five callers, one Host",
+        "one Host",
     ),
     (
         "anila.ai.ncsist.org.tw",

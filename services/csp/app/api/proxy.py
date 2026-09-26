@@ -1,6 +1,7 @@
 """OpenAI-compatible API proxy endpoints."""
 import asyncio
 import logging
+import re
 import time
 from typing import AsyncIterator
 
@@ -29,6 +30,8 @@ from app.services.institutional_kb import (
     retrieve_institutional,
 )
 from app.services.api_key_service import check_model_permission, check_agent_permission
+from app.services.health_checker import HEALTH_HEALTHY, normalize_health_status
+from app.services.model_roles import resolve_role
 from app.services.auth_service import is_admin_tier
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
@@ -2004,4 +2007,135 @@ async def embeddings_v2(
         ),
         embedding_input_role=input_type,
         tuning=resolve_proxy_tuning(db),
+    )
+
+
+_IMAGE_UNREADY = "生圖模型尚未就緒，簡報將不配生成圖片"
+_IMAGE_PROMPT_MAX = 240
+IMAGE_UPSTREAM_MAX_BYTES = 8 * 1024 * 1024
+_IMAGE_PIXEL_CAP = 1792 * 1024
+_IMAGE_SIZES = frozenset({
+    "512x512",
+    "768x768",
+    "1024x1024",
+    "1024x768",
+    "768x1024",
+    "1280x720",
+    "1792x1024",
+})
+_KB_LEAK_RE = re.compile(
+    r"(來源\s*[:：]|第\s*\d+\s*條|\(參\s*\[|（參\s*\[|chunk\b|leaf-\d+)",
+    re.IGNORECASE,
+)
+
+
+def image_size_allowed(size: str) -> bool:
+    """只允許白名單尺寸，而且寬乘高不得超過像素上限。"""
+    if size not in _IMAGE_SIZES:
+        return False
+    width_text, height_text = size.split("x", 1)
+    return int(width_text) * int(height_text) <= _IMAGE_PIXEL_CAP
+
+
+def prepare_image_prompt(prompt: str) -> str:
+    """短的抽象視覺描述。知識庫原文直接拒絕；內部細節先濾掉再送。"""
+    from anila_core.api.router_prompts import redact_internal_details
+
+    text = " ".join(prompt.split())
+    if not text or len(text) > _IMAGE_PROMPT_MAX or _KB_LEAK_RE.search(text):
+        raise HTTPException(status_code=400, detail="生圖提示必須是短的抽象視覺描述")
+    cleaned = " ".join(redact_internal_details(text).split())
+    if not cleaned or len(cleaned) > _IMAGE_PROMPT_MAX or _KB_LEAK_RE.search(cleaned):
+        raise HTTPException(status_code=400, detail="生圖提示必須是短的抽象視覺描述")
+    return cleaned
+
+
+@router.post("/v1/images/generations")
+async def images_generations(
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    db: Session = Depends(get_db),
+):
+    """把生圖請求轉給「生圖模型」角色。位址與金鑰留在 CSP。
+
+    沒設回 404、已停用或健康狀態不是 healthy 回 409，都不打上游。
+    呼叫端帶來的 model／網址一律不用，只轉角色目前那一顆。
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="請求必須是 JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="請求必須是 JSON 物件")
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(status_code=400, detail="缺少 prompt")
+
+    resolved = resolve_role(db, "image_generation")
+    if resolved.status == "unset":
+        raise HTTPException(status_code=404, detail=resolved.message)
+    if resolved.status != "ok" or resolved.model is None:
+        raise HTTPException(status_code=409, detail=resolved.message)
+    model = resolved.model
+    health = normalize_health_status(
+        model.health_status, is_active=bool(model.is_active)
+    )
+    if health != HEALTH_HEALTHY:
+        raise HTTPException(status_code=409, detail=_IMAGE_UNREADY)
+    if not check_model_permission(
+        db,
+        user=caller.user,
+        api_key_id=caller.api_key_id,
+        model_id=model.id,
+    ):
+        raise HTTPException(status_code=403, detail=f"無權使用模型 '{model.name}'")
+
+    prompt = prepare_image_prompt(prompt.strip())
+    size = body.get("size") or "1024x1024"
+    if not isinstance(size, str) or not image_size_allowed(size):
+        raise HTTPException(status_code=400, detail="不支援的生圖尺寸")
+    task_ctx = begin_task_run(
+        db,
+        caller=caller,
+        request_headers=request.headers,
+        dispatch_target="model",
+        resource_type="model",
+        resource_id=str(model.id),
+    )
+    enforce_model_ceiling(
+        db,
+        model=model,
+        caller=caller,
+        task_ctx=task_ctx,
+        conv_id_int=None,
+    )
+    forwarded = {
+        "model": model.name,
+        "prompt": prompt,
+        "n": 1,
+        "size": size,
+        "response_format": "b64_json",
+    }
+    return await proxy_request(
+        model=model,
+        api_key_id=caller.api_key_id,
+        user_id=caller.user.id,
+        user_identity=downstream_identity(caller.user),
+        department_id=caller.user.department_id,
+        request_body=forwarded,
+        endpoint_path="/v1/images/generations",
+        endpoint_display=_endpoint_display_for(
+            db,
+            caller.user,
+            model.endpoint_url,
+            is_internal=bool(getattr(model, "is_internal", False)),
+        ),
+        tuning=resolve_proxy_tuning(db),
+        usage_source=request.headers.get("X-ANILA-Request-Source"),
+        model_name_snapshot=model.name,
+        task_id=task_ctx.task_id if task_ctx else None,
+        task_trace_id=task_ctx.trace_id if task_ctx else None,
+        task_run_id=task_ctx.task_run_id if task_ctx else None,
+        legacy_runtime_call=task_ctx is None,
+        max_response_bytes=IMAGE_UPSTREAM_MAX_BYTES,
     )

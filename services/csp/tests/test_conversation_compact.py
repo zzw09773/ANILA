@@ -325,12 +325,12 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0050():
+def test_alembic_heads_single_r1_0051():
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0050"], f"alembic head 應為 r1_0050，實得 {heads}"
+    assert heads == ["r1_0051"], f"alembic head 應為 r1_0051，實得 {heads}"
 
     cli = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
@@ -341,21 +341,28 @@ def test_alembic_heads_single_r1_0050():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0050" in cli.stdout
+    assert "r1_0051" in cli.stdout
 
     head_src = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0051_retire_image_generator.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0051"' in head_src
+    assert 'down_revision: Union[str, None] = "r1_0050"' in head_src
+    assert "retire_image_generator" in head_src
+
+    external = (
         CSP_ROOT / "migrations" / "versions" / "r1_0050_external_services.py"
     ).read_text(encoding="utf-8")
-    assert 'revision: str = "r1_0050"' in head_src
-    assert 'down_revision: Union[str, None] = "r1_0049"' in head_src
-    assert "external_services" in head_src
+    assert 'revision: str = "r1_0050"' in external
+    assert 'down_revision: Union[str, None] = "r1_0049"' in external
+    assert "external_services" in external
 
-    previous_head = (
+    parent = (
         CSP_ROOT / "migrations" / "versions" / "r1_0049_agent_unavailable_reason.py"
     ).read_text(encoding="utf-8")
-    assert 'revision: str = "r1_0049"' in previous_head
-    assert 'down_revision: Union[str, None] = "r1_0048"' in previous_head
-    assert "unavailable_reason" in previous_head
+    assert 'revision: str = "r1_0049"' in parent
+    assert 'down_revision: Union[str, None] = "r1_0048"' in parent
+    assert "unavailable_reason" in parent
 
     previous = (
         CSP_ROOT / "migrations" / "versions" / "r1_0048_revoke_agent_credentials.py"

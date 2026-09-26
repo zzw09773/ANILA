@@ -1,6 +1,6 @@
 """治理中心的模型角色：一份清單、一次指定、執行期解析。
 
-管理員用同一組端點讀寫六個角色。Studio、ingestion-worker、Router
+管理員用同一組端點讀寫七個角色。Studio、ingestion-worker、Router
 用服務憑證或既有的 API key 在執行期解析，不讀環境變數裡的模型名稱。
 """
 from __future__ import annotations
@@ -136,7 +136,7 @@ def get_roles(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """治理中心模型角色面板。六個角色都在，沒設的也列出來。"""
+    """治理中心模型角色面板。七個角色都在，沒設的也列出來。"""
     del admin
     return {"roles": [_role_body(item, db) for item in list_roles(db)]}
 

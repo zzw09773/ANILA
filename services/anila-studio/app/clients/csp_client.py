@@ -520,3 +520,102 @@ async def proxy_chat_completions(
         max_attempts_override=1,
     )
     return response.json()
+
+
+# 上游 JSON 與解碼後的圖片都設上限，避免把整包回應灌進 CSP、Studio 與渲染器。
+MAX_IMAGE_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_DECODED_IMAGE_BYTES = 6 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def _image_mime(raw: bytes) -> str | None:
+    if raw.startswith(_PNG_MAGIC):
+        return "image/png"
+    if raw.startswith(_JPEG_MAGIC):
+        return "image/jpeg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _decode_generated_image(payload: object) -> tuple[bytes, str] | None:
+    import base64
+
+    if not isinstance(payload, dict):
+        return None
+    try:
+        encoded = payload["data"][0]["b64_json"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not isinstance(encoded, str):
+        return None
+    if len(encoded) > MAX_DECODED_IMAGE_BYTES * 2:
+        return None
+    try:
+        raw = base64.b64decode(encoded, validate=False)
+    except Exception:
+        return None
+    if len(raw) > MAX_DECODED_IMAGE_BYTES:
+        return None
+    mime = _image_mime(raw)
+    if mime is None:
+        return None
+    return raw, mime
+
+
+async def proxy_image_generation(
+    *,
+    model: str,
+    prompt: str,
+    size: str,
+    bearer: str,
+    task_id: str | None = None,
+) -> tuple[bytes, str] | None:
+    """``POST /v1/images/generations``。位址是 CSP，不是模型主機。
+
+    提示先收成短的抽象視覺描述。任何失敗都回 None，讓簡報改走沒有生成圖的版面。
+    回傳實際圖片位元組與 MIME（png / jpeg / webp）。
+    """
+    from app.services.image_prompt import outbound_image_prompt
+
+    safe_prompt = outbound_image_prompt(prompt)
+    if safe_prompt is None:
+        logger.warning("生圖提示不是短的抽象視覺描述，這張投影片不配生成圖片")
+        return None
+
+    headers = {"X-ANILA-Request-Source": "studio"}
+    if task_id and str(task_id).strip().isdigit():
+        headers["X-ANILA-Task-Id"] = str(task_id).strip()
+
+    url = f"{settings.CSP_BASE_URL}/v1/images/generations"
+    try:
+        response = await _request(
+            "POST",
+            url,
+            bearer=bearer,
+            json_body={
+                "model": model,
+                "prompt": safe_prompt,
+                "n": 1,
+                "size": size,
+                "response_format": "b64_json",
+            },
+            extra_headers=headers,
+            max_attempts_override=1,
+        )
+    except CspClientError as exc:
+        logger.warning("生圖請求失敗，這張投影片不配生成圖片: %s", exc)
+        return None
+    body = response.content
+    if len(body) > MAX_IMAGE_RESPONSE_BYTES:
+        logger.warning("生圖回應超過大小上限，這張投影片不配生成圖片")
+        return None
+    try:
+        decoded = _decode_generated_image(json.loads(body))
+    except Exception as exc:  # noqa: BLE001 — 上游形狀不對就當沒圖
+        logger.warning("生圖回應無法解讀，這張投影片不配生成圖片: %s", exc)
+        return None
+    if decoded is None:
+        logger.warning("生圖回應不是受支援的圖片，這張投影片不配生成圖片")
+    return decoded

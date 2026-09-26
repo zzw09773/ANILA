@@ -123,12 +123,9 @@ from app.services.studio_llm import (
 )
 from app.services.studio_render import (
     _apply_illustration_fallback,
-    _generate_slide_illustration,
     _hydrate_images,
     _infer_image_use_case,
     _render_pptx,
-    get_active_flux_provider,
-    get_flux_provider,
 )
 from app.services.studio_retrieval import (
     retrieve_chunks as _retrieve_chunks,
@@ -595,12 +592,7 @@ def _build_fallback_spec(
     )
 
 
-# ── Step 7: render → moved to app/services/studio_render.py (god-module split)
-# get_flux_provider / get_active_flux_provider / _hydrate_images / _render_pptx /
-# _generate_slide_illustration / _infer_image_use_case / _apply_illustration_fallback
-# live there now and are imported above (same names). _gated_generate stays
-# private to studio_render. Tests monkeypatch the render chain on
-# app.services.studio_render now.
+# 渲染在 app/services/studio_render.py。配圖角色沒設時不向模型要圖。
 
 
 # ── Step 8: vision QA → moved to app/services/studio_vision_qa.py (split) ──
@@ -719,10 +711,10 @@ async def _run_pipeline(
     }
 
     # ── Steps 4-6: LLM → JSON → SlidesSpec ──
-    # Only teach the model about generated illustrations when a FLUX
-    # provider is actually resolvable here; otherwise hydration would drop
-    # every image_prompt it writes and leave hollow one-line slides behind.
-    illustrations_enabled = await get_active_flux_provider() is not None
+    # 生圖角色沒設或不健康時，不要教模型寫插畫提示，否則會留下空的配圖框。
+    from app.services.studio_model_primary import resolve_image_generation
+
+    illustrations_enabled = await resolve_image_generation() is not None
     await updater.set(step=JOB_STEP_GENERATING)
     two_pass_ctx: dict[str, Any] = (
         {"collection_id": payload.collection_id}
@@ -822,27 +814,8 @@ async def _run_pipeline(
         spec = append_sources_slide(spec, chunks)
         await updater.set(slide_count=len(spec.slides))
 
-    # ── Stage 3: infer the deck's visual house style from its content,
-    # once per deck, so every slide shares one visual language. Only when
-    # the FLUX cover-hero path will actually run; failure degrades to the
-    # default style inside infer_deck_style.
+    # 生圖風格不再在本機推。有生圖角色時，配圖請求走 CSP。
     deck_style = None
-    # deck_base_seed check first so a fallback-deck/skip-retrieval run
-    # (deck_base_seed None) never pays for the async csp image-primary
-    # round-trip inside get_active_flux_provider() (`and` short-circuits).
-    if deck_base_seed is not None and await get_active_flux_provider() is not None:
-        from app.services.flux_style import infer_deck_style
-
-        style_sample = spec.title or ""
-        if chunks:
-            style_sample += "\n" + "\n\n".join(
-                str(c.get("content", "")) for c in chunks
-            )
-        deck_style = await infer_deck_style(
-            title=spec.title or "",
-            content_sample=style_sample,
-            llm=flux_llm,
-        )
 
     # ── Step 7: render ──
     await updater.set(step=JOB_STEP_RENDERING)
@@ -850,6 +823,7 @@ async def _run_pipeline(
         spec, images_lookup, bearer=bearer,
         deck_base_seed=deck_base_seed, llm=flux_llm,
         deck_style=deck_style,
+        task_id=payload.task_id,
     )
     pptx_bytes, pptx_path = render_out
 
@@ -910,6 +884,7 @@ async def _run_pipeline(
                     fixed, images_lookup, bearer=bearer,
                     deck_base_seed=deck_base_seed, llm=flux_llm,
                     deck_style=deck_style,
+                    task_id=payload.task_id,
                 )
             except Exception as e:  # noqa: BLE001 — never lose a rendered deck
                 logger.warning("Studio defect-fix pass failed, shipping the pre-fix deck: %s", e)

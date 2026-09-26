@@ -268,7 +268,6 @@ def _build_response(
         "is_router_primary": bool(model.is_router_primary),
         "router_enabled": bool(getattr(model, "router_enabled", False)),
         "router_conversation_count": int(router_conversation_count or 0),
-        "is_image_primary": bool(getattr(model, "is_image_primary", False)),
         "is_asr_primary": bool(getattr(model, "is_asr_primary", False)),
         "is_slides_primary": bool(getattr(model, "is_slides_primary", False)),
         "is_platform_embedding": bool(
@@ -1343,7 +1342,7 @@ def unset_router_primary(
     return _build_response(model, caller=admin, db=db)
 
 
-# ── 主簡報模型（slides-primary）— 2026-09-02，比照 image-primary 三件組 ──────
+# ── 主簡報模型（slides-primary）──────────────────────────────────────────────
 
 
 @router.get("/slides-primary")
@@ -1356,9 +1355,9 @@ def get_slides_primary(
     """Return the LLM designated for slide-deck generation (anila-studio).
 
     anila-studio polls this with its service token (60 s TTL) so an admin
-    can switch the deck model from the Models page without a restart. Same
-    admission rules and endpoint-address visibility as ``/image-primary``;
-    never returns a key.
+    can switch the deck model from the Models page without a restart.
+    Service tokens and designated callers see the real URL; everyone else
+    gets the redaction sentinel. Never returns a key.
     """
     is_svc = False
     caller: User | None = None
@@ -1457,142 +1456,6 @@ def unset_slides_primary(
         resource_type="model",
         resource_id=model.id,
         detail=f"取消主簡報模型: {model.display_name}",
-        commit=True,
-    )
-    return _build_response(model, caller=admin, db=db)
-
-
-# ── Slice 8b image-primary designation ───────────────────────────────────────
-
-
-@router.get("/image-primary")
-def get_image_primary(
-    request: Request,
-    db: Session = Depends(get_db),
-    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-):
-    """Return the model designated as the primary image (FLUX) model.
-
-    Service-to-service consumers (flux2-dev-agent / anila-studio) send
-    ``X-CSP-Service-Token``. Authenticated users may also read it; the
-    address is shaped by the single visibility predicate
-    ``can_see_endpoint_address`` / ``visible_endpoint_url`` — service
-    tokens and designated callers see the real URL, everyone else gets
-    the redaction sentinel. Never returns the model's API key.
-
-    Admitted service-token principals:
-      * ``service_client`` of any ``client_type`` (taxonomy:
-        router|worker|admin_tool). Live studio traffic presents the
-        fleet secret, which resolves as ``router-primary``
-        (``client_type='router'``) via the DB row — not as unattributed
-        legacy env.
-      * unattributed legacy env (``identity is None``) — only reached
-        when no active DB credential matches; kept for cutover / tests.
-    Rejected on the service-token path: ``agent``-kind ``csk-``.
-    """
-    is_svc = False
-    caller: User | None = None
-    if x_csp_service_token:
-        identity = verify_service_token(request, db, x_csp_service_token)
-        # KIND GATE — remove this call to prove A1 red for image-primary.
-        require_admitted_service_principal(
-            identity,
-            db=db,
-            allowed_kinds=("service_client",),
-            allowed_client_types=None,
-            allow_legacy_env=True,
-            endpoint="GET /api/models/image-primary",
-        )
-        is_svc = True
-    else:
-        caller = get_current_user(request, credentials, db)
-
-    model = (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.is_image_primary.is_(True))
-        .first()
-    )
-    if not model:
-        raise HTTPException(status_code=404, detail="尚未指定主圖像模型")
-    if not model.is_active:
-        raise HTTPException(status_code=409, detail="已指定的主圖像模型已被停用")
-    return {
-        "id": model.id,
-        "name": model.name,
-        "display_name": model.display_name,
-        "model_type": model.model_type,
-        "endpoint_url": visible_endpoint_url(
-            model.endpoint_url,
-            is_internal=bool(getattr(model, "is_internal", False)),
-            db=db,
-            caller=caller,
-            is_service_token=is_svc,
-        ),
-        "api_version": model.api_version,
-        "health_status": model.health_status,
-    }
-
-
-@router.post("/{model_id}/set-image-primary", response_model=ModelResponse)
-def set_image_primary(
-    model_id: int,
-    admin: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    """Mark a model as the primary image (FLUX) model (clearing any previous one)."""
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
-    if not model:
-        raise HTTPException(status_code=404, detail="模型不存在")
-    if model.model_type != "image":
-        raise HTTPException(status_code=400, detail="僅 image 類型可設為主圖像模型")
-    if not model.is_active:
-        raise HTTPException(status_code=400, detail="已停用的模型不能設為主圖像模型")
-
-    # Clear previous primary first to avoid violating the partial unique index.
-    (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.is_image_primary.is_(True), ModelRegistry.id != model_id)
-        .update({"is_image_primary": False}, synchronize_session=False)
-    )
-    model.is_image_primary = True
-    db.commit()
-    db.refresh(model)
-    log_audit_event(
-        db,
-        actor=admin,
-        action="set_image_primary",
-        resource_type="model",
-        resource_id=model.id,
-        detail=f"設為主圖像模型: {model.display_name}",
-        commit=True,
-    )
-    return _build_response(model, caller=admin, db=db)
-
-
-@router.post("/{model_id}/unset-image-primary", response_model=ModelResponse)
-def unset_image_primary(
-    model_id: int,
-    admin: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    """Remove the primary image-model designation from a model."""
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
-    if not model:
-        raise HTTPException(status_code=404, detail="模型不存在")
-    if not model.is_image_primary:
-        return _build_response(model, caller=admin, db=db)
-
-    model.is_image_primary = False
-    db.commit()
-    db.refresh(model)
-    log_audit_event(
-        db,
-        actor=admin,
-        action="unset_image_primary",
-        resource_type="model",
-        resource_id=model.id,
-        detail=f"取消主圖像模型: {model.display_name}",
         commit=True,
     )
     return _build_response(model, caller=admin, db=db)
@@ -2314,11 +2177,6 @@ def deactivate_model(
     # holds; admin must explicitly re-pin a primary after re-activation.
     if model.is_router_primary:
         model.is_router_primary = False
-    # Same invariant for the image-primary flag (doc
-    # 2026-07-06-flux-image-primary-design.md §1): a disabled row must not
-    # stay pinned as primary.
-    if getattr(model, "is_image_primary", False):
-        model.is_image_primary = False
     if getattr(model, "is_asr_primary", False):
         model.is_asr_primary = False
     if getattr(model, "is_platform_embedding", False):

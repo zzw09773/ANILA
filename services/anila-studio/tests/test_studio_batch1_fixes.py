@@ -70,9 +70,12 @@ def test_prompt_gates_illustration_sections_on_provider():
     from app.services.studio_llm import build_generation_prompt
     off, _ = build_generation_prompt("kb", "教學投影片", None, [], retrieval_failed=False, illustrations_enabled=False)
     on, _ = build_generation_prompt("kb", "教學投影片", None, [], retrieval_failed=False, illustrations_enabled=True)
-    assert "image_prompt" not in off and "FLUX" not in off
-    assert "diagram_dot" in off  # graphviz 不靠 FLUX，照舊
-    assert "image_prompt" in on and "FLUX" in on
+    assert "image_prompt" not in off and "生圖模型" not in off
+    assert "diagram_dot" in off
+    assert "image_prompt" in on and "生圖模型" in on
+    assert "50-500" not in on
+    assert "240" in on
+    assert "抽象" in on
 
 
 # ── 稽核：偽裝的 image_focus 不管幾條 bullet 都是候選 ─────────────────────
@@ -153,7 +156,6 @@ def _patch(monkeypatch, *, fix_raises, vision_defects):
     monkeypatch.setattr(studio_mod, "_retrieve_images", fake_images)
     monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_llm)
     monkeypatch.setattr(studio_mod, "_render_pptx", fake_render)
-    monkeypatch.setattr(studio_mod, "get_active_flux_provider", fake_provider)
     monkeypatch.setattr(studio_mod, "_visual_qa", fake_visual_qa)
     monkeypatch.setattr(studio_mod, "_fix_spec_with_defects", fake_fix)
 

@@ -70,12 +70,12 @@ services/anila-studio/
 │   ├── schemas/            # studio.py report.py mindmap.py infographic.py datatable.py
 │   ├── services/           # 30 modules (grouped below)
 │   └── templates/          # infographic/base.html.j2 + report/*.html.j2
-└── tests/                  # 42 test files; 524 collected, 521 green, 3 pre-existing FLUX reds (see Testing)
+└── tests/                  # pytest; image role set → CSP images proxy, unset → no generated frames
 ```
 
 `services/` groups (30 modules):
 - **Slide pipeline**: `studio_config` / `studio_retrieval` / `studio_llm` / `studio_render` / `studio_vision_qa` / `studio_layout` / `studio_job_service` / `studio_text_normalizer` (s2twp Simplified→Traditional + cleanup) / `llm_json` (lenient JSON parsing).
-- **FLUX image gen**: `flux_image_provider` / `flux_prompt_rewriter` / `flux_quality_gate` (VLM ranking + FFT striping) / `flux_style` / `diagram_renderer` (Graphviz dot→PNG) / `geometric_qa`.
+- **Slide images**: the governance-center `image_generation` role, proxied by CSP. `diagram_renderer` (Graphviz dot→PNG) and `geometric_qa` stay local.
 - **Other artifacts**: `report_job_service` / `report_renderer` / `report_runner`, `mindmap_job_service` / `mindmap_renderer`, `infographic_job_service` / `infographic_renderer`, `datatable_job_service` / `datatable_exporter`.
 - **Cross-cutting job coordination**: `job_lifecycle` (`JobReportContext` + `*JobUpdater` coordination) / `job_store` (Redis `PersistedJob`) / `job_reporting` (CSP artifact reporting). Spans are not posted.
 - **Auth / infra**: `jwks_client` (fetch csp JWKS + cache) / `revocation_cache` (Redis pub/sub + cold-start, fail-closed).
@@ -102,15 +102,15 @@ Plus `GET /health`. `openapi/studio.openapi.json` (3.1.0) already covers all fiv
 cd services/anila-studio
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest                                    # tests (no docker needed)
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100     # needs csp:8000 / redis / flux2-dev / pptx-renderer
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100     # needs csp:8000 / redis / pptx-renderer
 # or (from repo root): docker compose up -d --build anila-studio   # → infra/compose/platform.yml
 ```
 
 Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila-studio","version":"0.1.0","ready":true,"deps":{"revocation_cache":true}}`. During lifespan startup it returns 503 + `ready=false` (status `"degraded"`) until JWKS + revocation cache cold-start finish. The JobStore is best-effort and does not gate readiness.
 
-### Testing (524 collected · 521 green · 3 pre-existing reds)
+### Testing
 
-`.venv/bin/python -m pytest` collects **524** tests (42 files): **521 pass**, **3 pre-existing FLUX reds** — all in `tests/test_hydrate_images.py` (`test_hydrate_image_prompt_calls_flux` / `test_cover_hero_path_generates_via_rewriter` / `test_mixed_slides_all_resolved`), a known pre-existing failure, not a regression from this work. Tests need no docker (csp / redis are mocked with respx / fakeredis).
+`PYTHONPATH=$PWD python3 -m pytest -q`. csp / redis are mocked with respx / fakeredis; docker is not required. When the image-generation role is set, slide images go through CSP `POST /v1/images/generations`. When it is unset, slides keep no generated-image frames.
 
 ---
 
@@ -124,10 +124,12 @@ Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila
 | `POST /api/ingestion/collections/{id}/search` | RAG chunk retrieval |
 | `POST /api/ingestion/collections/{id}/images/search` | RAG image retrieval |
 | `GET /api/ingestion/images/{id}/blob` | raw image bytes |
+| `GET /api/models/roles/image_generation` | image-generation role; images are requested only when it is healthy |
+| `POST /v1/images/generations` | generated slide images via CSP, using the caller's credential |
 | `POST /v1/chat/completions` | LLM (via csp proxy for billing; **no `/api/proxy` prefix**) |
 | `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact reporting (Slice 8b, fire-and-forget). `trace_id` on the body is a correlation id; spans are not posted |
 
-It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`) and the FLUX backend. CSP artifact reporting reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics); if a legacy `CSP_SERVICE_TOKEN` is set it additionally attaches `X-CSP-Service-Token`.
+It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`). Generated images go through CSP, not a model host. CSP artifact reporting reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics); if a legacy `CSP_SERVICE_TOKEN` is set it additionally attaches `X-CSP-Service-Token`.
 
 ### Redis pub/sub
 
@@ -146,13 +148,13 @@ Subscribes to channel `anila:auth:token-revoke` (csp publishes). On Redis loss t
 | `JWT_KID` / `JWT_ALGORITHMS` / `JWT_LEEWAY_SECONDS` | `anila-v1` / `("RS256",)` / `60` | JWT settings |
 | `JWKS_REFRESH_SECONDS` / `REVOCATION_CACHE_TTL_SECONDS` | `3600` / `2592000` (30 days) | JWKS refetch / revocation deny-list TTL |
 | `INTERNAL_TIMEOUT_SECONDS` / `INTERNAL_TIMEOUT_CONNECT` / `INTERNAL_LLM_TIMEOUT_SECONDS` | `30.0` / `5.0` / `300.0` | csp_client read / connect / long LLM timeout |
-| `FLUX_BACKEND_URL` / `RENDERER_BASE_URL` | `http://flux2-dev:8000` / `http://pptx-renderer:7100` | FLUX backend (OpenAI-compatible Images API base URL, server root or with `/v1`) / pptx renderer |
-| `FLUX_CACHE_DIR` | `/var/anila/anila-studio-flux-cache` | FLUX cache |
+| `RENDERER_BASE_URL` | `http://pptx-renderer:7100` | pptx renderer |
+| image generation | governance-center `image_generation` | requested via CSP `/v1/images/generations` only when the role is set and healthy |
 | `ARTIFACTS_DIR` | `/var/anila/anila-studio-artifacts` | **persistence root for report/mindmap/infographic/datatable outputs**; download endpoints read back from here |
 | `JOB_STORE_KEY_PREFIX` / `JOB_STORE_TTL_SECONDS` | `anila-studio:jobs:` / `604800` (7 days) | Redis JobStore key prefix / TTL |
 | `STUDIO_ARTIFACT_REPORTING` | `true` | master switch for CSP artifact-job / artifact / trace-span reporting |
 
-> Note: some render paths read `os.environ` directly (`geometric_qa.py` reads `RENDERER_BASE_URL`, `studio_render.py` uses `FLUX_BACKEND_URL`); four FLUX knobs are **env-only, not in config.py**: `FLUX_MODEL` (the Images API `model` field, default `flux.2-dev`), `FLUX_API_KEY` (Bearer sent only when set), `FLUX_MAX_CONCURRENT`, `FLUX_TIMEOUT_SECONDS`. In compose an empty `FLUX_BACKEND_URL` disables studio image generation (no FLUX on the intranet). Since 2026-07 FLUX calls use the OpenAI-compatible `POST {base}/v1/images/generations` (`{model, prompt, n, size, response_format:"b64_json"}` → `{created, data:[{b64_json}]}`).
+> Generated images do not read a local backend URL. When the role is healthy, Studio posts to CSP `/v1/images/generations` with the caller's credential. When it is unset, slides ship without generated images. `geometric_qa.py` still reads `RENDERER_BASE_URL` from the environment.
 
 ---
 
@@ -178,5 +180,4 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 ## Related docs
 
 - Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (`00-product-constitution.md`, `09-api-event-contracts.md` artifact / trace contracts, `02-system-architecture.md` JobStore failure model). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
-- Studio / FLUX main spec: [`../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/specs/studio-flux/ANILA_Studio_FLUX_Spec.md)
 - Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

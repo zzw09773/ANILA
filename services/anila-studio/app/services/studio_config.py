@@ -73,17 +73,7 @@ from app.services.studio_model_primary import (  # noqa: E402
     VISION_ROLE_SENTINEL as VISION_LLM_MODEL,
 )
 
-# ── Flux quality gate (Stage 2 / Layer C) ─────────────────────────────────
-# How many extra times to regenerate a slide's image when every candidate
-# fails the quality gate. attempt 0 + MAX_RETRIES more.
-FLUX_GATE_MAX_RETRIES = 3
-# Candidates generated per attempt (spec 5: N=2).
-FLUX_GATE_NUM_CANDIDATES = 2
-# Seed stride between retry attempts so each attempt explores a different
-# region of latent space (attempt k uses base_seed + k*1024).
-FLUX_GATE_SEED_STRIDE = 1024
-
-# ── Illustration routing (Stage 4) ────────────────────────────────────────
+# ── 生成配圖上限 ─────────────────────────────────────────────────────────
 # Hard ceiling on generated images per deck. Beyond this, remaining
 # illustration slides take the theme/text fallback instead of spending GPU.
 # Protects against runaway latency on decks with many section breaks.

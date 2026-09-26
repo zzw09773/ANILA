@@ -187,7 +187,7 @@ docker compose up -d csp                                 # prod (platform.yml)
 # intranet card-login bootstrap: infra/deployment/intranet/intranet-deploy.sh
 ```
 
-CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). On first boot if it doesn't exist: `docker network create anila-models-net`.
+CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy`). On first boot if it doesn't exist: `docker network create anila-models-net`.
 
 Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_KID`, `ADMIN_PASSWORD`, `ANILA_AUTH_MODE`, `CSP_SERVICE_TOKEN`, `MODEL_GATEWAY_API_KEY`, `ANILA_ENV` (deployment posture; since PLAN.md P0.2 it no longer affects the model-http gate), `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_PUBLIC_SHARE`. JWT PEM paths are fixed at `secrets/jwt-{private,public}.pem`. See [`.env.example`](./.env.example).
 

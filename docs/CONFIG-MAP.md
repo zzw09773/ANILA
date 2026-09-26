@@ -51,21 +51,21 @@ compose 引用的名字總數不是「管理員要設的鍵數」：compose 自�
 | `ANILA_ALLOW_DEV_SECRET` | 開不開「開發祕密照收」 | 部署 | `up -d` | `.env.example` |
 
 ### 2b. 改錯「大聲死」（拒絕啟動）
-`startup_security.py` **實際 grep 到的**（非猜）：`SECRET_KEY`、`CSP_SERVICE_TOKEN`（已從 `.env.example` 拿掉；環境裡還留著舊值才會被檢查）、`INTERNAL_PLATFORM_API_KEY`（worker 不再讀；flux agent 的 `CSP_API_KEY` 仍引用）、`ANILA_ALLOW_DEV_SECRET`。
+`startup_security.py` **實際 grep 到的**（非猜）：`SECRET_KEY`、`CSP_SERVICE_TOKEN`（已從 `.env.example` 拿掉；環境裡還留著舊值才會被檢查）、`INTERNAL_PLATFORM_API_KEY`（worker 與本機生圖都不再讀）、`ANILA_ALLOW_DEV_SECRET`。
 
 ⚠ 不在上面≠設錯無聲：`CSP_DB_PASSWORD`／`CSP_APP_DB_PASSWORD` 在連 DB 那刻爆；`MODEL_GATEWAY_API_KEY` 在出向呼叫時才用。
 
 ### 2c. 其餘部署參數（一句一句，白話）
 - `ASR_PROBE_*`／`ASR_PARTIALS_ENABLED`／`ASR_MAX_SESSION_SECONDS`／`ASR_OPENCC_MODE`＝語音 gateway 的探針與切句行為。解碼位址不在 `.env`。
-- `EMBEDDING_*`／`LOCAL_EMBEDDING_*`／`LOCAL_LLM_*`／`GEMMA4_BASE_URL`＝第一次啟動時登錄模型用的端點。平台自己用哪一顆（主路由、嵌入、簡報、視覺、摘要、知識庫對話）在治理中心「模型角色」指定，不寫在 `.env`。
-- `FLUX_BACKEND_URL`／`FLUX_AGENT_BASE_URL`／`N8N_*`＝簡報／流程編排服務指向。
+- `EMBEDDING_*`／`LOCAL_EMBEDDING_*`／`LOCAL_LLM_*`／`GEMMA4_BASE_URL`＝第一次啟動時登錄模型用的端點。平台自己用哪一顆（主路由、嵌入、簡報、生圖、視覺、摘要、知識庫對話）在治理中心「模型角色」指定，不寫在 `.env`。
+- `N8N_*`＝流程編排服務指向。簡報配圖不再用 `FLUX_*`。
 - `ANILA_ALLOW_{HTTP,GRPC,PRIVATE,HTTP_AGENT}_ENDPOINT`＝「放行哪些非 https 模型端點」的四面。
 - `ALLOWED_HOSTS`／`ANILA_HOST`／`ANILA_ENV`／`ANILA_TRUSTED_HOSTS`＝主機／環境／信任主機名。
 - 登入／code server（`CARD_*`／`CODESERVER_*`／`ENABLE_IMAGE_CAPTIONS`／`PDF_OCR_FALLBACK`）。文件解析與語音位址在治理中心「外部服務」。
 
 全文逐鍵在附 1。
 
-已從 `.env.example` 拿掉的鍵：`CSP_SERVICE_TOKEN`。Router、anila-studio、ingestion-worker 改讀 CSP 寫的憑證檔。部署後從執行中的 `.env` 刪掉 `CSP_SERVICE_TOKEN=...` 那一行。`INTERNAL_PLATFORM_API_KEY` 還在，只剩 `flux2-dev-agent` 的 `CSP_API_KEY` 在用。
+已從 `.env.example` 拿掉的鍵：`CSP_SERVICE_TOKEN`、`FLUX_BACKEND_URL`、`FLUX_AGENT_BASE_URL`。Router、anila-studio、ingestion-worker 改讀 CSP 寫的憑證檔。部署後從執行中的 `.env` 刪掉 `CSP_SERVICE_TOKEN=...` 那一行。本機生圖服務已刪，不再讀 `INTERNAL_PLATFORM_API_KEY`。
 
 ### 附 1：`.env.example` 鍵清單（以 §0 指令為準；下面依檔案行序抄錄，值不抄）
 ```
@@ -97,8 +97,6 @@ EMBEDDING_BATCH_SIZE
 EMBEDDING_TIMEOUT
 EMBEDDING_TIMEOUT_SECONDS
 ENABLE_IMAGE_CAPTIONS
-FLUX_AGENT_BASE_URL
-FLUX_BACKEND_URL
 GEMMA4_BASE_URL
 INTERNAL_PLATFORM_API_KEY
 LOCAL_EMBEDDING_BASE_URL
@@ -147,11 +145,10 @@ SECRET_KEY
 ## 4. 有旋鈕沒消費者（死鍵候選）
 
 > 判法：`.env.example` 有指定行、但全樹沒有非 env/compose/doc 的檔讀它。**列進這節≠該刪**——
-> n8n/flux 整包未上線前留著的佔位都在這，標而不砍（擁有者 2026-08-22 裁定「真的有必要再列，沒有就不要」）。
+> n8n 整包未上線前留著的佔位都在這，標而不砍（擁有者 2026-08-22 裁定「真的有必要再列，沒有就不要」）。本機生圖的 `FLUX_*` 已從程式與 compose 拿掉。
 
 | 鍵 | 全樹命中（消費層） | 判 |
 |---|---|---|
-| `FLUX_AGENT_BASE_URL` | 0 程式正本 | 死鍵候選 |
 | `N8N_NODE_FUNCTION_ALLOW_BUILTIN` | 0 | 死鍵候選 |
 | `N8N_NODE_FUNCTION_ALLOW_EXTERNAL` | 0 | 死鍵候選 |
 | `N8N_TLS_REJECT_UNAUTHORIZED` | 0 | 死鍵候選 |
@@ -190,10 +187,6 @@ DOCLING_SERVICE_TOKEN
 DOCLING_URL
 ENABLE_PROMPT_TRANSLATION
 ENV_CA_FILE
-FLUX_API_KEY
-FLUX_MAX_CONCURRENT
-FLUX_MODEL
-FLUX_TIMEOUT_SECONDS
 GEMMA_MODEL
 HF_HUB_OFFLINE
 MIGRATION_DATABASE_URL
@@ -208,7 +201,7 @@ VISION_API_KEY
 VISION_URL
 ```
 
-平台自己用的模型名（主路由、嵌入、簡報、視覺、摘要、知識庫對話）不在這張表：治理中心「模型角色」指定，服務執行期問 CSP。`VISION_MODEL`、`MEMORY_LLM_MODEL`、`LLM_MODEL`、`ANILALM_DEFAULT_CHAT_MODEL`、`ANILA_STUDIO_SLIDES_MODEL`、`ANILA_STUDIO_VISION_MODEL`、`VITE_DEFAULT_CHAT_MODEL` 都不再讀。
+平台自己用的模型名（主路由、嵌入、簡報、生圖、視覺、摘要、知識庫對話）不在這張表：治理中心「模型角色」指定，服務執行期問 CSP。生圖角色沒設時，簡報不配生成圖片。`VISION_MODEL`、`MEMORY_LLM_MODEL`、`LLM_MODEL`、`ANILALM_DEFAULT_CHAT_MODEL`、`ANILA_STUDIO_SLIDES_MODEL`、`ANILA_STUDIO_VISION_MODEL`、`VITE_DEFAULT_CHAT_MODEL` 都不再讀。
 
 ---
 
@@ -232,6 +225,6 @@ VISION_URL
 
 ## 8. Open questions（真查不到，不寫傾向）
 
-1. `ASR_GPU`／`FLUX_AGENT_BASE_URL`／n8n 五鍵是否「整包未上線前留的佔位」——需看現行 compose profile 是否還掛那幾包。
+1. n8n 五鍵是否「整包未上線前留的佔位」——需看現行 compose profile 是否還掛那幾包。
    本輪停在「沒有程式正本」就標死鍵候選，未再追「是不是 profile 未啟用」。
 2. `DOCKER_GID`／`GID`／`UID` 等 compose 引但不在 `.env.example` 的鍵——多數是 compose 自己 `:-預設` 吃掉，本輪未逐顆分「引了但 player 不看」vs「player 靠它活」。

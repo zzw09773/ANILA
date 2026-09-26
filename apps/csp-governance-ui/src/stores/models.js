@@ -2,8 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel,
-  setRouterPrimary, unsetRouterPrimary, setImagePrimary as setImagePrimaryApi,
-  unsetImagePrimary as unsetImagePrimaryApi,
+  setRouterPrimary, unsetRouterPrimary,
   setSlidesPrimary as setSlidesPrimaryApi, unsetSlidesPrimary as unsetSlidesPrimaryApi,
   setAsrPrimary as setAsrPrimaryApi, unsetAsrPrimary as unsetAsrPrimaryApi,
   setPlatformEmbedding, unsetPlatformEmbedding,
@@ -86,17 +85,6 @@ export const useModelsStore = defineStore('models', () => {
     await fetchModels()
   }
 
-  // FLUX 主圖像模型（image-primary）— 完全比照 setPrimary/unsetPrimary 寫法。
-  async function setImagePrimary(id) {
-    await setImagePrimaryApi(id)
-    await fetchModels()
-  }
-
-  async function unsetImagePrimary(id) {
-    await unsetImagePrimaryApi(id)
-    await fetchModels()
-  }
-
   async function setSlidesPrimary(id) {
     await setSlidesPrimaryApi(id)
     await fetchModels()
@@ -145,7 +133,7 @@ export const useModelsStore = defineStore('models', () => {
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, test,
     probeThinking,
-    setPrimary, enableRouterCampus, unsetPrimary, setImagePrimary, setSlidesPrimary, unsetSlidesPrimary, unsetImagePrimary,
+    setPrimary, enableRouterCampus, unsetPrimary, setSlidesPrimary, unsetSlidesPrimary,
     setAsrPrimary, unsetAsrPrimary,
     setPlatformEmbed, unsetPlatformEmbed,
     importFromEndpoint, activateCreated,

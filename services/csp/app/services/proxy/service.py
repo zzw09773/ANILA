@@ -6,6 +6,7 @@ behavior-preserving refactor). ``proxy_request`` / ``proxy_stream`` /
 live in the sibling modules of this package (headers / sse / usage / guard).
 """
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -675,6 +676,59 @@ def _redact_upstream_text(text: str, headers: dict | None) -> str:
     return _SK_RE.sub("sk-***", out)
 
 
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_IMAGE_DECODED_MAX = 6 * 1024 * 1024
+
+
+def _upstream_body_bytes(response) -> bytes:
+    """讀上游本文。有 content 就用位元組，測試雙重物件才退回 text。"""
+    content = getattr(response, "content", None)
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    return str(getattr(response, "text", "")).encode("utf-8")
+
+
+def _image_magic_ok(raw: bytes) -> bool:
+    if raw.startswith(_PNG_MAGIC) or raw.startswith(_JPEG_MAGIC):
+        return True
+    return len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+
+
+def _require_supported_image(result: object) -> None:
+    """只接受 PNG、JPEG、WebP，且解碼後不得超過上限。"""
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="生圖回應格式不正確")
+    try:
+        encoded = result["data"][0]["b64_json"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="生圖回應格式不正確") from exc
+    if not isinstance(encoded, str):
+        raise HTTPException(status_code=502, detail="生圖回應格式不正確")
+    try:
+        decoded = base64.b64decode(encoded, validate=False)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="生圖回應格式不正確") from exc
+    if len(decoded) > _IMAGE_DECODED_MAX or not _image_magic_ok(decoded):
+        raise HTTPException(status_code=502, detail="生圖回應不是受支援的圖片")
+
+
+def _image_result_from_response(response, max_bytes: int) -> dict:
+    """在 json 解析前先看大小。超過上限或不是圖片就不把本文交回呼叫端。"""
+    declared = str(response.headers.get("content-length") or "")
+    if declared.isdigit() and int(declared) > max_bytes:
+        raise HTTPException(status_code=502, detail="生圖回應超過大小上限")
+    raw = _upstream_body_bytes(response)
+    if len(raw) > max_bytes:
+        raise HTTPException(status_code=502, detail="生圖回應超過大小上限")
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="生圖回應格式不正確") from exc
+    _require_supported_image(result)
+    return result
+
+
 async def _proxy_request_impl(
     model: ModelRegistry,
     api_key_id: int,
@@ -705,6 +759,7 @@ async def _proxy_request_impl(
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
     request_type_override: Optional[str] = None,
+    max_response_bytes: Optional[int] = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -891,12 +946,15 @@ async def _proxy_request_impl(
             # (some agents — e.g. asrd — only speak streaming). Aggregate the
             # deltas into one OpenAI-shape chat.completion object so the
             # caller gets JSON.
-            content_type = response.headers.get("content-type", "")
-            body_preview = response.text[:8].lstrip()
-            if "text/event-stream" in content_type or body_preview.startswith("data:"):
-                result = _aggregate_sse_to_chat_completion(response.text, model.name)
+            if max_response_bytes is not None:
+                result = _image_result_from_response(response, max_response_bytes)
             else:
-                result = response.json()
+                content_type = response.headers.get("content-type", "")
+                body_preview = response.text[:8].lstrip()
+                if "text/event-stream" in content_type or body_preview.startswith("data:"):
+                    result = _aggregate_sse_to_chat_completion(response.text, model.name)
+                else:
+                    result = response.json()
 
             # Extract token usage from response
             usage = result.get("usage", {})
@@ -1105,6 +1163,7 @@ async def proxy_request(
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
     request_type_override: Optional[str] = None,
+    max_response_bytes: Optional[int] = None,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -1150,6 +1209,7 @@ async def proxy_request(
             invocation_id=invocation_id,
             model_name_snapshot=model_name_snapshot,
             request_type_override=request_type_override,
+            max_response_bytes=max_response_bytes,
         )
     except HTTPException as exc:
         if task_run_id is not None:

@@ -149,7 +149,7 @@ services:
       # ⚠ 尾巴的 `,docling,router` 在 `:-` 預設值**外側**:operator 設
       # ANILA_TRUSTED_HOSTS 會整份替換括號裡的預設清單,但這兩個 compose
       # 內部服務名恆在（平台內服務,不是 operator 會想換掉的模型）。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent},docling,router"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy},docling,router"
       # **入向** Host header allow-list (TrustedHostMiddleware) —— 跟上面那條
       # 出向 SSRF allow-list 是兩回事,別搞混。csp 的 library 預設是 "*"(等於
       # 關著),所以**這一行就是打開它的地方**:沒有它,.env 設 ALLOWED_HOSTS
@@ -208,19 +208,17 @@ services:
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
-      # 平台自己用的模型（主路由、嵌入、簡報、視覺、摘要、知識庫對話）
+      # 平台自己用的模型（主路由、嵌入、簡報、生圖、視覺、摘要、知識庫對話）
       # 在治理中心「模型角色」指定，不讀這裡的模型名稱。
       # AUTO_REGISTER_MODELS 只在第一次建立還沒有的列。已存在的列
       # （含治理中心改過的端點）開機不會被這段蓋回去。
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
       # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
-      # FLUX_AGENT_BASE_URL 用 `${VAR-default}` (無冒號):「沒設」→ 同主機
-      # docker DNS 預設;「設成空字串」→ auto_seed 跳過該 entry (內網無 FLUX
-      # 時用這招停用繪圖 agent,避免註冊一個打不通的 dead agent 給 Router)。
+      # 本機不再種 image-generator。簡報配圖走治理中心的生圖角色。
       AUTO_REGISTER_AGENTS: >-
-        [{"name":"image-generator","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
+        []
       # ingestion-worker 的系統帳號與 sk- 由 CSP 核發，明文只寫進
       # /run/anila/service-clients/ingestion-worker/token。不要再從 .env 種這把 key。
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
@@ -553,12 +551,7 @@ services:
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/anila-studio/token
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
-      # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
-      # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
-      # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
-      FLUX_CACHE_DIR: /var/anila/anila-studio-flux-cache
+      # 簡報配圖走治理中心的生圖角色，經 CSP 代理。這裡不再掛本機 FLUX。
       # report / mindmap / infographic / datatable 4 種 artifact 的持久化目錄。
       # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
@@ -574,12 +567,11 @@ services:
       pptx-renderer:
         condition: service_healthy
     volumes:
-      - anila-studio-flux-cache:/var/anila/anila-studio-flux-cache
       - anila-studio-artifacts:/var/anila/anila-studio-artifacts
       - anila-service-credentials:/run/anila/service-clients:ro
     networks:
       - default
-      - anila-models-net  # flux2-dev sits here
+      - anila-models-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
@@ -897,7 +889,6 @@ volumes:
   router-sessions:
   anila-service-credentials:
   anila-csp-local-secrets:
-  anila-studio-flux-cache:
   anila-studio-artifacts:
   # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
   # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。

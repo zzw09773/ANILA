@@ -52,13 +52,6 @@ export const setSlidesPrimary = (id) =>
 export const unsetSlidesPrimary = (id) =>
   client.post(`/api/models/${id}/unset-slides-primary`)
 
-// FLUX 主圖像模型（image-primary）— 完全比照 router-primary 三件組寫法。
-export const setImagePrimary = (id) =>
-  client.post(`/api/models/${id}/set-image-primary`)
-
-export const unsetImagePrimary = (id) =>
-  client.post(`/api/models/${id}/unset-image-primary`)
-
 // 舊的主語音旗標。解碼位址已改在「外部服務」，畫面不再呼叫這兩支。
 export const setAsrPrimary = (id) =>
   client.post(`/api/models/${id}/set-asr-primary`)

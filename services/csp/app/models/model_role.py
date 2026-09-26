@@ -2,7 +2,7 @@
 
 既有的 ``is_router_primary``／``is_platform_embedding``／``is_slides_primary``
 仍寫在 ``model_registry`` 上（讀寫點很多，搬欄位不會更簡單）。視覺、摘要、
-知識庫對話這三個新角色放這張表。治理中心與執行期都走同一組角色名稱。
+知識庫對話、生圖放這張表。治理中心與執行期都走同一組角色名稱。
 列不存在，或 ``model_id`` 為空，就是「尚未設定」。
 """
 from datetime import datetime, timezone

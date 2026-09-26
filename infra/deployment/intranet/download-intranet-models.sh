@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # download-intranet-models.sh
 # ============================================================================
-# 內網模型權重下載 (2026-06-10 定稿,共 12 repo ≈ 2469 GiB)。
+# 內網模型權重下載 (2026-06-10 定稿後,2026-09-26 拿掉生圖權重)。
 #
 # ⚠ 通道 = Google Drive (無轉移碟),單檔上限 50G;本機只剩 ~1.3TB。
 #   → 逐模型 pipeline:下載到本機暫存 → pack-chunks.sh 切 45GiB 塊
@@ -17,9 +17,9 @@
 #   GEN_MANIFEST=1   下載完產生 WEIGHTS-CHECKSUMS.sha256 (2TB 約 30-60 分鐘,
 #                    內網端 `sha256sum -c` 驗檔用 — 供應鏈防護,建議開)
 #   HF_TOKEN         未設則用 ~/.cache/huggingface/token (gated repo 需要:
-#                    meta-llama 兩個 + FLUX.2-dev;403 = 還沒在 HF 網頁按同意)
+#                    meta-llama;403 = 還沒在 HF 網頁按同意)
 #
-# 已在本機的權重 (gemma-4-31B-it / assistant / FLUX.2-dev / gpt-oss-20b /
+# 已在本機的權重 (gemma-4-31B-it / assistant / gpt-oss-20b /
 # NV-Embed-v2 / Scout-Instruct-FP8) 不在此清單重抓 — 直接從
 # project/Huggingface 走 pack-chunks 上傳,不用過這支腳本。
 # gemma-31B / Scout 已拍板用 instruct 版 (2026-06-10):gemma-4-31B-it
@@ -42,8 +42,6 @@ MODELS=(
   # 語音輸入 (asr-decoder) 用;fp16 推論吃 ~4.7 GiB VRAM。
   "Systran/faster-whisper-large-v3|faster-whisper-large-v3"                            #   3.1 GiB
   "google/gemma-4-E4B|gemma-4-E4B"                                                     #  14.9 GiB (NVFP4 rehearsal 用)
-  "black-forest-labs/FLUX.2-klein-4B|FLUX.2-klein-4B"                                  #  22.1 GiB
-  "black-forest-labs/FLUX.2-dev|FLUX.2-dev"                                            # 165.4 GiB (本機已有→自動跳過)
   # ── B200 期貨 (instruct 定案:Scout 帶 Instruct,不帶 base) ───────────────
   "meta-llama/Llama-4-Scout-17B-16E-Instruct|Llama-4-Scout-17B-16E-Instruct"           # 202.4 GiB
   "mistralai/Mistral-Small-4-119B-2603|Mistral-Small-4-119B-2603"                      # 225.3 GiB
@@ -56,11 +54,11 @@ MODELS=(
   "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8|Llama-4-Maverick-17B-128E-Instruct-FP8"              # 388.2 GiB
   "meta-llama/Llama-4-Maverick-17B-128E-Instruct|Llama-4-Maverick-17B-128E-Instruct"   # 748.0 GiB (REMOVE_SOURCE=1 打包)
 )
-TOTAL_GIB=2473
+TOTAL_GIB=2286
 
 command -v hf >/dev/null || { echo "✗ 找不到 hf CLI (pip install -U huggingface_hub[cli])"; exit 1; }
 [ -n "${HF_TOKEN:-}" ] || [ -f "$HOME/.cache/huggingface/token" ] \
-  || { echo "✗ 無 HF token — gated repo (meta-llama/FLUX) 會 403"; exit 1; }
+  || { echo "✗ 無 HF token — gated repo (meta-llama) 會 403"; exit 1; }
 
 AVAIL_GIB=$(df -BG --output=avail "$DEST" | tail -1 | tr -dc '0-9')
 echo "目的地: $DEST (可用 ${AVAIL_GIB} GiB / 全清單需 ~${TOTAL_GIB} GiB)"

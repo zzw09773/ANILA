@@ -90,7 +90,7 @@ flowchart TB
     agents["已註冊 Agent"]
     redis[("Redis<br/>queue · revoke · studio job store")]
     db[("PostgreSQL + pgvector（RLS: csp_app）")]
-    models["infra/models（anila-models-net）<br/>vLLM · TensorRT-LLM · FLUX"]
+    models["infra/models（anila-models-net）<br/>vLLM · TensorRT-LLM"]
 
     users -->|讀卡| card --> shell
     users -->|cookie| nginx --> shell & alm & gov & ctrl & data & router & studio
@@ -100,7 +100,6 @@ flowchart TB
     data --> models
     ctrl -.->|enqueue| redis --> worker --> db
     studio -.-> pptx
-    studio -.->|FLUX| models
     redis -.->|revoke + job| studio
 ```
 
@@ -117,7 +116,7 @@ flowchart TB
 | [`anila-studio`](./services/anila-studio/) | 產出中心引擎：報告／簡報／心智圖／資訊圖／資料表 artifact；本地驗 JWKS ＋ Redis revocation ＋ durable job store | `:8100`（internal） |
 | [`ingestion-worker`](./services/ingestion-worker/) | 知識入庫 worker：arq ＋ Redis；parse → chunk → embed → pgvector | 無 host port |
 | [`pptx-renderer`](./services/pptx-renderer/) | PPTX 渲染 service（Node），由 anila-studio server-to-server 呼叫 | `:7100`（internal） |
-| [`flux2-dev`](./services/flux2-dev/) · [`flux2-dev-agent`](./services/flux2-dev-agent/) | FLUX 影像生成 service 與 image-generator agent shim（僅 dev／繪圖用；無外部 auth，須置於 CSP／內網後） | internal |
+
 
 **`apps/`** — 前端
 
@@ -236,7 +235,6 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 | anilalm | `cd apps/anilalm && npm install && npm run typecheck && npm run build`（schema 改動先 `npm run gen:studio-types`） |
 | csp-governance-ui | `cd apps/csp-governance-ui && npm install && npm run build`（無 test script，以 build 作 gate） |
 | pptx-renderer | `cd services/pptx-renderer && node tests/test_cover_hero_guard.js`（無 npm test，手動跑） |
-| flux2-dev · flux2-dev-agent | `cd services/flux2-dev && pip install -e '.[test]' && pytest`（mock pipeline，不載大型權重） |
 | CI gate | `bash infra/ci/lint-zh-tw.sh`（繁中政策）· `bash infra/ci/lint-boundaries.sh`（CSP module boundary） |
 
 > 現況無 repo-wide coverage gate，也無可信整體覆蓋率數字（doc 10 §17.2）；每步以「不新增紅字」為 gate。

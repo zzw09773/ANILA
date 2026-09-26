@@ -9,7 +9,7 @@
 #   bash infra/deployment/intranet/model-serve.sh logs <service>          tail -f
 #
 # Group (up 專用捷徑):
-#   trial      試用機現役組: gpt-oss-20b gemma4 nv-embed flux
+#   trial      試用機現役組: gpt-oss-20b gemma4 nv-embed
 #   intranet   內網 H100 組:  gemma4(31B) 26b-a4b 12b 120b nv-embed
 #
 # 行為:
@@ -23,7 +23,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
 
-GROUP_TRIAL=(gpt-oss-20b gemma4 nv-embed-triton nv-embed-proxy flux2-dev flux2-dev-agent)
+GROUP_TRIAL=(gpt-oss-20b gemma4 nv-embed-triton nv-embed-proxy)
 GROUP_INTRANET=(gemma4 nv-embed-triton nv-embed-proxy gemma-4-26b-a4b gemma-4-12b gpt-oss-120b)
 
 if [[ -f "$REPO_ROOT/.env" ]]; then

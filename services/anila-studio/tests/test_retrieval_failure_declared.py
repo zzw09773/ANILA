@@ -137,9 +137,6 @@ def _patch_slides(monkeypatch, *, chunks_result, captured):
     monkeypatch.setattr(studio_mod, "_retrieve_images", fake_retrieve_images)
     monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_call_llm_chat)
     monkeypatch.setattr(studio_mod, "_render_pptx", fake_render_pptx)
-    monkeypatch.setattr(
-        studio_mod, "get_active_flux_provider", fake_active_provider,
-    )
     monkeypatch.setattr(studio_mod, "_rebalance_layouts", fake_rebalance)
 
 
