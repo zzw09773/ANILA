@@ -3,24 +3,30 @@
 Humans do not copy these tokens. On startup and on a timer, CSP makes
 sure each configured internal client has one active credential and
 writes the current plaintext to
-``<ANILA_SERVICE_CLIENT_DIR>/<client_name>.token``. The file is mode
-0640 and, when the process may change groups, owned by the consumer
-gid (default 10002, the ``anila-svc-tokens`` group shared with the
-router uid). A revoked row is not re-issued: the file is removed so
-the consumer fails closed.
+``<ANILA_SERVICE_CLIENT_DIR>/<client_name>.token``. 有指定消費者群組時，明文寫在
+``<目錄>/<client_name>/token``，子目錄必須已存在（啟動腳本以 uid 10005
+建好）。沒有群組時寫 ``<目錄>/<client_name>.token``（測試用）。
+已吊銷的列不重新核發，
+並刪掉憑證檔，該服務因此失敗即關閉。
 
-The client list is data. The built-in default is ``router-primary``
-(``client_type=router``). ``ANILA_INTERNAL_SERVICE_CLIENTS`` adds to
-that list with a JSON array so ``ingestion-worker`` can be added
-without a code change. ``router-primary`` is always provisioned as a
-router client, including when the JSON omits it or names it with
-another ``client_type``::
+內建名單是 ``router-primary``（服務憑證）、``anila-studio``（服務憑證）
+與 ``ingestion-worker``（使用者 API key，不是 csk-）。
+``ANILA_INTERNAL_SERVICE_CLIENTS`` 可再加客戶端。``router-primary`` 與
+``anila-studio`` 一律會核發，類型被寫錯時改回內建值。JSON 若已明確列出
+``ingestion-worker``，就照那一筆（舊的服務憑證測試仍可這樣寫）；沒列才
+補上內建的 API key。
 
-    [{"client_name": "ingestion-worker", "client_type": "worker", "file_gid": 10001}]
+每個消費者一個子目錄（擁有者 uid 10005，mode 2770，群組才進得去）。
+CSP、studio、worker 都是 uid 10001；檔案若放在同一個 0640 目錄，
+它們會互讀。子目錄的擁有者不是 10001，同 uid 的其他行程進不去。
+CSP 必須加入每一個消費者群組才能在目錄裡建檔。::
+
+    [{"client_name": "ingestion-worker", "client_type": "worker", "credential": "api_key", "file_gid": 10004}]
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -29,7 +35,7 @@ import re
 import secrets
 import stat
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
@@ -58,11 +64,23 @@ _LOCK = threading.RLock()
 # cannot look the same as a healthy boot.
 _provision_failed: tuple[str, ...] | None = None
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,98}$")
-_CLIENT_TYPES = frozenset({"router", "worker", "admin_tool"})
+_CLIENT_TYPES = frozenset({"router", "worker", "admin_tool", "studio"})
+_CREDENTIALS = frozenset({"service_token", "api_key"})
 _UNSET = object()
 
+# 憑證檔維持 0640。隔離不靠拿掉擁有者位元：CSP 與 studio／worker
+# 同是 uid 10001，擁有者讀不到就連寫入行程也讀不回。
+# 每個客戶端一個子目錄，擁有者 uid 10005（沒有服務以這個 uid 跑），
+# mode 2770，群組才進得去。見 infra/docker/csp-credential-dirs.sh。
 TOKEN_FILE_MODE = 0o640
+# 升級腳本清掉根目錄的扁平憑證後留下這個檔。只處理一次。
+_FORCE_ROTATE_MARKER = ".force-rotate-router-primary"
+_FORCE_ROTATE_DETAIL = "升級時清掉可能被複製的 router 權杖，不留寬限"
 DIRECTORY_MODE = 0o2750
+TOKEN_DIR_OWNER_UID = 10005
+ROUTER_FILE_GID = 10002
+STUDIO_FILE_GID = 10003
+WORKER_FILE_GID = 10004
 DEFAULT_ROTATE_AFTER = timedelta(days=30)
 DEFAULT_GRACE = timedelta(hours=24)
 _MIN_PROVISION_INTERVAL_SECONDS = 60
@@ -74,6 +92,9 @@ class InternalServiceClientSpec:
     client_type: str
     description: str = ""
     file_gid: int | None = None
+    # service_token：csk-，寫進 service_clients。
+    # api_key：sk-，雜湊後放 api_keys，明文只進憑證檔。
+    credential: str = "service_token"
 
 
 @dataclass(frozen=True)
@@ -86,7 +107,21 @@ DEFAULT_INTERNAL_SERVICE_CLIENTS: tuple[InternalServiceClientSpec, ...] = (
     InternalServiceClientSpec(
         client_name="router-primary",
         client_type="router",
-        description="anila-core-router; credential provisioned by CSP",
+        description="anila-core-router；憑證由 CSP 核發",
+        file_gid=ROUTER_FILE_GID,
+    ),
+    InternalServiceClientSpec(
+        client_name="anila-studio",
+        client_type="studio",
+        description="anila-studio；憑證由 CSP 核發",
+        file_gid=STUDIO_FILE_GID,
+    ),
+    InternalServiceClientSpec(
+        client_name="ingestion-worker",
+        client_type="worker",
+        description="ingestion-worker 系統帳號的 API key；明文只寫憑證檔",
+        file_gid=WORKER_FILE_GID,
+        credential="api_key",
     ),
 )
 
@@ -146,33 +181,71 @@ def parse_internal_service_clients(raw: str | None) -> tuple[InternalServiceClie
             "using the built-in list"
         )
         return DEFAULT_INTERNAL_SERVICE_CLIENTS
-    return _with_required_router(tuple(specs))
+    return _with_required_clients(tuple(specs))
 
 
-def _with_required_router(
+def _builtin(name: str) -> InternalServiceClientSpec:
+    for spec in DEFAULT_INTERNAL_SERVICE_CLIENTS:
+        if spec.client_name == name:
+            return spec
+    raise KeyError(name)
+
+
+def _with_required_clients(
     specs: tuple[InternalServiceClientSpec, ...],
 ) -> tuple[InternalServiceClientSpec, ...]:
-    """Keep ``router-primary`` as a router client in every configured list."""
+    """router-primary 與 anila-studio 一律留在名單裡，類型不對就改回內建。"""
     kept: list[InternalServiceClientSpec] = []
-    saw_router = False
+    saw: set[str] = set()
     for spec in specs:
-        if spec.client_name != "router-primary":
-            kept.append(spec)
+        if spec.client_name == "router-primary":
+            if spec.client_type != "router" or spec.credential != "service_token":
+                logger.error(
+                    "internal service client router-primary must be a router "
+                    "service token; the built-in router client is used instead"
+                )
+                continue
+            if "router-primary" in saw:
+                logger.error("duplicate internal service client router-primary ignored")
+                continue
+            saw.add("router-primary")
+            kept.append(_with_default_gid(spec, ROUTER_FILE_GID))
             continue
-        if spec.client_type != "router":
+        if spec.client_name == "anila-studio":
+            if spec.client_type != "studio" or spec.credential != "service_token":
+                logger.error(
+                    "internal service client anila-studio must be a studio "
+                    "service token; the built-in studio client is used instead"
+                )
+                continue
+            if "anila-studio" in saw:
+                logger.error("duplicate internal service client anila-studio ignored")
+                continue
+            saw.add("anila-studio")
+            kept.append(_with_default_gid(spec, STUDIO_FILE_GID))
+            continue
+        if spec.client_name in saw:
             logger.error(
-                "internal service client router-primary must be client_type "
-                "router; the built-in router client is used instead"
+                "duplicate internal service client %s ignored", spec.client_name
             )
             continue
-        if saw_router:
-            logger.error("duplicate internal service client router-primary ignored")
-            continue
-        saw_router = True
+        saw.add(spec.client_name)
         kept.append(spec)
-    if saw_router:
-        return tuple(kept)
-    return (DEFAULT_INTERNAL_SERVICE_CLIENTS[0], *kept)
+    if "router-primary" not in saw:
+        kept.insert(0, _builtin("router-primary"))
+    if "anila-studio" not in saw:
+        kept.append(_builtin("anila-studio"))
+    if "ingestion-worker" not in saw:
+        kept.append(_builtin("ingestion-worker"))
+    return tuple(kept)
+
+
+def _with_default_gid(
+    spec: InternalServiceClientSpec, gid: int
+) -> InternalServiceClientSpec:
+    if spec.file_gid is not None:
+        return spec
+    return replace(spec, file_gid=gid)
 
 
 def ensure_internal_service_clients(
@@ -319,25 +392,40 @@ def write_token_file(
     client_name: str,
     plaintext: str,
     *,
-    mode: int = TOKEN_FILE_MODE,
+    mode: int | None = None,
     gid: int | None = None,
 ) -> None:
     """Atomically publish ``plaintext``. No-op when the bytes already match.
 
-    The temporary file is created in ``directory`` and renamed over the
-    destination so readers never see a partial token. Mode is forced to
-    0640 and, when ``gid`` is set, the group is changed. A failed
-    chmod or chown, or a resulting mode or gid that does not match,
-    raises. The caller must not report the publication as successful.
+    暫存檔寫在同一目錄再改名，讀者不會看到半截憑證。有 ``gid`` 時檔案在
+    ``<directory>/<client_name>/token``（子目錄必須已存在）。mode 是
+    0640。chmod／chown 失敗，或寫完之後的 mode／gid 不符，就拋出。
+    呼叫端不得把這次發布當成成功。
+
+    有 gid 卻沒有專屬目錄時拒絕發布，不退回根目錄的扁平檔。同 uid 的
+    其他服務讀得到那個扁平檔，這次發布必須失敗，readiness 才會降級。
     """
+    if mode is None:
+        mode = TOKEN_FILE_MODE
     payload = _payload(plaintext)
     directory.mkdir(parents=True, exist_ok=True)
-    _harden_directory(directory, gid)
-    dest = _token_path(directory, client_name)
+    _harden_directory(directory)
+    if gid is not None and not (directory / client_name).is_dir():
+        logger.error(
+            "private credential directory for %s is missing; refusing to "
+            "publish. csp-credential-dirs must create it so uid 10001 "
+            "services cannot read each other's tokens. health is degraded",
+            client_name,
+        )
+        raise FileNotFoundError(
+            f"private credential directory for {client_name} is missing"
+        )
+    dest = _token_path(directory, client_name, gid=gid)
+    dest_parent = dest.parent
     if dest.is_file() and _file_matches(dest, payload):
         _apply_mode_and_group(dest, mode, gid)
         return
-    tmp = directory / f".{client_name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    tmp = dest_parent / f".{client_name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     fd = os.open(
         tmp,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
@@ -359,15 +447,17 @@ def write_token_file(
         tmp.unlink(missing_ok=True)
         raise
     _apply_mode_and_group(dest, mode, gid)
-    _fsync_directory(directory)
+    _fsync_directory(dest_parent)
 
 
-def remove_token_file(directory: Path, client_name: str) -> None:
+def remove_token_file(
+    directory: Path, client_name: str, *, gid: int | None = None
+) -> None:
     if not _NAME_RE.fullmatch(client_name):
         logger.error("refusing to remove a token file for an unsafe client name")
         return
     try:
-        _token_path(directory, client_name).unlink()
+        _token_path(directory, client_name, gid=gid).unlink()
     except FileNotFoundError:
         return
     except OSError as exc:
@@ -388,10 +478,17 @@ def _ensure_one(
     file_gid: int | None | object,
 ) -> ProvisionOutcome:
     name = spec.client_name
-    if not _NAME_RE.fullmatch(name) or spec.client_type not in _CLIENT_TYPES:
+    if (
+        not _NAME_RE.fullmatch(name)
+        or spec.client_type not in _CLIENT_TYPES
+        or spec.credential not in _CREDENTIALS
+    ):
         logger.error("skipping internal service client with an invalid name or type")
         return ProvisionOutcome(name, "error")
     gid = _gid_for(spec, file_gid)
+    if spec.credential == "api_key":
+        return _ensure_api_key(db, spec, directory, now, rotate_after, grace, gid)
+    force = _force_rotate_requested(directory, name)
     try:
         row = _lock_named(db, name)
         if row is not None and (not row.is_active or row.revoked_at is not None):
@@ -401,7 +498,10 @@ def _ensure_one(
                 name,
             )
             db.rollback()
-            remove_token_file(directory, name)
+            remove_token_file(directory, name, gid=gid)
+            if force:
+                # 舊權杖已經不能用。清掉標記，避免下一輪又去輪替。
+                _consume_force_rotate_marker(directory)
             return ProvisionOutcome(name, "revoked")
         if row is not None and row.client_type != spec.client_type:
             logger.error(
@@ -411,11 +511,36 @@ def _ensure_one(
                 row.client_type,
                 spec.client_type,
             )
-            db.rollback()
+            if force:
+                claimed = _claim_new_token(
+                    db,
+                    row,
+                    now,
+                    previous_grace=None,
+                    detail=_FORCE_ROTATE_DETAIL,
+                )
+                if claimed == "error":
+                    return ProvisionOutcome(name, "error")
+                if claimed != "lost":
+                    db.commit()
+                _consume_force_rotate_marker(directory)
+            else:
+                db.rollback()
             return ProvisionOutcome(name, "error")
 
         if row is None:
             action = _insert_client(db, spec, now)
+        elif force:
+            # 扁平檔可能已被複製。這一次不留寬限，換完就清掉標記。
+            action = _claim_new_token(
+                db,
+                row,
+                now,
+                previous_grace=None,
+                detail=_FORCE_ROTATE_DETAIL,
+            )
+            if action == "ok":
+                action = "force_rotated"
         elif _active_is_legacy_shared(row):
             # Migration 0027 stored the fleet CSP_SERVICE_TOKEN on this row.
             # Republishing it, or keeping it for the grace window, leaves the
@@ -442,6 +567,8 @@ def _ensure_one(
         if action == "error":
             return _finish(db, name, directory, gid, "error")
         db.commit()
+        if force:
+            _consume_force_rotate_marker(directory)
     except IntegrityError:
         db.rollback()
         logger.info(
@@ -474,6 +601,228 @@ def _ensure_one(
         )
         return ProvisionOutcome(name, "error")
     return _finish(db, name, directory, gid, action)
+
+
+def _ensure_api_key(
+    db: Session,
+    spec: InternalServiceClientSpec,
+    directory: Path,
+    now: datetime,
+    rotate_after: timedelta,
+    grace: timedelta,
+    gid: int | None,
+) -> ProvisionOutcome:
+    """核發 ingestion-worker 這類系統帳號的 sk-。
+
+    雜湊方式與現有 api_keys 相同。明文只寫進憑證檔，日誌與稽核不記明文。
+    檔案不見時無法從雜湊還原，只能換一把新的。已停用、沒有現用金鑰時
+    不重新核發，並刪掉憑證檔。
+    """
+    from app.models.api_key import ApiKey
+    from app.models.user import User
+    from app.utils.security import hash_password
+
+    name = spec.client_name
+    key_name = f"{name}-system-key"
+    try:
+        user = (
+            db.query(User)
+            .filter(User.username == name)
+            # User 有自動 join 的關聯，查詢會帶 outer join；PostgreSQL 不准對
+            # outer join 的可空側下 FOR UPDATE，所以只鎖 users 這張表。
+            .with_for_update(of=User)
+            .first()
+        )
+        if user is None:
+            user = User(
+                username=name,
+                email=f"{name}@anila.local",
+                hashed_password=hash_password(secrets.token_urlsafe(24)),
+                role="system",
+                is_active=True,
+                is_approved=True,
+            )
+            db.add(user)
+            db.flush()
+            action = "created"
+        elif user.role != "system" or not user.is_active:
+            logger.error(
+                "internal API key %s belongs to a user that is not an active "
+                "system account; not publishing a credential",
+                name,
+            )
+            db.rollback()
+            return ProvisionOutcome(name, "error")
+        else:
+            action = "unchanged"
+
+        keys = (
+            db.query(ApiKey)
+            .filter(ApiKey.user_id == user.id, ApiKey.name == key_name)
+            .all()
+        )
+        current = _current_api_key(keys, now)
+        inactive = [row for row in keys if not row.is_active]
+        if current is None and inactive:
+            for row in keys:
+                if row.is_active:
+                    row.is_active = False
+            db.commit()
+            remove_token_file(directory, name, gid=gid)
+            logger.error(
+                "internal API key %s is revoked; refusing to re-issue; "
+                "token file removed so the service fails closed",
+                name,
+            )
+            return ProvisionOutcome(name, "revoked")
+
+        legacy_hash = _legacy_platform_key_hash()
+        replace_legacy = (
+            current is not None
+            and legacy_hash is not None
+            and _hash_is(current.key_hash, legacy_hash)
+        )
+        file_ok = (
+            current is not None
+            and _api_key_file_matches(directory, name, current.key_hash, gid=gid)
+        )
+        if (
+            current is not None
+            and file_ok
+            and not replace_legacy
+            and not _api_key_rotation_due(current, now, rotate_after)
+        ):
+            plaintext_now = _plaintext_placeholder_skip(directory, name, gid=gid)
+            db.rollback()
+            write_token_file(directory, name, plaintext_now, gid=gid)
+            return ProvisionOutcome(name, "unchanged")
+
+        if current is not None and file_ok and not replace_legacy:
+            action = "rotated"
+        elif replace_legacy:
+            action = "replaced_legacy"
+        elif current is None:
+            action = "created"
+        else:
+            # 檔案不見或內容對不上現用金鑰：雜湊還原不了明文，換一把。
+            action = "rotated" if action == "unchanged" else action
+
+        plaintext, prefix, suffix, key_hash = _mint_api_key_parts()
+        new_row = ApiKey(
+            user_id=user.id,
+            name=key_name,
+            key_prefix=prefix,
+            key_suffix=suffix,
+            key_hash=key_hash,
+            is_active=True,
+        )
+        db.add(new_row)
+        db.flush()
+        if current is not None:
+            if replace_legacy:
+                current.is_active = False
+                current.expires_at = now
+            else:
+                current.expires_at = now + grace
+        audit = log_audit_event(
+            db,
+            actor=None,
+            action=agent_credential_service.AUDIT_TOKEN_ISSUED,
+            resource_type="api_key",
+            resource_id=new_row.id,
+            detail=f"auto-provisioned api key '{key_name}' for {name}",
+            metadata={
+                "client_name": name,
+                "credential": "api_key",
+                "source": "internal_provisioner",
+            },
+        )
+        if audit is None:
+            logger.error(
+                "internal API key %s was not provisioned; audit write failed",
+                name,
+            )
+            return ProvisionOutcome(name, "error")
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.info(
+            "internal API key %s already committed by another replica",
+            name,
+        )
+        return ProvisionOutcome(name, "unchanged")
+    except Exception:
+        db.rollback()
+        logger.exception("internal API key %s could not be provisioned", name)
+        return ProvisionOutcome(name, "error")
+    try:
+        write_token_file(directory, name, plaintext, gid=gid)
+    except Exception as exc:
+        logger.error(
+            "failed to publish token file for %s: %s",
+            name,
+            exc.__class__.__name__,
+        )
+        return ProvisionOutcome(name, "error")
+    logger.info(
+        "internal API key %s %s; credential file updated",
+        name,
+        action,
+    )
+    return ProvisionOutcome(name, action)
+
+
+def _current_api_key(keys, now: datetime):
+    current = None
+    for row in keys:
+        if not row.is_active:
+            continue
+        if row.expires_at is not None:
+            exp = as_utc(row.expires_at)
+            if exp is None or exp <= now:
+                continue
+            continue
+        if current is None or row.id > current.id:
+            current = row
+    return current
+
+
+def _api_key_rotation_due(row, now: datetime, rotate_after: timedelta) -> bool:
+    anchor = as_utc(row.created_at)
+    return anchor is None or now - anchor >= rotate_after
+
+
+def _legacy_platform_key_hash() -> str | None:
+    raw = os.environ.get("INTERNAL_PLATFORM_API_KEY", "").strip()
+    if not raw:
+        return None
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _mint_api_key_parts() -> tuple[str, str, str, str]:
+    from app.services.api_key_service import generate_api_key
+
+    return generate_api_key()
+
+
+def _api_key_file_matches(
+    directory: Path, client_name: str, key_hash: str, *, gid: int | None = None
+) -> bool:
+    try:
+        text = _token_path(directory, client_name, gid=gid).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not text or not key_hash:
+        return False
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    return _hash_is(digest, key_hash)
+
+
+def _plaintext_placeholder_skip(
+    directory: Path, client_name: str, *, gid: int | None = None
+) -> str:
+    """檔案已對上雜湊時，把同一份明文再交給 write_token_file 以確認 mode。"""
+    return _token_path(directory, client_name, gid=gid).read_text(encoding="utf-8").strip()
 
 
 def _lock_named(db: Session, name: str) -> ServiceClient | None:
@@ -540,11 +889,13 @@ def _claim_new_token(
     now: datetime,
     *,
     previous_grace: timedelta | None,
+    detail: str | None = None,
 ) -> str:
     """Install a new active token if the row still has the hash we read.
 
     ``previous_grace is None`` drops the old token immediately. That is
-    required when the old token is the fleet-shared legacy secret.
+    required when the old token is the fleet-shared legacy secret, and
+    for the one-time upgrade rotation of a token copied from a flat file.
     Returns ``ok``, ``lost`` (another replica committed), or ``error``.
     """
     expected = row.service_token_lookup_hash
@@ -563,12 +914,17 @@ def _claim_new_token(
         values["service_token_previous_envelope"] = None
         values["service_token_previous_lookup_hash"] = None
         values["service_token_previous_expires_at"] = None
-        detail = "replaced legacy shared credential; previous token invalidated"
+        if detail is None:
+            detail = "replaced legacy shared credential; previous token invalidated"
     else:
         values["service_token_previous_envelope"] = previous_envelope
         values["service_token_previous_lookup_hash"] = expected
         values["service_token_previous_expires_at"] = now + previous_grace
-        detail = f"service_client rotated (grace={int(previous_grace.total_seconds())}s)"
+        if detail is None:
+            detail = (
+                "service_client rotated "
+                f"(grace={int(previous_grace.total_seconds())}s)"
+            )
     result = db.execute(
         update(ServiceClient)
         .where(
@@ -673,7 +1029,7 @@ def _publish_committed(
             # publish; deleting here would remove the file it just wrote.
             return None
         if not row.is_active or row.revoked_at is not None:
-            remove_token_file(directory, name)
+            remove_token_file(directory, name, gid=gid)
             logger.error(
                 "internal service client %s is revoked; credential file removed "
                 "so the service fails closed",
@@ -737,11 +1093,16 @@ def _spec_from_json(item: object) -> InternalServiceClientSpec | None:
         logger.error("skipping internal service client with an invalid name or type")
         return None
     description = str(item.get("description") or "")[:500]
+    credential = str(item.get("credential") or "service_token").strip()
+    if credential not in _CREDENTIALS:
+        logger.error("skipping internal service client with an invalid credential kind")
+        return None
     return InternalServiceClientSpec(
         client_name=name,
         client_type=client_type,
         description=description,
         file_gid=_coerce_gid(item.get("file_gid")),
+        credential=credential,
     )
 
 
@@ -791,10 +1152,17 @@ def _gid_for(
     spec: InternalServiceClientSpec,
     override: int | None | object,
 ) -> int | None:
-    if spec.file_gid is not None:
-        return spec.file_gid
+    # 呼叫端明示的值（含 None）蓋過 spec，測試才能關掉 chown。
+    # router 的群組就是 ANILA_SERVICE_CLIENT_FILE_GID（compose 的 10002）。
+    # 其他客戶端用自己的 file_gid，避免共用一個群組。
     if override is not _UNSET:
         return _coerce_gid(override)
+    if spec.client_name == "router-primary":
+        configured = _coerce_gid(settings.ANILA_SERVICE_CLIENT_FILE_GID)
+        if configured is not None:
+            return configured
+    if spec.file_gid is not None:
+        return spec.file_gid
     return _coerce_gid(settings.ANILA_SERVICE_CLIENT_FILE_GID)
 
 
@@ -821,9 +1189,50 @@ def _payload(plaintext: str) -> bytes:
     return (text + "\n").encode("utf-8")
 
 
-def _token_path(directory: Path, client_name: str) -> Path:
+def _force_rotate_marker(directory: Path) -> Path:
+    return directory / _FORCE_ROTATE_MARKER
+
+
+def _force_rotate_requested(directory: Path, name: str) -> bool:
+    """升級腳本刪過扁平憑證檔時才為真。只針對 router-primary，且只做一次。"""
+    if name != "router-primary":
+        return False
+    marker = _force_rotate_marker(directory)
+    try:
+        if marker.is_symlink():
+            return False
+        return marker.is_file()
+    except OSError:
+        logger.error("could not stat router force-rotate marker")
+        return False
+
+
+def _consume_force_rotate_marker(directory: Path) -> None:
+    marker = _force_rotate_marker(directory)
+    try:
+        if marker.is_symlink() or not marker.is_file():
+            return
+        marker.unlink()
+    except OSError as exc:
+        logger.error(
+            "could not remove router force-rotate marker: %s",
+            exc.__class__.__name__,
+        )
+
+
+def _token_path(
+    directory: Path, client_name: str, *, gid: int | None = None
+) -> Path:
     if not _NAME_RE.fullmatch(client_name):
         raise ValueError("unsafe service client name")
+    private = directory / client_name
+    if gid is not None:
+        # 沒有專屬目錄就不要退回根目錄的 <client>.token。
+        if not private.is_dir():
+            raise FileNotFoundError(
+                f"private credential directory for {client_name} is missing"
+            )
+        return private / "token"
     return directory / f"{client_name}.token"
 
 
@@ -842,7 +1251,12 @@ def _file_matches(path: Path, payload: bytes) -> bool:
     return hmac.compare_digest(current, payload)
 
 
-def _harden_directory(directory: Path, gid: int | None) -> None:
+def _harden_directory(directory: Path) -> None:
+    """共用目錄維持 router 那個群組，不要改成最後一個客戶端的 gid。
+
+    各憑證檔自己 chgrp。目錄若被改成 studio 的群組，uid 1000 的 router
+    就進不了目錄。
+    """
     try:
         os.chmod(directory, DIRECTORY_MODE)
     except OSError as exc:
@@ -851,6 +1265,7 @@ def _harden_directory(directory: Path, gid: int | None) -> None:
             directory,
             exc.__class__.__name__,
         )
+    gid = _coerce_gid(settings.ANILA_SERVICE_CLIENT_FILE_GID)
     if gid is None:
         return
     try:

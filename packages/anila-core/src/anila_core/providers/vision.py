@@ -130,6 +130,17 @@ class VisionProvider:
                     f"{self._base_url}/chat/completions",
                     json=payload,
                 )
+                if response.status_code in (401, 403):
+                    # 呼叫端可掛上重讀憑證的回呼。沒掛就維持原本的失敗即空字串。
+                    refresh = getattr(self, "_refresh_authorization", None)
+                    if callable(refresh):
+                        new_key = refresh()
+                        if new_key:
+                            self._headers["Authorization"] = f"Bearer {new_key}"
+                            response = await client.post(
+                                f"{self._base_url}/chat/completions",
+                                json=payload,
+                            )
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:

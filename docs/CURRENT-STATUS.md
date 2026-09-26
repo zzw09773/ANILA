@@ -26,13 +26,35 @@ cd apps/csp-governance-ui && npm test && npm run build
 
 ## 內部服務身分（自動核發）
 
-CSP 在啟動時，以及之後每個週期（預設一小時），為設定名單裡的內部服務核發憑證。預設只有 `router-primary`（類型 `router`）。名單是 `ANILA_INTERNAL_SERVICE_CLIENTS` 的 JSON；留空就用預設，要加 `ingestion-worker` 時把那筆加進 JSON。`router-primary` 一律會核發，名單漏掉它、或把它寫成別的類型，仍然以 router 核發。明文只寫進 `/run/anila/service-clients/<client_name>.token`（mode 0640，群組 `anila-svc-tokens` gid 10002），日誌不記明文。chmod／chown 失敗，或寫完之後的 mode／gid 不符，這次發布算失敗，readiness 降級。約 30 天輪替一次，上一把在寬限期（預設 24 小時）內仍可通過驗證。`ANILA_SERVICE_CLIENT_AUTO_PROVISION=0` 時 `/health` 是 503，`status=degraded`、`service_client_provisioning=disabled`。
+CSP 在啟動時，以及之後每個週期（預設一小時），為內建名單核發憑證。人不產生、也不複製這些明文。
 
-Router 讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀（另外每 30 秒看一次 mtime）；CSP 回 401／403 時再讀一次才放棄。路徑有設而檔案不在時 `token_source=file_missing`，不改用別的憑證，並繼續重讀，CSP 寫上檔就恢復。`/health` 的 `token_source` 還有 `file`、`file_error`、`state_file`、`bootstrap`、`legacy_env`、`none`。state 檔、`CSP_BOOTSTRAP_TOKEN`、`CSP_SERVICE_TOKEN` 只在 `ANILA_SERVICE_TOKEN_FILE` 沒設時才是後援。`CSP_SERVICE_TOKEN` 仍給其他服務當舊式共用祕密，不再是 Router 的正常憑證。
+| 消費者 | 檔案 | 種類 | 群組 |
+|---|---|---|---|
+| router | `/run/anila/service-clients/router-primary/token` | 服務憑證 `csk-`（`client_type=router`） | 目錄 gid 10002 `anila-svc-tokens` |
+| anila-studio | `/run/anila/service-clients/anila-studio/token` | 服務憑證 `csk-`（`client_type=studio`） | 目錄 gid 10003 `anila-studio-tokens` |
+| ingestion-worker | `/run/anila/service-clients/ingestion-worker/token` | 系統使用者的 `sk-` API key（雜湊存在 `api_keys`，不是 `service_clients`） | 目錄 gid 10004 `anila-worker-tokens` |
 
-緊急吊銷：治理中心「服務客戶端」按吊銷。CSP 不會把已吊銷的列重新核發，並刪掉憑證檔，該服務因此失敗即關閉。日誌可搜 `refusing to re-issue`。要恢復時，刪掉那筆已吊銷的 `service_clients` 列，然後重啟 CSP（或等下一個週期）；系統會重新核發並寫檔。畫面上的手動輪替只供緊急使用，新憑證會直接寫回憑證檔，不必貼進 `.env`。
+子目錄的擁有者是 uid 10005（沒有服務用這個 uid），mode 2770，只有該群組進得去。CSP、studio、worker 都是 uid 10001；若憑證放在同一個他們擁有的目錄，0640 擋不住互讀。`csp-credential-dirs` 在 CSP 啟動前用 root 把這三個目錄建好（既有 volume 也不會漏），並刪掉根目錄的扁平 `<client>.token`。有刪到檔案時留下標記，CSP 把 `router-primary` 輪替一次且不留寬限，複製走的舊檔因此失效。沒有專屬目錄時 CSP 拒絕發布、不退回扁平檔，`/health` 降級。檔案本身是 0640。CSP 加入上述三個群組才能寫；每個消費者只加入自己的群組。上層目錄仍是 gid 10002、mode 2750。日誌不記明文。chmod／chown 失敗，或寫完之後的 mode／gid 不符，這次發布算失敗，readiness 降級。約 30 天輪替一次。服務憑證的上一把在寬限期（預設 24 小時）內仍可通過驗證；worker 的舊 key 同樣留到寬限期，但若那把是環境變數裡的 `INTERNAL_PLATFORM_API_KEY`，換發當下就停用。`ANILA_SERVICE_CLIENT_AUTO_PROVISION=0` 時 `/health` 是 503。
 
-換上這版之後要做一次：重建 csp 與 router 映像（兩邊都加了 gid 10002），再用更新後的 compose 啟動，讓新的 named volume `anila-service-credentials`（dev 是 `anila-service-credentials-dev`）掛上。不要再把 `CSP_BOOTSTRAP_TOKEN` 灌進 router。
+三個服務都讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀；CSP 回 401／403 時再讀一次才放棄。路徑有設而檔案不在或讀不到時，不改用別的憑證。`/health`（worker 沒有 HTTP，啟動日誌與 `credential_health()`）的 `token_source` 是 `file`、`file_missing` 或 `file_error`。studio 在 `file_missing`／`file_error` 時 `/health` 是 503。
+
+自動核發開啟時（正式環境的預設），舊的共用 `CSP_SERVICE_TOKEN` 不再是任何服務身分，就算資料庫列上還留著那把祕密也一樣。這不靠環境變數裡還有沒有那把祕密。長效 `agent_credentials` 已退役（代理用 5 分鐘派工 JWT）；遷移 `r1_0048` 撤銷仍有效的列並清掉寬限複本，驗證路徑也不再接受那些列。自動核發關掉時，測試仍可用環境變數後援。
+
+`asr-gateway` 與 `flux2-dev-agent` 的 compose 不再注入 `CSP_SERVICE_TOKEN`。程式裡的舊讀取路徑還在，重新啟用前必須改讀專屬憑證檔。`flux2-dev-agent` 的 `CSP_API_KEY` 仍來自 `.env` 的 `INTERNAL_PLATFORM_API_KEY`，跟 worker 無關。
+
+緊急吊銷服務憑證：治理中心「服務客戶端」按吊銷。CSP 不會把已吊銷的列重新核發，並刪掉憑證檔。要恢復時，刪掉那筆已吊銷的 `service_clients` 列，然後重啟 CSP（或等下一個週期）。worker 的 key 不在那個畫面：把名為 `ingestion-worker-system-key` 的 API key 停用後，CSP 不會再核發，並刪掉憑證檔；要恢復就刪掉那些已停用的 key 列再重啟 CSP。
+
+### 換上這版之後，擁有者要從 `.env` 刪掉的行
+
+部署並確認 studio、worker、router 的 `token_source=file` 之後，刪掉這些行（整行，含值）：
+
+- `CSP_SERVICE_TOKEN=...`
+
+不要刪 `INTERNAL_PLATFORM_API_KEY`，除非模型 stack 的 `flux2-dev-agent` 也不再使用它。worker 已經不讀 `INTERNAL_PLATFORM_API_KEY`、`EMBEDDING_API_KEY`、`VISION_API_KEY`、`RELATION_LLM_API_KEY`。
+
+同時要重建 csp、router、anila-studio、ingestion-worker 映像（群組 10002／10003／10004），再用更新後的 compose 啟動。憑證 volume 仍是 `anila-service-credentials`（dev 是 `anila-service-credentials-dev`）。不要再把 `CSP_BOOTSTRAP_TOKEN` 灌進 router。
+
+`.env.example` 已拿掉的鍵：`CSP_SERVICE_TOKEN`。
 
 ## GitLab（2026-09-26 先拿掉）
 

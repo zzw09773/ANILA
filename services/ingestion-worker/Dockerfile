@@ -59,8 +59,13 @@ VOLUME ["/var/anila/ingestion-uploads"]
 # chown 這個目錄有兩個作用:(a) 沒掛 bind mount 時 VOLUME 產生的匿名 volume
 # 會繼承映像裡的所有權,不會又變回 root:root;(b) 掛了 bind mount 時 host
 # 端所有權蓋過映像 —— 那條路徑由上面那支部署腳本負責。
+# 10004（anila-worker-tokens）才能進 ingestion-worker/ 憑證目錄。
+# uid 與 CSP 相同；目錄擁有者是 10005，不在群組裡就進不去。
+# 不要加入 10002／10003。
 RUN addgroup -g 10001 anila \
+ && addgroup -g 10004 -S anila-worker-tokens \
  && adduser -D -u 10001 -G anila anila \
+ && adduser anila anila-worker-tokens \
  && chown anila:anila /var/anila/ingestion-uploads \
  && pip uninstall -y pip \
  && rm -rf /usr/local/lib/python3.13/site-packages/pip \

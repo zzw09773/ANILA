@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -218,14 +219,15 @@ def test_bootstrap_wrong_token_rejected(db):
 # ---------------------------------------------------------------------------
 
 
-def test_verify_resolves_to_agent_identity(db):
+def test_verify_does_not_resolve_agent_credential(db):
+    """長效 agent csk- 不是呼叫者。派工 JWT 才是 agent 身分。"""
     admin = make_user(db, username="admin7", role="admin")
     owner = make_user(db, username="owner7")
     agent = make_agent(db, owner=owner, name="rag-7", approval_status="approved")
 
     bsk = agent_credential_service.issue_bootstrap_token(db, agent=agent, issuer=admin)
     db.commit()
-    cred, csk = agent_credential_service.consume_bootstrap_token(
+    _cred, csk = agent_credential_service.consume_bootstrap_token(
         db,
         agent=agent,
         presented_token=bsk,
@@ -233,13 +235,7 @@ def test_verify_resolves_to_agent_identity(db):
     )
     db.commit()
 
-    identity = agent_credential_service.verify_service_token(db, token=csk)
-    assert identity is not None
-    assert identity.kind == "agent"
-    assert identity.agent_id == agent.id
-    assert identity.credential_id == cred.id
-    assert identity.is_legacy is False
-    assert identity.used_previous_token is False
+    assert agent_credential_service.verify_service_token(db, token=csk) is None
 
 
 def test_verify_rejects_unknown_token(db):
@@ -258,7 +254,7 @@ def test_verify_rejects_revoked_credential(db):
         db, agent=agent, issuer=admin, label="t1"
     )
     db.commit()
-    assert agent_credential_service.verify_service_token(db, token=csk) is not None
+    assert agent_credential_service.verify_service_token(db, token=csk) is None
 
     agent_credential_service.revoke_agent_credential(db, credential=cred, actor=admin)
     db.commit()
@@ -270,7 +266,7 @@ def test_verify_rejects_revoked_credential(db):
 # ---------------------------------------------------------------------------
 
 
-def test_rotation_keeps_previous_token_alive_in_grace(db):
+def test_agent_rotation_does_not_authenticate_either_token(db):
     admin = make_user(db, username="admin9", role="admin")
     owner = make_user(db, username="owner9")
     agent = make_agent(db, owner=owner, name="rag-9", approval_status="approved")
@@ -285,14 +281,11 @@ def test_rotation_keeps_previous_token_alive_in_grace(db):
     )
     db.commit()
 
-    # Both tokens must verify during the grace window.
-    new_identity = agent_credential_service.verify_service_token(db, token=new_csk)
-    assert new_identity is not None
-    assert not new_identity.used_previous_token
-
-    old_identity = agent_credential_service.verify_service_token(db, token=old_csk)
-    assert old_identity is not None
-    assert old_identity.used_previous_token is True
+    # 輪替仍把上一把留在列上，但兩把都不能再當呼叫者。
+    assert agent_credential_service.verify_service_token(db, token=new_csk) is None
+    assert agent_credential_service.verify_service_token(db, token=old_csk) is None
+    db.refresh(cred)
+    assert cred.service_token_previous_lookup_hash == compute_lookup_hash(old_csk)
 
 
 def test_rotation_grace_expiry(db):
@@ -491,6 +484,138 @@ def test_proxy_cache_invalidation_on_rotation(db):
 # ---------------------------------------------------------------------------
 # Legacy env-var fallback.
 # ---------------------------------------------------------------------------
+
+
+def test_agent_credentials_are_not_a_caller_without_the_fleet_env(db, monkeypatch):
+    """0027 種下的 agent 列在 CSP_SERVICE_TOKEN 為空時仍不得變成呼叫者。
+
+    自動核發開啟也一樣：拒絕條件不能靠那顆環境變數。一般核發的 csk-、
+    還在寬限期的上一把，以及會把任何身分當成服務呼叫者的任務連結，都不接受。
+    """
+    from fastapi import HTTPException
+
+    from app.services.proxy.task_link import _resolve_acting_user
+
+    monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
+    monkeypatch.setenv("CSP_SERVICE_TOKEN", "")
+    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "", raising=False)
+
+    legacy = "csk-fleet-shared-from-0027"
+    previous = "csk-fleet-previous-still-in-grace"
+    now = datetime.now(timezone.utc)
+    owner = make_user(db, username="100001")
+    agent = make_agent(
+        db, owner, name="legacy-fleet-agent", approval_status="approved"
+    )
+    db.add(
+        AgentCredential(
+            agent_id=agent.id,
+            label="legacy-fleet-shared",
+            service_token_envelope=encode_service_token_envelope(legacy),
+            service_token_lookup_hash=compute_lookup_hash(legacy),
+            service_token_previous_envelope=encode_service_token_envelope(previous),
+            service_token_previous_lookup_hash=compute_lookup_hash(previous),
+            service_token_previous_expires_at=now + timedelta(hours=24),
+            service_token_issued_at=now,
+            is_legacy=True,
+            is_active=True,
+        )
+    )
+    _cred, issued = agent_credential_service.issue_static_credential(
+        db, agent=agent, issuer=owner, label="still-active"
+    )
+    db.commit()
+
+    assert agent_credential_service.verify_service_token(db, token=legacy) is None
+    assert agent_credential_service.verify_service_token(db, token=previous) is None
+    assert agent_credential_service.verify_service_token(db, token=issued) is None
+
+    with pytest.raises(HTTPException) as exc:
+        _resolve_acting_user(
+            db,
+            caller=owner,
+            request_headers={
+                "X-CSP-Service-Token": legacy,
+                "X-ANILA-User-Id": owner.username,
+            },
+        )
+    assert exc.value.status_code == 401
+
+
+def test_migration_revokes_every_active_agent_credential(db, db_engine):
+    """長效 agent 憑證已退役。遷移把仍有效的列撤銷，並清掉寬限複本。"""
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    legacy = "csk-migration-legacy"
+    previous = "csk-migration-previous"
+    now = datetime.now(timezone.utc)
+    owner = make_user(db, username="100002", role="admin")
+    agent = make_agent(db, owner, name="migration-agent", approval_status="approved")
+    active = AgentCredential(
+        agent_id=agent.id,
+        label="legacy-fleet-shared",
+        service_token_envelope=encode_service_token_envelope(legacy),
+        service_token_lookup_hash=compute_lookup_hash(legacy),
+        service_token_previous_envelope=encode_service_token_envelope(previous),
+        service_token_previous_lookup_hash=compute_lookup_hash(previous),
+        service_token_previous_expires_at=now + timedelta(hours=24),
+        service_token_issued_at=now,
+        is_legacy=True,
+        is_active=True,
+    )
+    already = now - timedelta(days=1)
+    inactive = AgentCredential(
+        agent_id=agent.id,
+        label="already-revoked",
+        service_token_envelope=encode_service_token_envelope("csk-already-dead"),
+        service_token_lookup_hash=compute_lookup_hash("csk-already-dead"),
+        service_token_previous_envelope=encode_service_token_envelope(
+            "csk-inactive-previous"
+        ),
+        service_token_previous_lookup_hash=compute_lookup_hash("csk-inactive-previous"),
+        service_token_previous_expires_at=now + timedelta(hours=1),
+        service_token_issued_at=already,
+        is_legacy=False,
+        is_active=False,
+        revoked_at=already,
+    )
+    db.add(active)
+    db.add(inactive)
+    db.commit()
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "versions"
+        / "r1_0048_revoke_agent_credentials.py"
+    )
+    assert path.is_file()
+    spec = importlib.util.spec_from_file_location("r1_0048_revoke", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "r1_0048"
+    assert module.down_revision == "r1_0047"
+
+    ctx = MigrationContext.configure(db.connection())
+    with Operations.context(ctx):
+        module.upgrade()
+    db.commit()
+    db.expire_all()
+
+    active_row = db.get(AgentCredential, active.id)
+    assert active_row.is_active is False
+    assert active_row.revoked_at is not None
+    assert active_row.service_token_previous_envelope is None
+    assert active_row.service_token_previous_lookup_hash is None
+    assert active_row.service_token_previous_expires_at is None
+    inactive_row = db.get(AgentCredential, inactive.id)
+    assert inactive_row.is_active is False
+    assert inactive_row.service_token_previous_envelope is None
+    assert inactive_row.service_token_previous_lookup_hash is None
+    assert inactive_row.service_token_previous_expires_at is None
 
 
 def test_legacy_env_var_fallback_still_recognised(db, monkeypatch):

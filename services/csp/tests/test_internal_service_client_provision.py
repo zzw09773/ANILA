@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import stat
+import subprocess
 import threading
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -96,10 +97,12 @@ def test_parse_list_is_data_driven_and_does_not_log_raw_values(caplog):
         '"description":"pipeline"},'
         '{"client_name":"router-primary","client_type":"router"}]'
     )
-    assert [(s.client_name, s.client_type) for s in specs] == [
-        ("ingestion-worker", "worker"),
-        ("router-primary", "router"),
-    ]
+    by_name = {spec.client_name: spec for spec in specs}
+    assert by_name["ingestion-worker"].client_type == "worker"
+    assert by_name["ingestion-worker"].credential == "service_token"
+    assert by_name["router-primary"].client_type == "router"
+    assert by_name["anila-studio"].client_type == "studio"
+    assert by_name["anila-studio"].credential == "service_token"
 
 
 def test_provision_creates_row_and_file_and_is_idempotent(db, tmp_path, caplog):
@@ -251,10 +254,13 @@ def test_configured_router_primary_keeps_its_own_file_gid():
         '{"client_name":"router-primary","client_type":"router","file_gid":10002}]'
     )
     by_name = {spec.client_name: spec for spec in specs}
-    assert set(by_name) == {"ingestion-worker", "router-primary"}
+    assert set(by_name) == {"ingestion-worker", "router-primary", "anila-studio"}
     assert by_name["router-primary"].client_type == "router"
     assert by_name["router-primary"].file_gid == 10002
     assert by_name["ingestion-worker"].file_gid == 10001
+    assert by_name["ingestion-worker"].credential == "service_token"
+    assert by_name["anila-studio"].client_type == "studio"
+    assert by_name["anila-studio"].file_gid == 10003
 
 
 def test_configured_list_can_add_ingestion_worker(db, tmp_path):
@@ -713,6 +719,7 @@ def test_admin_rotate_reports_failure_when_file_sync_fails(
     monkeypatch.setattr(
         settings, "ANILA_SERVICE_CLIENT_FILE_GID", os.getgid(), raising=False
     )
+    (tmp_path / "router-primary").mkdir()
     note_provision_outcomes([])
     admin = make_user(db, username="svc-admin-rotate-fail", role="admin")
     created = create_client(
@@ -721,7 +728,7 @@ def test_admin_rotate_reports_failure_when_file_sync_fails(
         admin,
         db,
     )
-    original = (tmp_path / "router-primary.token").read_text(encoding="utf-8").strip()
+    original = (tmp_path / "router-primary" / "token").read_text(encoding="utf-8").strip()
     assert created.delivery == "file"
 
     def _boom(*_args, **_kwargs):
@@ -750,7 +757,7 @@ def test_admin_rotate_reports_failure_when_file_sync_fails(
         assert minted not in blob
         assert original not in blob
         assert minted not in caplog.text
-        on_disk = (tmp_path / "router-primary.token").read_text(encoding="utf-8").strip()
+        on_disk = (tmp_path / "router-primary" / "token").read_text(encoding="utf-8").strip()
         assert on_disk == original
 
         response = _asgi_get(db_engine, "/health")
@@ -779,6 +786,7 @@ def test_emergency_issue_static_still_returns_the_token_once(
     monkeypatch.setattr(
         settings, "ANILA_SERVICE_CLIENT_FILE_GID", os.getgid(), raising=False
     )
+    (tmp_path / "router-primary").mkdir()
     admin = make_user(db, username="svc-admin-emergency", role="admin")
     note_provision_outcomes([])
     created = create_client(
@@ -849,6 +857,7 @@ def test_chown_failure_fails_publication_and_degrades_readiness(
     monkeypatch.setattr(os, "fchown", _deny)
     try:
         directory = tmp_path / "service-clients"
+        (directory / "router-primary").mkdir(parents=True)
         outcome = ensure_internal_service_clients(
             db,
             specs=(ROUTER,),
@@ -907,13 +916,15 @@ def test_publication_fails_when_resulting_gid_does_not_match(
     monkeypatch.setattr(os, "chown", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(os, "fchown", lambda *_args, **_kwargs: None)
     secret = "csk-gid-check-secret"
+    (tmp_path / "router-primary").mkdir()
     try:
         isc.write_token_file(tmp_path, "router-primary", secret, gid=foreign_gid)
     except OSError:
         pass
     else:
         raise AssertionError("wrong gid was reported as a successful publication")
-    path = tmp_path / "router-primary.token"
+    path = tmp_path / "router-primary" / "token"
+    assert not (tmp_path / "router-primary.token").exists()
     if path.exists():
         assert path.stat().st_gid == foreign_gid
     assert secret not in caplog.text
@@ -1019,6 +1030,7 @@ def test_file_provisioned_clients_hide_plaintext_except_emergency_reissue(
     monkeypatch.setattr(
         settings, "ANILA_SERVICE_CLIENT_FILE_GID", os.getgid(), raising=False
     )
+    (tmp_path / "router-primary").mkdir()
     admin = make_user(db, username="svc-admin", role="admin")
     request = _request()
 
@@ -1031,7 +1043,7 @@ def test_file_provisioned_clients_hide_plaintext_except_emergency_reissue(
     assert created.delivery == "file"
     assert created.service_token is None
     created_json = created.model_dump_json()
-    file_token = (tmp_path / "router-primary.token").read_text(encoding="utf-8").strip()
+    file_token = (tmp_path / "router-primary" / "token").read_text(encoding="utf-8").strip()
     assert file_token.startswith("csk-")
     assert file_token not in created_json
 
@@ -1053,7 +1065,7 @@ def test_file_provisioned_clients_hide_plaintext_except_emergency_reissue(
     )
     assert rotated.delivery == "file"
     assert rotated.service_token is None
-    rotated_file = (tmp_path / "router-primary.token").read_text(encoding="utf-8").strip()
+    rotated_file = (tmp_path / "router-primary" / "token").read_text(encoding="utf-8").strip()
     assert rotated_file != file_token
     assert rotated_file not in rotated.model_dump_json()
 
@@ -1063,9 +1075,440 @@ def test_file_provisioned_clients_hide_plaintext_except_emergency_reissue(
     assert emergency.service_token.startswith("csk-")
     assert emergency.service_token in emergency.model_dump_json()
     assert (
-        (tmp_path / "router-primary.token").read_text(encoding="utf-8").strip()
+        (tmp_path / "router-primary" / "token").read_text(encoding="utf-8").strip()
         == emergency.service_token
     )
+
+
+def test_default_list_provisions_studio_token_and_worker_api_key(
+    db, tmp_path, caplog
+):
+    """內建名單要有 anila-studio 的服務憑證，以及 ingestion-worker 的 sk- 金鑰。
+
+    三個消費者的 file_gid 必須不同，檔案才不會讓 uid 10001 的行程互讀。
+    """
+    caplog.set_level(logging.DEBUG)
+    specs = parse_internal_service_clients(None)
+    by_name = {spec.client_name: spec for spec in specs}
+    assert by_name["router-primary"].client_type == "router"
+    assert by_name["router-primary"].file_gid == 10002
+    assert by_name["anila-studio"].client_type == "studio"
+    assert by_name["anila-studio"].file_gid == 10003
+    assert getattr(by_name["anila-studio"], "credential", "service_token") == "service_token"
+    assert by_name["ingestion-worker"].client_type == "worker"
+    assert by_name["ingestion-worker"].file_gid == 10004
+    assert by_name["ingestion-worker"].credential == "api_key"
+    assert len({
+        by_name["router-primary"].file_gid,
+        by_name["anila-studio"].file_gid,
+        by_name["ingestion-worker"].file_gid,
+    }) == 3
+
+    # 測試行程不在 10002/10003/10004，明示 file_gid=None 才能讀回明文。
+    outcomes = ensure_internal_service_clients(
+        db,
+        specs=specs,
+        directory=tmp_path,
+        file_gid=None,
+        rotate_after=timedelta(days=30),
+    )
+    actions = {item.client_name: item.action for item in outcomes}
+    assert actions["anila-studio"] == "created"
+    assert actions["ingestion-worker"] == "created"
+    studio_token = (tmp_path / "anila-studio.token").read_text(encoding="utf-8").strip()
+    worker_key = (tmp_path / "ingestion-worker.token").read_text(encoding="utf-8").strip()
+    assert studio_token.startswith("csk-")
+    assert worker_key.startswith("sk-")
+    studio_row = db.query(ServiceClient).filter_by(client_name="anila-studio").one()
+    assert studio_row.client_type == "studio"
+    assert studio_row.service_token_lookup_hash == compute_lookup_hash(studio_token)
+    assert (
+        db.query(ServiceClient).filter_by(client_name="ingestion-worker").count() == 0
+    )
+    from app.models.api_key import ApiKey
+    from app.models.user import User
+    from app.services.api_key_service import validate_api_key
+
+    user = db.query(User).filter_by(username="ingestion-worker").one()
+    assert user.role == "system"
+    stored = db.query(ApiKey).filter_by(user_id=user.id, is_active=True).one()
+    assert stored.key_hash != worker_key
+    assert validate_api_key(db, worker_key) is not None
+    assert studio_token not in caplog.text
+    assert worker_key not in caplog.text
+
+
+def test_legacy_worker_env_key_stops_working_once_the_file_is_provisioned(
+    db, tmp_path, monkeypatch
+):
+    """AUTO_SEED 寫進資料庫的舊 sk- 在憑證檔生效後不得再通過驗證。"""
+    import hashlib
+
+    from app.models.api_key import ApiKey
+    from app.models.user import User
+    from app.services.api_key_service import validate_api_key
+    from app.utils.security import hash_password
+
+    legacy = "sk-legacy-internal-platform-key"
+    monkeypatch.setenv("INTERNAL_PLATFORM_API_KEY", legacy)
+    user = User(
+        username="ingestion-worker",
+        email="ingestion-worker@anila.local",
+        hashed_password=hash_password("not-used"),
+        role="system",
+        is_active=True,
+        is_approved=True,
+    )
+    db.add(user)
+    db.flush()
+    db.add(
+        ApiKey(
+            user_id=user.id,
+            name="ingestion-worker-system-key",
+            key_prefix=legacy[:8],
+            key_suffix=legacy[-4:],
+            key_hash=hashlib.sha256(legacy.encode()).hexdigest(),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    worker = next(
+        spec
+        for spec in parse_internal_service_clients(None)
+        if spec.client_name == "ingestion-worker"
+    )
+    ensure_internal_service_clients(
+        db,
+        specs=(worker,),
+        directory=tmp_path,
+        file_gid=None,
+        rotate_after=timedelta(days=30),
+    )
+    minted = (tmp_path / "ingestion-worker.token").read_text(encoding="utf-8").strip()
+    assert minted.startswith("sk-")
+    assert minted != legacy
+    assert validate_api_key(db, minted) is not None
+    assert validate_api_key(db, legacy) is None
+
+
+def test_grouped_credential_is_inside_a_private_directory(tmp_path):
+    """有 gid 時明文在 <client>/token，不在扁平的 <client>.token。
+
+    子目錄要先存在。正式環境由 csp-credential-dirs 以 uid 10005 建好，
+    同為 uid 10001 的其他服務進不了別人的目錄。
+    """
+    secret = "csk-group-only"
+    gid = os.getgid()
+    sub = tmp_path / "anila-studio"
+    sub.mkdir()
+    os.chmod(sub, 0o2770)
+    isc.write_token_file(tmp_path, "anila-studio", secret, gid=gid)
+    assert not (tmp_path / "anila-studio.token").exists()
+    path = sub / "token"
+    assert path.is_file()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert path.stat().st_gid == gid
+    assert path.read_text(encoding="utf-8").strip() == secret
+
+
+def test_credential_dir_init_is_not_owned_by_the_runtime_uid():
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "infra/docker/csp-credential-dirs.sh"
+    )
+    text = script.read_text(encoding="utf-8")
+    assert "chown 10005:" in text
+    assert "install_dir router-primary 10002" in text
+    assert "install_dir anila-studio 10003" in text
+    assert "install_dir ingestion-worker 10004" in text
+    assert "2770" in text
+
+
+def test_fleet_secret_is_not_a_service_identity_when_files_are_in_use(
+    db, db_engine, tmp_path, monkeypatch
+):
+    """自動核發開啟後，舊的共用 CSP_SERVICE_TOKEN 不能再當任何服務身分。"""
+    from app.api import artifacts
+    from app.config import settings as canonical_settings
+    from app.services import auth_service
+    from fastapi import HTTPException
+
+    legacy = "csk-fleet-shared-secret"
+    monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
+    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
+    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
+    now = datetime.now(timezone.utc)
+    db.add(
+        ServiceClient(
+            client_name="router-primary",
+            client_type="router",
+            service_token_envelope=encode_service_token_envelope(legacy),
+            service_token_lookup_hash=compute_lookup_hash(legacy),
+            service_token_issued_at=now,
+            is_legacy=True,
+            is_active=True,
+        )
+    )
+    db.add(
+        ModelRegistry(
+            name="fleet-image",
+            display_name="fleet-image",
+            model_type="image",
+            endpoint_url="https://flux.example.internal/v1",
+            is_active=True,
+            is_image_primary=True,
+            is_router_primary=True,
+        )
+    )
+    db.commit()
+
+    rejected = _asgi_get(
+        db_engine,
+        "/api/models/router-primary",
+        headers={"X-CSP-Service-Token": legacy},
+    )
+    assert rejected.status_code == 401, rejected.text
+    image = _asgi_get(
+        db_engine,
+        "/api/models/image-primary",
+        headers={"X-CSP-Service-Token": legacy},
+    )
+    assert image.status_code == 401, image.text
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    revocations = _asgi_get(
+        db_engine,
+        f"/api/auth/revocations?since={since}",
+        headers={"X-CSP-Service-Token": legacy},
+    )
+    assert revocations.status_code == 401, revocations.text
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/artifact-jobs",
+            "headers": [(b"x-csp-service-token", legacy.encode())],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 9),
+        }
+    )
+    try:
+        artifacts._resolve_service_token(request, db)
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    else:
+        raise AssertionError("fleet secret was accepted as an artifact caller")
+
+    directory = tmp_path / "service-clients"
+    ensure_internal_service_clients(
+        db,
+        specs=parse_internal_service_clients(None),
+        directory=directory,
+        file_gid=None,
+        rotate_after=timedelta(days=30),
+    )
+    studio = (directory / "anila-studio.token").read_text(encoding="utf-8").strip()
+    admitted = _asgi_get(
+        db_engine,
+        "/api/models/image-primary",
+        headers={"X-CSP-Service-Token": studio},
+    )
+    assert admitted.status_code == 200, admitted.text
+    assert admitted.json()["name"] == "fleet-image"
+    still_rejected = _asgi_get(
+        db_engine,
+        "/api/models/image-primary",
+        headers={"X-CSP-Service-Token": legacy},
+    )
+    assert still_rejected.status_code == 401, still_rejected.text
+
+
+def test_upgrade_removes_root_flat_tokens_and_marks_one_router_rotation(tmp_path):
+    """升版時根目錄的扁平 <client>.token 要在消費者啟動前清掉。
+
+    只動這一層。子目錄裡的 token、符號連結、不是 .token 的檔案都留下。
+    真的有刪到檔案才寫 router 強制輪替標記；下次沒有扁平檔就不再寫。
+    """
+    script = (
+        Path(__file__).resolve().parents[3] / "infra/docker/csp-credential-dirs.sh"
+    )
+    root = tmp_path / "service-clients"
+    private = root / "router-primary"
+    private.mkdir(parents=True)
+    kept = private / "token"
+    kept.write_text("csk-already-private\n", encoding="utf-8")
+    flat_router = root / "router-primary.token"
+    flat_router.write_text("csk-copied-router\n", encoding="utf-8")
+    flat_studio = root / "anila-studio.token"
+    flat_studio.write_text("csk-copied-studio\n", encoding="utf-8")
+    note = root / "README"
+    note.write_text("keep", encoding="utf-8")
+    backup = root / "router-primary.token.bak"
+    backup.write_text("keep", encoding="utf-8")
+    link = root / "link.token"
+    link.symlink_to(kept)
+
+    proc = subprocess.run(
+        ["sh", str(script), str(root)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not flat_router.exists()
+    assert not flat_studio.exists()
+    assert kept.read_text(encoding="utf-8") == "csk-already-private\n"
+    assert note.read_text(encoding="utf-8") == "keep"
+    assert backup.read_text(encoding="utf-8") == "keep"
+    assert link.is_symlink()
+    assert link.read_text(encoding="utf-8") == "csk-already-private\n"
+    marker = root / ".force-rotate-router-primary"
+    assert marker.is_file()
+    assert not marker.is_symlink()
+
+    marker.unlink()
+    again = subprocess.run(
+        ["sh", str(script), str(root)],
+        capture_output=True,
+        text=True,
+    )
+    assert again.returncode == 0, again.stderr
+    assert not marker.exists()
+    assert kept.read_text(encoding="utf-8") == "csk-already-private\n"
+
+
+def test_flat_token_marker_force_rotates_router_without_grace(
+    db, tmp_path, monkeypatch
+):
+    """標記在、環境變數是空的：router-primary 立刻輪替，舊權杖與寬限複本都失效。
+
+    只做一次。標記清掉之後，同一把新權杖維持不變。
+    """
+    from app.config import settings
+
+    monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
+    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "", raising=False)
+    old = "csk-copied-from-flat-file"
+    previous = "csk-previous-still-in-grace"
+    now = datetime.now(timezone.utc)
+    db.add(
+        ServiceClient(
+            client_name="router-primary",
+            client_type="router",
+            service_token_envelope=encode_service_token_envelope(old),
+            service_token_lookup_hash=compute_lookup_hash(old),
+            service_token_previous_envelope=encode_service_token_envelope(previous),
+            service_token_previous_lookup_hash=compute_lookup_hash(previous),
+            service_token_previous_expires_at=now + timedelta(hours=12),
+            service_token_issued_at=now,
+            is_legacy=False,
+            is_active=True,
+        )
+    )
+    db.commit()
+    directory = tmp_path / "service-clients"
+    directory.mkdir()
+    marker = directory / ".force-rotate-router-primary"
+    marker.write_text("upgrade\n", encoding="utf-8")
+
+    outcome = ensure_internal_service_clients(
+        db,
+        specs=(ROUTER,),
+        directory=directory,
+        file_gid=None,
+        rotate_after=timedelta(days=30),
+    )
+    assert outcome[0].action == "force_rotated"
+    assert agent_credential_service.verify_service_token(db, token=old) is None
+    assert agent_credential_service.verify_service_token(db, token=previous) is None
+    row = db.query(ServiceClient).filter_by(client_name="router-primary").one()
+    assert row.service_token_previous_envelope is None
+    assert row.service_token_previous_lookup_hash is None
+    assert row.service_token_previous_expires_at is None
+    assert row.is_legacy is False
+    minted = (directory / "router-primary.token").read_text(encoding="utf-8").strip()
+    assert minted.startswith("csk-")
+    assert minted != old
+    assert minted != previous
+    fresh = agent_credential_service.verify_service_token(db, token=minted)
+    assert fresh is not None
+    assert fresh.used_previous_token is False
+    assert not marker.exists()
+
+    again = ensure_internal_service_clients(
+        db,
+        specs=(ROUTER,),
+        directory=directory,
+        file_gid=None,
+        rotate_after=timedelta(days=30),
+    )
+    assert again[0].action == "unchanged"
+    assert (
+        (directory / "router-primary.token").read_text(encoding="utf-8").strip()
+        == minted
+    )
+
+
+def test_missing_private_directory_refuses_flat_publish_and_degrades_readiness(
+    db, db_engine, tmp_path, monkeypatch, caplog
+):
+    """有 gid 但專屬目錄不在：不得退回根目錄的扁平檔，發布失敗且 readiness 降級。"""
+    monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
+    caplog.set_level(logging.DEBUG)
+    directory = tmp_path / "service-clients"
+    directory.mkdir()
+    try:
+        outcome = ensure_internal_service_clients(
+            db,
+            specs=(ROUTER,),
+            directory=directory,
+            file_gid=os.getgid(),
+            rotate_after=timedelta(days=30),
+        )
+        assert not (directory / "router-primary.token").exists()
+        assert not (directory / "router-primary" / "token").exists()
+        assert outcome[0].action == "error"
+        assert "refusing to publish" in caplog.text
+        assert "publishing a flat file" not in caplog.text
+        minted = decode_service_token_envelope(
+            db.query(ServiceClient).one().service_token_envelope
+        )
+        assert minted not in caplog.text
+        note_provision_outcomes(outcome)
+        response = _asgi_get(db_engine, "/health")
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert body["status"] == "degraded"
+        assert body["service_client_provisioning"] == "degraded"
+        assert "router-primary" in body["service_client_provisioning_failed"]
+        assert minted not in response.text
+    finally:
+        note_provision_outcomes([])
+
+
+def test_dormant_callers_are_not_injected_with_the_retired_fleet_token():
+    """asr-gateway 與 flux2-dev-agent 的 compose 不再注入共用權杖。
+
+    程式路徑留著，但重新啟用前必須改讀專屬憑證檔。
+    """
+    root = Path(__file__).resolve().parents[3]
+    for rel in (
+        "infra/compose/platform.yml",
+        "infra/compose/dev.yml",
+        "infra/models/docker-compose.yml",
+    ):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "CSP_SERVICE_TOKEN:" not in text, rel
+    for rel in (
+        "services/asr-gateway/app/decode_endpoint.py",
+        "services/asr-gateway/app/services/revocation_cache.py",
+        "services/flux2-dev-agent/app/main.py",
+        "services/flux2-dev-agent/app/image_primary_fetcher.py",
+    ):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "重新啟用" in text, rel
+        assert "憑證檔" in text, rel
 
 
 def test_console_shows_plaintext_only_on_emergency_reissue():

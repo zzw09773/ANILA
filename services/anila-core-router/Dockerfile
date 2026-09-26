@@ -39,9 +39,10 @@ COPY services/anila-core-router/main.py ./
 # /app/.anila 是 router session SQLite 的家（compose 掛 named volume）。目錄要在
 # image 裡先建好並歸 anila，named volume 第一次建立時才會繼承這個所有權，否則
 # volume 是 root 的、router 寫不進去（uid 1000）。
-# /run/anila/service-clients 是 CSP 寫、router 讀的憑證目錄。所有權釘成
-# 10001:10002（anila-svc-tokens），mode 2750，跟 infra/docker/csp.Dockerfile
-# 相同，誰先掛上 named volume 都繼承得到。router 使用者加入該群組才能讀 0640。
+# /run/anila/service-clients 是 CSP 寫、router 讀的憑證目錄。目錄群組是
+# 10002（anila-svc-tokens），mode 2750。router 只加入這個群組。
+# router 只進 router-primary/。那個目錄的擁有者是 uid 10005，
+# 不在 10002 的行程進不去。不要把 router 加進 10003／10004。
 # pip's vendored CycloneDX SBOM still lists msgpack 1.1.2 and setuptools 70.3.0.
 # Runtime does not need pip; drop it after the setuptools/msgpack upgrade so
 # Trivy does not treat those vendor copies as shipped packages.

@@ -202,8 +202,10 @@ def verify_service_token(
          post-migration-0027 deploy the host ``CSP_SERVICE_TOKEN`` is
          seeded as ``client_name='router-primary'``, so the fleet secret
          matches **here** — attributed ``service_client``, not step 3.
-      2. ``agent_credentials`` (per-agent ``csk-`` traffic).
-      3. ``settings.CSP_SERVICE_TOKEN`` env-var fallback — only reached
+         Long-lived ``agent_credentials`` are not consulted. Agents use
+         the dispatch JWT; migration 0027 rows must not become a caller
+         when ``CSP_SERVICE_TOKEN`` is unset.
+      2. ``settings.CSP_SERVICE_TOKEN`` env-var fallback — only reached
          when no active DB row matches. Hits write
          ``service_token_legacy_env_used`` (Signal A / legacy-token-stats).
          That signal is often already **zero** while step 1 still serves
@@ -227,7 +229,15 @@ def verify_service_token(
             detail="缺少 X-CSP-Service-Token header",
         )
 
-    # 1) + 2) DB lookup.
+    # 每服務憑證檔啟用後，舊的共用祕密不是任何服務身分。
+    # 在資料庫查找與環境變數後援之前拒絕，避免它仍被當成 router-primary。
+    if agent_credential_service.fleet_secret_retired(x_csp_service_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="服務權杖無效",
+        )
+
+    # service_clients。長效 agent_credentials 不再是身分。
     identity = agent_credential_service.verify_service_token(
         db, token=x_csp_service_token
     )

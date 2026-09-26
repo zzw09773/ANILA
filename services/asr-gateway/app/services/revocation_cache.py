@@ -328,6 +328,7 @@ class RevocationCache:
         url = f"{settings.CSP_BASE_URL}/api/auth/revocations"
         params = {"since": since.isoformat()}
         headers: dict[str, str] = {}
+        # 重新啟用前必須改讀專屬憑證檔。這條仍會送出舊權杖，compose 已不再注入。
         if settings.CSP_SERVICE_TOKEN:
             # csp's verify_service_token accepts this header (the
             # legacy env-var fallback path), no DB row needed.

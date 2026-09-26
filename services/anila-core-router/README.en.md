@@ -93,7 +93,7 @@ Read by `main.py` (raw `os.environ`):
 | Variable | Notes | Default |
 |---|---|---|
 | `CSP_BASE_URL` | CSP base URL; `http://csp:8000` inside containers | `http://csp:8000` |
-| `ANILA_SERVICE_TOKEN_FILE` | Credential file written by CSP. Compose mounts `/run/anila/service-clients/router-primary.token` | unset |
+| `ANILA_SERVICE_TOKEN_FILE` | Credential file written by CSP. Compose mounts `/run/anila/service-clients/router-primary/token` | unset |
 | `ANILA_SERVICE_TOKEN_RELOAD_SECONDS` | How often to re-read the credential file. Floor is 5 seconds | `30` |
 | `CSP_BOOTSTRAP_TOKEN` | Used only when `ANILA_SERVICE_TOKEN_FILE` is unset and the state file is empty. Copied into the state file | `""` |
 | `CSP_SERVICE_TOKEN` | Last fallback, and only when the token-file path is unset: the old fleet secret. Router-only CSP endpoints reject it once `router-primary` has its own credential | `""` |

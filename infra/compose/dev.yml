@@ -57,6 +57,16 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
+  csp-credential-dirs:
+    build:
+      context: ../..
+      dockerfile: infra/docker/csp.Dockerfile
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/usr/local/bin/csp-credential-dirs.sh"]
+    volumes:
+      - anila-service-credentials-dev:/run/anila/service-clients
+    restart: "no"
+
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
     build:
@@ -101,8 +111,8 @@ services:
       # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
       LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       # 內部服務憑證。與 platform.yml 同一路徑；volume 名稱分開，避免跟 live stack 混用。
+      # 10002 是共用目錄（router）。studio 10003、worker 10004 寫在內建名單。
       ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
       ANILA_SERVICE_CLIENT_FILE_GID: "10002"
       AUTO_REGISTER_MODELS: >-
@@ -114,8 +124,7 @@ services:
       # Dev 用獨立 seed key，跟 prod sk-test-user-api-key 區隔開——避免你拿 dev key
       # 不小心打到 prod CSP，或反過來。
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":["image-generator"]},
-         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":["image-generator"]}]
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -172,6 +181,8 @@ services:
     # 環境選擇,不是 csp 的圖譜依賴 —— 與 ASR 先例一致:dev 的 asr-gateway 也不
     # depends_on asr-decoder,只帶 working default 的 env。
     depends_on:
+      csp-credential-dirs:
+        condition: service_completed_successfully
       csp-db:
         condition: service_healthy
     healthcheck:
@@ -207,7 +218,7 @@ services:
       REDIS_URL: redis://redis:6379
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
-      EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/ingestion-worker/token
       EMBEDDING_DIM: "4000"
       UPLOAD_DIR: "${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       # Keep certificate verification enabled; this is only the optional CA
@@ -224,7 +235,6 @@ services:
       ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
-      VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
       # LLM relation extraction (document-relations Phase 2 / B). Goes through
@@ -232,7 +242,6 @@ services:
       ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
       RELATION_LLM_URL: "${RELATION_LLM_URL:-http://csp:8000/v1}"
       RELATION_LLM_MODEL: "${RELATION_LLM_MODEL:-gemma4}"
-      RELATION_LLM_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
       DOC_PARSER: "${DOC_PARSER:-native}"
@@ -256,6 +265,7 @@ services:
       # 一次性 chown 見上面 csp 服務那段註解（同一條命令一起修好兩邊）。
       - "../../share-dev/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       - ../../share-dev/pki:/etc/anila/pki:ro
+      - anila-service-credentials-dev:/run/anila/service-clients:ro
     depends_on:
       csp-db:
         condition: service_healthy
@@ -275,8 +285,7 @@ services:
       - "9000"
     environment:
       CSP_BASE_URL: http://csp:8000
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
-      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary.token
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary/token
       # 主路由模型由治理中心的 router_primary 決定，不在這裡寫模型名。
     volumes:
       - anila-service-credentials-dev:/run/anila/service-clients:ro
@@ -320,10 +329,7 @@ services:
       - "8100"
     environment:
       CSP_BASE_URL: http://csp:8000
-      # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
-      # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
-      # csp 的 verify_service_token。對齊 router / ingestion-worker 的 pattern。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/anila-studio/token
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       FLUX_BACKEND_URL: http://flux2-dev:8000
@@ -347,6 +353,7 @@ services:
     volumes:
       - anila-studio-flux-cache-dev:/var/anila/anila-studio-flux-cache
       - anila-studio-artifacts-dev:/var/anila/anila-studio-artifacts
+      - anila-service-credentials-dev:/run/anila/service-clients:ro
     networks:
       - default
       - anila-models-net  # flux2-dev sits here
@@ -390,7 +397,7 @@ services:
       ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
       ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
       CSP_BASE_URL: http://csp:8000
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      # 重新啟用前必須改讀專屬憑證檔。共用服務權杖已退役，這裡不再注入。
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       JWT_KID: anila-v1

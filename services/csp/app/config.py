@@ -54,18 +54,17 @@ class Settings(BaseSettings):
     ANILA_ALERT_SMTP_TO: str = ""
     ANILA_ALERT_SMTP_USE_TLS: bool = True
 
-    # Service-to-service token sent to downstream agents so they can verify
-    # requests originate from CSP. Set to a long random string in production.
-    # Router-only endpoints do not accept this fleet secret once router-primary
-    # has its own credential. That credential is provisioned below.
+    # 舊的艦隊共用祕密。自動核發開啟時，這把值不再是任何服務身分。
+    # CSP 不再把它加進打給 agent 的 header。留著是為了認得資料庫裡
+    # 尚未換掉的舊雜湊，以及自動核發關掉時的測試後援。
     CSP_SERVICE_TOKEN: str = ""
 
-    # Internal service credentials. CSP mints these and writes plaintext to
-    # ANILA_SERVICE_CLIENT_DIR/<client_name>.token (mode 0640, group
-    # ANILA_SERVICE_CLIENT_FILE_GID). Empty ANILA_INTERNAL_SERVICE_CLIENTS
-    # keeps the built-in list (router-primary / router). A JSON list adds
-    # clients such as ingestion-worker. router-primary is always included
-    # and is always client_type router.
+    # 內部憑證。CSP 核發並把明文寫進
+    # ANILA_SERVICE_CLIENT_DIR/<client_name>/token。子目錄擁有者是
+    # uid 10005。ANILA_SERVICE_CLIENT_FILE_GID 是上層目錄的群組
+    # （router，10002）。
+    # 空的 ANILA_INTERNAL_SERVICE_CLIENTS 用內建名單：router-primary、
+    # anila-studio、ingestion-worker（後者是 sk- API key）。
     ANILA_SERVICE_CLIENT_DIR: str = "/run/anila/service-clients"
     ANILA_SERVICE_CLIENT_ROTATE_INTERVAL_SECONDS: int = 30 * 24 * 3600
     ANILA_SERVICE_CLIENT_GRACE_SECONDS: int = 24 * 3600

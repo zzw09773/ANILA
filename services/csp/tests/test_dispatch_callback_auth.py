@@ -366,7 +366,7 @@ def test_e_bare_agent_csk_rejected_on_artifacts(client: TestClient, db, monkeypa
         },
     )
     assert resp.status_code == 401, resp.text
-    assert "派工 JWT" in resp.json()["detail"]
+    assert resp.json()["detail"] == "服務權杖無效"
     _ = cred  # keep local for readability
 
 

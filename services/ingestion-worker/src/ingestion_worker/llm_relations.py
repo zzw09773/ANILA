@@ -186,21 +186,28 @@ async def _candidates(
 
 
 async def _call_llm(messages: list[dict[str, str]], settings: Any) -> str:
+    from ingestion_worker.credential_file import api_key as credential_api_key
+    from ingestion_worker.credential_file import reload as reload_credential
+
+    body = {
+        "model": settings.relation_llm_model,
+        "messages": messages,
+        "temperature": 0,
+        "stream": False,
+    }
+    key = credential_api_key(settings.relation_llm_api_key)
     async with httpx.AsyncClient(
         base_url=settings.relation_llm_url,
         timeout=settings.relation_llm_timeout_seconds,
         verify=settings.relation_llm_verify_ssl,
-        headers={"Authorization": f"Bearer {settings.relation_llm_api_key}"},
     ) as client:
-        resp = await client.post(
-            "/chat/completions",
-            json={
-                "model": settings.relation_llm_model,
-                "messages": messages,
-                "temperature": 0,
-                "stream": False,
-            },
-        )
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        resp = await client.post("/chat/completions", json=body, headers=headers)
+        if resp.status_code in (401, 403):
+            reload_credential(True)
+            key = credential_api_key(settings.relation_llm_api_key)
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+            resp = await client.post("/chat/completions", json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"] or ""

@@ -81,6 +81,8 @@ import httpx
 from anila_core.ingestion.errors import EmbedError
 from anila_core.memory.long_term import EMBED_DIM, truncate_embedding
 
+from ingestion_worker.credential_file import api_key as credential_api_key
+from ingestion_worker.credential_file import reload as reload_credential
 from ingestion_worker.settings import WorkerSettings
 
 
@@ -113,7 +115,6 @@ class Embedder:
         self._client = httpx.AsyncClient(
             base_url=settings.embedding_base_url,
             timeout=settings.embedding_timeout_seconds,
-            headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
         )
 
     @property
@@ -242,6 +243,12 @@ class Embedder:
             details=details,
         )
 
+    def _auth_headers(self) -> dict[str, str]:
+        key = credential_api_key(self._settings.embedding_api_key)
+        if not key:
+            return {}
+        return {"Authorization": f"Bearer {key}"}
+
     async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """One POST. ``texts`` is already bounded by ``batch_size``."""
         try:
@@ -251,7 +258,18 @@ class Embedder:
                     "model": self._model_name,
                     "input": texts,
                 },
+                headers=self._auth_headers(),
             )
+            if r.status_code in (401, 403):
+                reload_credential(True)
+                r = await self._client.post(
+                    "/embeddings",
+                    json={
+                        "model": self._model_name,
+                        "input": texts,
+                    },
+                    headers=self._auth_headers(),
+                )
         except httpx.TimeoutException as e:
             raise EmbedError.timeout(
                 user_message="Embedding endpoint timed out.",

@@ -39,6 +39,15 @@ from ingestion_worker.settings import settings
 
 async def on_startup(ctx: dict) -> None:
     """Open pool + embedder once per worker process."""
+    import logging
+
+    from ingestion_worker.credential_file import credential_health
+
+    snap = credential_health()
+    logging.getLogger(__name__).info(
+        "ingestion-worker credential token_source=%s", snap["token_source"]
+    )
+    ctx["credential_health"] = snap
     pool = PgPool(
         settings.database_url,
         min_size=settings.pg_pool_min,

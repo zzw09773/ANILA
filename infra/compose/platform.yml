@@ -55,6 +55,18 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
+  # 憑證子目錄的擁有者必須是 10005，不能由 uid 10001 的 CSP 自己 mkdir。
+  # 既有 volume 不會從映像繼承新目錄，所以每次啟動都用 root 補一次。
+  csp-credential-dirs:
+    build:
+      context: ../..
+      dockerfile: infra/docker/csp.Dockerfile
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/usr/local/bin/csp-credential-dirs.sh"]
+    volumes:
+      - anila-service-credentials:/run/anila/service-clients
+    restart: "no"
+
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
     build:
@@ -167,11 +179,9 @@ services:
       # `up -d csp` 了,`printenv EMBEDDING_TIMEOUT` 仍是空的,行為一模一樣。
       # 預設值與 app/config.py 的 Settings.EMBEDDING_TIMEOUT 同為 30。
       EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"
-      # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
-      # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
-      # 內部服務憑證。CSP 寫、router 只讀。人不必複製 token。
-      # FILE_GID 10002 = 兩支 Dockerfile 的 anila-svc-tokens。
+      # 內部服務憑證。CSP 寫，各服務只讀自己的檔。人不必複製 token。
+      # FILE_GID 10002 是共用目錄的群組（router）。studio 是 10003，
+      # worker 是 10004，寫在內建名單裡，不從這裡覆寫。
       ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
       ANILA_SERVICE_CLIENT_FILE_GID: "10002"
       # ── branch SSO:中科院憑證卡登入 (prod-intranet-card fork 區) ─────────
@@ -211,16 +221,8 @@ services:
       # 時用這招停用繪圖 agent,避免註冊一個打不通的 dead agent 給 Router)。
       AUTO_REGISTER_AGENTS: >-
         [{"name":"image-generator","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
-      # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
-      # 必需,讓 worker 能呼叫 csp /v1/embeddings 與 /v1/chat/completions)。
-      # smoke-user 是 e2e 測試用的帳號,prod 不需要,已移除。要恢復就把舊 entry
-      # 加回來 (參考 .env.dev.local 同步區段或 git history)。
-      # ingestion-worker 的帳號是 role=system。check_model_permission 對
-      # system 放行任何啟用中的模型，所以這把 key 不必跟著視覺／嵌入角色
-      # 改授權。models 只在第一次建立 key 時寫一筆嵌入模型，之後換角色不用改這裡。
-      # auto_seed 對既有 key 只補列上的權限、不刪舊的。
-      AUTO_SEED_API_KEYS: >-
-        [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
+      # ingestion-worker 的系統帳號與 sk- 由 CSP 核發，明文只寫進
+      # /run/anila/service-clients/ingestion-worker/token。不要再從 .env 種這把 key。
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -294,6 +296,8 @@ services:
       #   docker network create anila-models-net
       - anila-models-net
     depends_on:
+      csp-credential-dirs:
+        condition: service_completed_successfully
       csp-db:
         condition: service_healthy
       # 遠端 docling:與 ingestion-worker 同一條 required:false 規則——開
@@ -335,7 +339,8 @@ services:
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
-      EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
+      # 嵌入、視覺、關係抽取共用這一個檔。CSP 核發，worker 只讀。
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/ingestion-worker/token
       EMBEDDING_DIM: "4000"
       # 一份文件切成幾段送。csp 的 Triton gRPC 路徑是「每段文字各一次
       # ModelInfer,整通呼叫共用 5s + EMBEDDING_TIMEOUT 的預算,且與
@@ -371,8 +376,6 @@ services:
       # 角色沒設時略過圖說，入庫繼續。
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
-      # 對齊 EMBEDDING_API_KEY 的 fail-loud convention — 不留 changeme fallback。
-      VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
       # 掃描件 PDF 的 OCR fallback。預設 false —— 這幾行在的理由是「不設定就
@@ -414,6 +417,7 @@ services:
     volumes:
       - "../../share/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
       - ../../share/pki:/etc/anila/pki:ro
+      - anila-service-credentials:/run/anila/service-clients:ro
     depends_on:
       csp-db:
         condition: service_healthy
@@ -440,16 +444,13 @@ services:
       - "9000"
     environment:
       CSP_BASE_URL: http://csp:8000
-      # 後援。正常憑證是 ANILA_SERVICE_TOKEN_FILE。這把舊式共用祕密在
-      # router-primary 有自己的憑證之後，打不進 router-only 端點。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       # 多輪派工的中途狀態（/v1/sessions/{id}/state、/answer）存在這個 SQLite；
       # 2026-09-02 之前沒有 volume，recreate 一次就全部消失（harness M2）。
       ANILA_SESSION_DB_PATH: /app/.anila/sessions.db
       # 只在 ANILA_SERVICE_TOKEN_FILE 沒設時才當後援。路徑有設而檔案不在時，
       # router 失敗即關閉（token_source=file_missing），不讀這個目錄。
       ANILA_ROUTER_STATE_DIR: /app/.anila/state
-      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary.token
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary/token
     volumes:
       - router-sessions:/app/.anila
       - anila-service-credentials:/run/anila/service-clients:ro
@@ -550,11 +551,8 @@ services:
       - "8100"
     environment:
       CSP_BASE_URL: http://csp:8000
-      # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
-      # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
-      # csp 的 verify_service_token。對齊 csp / router / ingestion-worker
-      # 的 prod fail-loud convention(缺值直接停,不走 dev fallback)。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      # CSP 寫的 anila-studio 服務憑證。檔案不在時 /health 是 503。
+      ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/anila-studio/token
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。
@@ -580,6 +578,7 @@ services:
     volumes:
       - anila-studio-flux-cache:/var/anila/anila-studio-flux-cache
       - anila-studio-artifacts:/var/anila/anila-studio-artifacts
+      - anila-service-credentials:/run/anila/service-clients:ro
     networks:
       - default
       - anila-models-net  # flux2-dev sits here
@@ -832,7 +831,7 @@ services:
       ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
       ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
       CSP_BASE_URL: http://csp:8000
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-}
+      # 重新啟用前必須改讀專屬憑證檔。共用服務權杖已退役，這裡不再注入。
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       JWT_KID: anila-v1

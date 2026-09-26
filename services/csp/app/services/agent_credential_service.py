@@ -118,6 +118,27 @@ class CallerIdentity:
 # ---------------------------------------------------------------------------
 
 
+def fleet_secret_retired(token: str) -> bool:
+    """自動核發開啟時，舊的共用 CSP_SERVICE_TOKEN 不再是任何服務身分。
+
+    比對放在資料庫查找之前。列上即使還留著這把祕密，也不得通過驗證。
+    自動核發關掉時（測試預設）仍走原本的環境變數後援。
+    """
+    presented = (token or "").strip()
+    if not presented:
+        return False
+    from app.services.internal_service_clients import auto_provision_enabled
+
+    if not auto_provision_enabled():
+        return False
+    from app.config import settings
+
+    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
+    if not legacy or len(legacy) != len(presented):
+        return False
+    return hmac.compare_digest(legacy, presented)
+
+
 def verify_service_token(
     db: Session,
     *,
@@ -129,28 +150,28 @@ def verify_service_token(
     ``verify_service_token`` dependency) is responsible for translating
     ``None`` into HTTP 401.
 
+    自動核發開啟且呈現的是共用 CSP_SERVICE_TOKEN 時直接沒有身分，
+    即使某列的雜湊還等於那把祕密。
+
+    長效 ``agent_credentials`` 已退役。代理改用 5 分鐘派工 JWT，
+    核發端點回 410。這裡不比對那些列，也不看 ``CSP_SERVICE_TOKEN``
+    在不在環境裡：0027 種下的舊祕密不得再變成 agent 身分。
+    沒有仍要接受長效 agent 憑證的路徑。
+
     The lookup hash is the indexed key; the constant-time
     ``hmac.compare_digest`` against the decrypted envelope is the
     actual security check.
     """
     if not token:
         return None
+    if fleet_secret_retired(token):
+        return None
 
     lookup_hash = compute_lookup_hash(token)
     now = datetime.now(timezone.utc)
 
-    # 1) service_clients first (Router / worker traffic dominates s2s
-    #    volume; checking it first reduces average latency).
-    sc_match = _match_service_client(db, token=token, lookup_hash=lookup_hash, now=now)
-    if sc_match is not None:
-        return sc_match
-
-    # 2) agent_credentials.
-    ac_match = _match_agent_credential(db, token=token, lookup_hash=lookup_hash, now=now)
-    if ac_match is not None:
-        return ac_match
-
-    return None
+    # service_clients（router / studio / worker）。長效 agent 憑證不在此列。
+    return _match_service_client(db, token=token, lookup_hash=lookup_hash, now=now)
 
 
 def _match_service_client(
@@ -214,6 +235,11 @@ def _match_service_client(
 def _match_agent_credential(
     db: Session, *, token: str, lookup_hash: str, now: datetime
 ) -> Optional[CallerIdentity]:
+    """長效 agent 憑證的比對。請求路徑不得呼叫。
+
+    代理身分是派工 JWT。沒有仍支援這張表的入口；``verify_service_token``
+    不使用這個函式，也不因環境裡沒有 CSP_SERVICE_TOKEN 而放行。
+    """
     candidates = (
         db.query(AgentCredential)
         .filter(

@@ -90,6 +90,7 @@ class ImagePrimaryFetcher:
 
     async def _refresh(self, now: float) -> None:
         url = f"{self._csp_base_url}/api/models/image-primary"
+        # 重新啟用前必須改讀專屬憑證檔。這裡仍會送出建構時給的舊權杖。
         headers = (
             {"X-CSP-Service-Token": self._service_token} if self._service_token else {}
         )

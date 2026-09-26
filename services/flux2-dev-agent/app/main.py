@@ -124,11 +124,9 @@ def _build_from_env() -> FastAPI:
     flux_api_key = os.environ.get("FLUX_API_KEY", "").strip()
     csp_base_url = os.environ.get("CSP_BASE_URL", "http://csp:8000")
     csp_api_key = os.environ.get("CSP_API_KEY", "")
-    # CSP_SERVICE_TOKEN:X-CSP-Service-Token,打 GET /api/models/image-primary
-    # 用的 s2s 認證。flux2-dev-agent 原本沒有這個機制(prompt_translator 走
-    # CSP_API_KEY Bearer,是給 gemma4 chat completions 用的,跟這裡的服務
-    # 端認證是兩回事);沒設就送不帶 header 的請求,CSP 會回 401,fetcher
-    # 照樣 fallback 到 env(見錯誤處理表),行為等同「功能關閉」。
+    # 重新啟用前必須改讀專屬憑證檔。下面仍讀舊的環境變數；compose 已不再
+    # 注入。沒有憑證檔時 image-primary 會 401，fetcher 改走 env。
+    # CSP_API_KEY 是另一把金鑰（gemma4），與此無關。
     csp_service_token = os.environ.get("CSP_SERVICE_TOKEN", "").strip()
     gemma_model = os.environ.get("GEMMA_MODEL", "gemma4")
     enable_translation = os.environ.get("ENABLE_PROMPT_TRANSLATION", "1") == "1"

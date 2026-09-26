@@ -15,10 +15,9 @@ helper module (``service_token_envelope``) covers both.
                       ``client_name='router-primary'``, used by Router
                       to call CSP's ``/api/models/router-primary`` and
                       anywhere else CSP-internal s2s is needed.
-* ``worker``        — async pipeline workers. ingestion-worker is the
-                      first candidate for Sprint 9 X; this column lets
-                      us distinguish its traffic from Router traffic
-                      in usage / audit dashboards.
+* ``worker``        — async pipeline workers. ingestion-worker 的呼叫
+                      身分是系統使用者的 sk- API key，不是這張表的 csk-。
+* ``studio``        — anila-studio。打 X-CSP-Service-Token 的平台服務。
 * ``admin_tool``    — future surface for ops scripts that need to call
                       CSP s2s endpoints without holding admin JWT
                       (e.g. backup helpers, on-call runbooks).

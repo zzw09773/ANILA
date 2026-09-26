@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # ---- Schemas ---------------------------------------------------------------
 
 
-_CLIENT_TYPES = {"router", "worker", "admin_tool"}
+_CLIENT_TYPES = {"router", "worker", "admin_tool", "studio"}
 
 
 class ServiceClientResponse(ApiResponseModel):
@@ -85,7 +85,7 @@ class ServiceClientResponse(ApiResponseModel):
 
 class CreateServiceClientRequest(BaseModel):
     client_name: str = Field(..., min_length=1, max_length=100)
-    client_type: str = Field(..., description="router | worker | admin_tool")
+    client_type: str = Field(..., description="router | worker | admin_tool | studio")
     description: str | None = Field(default=None, max_length=500)
 
 

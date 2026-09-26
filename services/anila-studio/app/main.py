@@ -118,15 +118,22 @@ async def health() -> JSONResponse:
     to lazy-fetch on first verify) but its cold-start happens in lifespan
     so by the time we serve traffic it has at least one key cached.
     """
+    from app.service_token import source as service_token_source
+
     revocation_cache = revocation_cache_mod.get_revocation_cache()
-    ready = revocation_cache.ready
+    token_source = service_token_source()
+    # 路徑有設而檔案不在或讀不到：失敗即關閉，不把容器報成健康。
+    credential_ready = token_source not in {"file_missing", "file_error"}
+    ready = revocation_cache.ready and credential_ready
     body = {
         "status": "ok" if ready else "degraded",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "ready": ready,
+        "token_source": token_source,
         "deps": {
-            "revocation_cache": ready,
+            "revocation_cache": revocation_cache.ready,
+            "service_token": credential_ready,
         },
     }
     return JSONResponse(

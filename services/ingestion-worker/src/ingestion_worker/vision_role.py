@@ -47,13 +47,21 @@ async def resolve_vision_model(*, vision_url: str, api_key: str) -> tuple[str | 
         return None, _cache["message"]
 
     url = f"{origin}/api/models/roles/vision"
-    headers = {}
-    token = (api_key or "").strip()
-    if token and token != "not-set":
-        headers["Authorization"] = f"Bearer {token}"
+    from ingestion_worker.credential_file import api_key as credential_api_key
+    from ingestion_worker.credential_file import reload as reload_credential
+
+    def _headers(presented: str) -> dict[str, str]:
+        token = credential_api_key(presented).strip()
+        if token and token != "not-set":
+            return {"Authorization": f"Bearer {token}"}
+        return {}
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=_headers(api_key))
+            if resp.status_code in (401, 403):
+                reload_credential(True)
+                resp = await client.get(url, headers=_headers(api_key))
     except Exception as exc:  # noqa: BLE001 — 問不到就略過圖說
         logger.warning("vision role: 連線 csp 失敗（%s）", exc)
         if _cache["name"]:

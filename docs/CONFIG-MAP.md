@@ -50,7 +50,7 @@ compose 引用的名字總數不是「管理員要設的鍵數」：compose 自�
 | `ANILA_ALLOW_DEV_SECRET` | 開不開「開發祕密照收」 | 部署 | `up -d` | `.env.example` |
 
 ### 2b. 改錯「大聲死」（拒絕啟動）
-`startup_security.py` **實際 grep 到的**（非猜）：`SECRET_KEY`、`CSP_SERVICE_TOKEN`、`INTERNAL_PLATFORM_API_KEY`、`ANILA_ALLOW_DEV_SECRET`。
+`startup_security.py` **實際 grep 到的**（非猜）：`SECRET_KEY`、`CSP_SERVICE_TOKEN`（已從 `.env.example` 拿掉；環境裡還留著舊值才會被檢查）、`INTERNAL_PLATFORM_API_KEY`（worker 不再讀；flux agent 的 `CSP_API_KEY` 仍引用）、`ANILA_ALLOW_DEV_SECRET`。
 
 ⚠ 不在上面≠設錯無聲：`CSP_DB_PASSWORD`／`CSP_APP_DB_PASSWORD` 在連 DB 那刻爆；`MODEL_GATEWAY_API_KEY` 在出向呼叫時才用。
 
@@ -63,6 +63,8 @@ compose 引用的名字總數不是「管理員要設的鍵數」：compose 自�
 - 登入／code server／文件解析開關（`CARD_*`／`CODESERVER_*`／`DOC_PARSER`／`ENABLE_IMAGE_CAPTIONS`／`PDF_OCR_FALLBACK`）。
 
 全文逐鍵在附 1。
+
+已從 `.env.example` 拿掉的鍵：`CSP_SERVICE_TOKEN`。Router、anila-studio、ingestion-worker 改讀 CSP 寫的憑證檔。部署後從執行中的 `.env` 刪掉 `CSP_SERVICE_TOKEN=...` 那一行。`INTERNAL_PLATFORM_API_KEY` 還在，只剩 `flux2-dev-agent` 的 `CSP_API_KEY` 在用。
 
 ### 附 1：`.env.example` 鍵清單（以 §0 指令為準；下面依檔案行序抄錄，值不抄）
 ```
@@ -99,7 +101,6 @@ CODESERVER_PASSWORD
 CODESERVER_WORKSPACE
 CSP_APP_DB_PASSWORD
 CSP_DB_PASSWORD
-CSP_SERVICE_TOKEN
 DOC_PARSER
 EMBEDDING_BATCH_SIZE
 EMBEDDING_TIMEOUT

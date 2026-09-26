@@ -88,6 +88,7 @@ COPY --from=frontend-build /build/dist /app/frontend-dist
 #
 # 換版本時:換檔 → 重算 `sha256sum services/csp/app/static/*` → 改下面兩行。
 # 對不上就當場 build 失敗,不會生出一個「看起來好了」的映像。
+COPY infra/docker/csp-credential-dirs.sh /usr/local/bin/csp-credential-dirs.sh
 COPY infra/docker/verify-swagger-ui.py /tmp/verify-swagger-ui.py
 RUN python3 /tmp/verify-swagger-ui.py     && rm -f /tmp/verify-swagger-ui.py     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
@@ -110,10 +111,14 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 # 也是 10001,但那是巧合不是宣告 —— base image 換一版、多裝一個會建群組的
 # 套件,它就會變,而且不會有人發現。這裡要的是宣告。
 #
-# gid 10002（anila-svc-tokens）是內部服務憑證檔的群組,不是執行身分。
-# csp 以 uid 10001 寫 0640 檔,router 的 uid 1000 靠這個補充群組來讀。
-# 同一組 addgroup／adduser 也在 services/anila-core-router/Dockerfile。
-# 改這個 gid 時兩邊一起改,並改 compose 的 ANILA_SERVICE_CLIENT_FILE_GID。
+# 憑證子目錄一個消費者一個群組。檔案是 0640，隔離靠目錄：
+#   10002 anila-svc-tokens        router（uid 1000）
+#   10003 anila-studio-tokens     anila-studio
+#   10004 anila-worker-tokens     ingestion-worker
+# 子目錄擁有者是 uid 10005（csp-credential-dirs.sh），不是 10001。
+# CSP 要加入每一個群組才能在目錄裡建檔。router 只在 10002。
+# 改 gid 時連同腳本、對應 Dockerfile，以及 compose 的
+# ANILA_SERVICE_CLIENT_FILE_GID（上層目錄的群組，仍是 10002）。
 #
 # /app/logs 是**唯一**需要在映像裡就可寫的路徑:app/main.py 的 setup_logging()
 # 在 lifespan 啟動時對 logs/csp.log 開 RotatingFileHandler,不可寫 = 服務起不來。
@@ -129,9 +134,13 @@ ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 # 這裡是第二道:即使哪天 context 又漏進什麼,服務仍然起得來。
 # 目錄照理是空的,`-R` 的成本是零。
 RUN addgroup -g 10002 -S anila-svc-tokens \
+ && addgroup -g 10003 -S anila-studio-tokens \
+ && addgroup -g 10004 -S anila-worker-tokens \
  && addgroup -g 10001 anila \
  && adduser -D -u 10001 -G anila anila \
  && adduser anila anila-svc-tokens \
+ && adduser anila anila-studio-tokens \
+ && adduser anila anila-worker-tokens \
  && mkdir -p /app/logs /run/anila/service-clients \
  && chown -R anila:anila /app/logs \
  && chown 10001:10002 /run/anila/service-clients \

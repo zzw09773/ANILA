@@ -7,7 +7,7 @@ studio / asr-gateway. This helper makes the admitted kinds explicit.
 
 ``CallerIdentity.kind`` is ``"agent"`` | ``"service_client"``.
 ``service_clients.client_type`` is one of ``router`` | ``worker`` |
-``admin_tool`` (see ``app.api.service_clients._CLIENT_TYPES``).
+``studio`` | ``admin_tool`` (see ``app.api.service_clients._CLIENT_TYPES``).
 
 Live fleet topology (measured against the running stack)
 ========================================================

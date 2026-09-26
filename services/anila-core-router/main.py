@@ -4,7 +4,7 @@ The Router's outgoing CSP credential is a per-client token that CSP
 provisions itself. Nobody copies it into an env file. Resolution order:
 
     1. **Token file** — ``ANILA_SERVICE_TOKEN_FILE``
-       (compose: ``/run/anila/service-clients/router-primary.token``,
+       (compose: ``/run/anila/service-clients/router-primary/token``,
        written by CSP, mode 0640). Re-read when the file changes, on a
        timer, and once after CSP returns 401 or 403.
        If this path is configured, no other credential is used.

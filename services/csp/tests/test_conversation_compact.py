@@ -325,12 +325,12 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0047():
+def test_alembic_heads_single_r1_0048():
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0047"], f"alembic head 應為 r1_0047，實得 {heads}"
+    assert heads == ["r1_0048"], f"alembic head 應為 r1_0048，實得 {heads}"
 
     cli = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
@@ -341,13 +341,13 @@ def test_alembic_heads_single_r1_0047():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0047" in cli.stdout
+    assert "r1_0048" in cli.stdout
 
     head_src = (
-        CSP_ROOT / "migrations" / "versions" / "r1_0047_wipe_conversation_summaries.py"
+        CSP_ROOT / "migrations" / "versions" / "r1_0048_revoke_agent_credentials.py"
     ).read_text(encoding="utf-8")
-    assert 'revision: str = "r1_0047"' in head_src
-    assert 'down_revision: Union[str, None] = "r1_0046"' in head_src
+    assert 'revision: str = "r1_0048"' in head_src
+    assert 'down_revision: Union[str, None] = "r1_0047"' in head_src
 
     text_src = (
         CSP_ROOT / "migrations" / "versions" / "r1_0043_model_registry_name_lower_unique.py"

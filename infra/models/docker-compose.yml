@@ -297,12 +297,8 @@ services:
       CSP_BASE_URL: http://csp:8000
       # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
-      # image-primary 熱抓取用的 s2s token。不用 :? —— compose 解析階段就會
-      # 插值,models stack 與平台 stack 常分開起;硬性要求會讓「只起模型、
-      # 不起平台」的人整份 compose 掛掉(同 2026-07-30 ASR :? 踩雷)。
-      # 空預設 → agent 仍可啟動,但 GET /api/models/image-primary 會 401,
-      # fetcher fallback 到 env FLUX_BACKEND_URL(見 image_primary_fetcher)。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-}
+      # 重新啟用前必須改讀專屬憑證檔。共用服務權杖已退役，這裡不再注入。
+      # image-primary 熱抓取在改完之前會 401，fetcher 沿用 FLUX_BACKEND_URL。
       GEMMA_MODEL: gemma4
       ENABLE_PROMPT_TRANSLATION: "1"
       SHARE_DIR: /share/flux

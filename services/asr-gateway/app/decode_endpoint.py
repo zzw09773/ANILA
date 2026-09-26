@@ -148,6 +148,7 @@ async def refresh_decode_endpoint(
     designation stands — using a different machine silently is worse than
     voice being off.
     """
+    # 重新啟用前必須改讀專屬憑證檔。這條仍讀舊的環境變數，compose 已不再注入。
     token = (settings.CSP_SERVICE_TOKEN or "").strip()
     if not token:
         # No service credential → the service-to-service endpoint is not

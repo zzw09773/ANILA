@@ -312,18 +312,20 @@ class RevocationCache:
         )
         url = f"{settings.CSP_BASE_URL}/api/auth/revocations"
         params = {"since": since.isoformat()}
-        headers: dict[str, str] = {}
-        if settings.CSP_SERVICE_TOKEN:
-            # csp's verify_service_token accepts this header (the
-            # legacy env-var fallback path), no DB row needed.
-            headers["X-CSP-Service-Token"] = settings.CSP_SERVICE_TOKEN
+        from app.service_token import headers as service_token_headers
+        from app.service_token import reload as reload_service_token
 
         timeout = httpx.Timeout(
             settings.INTERNAL_TIMEOUT_SECONDS,
             connect=settings.INTERNAL_TIMEOUT_CONNECT,
         )
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url, params=params, headers=headers)
+            response = await client.get(url, params=params, headers=service_token_headers())
+            if response.status_code in (401, 403):
+                reload_service_token(True)
+                response = await client.get(
+                    url, params=params, headers=service_token_headers()
+                )
             response.raise_for_status()
             body = response.json()
 

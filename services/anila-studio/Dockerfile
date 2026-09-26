@@ -66,8 +66,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --break-system-packages . && \
     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
-# Run as non-root for defence-in-depth
-RUN useradd --create-home --uid 10001 anila \
+# Run as non-root for defence-in-depth.
+# uid 10001 與 CSP 相同。憑證放在擁有者 uid 10005 的子目錄裡，
+# 補充群組 10003 才能進 anila-studio/。不要加入 10002／10004。
+RUN groupadd --force --gid 10001 anila \
+ && groupadd --force --gid 10003 anila-studio-tokens \
+ && useradd --create-home --uid 10001 --gid 10001 --groups anila-studio-tokens anila \
  && chown -R anila:anila /app \
  && mkdir -p /var/anila/anila-studio-flux-cache \
  && chown anila:anila /var/anila/anila-studio-flux-cache \

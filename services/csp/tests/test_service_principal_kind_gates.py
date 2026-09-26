@@ -123,10 +123,7 @@ def _plant_asr_primary(db) -> ModelRegistry:
 def test_a1_agent_kind_rejected_on_each_platform_endpoint(
     client: TestClient, db, endpoint: str, setup: str
 ):
-    """PROVE RED: remove require_admitted_service_principal from the named
-    endpoint → this test goes green for that endpoint (agent token accepted).
-    Restore the gate → 403 again.
-    """
+    """長效 agent csk- 在驗證階段就是 401，到不了 kind gate。"""
     csk = _agent_csk(db)
     headers = {"X-CSP-Service-Token": csk}
 
@@ -147,11 +144,11 @@ def test_a1_agent_kind_rejected_on_each_platform_endpoint(
         _plant_asr_primary(db)
         resp = client.get("/api/models/asr-primary", headers=headers)
 
-    assert resp.status_code == 403, (
-        f"{endpoint}: expected 403 for agent-kind token, got "
+    assert resp.status_code == 401, (
+        f"{endpoint}: expected 401 for a retired agent credential, got "
         f"{resp.status_code}: {resp.text}"
     )
-    assert "kind=" in resp.json()["detail"] or "不接受" in resp.json()["detail"]
+    assert resp.json()["detail"] == "服務權杖無效"
 
 
 def test_a2_router_kind_succeeds_agent_kind_fails_on_router_primary(
@@ -175,7 +172,8 @@ def test_a2_router_kind_succeeds_agent_kind_fails_on_router_primary(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": agent_tok},
     )
-    assert denied.status_code == 403, denied.text
+    assert denied.status_code == 401, denied.text
+    assert denied.json()["detail"] == "服務權杖無效"
 
 
 def test_router_primary_rejects_worker_client_type(client: TestClient, db):
@@ -369,7 +367,11 @@ def test_r4_denial_writes_diagnosable_audit_without_secrets(
     """A kind-gate 403 must leave an audit row + log line naming the
     endpoint and principal kind — never the token or a model URL."""
     _plant_router_primary(db)
-    csk = _agent_csk(db)
+    # 長效 agent csk- 在驗證階段就是 401，到不了 kind gate。
+    # 這裡用仍會通過驗證、但 client_type 不被接受的 worker，確認拒絕稽核還在。
+    csk = _service_client_token(
+        db, name="kindgate-worker-audit", client_type="worker"
+    )
     model_url = "https://llm.example.internal/v1"
 
     with caplog.at_level(logging.WARNING, logger="app.api._service_principal"):

@@ -36,6 +36,8 @@ from asyncio import Lock
 import httpx
 
 from app.config import settings
+from app.service_token import headers as service_token_headers
+from app.service_token import reload as reload_service_token
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +58,7 @@ _lock = Lock()
 
 
 def _headers() -> dict[str, str]:
-    token = settings.CSP_SERVICE_TOKEN.strip()
-    return {"X-CSP-Service-Token": token} if token else {}
+    return service_token_headers()
 
 
 def _log_not_found_once() -> None:
@@ -120,6 +121,35 @@ async def _refresh_image_primary() -> None:
             _state["status"] = "not_found"
             _log_not_found_once()
         elif resp.status_code in (401, 403):
+            # 憑證可能剛輪替。重讀一次再打，仍被拒才放棄。
+            reload_service_token(True)
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    retried = await client.get(url, headers=_headers())
+            except (
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                logger.warning(
+                    "image-primary: 重讀憑證後連線 csp 失敗(%s)— 沿用上次快取值",
+                    exc,
+                )
+                _state["status"] = "conn_error"
+                _state["fetched_at"] = now
+                return
+            if retried.status_code == 200:
+                resp = retried
+                data = resp.json()
+                endpoint = str(data.get("endpoint_url") or "").strip()
+                model = str(data.get("name") or "").strip()
+                if endpoint:
+                    _state["endpoint"] = endpoint
+                    _state["model"] = model or None
+                    _state["status"] = "ok"
+                    _state["logged_not_found"] = False
+                    _state["fetched_at"] = now
+                    return
             logger.warning(
                 "image-primary: csp 拒絕 service token(%s)— "
                 "fallback env FLUX_BACKEND_URL/FLUX_MODEL",

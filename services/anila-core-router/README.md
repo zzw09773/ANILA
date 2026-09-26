@@ -93,7 +93,7 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | 變數 | 說明 | 預設 |
 |---|---|---|
 | `CSP_BASE_URL` | CSP 基底 URL;容器內為 `http://csp:8000` | `http://csp:8000` |
-| `ANILA_SERVICE_TOKEN_FILE` | CSP 寫好的憑證檔。compose 為 `/run/anila/service-clients/router-primary.token` | 未設 |
+| `ANILA_SERVICE_TOKEN_FILE` | CSP 寫好的憑證檔。compose 為 `/run/anila/service-clients/router-primary/token` | 未設 |
 | `ANILA_SERVICE_TOKEN_RELOAD_SECONDS` | 週期重讀憑證檔的間隔,最短 5 秒 | `30` |
 | `CSP_BOOTSTRAP_TOKEN` | 只在 `ANILA_SERVICE_TOKEN_FILE` 沒設、且 state file 也沒有時,抄進 state file | `""` |
 | `CSP_SERVICE_TOKEN` | 只在憑證檔路徑沒設時的最後後援:舊式共用祕密。router-primary 有自己的憑證後,打不進 router-only 端點 | `""` |

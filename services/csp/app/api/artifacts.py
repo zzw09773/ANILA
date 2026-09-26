@@ -168,6 +168,9 @@ def _resolve_service_token(request: Request, db: Session):
     if not token:
         return False, None, None
 
+    if agent_credential_service.fleet_secret_retired(token):
+        raise HTTPException(status_code=401, detail="服務權杖無效")
+
     identity = agent_credential_service.verify_service_token(db, token=token)
     if identity is not None:
         if identity.kind == "agent":

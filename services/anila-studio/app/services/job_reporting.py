@@ -38,6 +38,8 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.service_token import headers as service_token_headers
+from app.service_token import reload as reload_service_token
 
 
 logger = logging.getLogger(__name__)
@@ -57,8 +59,7 @@ def _headers(bearer: str | None) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
-    if settings.CSP_SERVICE_TOKEN:
-        headers["X-CSP-Service-Token"] = settings.CSP_SERVICE_TOKEN
+    headers.update(service_token_headers())
     return headers
 
 
@@ -79,6 +80,10 @@ async def _send(
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.request(method, url, headers=headers, json=json_body)
+            if resp.status_code in (401, 403) and attempt == 0:
+                reload_service_token(True)
+                await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                continue
             if resp.status_code >= 500 and attempt == 0:
                 await asyncio.sleep(_RETRY_DELAY_SECONDS)
                 continue

@@ -9,7 +9,7 @@ export async function listServiceClients() {
 }
 
 export async function createServiceClient(payload) {
-  // payload: { client_name, client_type: "router"|"worker"|"admin_tool", description? }
+  // payload: { client_name, client_type: "router"|"worker"|"studio"|"admin_tool", description? }
   // File-provisioned clients come back as delivery=file and no service_token.
   const { data } = await client.post('/api/service-clients', payload)
   return data

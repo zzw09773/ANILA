@@ -16,6 +16,8 @@ import httpx
 from fastapi import HTTPException
 
 from app.config import settings
+from app.service_token import headers as service_token_headers
+from app.service_token import reload as reload_service_token
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +53,7 @@ _lock = Lock()
 
 
 def _headers() -> dict[str, str]:
-    token = settings.CSP_SERVICE_TOKEN.strip()
-    return {"X-CSP-Service-Token": token} if token else {}
+    return service_token_headers()
 
 
 def _detail_from(resp: httpx.Response, role: str) -> str:
@@ -123,6 +124,15 @@ async def _refresh(role: str) -> None:
             logger.warning("model-role %s: 連線 csp 失敗（%s）", role, exc)
             _remember_transient(slot, role, now)
             return
+        if resp.status_code in (401, 403):
+            reload_service_token(True)
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url, headers=_headers())
+            except Exception as exc:  # noqa: BLE001 — 重試那一次也連不上就沿用舊值
+                logger.warning("model-role %s: 重讀憑證後連線 csp 失敗（%s）", role, exc)
+                _remember_transient(slot, role, now)
+                return
         if resp.status_code == 200:
             name = str((resp.json() or {}).get("name") or "").strip()
             if name:

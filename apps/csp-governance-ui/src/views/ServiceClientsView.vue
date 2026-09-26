@@ -116,6 +116,7 @@
           <select v-model="createForm.client_type" class="term-select">
             <option value="router">router</option>
             <option value="worker">worker</option>
+            <option value="studio">studio</option>
             <option value="admin_tool">admin_tool</option>
           </select>
         </TermField>

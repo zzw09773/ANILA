@@ -67,9 +67,11 @@ async def _bind_pdf_ocr_if_enabled() -> None:
         return
     from ingestion_worker.vision_role import bind_pdf_ocr_model
 
+    from ingestion_worker.credential_file import api_key as credential_api_key
+
     await bind_pdf_ocr_model(
         vision_url=settings.vision_url,
-        api_key=settings.vision_api_key,
+        api_key=credential_api_key(settings.vision_api_key),
     )
 
 
@@ -95,14 +97,35 @@ async def _resolve_caption_intent(
         return False, None
     from ingestion_worker.vision_role import resolve_vision_model
 
+    from ingestion_worker.credential_file import api_key as credential_api_key
+
     name, message = await resolve_vision_model(
         vision_url=settings.vision_url,
-        api_key=settings.vision_api_key,
+        api_key=credential_api_key(settings.vision_api_key),
     )
     if not name:
         logger.warning("ingestion-worker: 略過圖片說明 — %s", message)
         return want, None
     return want, name
+
+
+def _arm_vision_credential(provider: Any) -> Any:
+    """快取的 provider 也要換成目前憑證檔裡的金鑰。"""
+    if provider is None:
+        return None
+    from ingestion_worker.credential_file import api_key as credential_api_key
+
+    headers = getattr(provider, "_headers", None)
+    if isinstance(headers, dict):
+        key = credential_api_key(settings.vision_api_key)
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        def _refresh() -> str:
+            return credential_api_key(settings.vision_api_key)
+
+        provider._refresh_authorization = _refresh
+    return provider
 
 
 def _get_vision_provider(model: str | None = None) -> Any | None:
@@ -119,19 +142,21 @@ def _get_vision_provider(model: str | None = None) -> Any | None:
     if not chosen:
         # 舊測試把單一 provider 塞在 _vision_provider。沒有模型名就不新造一顆。
         if _vision_provider is not None and not _vision_providers:
-            return _vision_provider
+            return _arm_vision_credential(_vision_provider)
         return None
     cached = _vision_providers.get(chosen)
     if cached is not None:
-        return cached
+        return _arm_vision_credential(cached)
     if _vision_provider is not None and not _vision_providers:
         # Test / leftover single-slot cache.
-        return _vision_provider
+        return _arm_vision_credential(_vision_provider)
     from anila_core.providers.vision import VisionProvider
+
+    from ingestion_worker.credential_file import api_key as credential_api_key
 
     provider = VisionProvider(
         base_url=settings.vision_url,
-        api_key=settings.vision_api_key,
+        api_key=credential_api_key(settings.vision_api_key),
         model=chosen,
         timeout=settings.vision_timeout_seconds,
         verify_ssl=True,
@@ -139,7 +164,7 @@ def _get_vision_provider(model: str | None = None) -> Any | None:
     )
     _vision_providers[chosen] = provider
     _vision_provider = provider
-    return provider
+    return _arm_vision_credential(provider)
 
 
 # Reasoning-preamble patterns gemma4 likes to emit even when the prompt
