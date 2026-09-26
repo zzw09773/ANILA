@@ -186,7 +186,6 @@ import {
   IconSettings,
   IconShare,
   IconShield,
-  IconSpark,
   IconGift,
   IconSun,
   IconUser,
@@ -213,8 +212,6 @@ import { TweaksPanel } from "./tweaks.jsx";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
-import { ANILA_LM_ENTRY_ENABLED } from "./anilalmReleaseGate.js";
-import { originHref } from "./shellNav.jsx";
 import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
 import { ArtifactPreviewProvider } from "./artifactContext.jsx";
@@ -4590,24 +4587,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   {WATERMARK_DISCLAIMER}
                 </span>
               )}
-              {/* Slice 9a — Task result 可轉 artifact（doc 10 §11）：對話已建立
-                  Task 時，提供薄連結深連到知識 SPA 的 Studio 面，帶 taskId
-                  query 讓 ALM 承接；不在 shell 內另建 Studio 啟動器。
-                  本 release ANILA LM 關閉時一併隱藏（同一旗標 anilalmReleaseGate）。 */}
-              {ANILA_LM_ENTRY_ENABLED && selectedConv?.taskId != null && (
-                <a
-                  href={originHref(`/anilalm?taskId=${encodeURIComponent(selectedConv.taskId)}`)}
-                  title="將此任務結果轉為產出（Studio / artifact）"
-                  style={{
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    padding: "4px 10px", fontSize: 12, fontWeight: 500,
-                    background: "var(--bg-elev)", border: "1px solid var(--border)",
-                    borderRadius: "var(--radius)", color: "var(--fg)", textDecoration: "none",
-                  }}
-                >
-                  <IconSpark size={13} /> 產出
-                </a>
-              )}
+              {/* 產出深連結已拿掉。Shell 建立的對話 Task 是 source_scope=none，
+                  沒有 selected_collection_ids；對應對話的 collection_id 也是空的。
+                  ANILA LM 沒有可打開的知識庫，Studio 綁定無從預填。 */}
               <Dropdown align="right" width={260} trigger={() => (
                 <IconButton title="交給其他助手"><IconNodes size={14} /></IconButton>
               )}>

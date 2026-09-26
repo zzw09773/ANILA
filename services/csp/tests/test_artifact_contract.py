@@ -414,6 +414,56 @@ class TestGovernanceReads:
         assert client.get(f"/api/artifacts/{art_id}",
                           headers=_bearer(admin)).status_code == 200
 
+    def test_list_filters_by_workspace_on_the_bound_task(self, client: TestClient, db: Session):
+        owner = make_user(db, username="gov_ws")
+        task = _make_task(db, owner, level="無機密")
+        task.selected_collection_ids = [7]
+        db.commit()
+        art_id = _register_artifact(client, task_id=task.id).json()["artifact_id"]
+        listed = client.get(
+            "/api/artifacts?collection_id=7", headers=_bearer(owner)
+        )
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert [row["id"] for row in body] == [art_id]
+        assert body[0]["collection_id"] == 7
+        assert body[0]["collection_ids"] == [7]
+        empty = client.get(
+            "/api/artifacts?collection_id=8", headers=_bearer(owner)
+        )
+        assert empty.status_code == 200, empty.text
+        assert empty.json() == []
+        detail = client.get(f"/api/artifacts/{art_id}", headers=_bearer(owner))
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["collection_id"] == 7
+
+    def test_list_uses_job_collection_when_the_task_has_none(
+        self, client: TestClient, db: Session
+    ):
+        owner = make_user(db, username="gov_jobcol")
+        task = _make_task(db, owner)
+        created = client.post(
+            "/v1/artifact-jobs",
+            headers=_SVC,
+            json=_job_body(
+                "job-col-9", requester_user_id=owner.id, collection_id=9
+            ),
+        )
+        assert created.status_code == 201, created.text
+        registered = client.post(
+            "/v1/artifacts",
+            headers=_SVC,
+            json=_artifact_body(task_id=task.id, job_id="job-col-9"),
+        )
+        assert registered.status_code == 201, registered.text
+        art_id = registered.json()["artifact_id"]
+        listed = client.get(
+            "/api/artifacts?collection_id=9", headers=_bearer(owner)
+        )
+        assert listed.status_code == 200, listed.text
+        assert [row["id"] for row in listed.json()] == [art_id]
+        assert listed.json()[0]["collection_ids"] == [9]
+
     def test_filter_by_artifact_type(self, client: TestClient, db: Session):
         owner = make_user(db, username="gov_filter")
         task = _make_task(db, owner, level="無機密")

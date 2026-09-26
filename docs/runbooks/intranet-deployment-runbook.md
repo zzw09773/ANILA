@@ -182,7 +182,7 @@ intranet-image-overrides.yml   (compose up 時將 pinned image 改為已 load �
 > 長出入口卡片；既有資料不會被這次收斂刪除。平台管理員需在 `/platform-links` 手動
 > 建立交付需要的初始入口，建議清單為：`/anila`、`/anilalm`、`/codeserver`、
 > `/n8n`，以及內網 MLOps 入口 `https://aiops.ai.ncsist.org.tw:4443/`。不要再加 `/gitlab`。
-> ⚠ `/anilalm/` 現回 **503「尚未開放」是刻意的發行閘，不是故障**——重開程序見 `anilalm-release-gate.md`。
+> ⚠ `/anilalm/` 自 2026-09-26 起應回 **200**（或先 301 再 200）。ANILA LM 已開放。若仍是 503「尚未開放」，是舊閘門還沒套到這台機器，見 `anilalm-release-gate.md`。
 
 > **權重只能從這裡帶** — 內網無對外下載通道。image 同理 (本地客製 build,
 > registry 拉不到)。

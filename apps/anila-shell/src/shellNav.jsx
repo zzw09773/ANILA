@@ -74,7 +74,7 @@ export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, o
     // 任務中心 = 現有聊天工作區（預設視圖，chat 即任務工作台）。
     { id: "tasks", label: "對話", Icon: IconMessage, current: currentId === "tasks", onClick: onTaskCenter },
     // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
-    // 本 release 關閉：保留列、停用、標「即將推出」。重開改 anilalmReleaseGate.js。
+    // 開關在 anilalmReleaseGate.js。關上時保留這一列，標「即將推出」、不可點。
     knowledge,
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },

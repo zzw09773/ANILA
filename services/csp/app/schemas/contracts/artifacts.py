@@ -247,6 +247,10 @@ class ArtifactOut(ApiResponseModel):
     classification_level: ClassificationLevel
     created_at: datetime
     updated_at: datetime
+    # 知識庫 id 不在 artifacts 表上。讀取時由 job／metadata／task／snapshot 彙出，
+    # 讓另一台瀏覽器能把清單放回原本的工作區。沒有對應知識庫時為空。
+    collection_id: int | None = None
+    collection_ids: list[int] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

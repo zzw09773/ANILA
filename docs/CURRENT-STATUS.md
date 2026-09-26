@@ -22,7 +22,15 @@ cd apps/anila-shell && npm test
 cd apps/csp-governance-ui && npm test && npm run build
 ```
 
-入口：治理中心 `:443`、對話 `/anila/`。Composer 的 accessible name 是「傳訊息給 ANILA」。
+入口：治理中心 `:443`、對話 `/anila/`、知識庫與 Studio `/anilalm/`。Composer 的 accessible name 是「傳訊息給 ANILA」。
+
+## ANILA LM（2026-09-26 開放）
+
+知識庫與 Studio（`apps/anilalm`）對使用者開放。四道閘門都是開的：nginx 443／4443 把 `/anilalm` 轉給 anilalm、Shell「我的知識庫」可點、治理中心儀表板卡片可見、`POST /api/services/{id}/launch` 不再對 ANILA LM 回 503。再關閉的方法見 `docs/runbooks/anilalm-release-gate.md`。
+
+已經在跑的容器不會因為改這棵樹自動換上。要讓線上入口跟著開，照那份 runbook 重建 `anila-ui`、`csp`，並 force-recreate nginx。
+
+Shell 對話列不再放「產出」按鈕。那個連結只帶對話 Task 的 id；Shell 建立的 Task 是 `source_scope=none`、沒有知識庫，對應對話的 `collection_id` 也是空的，ANILA LM 沒有可開的工作區，Studio 綁定無從預填。
 
 ## 內部服務身分（自動核發）
 

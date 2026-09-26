@@ -5,8 +5,6 @@ import type { UserMe } from '../types'
 import { wipeAuthStorage } from './authStorage'
 
 interface AuthState {
-  accessToken: string | null
-  refreshToken: string | null
   user: UserMe | null
   // 'idle'     = 初始,尚未探測 session
   // 'checking' = 正在用 cookie 探測 /api/auth/me(跨 app SSO 接手)
@@ -14,37 +12,40 @@ interface AuthState {
   // 'unauth'   = 已探測但未登入 → ProtectedRoute 會導去 CSP /login
   status: 'idle' | 'checking' | 'authed' | 'unauth'
 
-  refresh: () => Promise<string | null>
+  refresh: () => Promise<boolean>
   fetchMe: () => Promise<void>
   logout: () => void
   hydrate: () => Promise<void>
 }
 
-// Drop any legacy zustand-persist blob that older builds wrote into
-// localStorage (access + refresh tokens). Session is cookie-only now.
+// 同時到期的請求只換發一次。第二次換發會把上一把 refresh cookie 作廢。
+let refreshInflight: Promise<boolean> | null = null
+
+// 清掉舊版寫進 localStorage 的權杖。工作階段只留在 httpOnly cookie。
 if (typeof localStorage !== 'undefined') {
   wipeAuthStorage(localStorage)
 }
 
 export const useAuthStore = create<AuthState>()((set, get) => ({
-  accessToken: null,
-  refreshToken: null,
   user: null,
   status: 'idle',
 
-  refresh: async () => {
-    // Cookie-first: CSP accepts anila_refresh_token on /api/auth/refresh
-    // even when the JSON body has no refresh_token (see password.py).
-    // After a reload the in-memory copy is gone; the httpOnly cookie is not.
-    const rt = get().refreshToken
-    try {
-      const { data } = await refreshApi(rt)
-      set({ accessToken: data.access_token, refreshToken: data.refresh_token })
-      return data.access_token
-    } catch {
-      set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
-      return null
-    }
+  refresh: () => {
+    if (refreshInflight) return refreshInflight
+    refreshInflight = (async () => {
+      try {
+        // 後端從 anila_refresh_token cookie 取權杖，並改寫 cookie。
+        // 回應本文仍帶權杖給 SDK，這裡不讀、不留。
+        await refreshApi()
+        return true
+      } catch {
+        set({ user: null, status: 'unauth' })
+        return false
+      } finally {
+        refreshInflight = null
+      }
+    })()
+    return refreshInflight
   },
 
   fetchMe: async () => {
@@ -52,18 +53,14 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       const { data } = await getMe()
       set({ user: data, status: 'authed' })
     } catch {
-      set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
+      set({ user: null, status: 'unauth' })
     }
   },
 
   logout: () => {
-    // Fire-and-forget: server-side logout is best-effort. The local
-    // state reset is the source of truth — even if the network call
-    // fails the user is signed out from the client's POV.
+    // 伺服器登出是盡力而為。本地狀態先清，網路失敗也算已登出。
     void logoutApi().catch(() => undefined)
     set({
-      accessToken: null,
-      refreshToken: null,
       user: null,
       status: 'unauth',
     })
@@ -81,11 +78,8 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 }))
 
-// Wire the axios interceptor to the store. Done at module load — the
-// store is created above synchronously, so by the time the first request
-// fires the adapter is already in place.
+// 模組載入時就把 axios 接到這個 store。store 已同步建好，第一個請求會用得到。
 bindAuthAdapter({
-  getAccessToken: () => useAuthStore.getState().accessToken,
   refresh: () => useAuthStore.getState().refresh(),
   logout: () => useAuthStore.getState().logout(),
 })

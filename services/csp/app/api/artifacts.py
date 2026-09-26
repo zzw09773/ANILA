@@ -739,15 +739,21 @@ def list_artifacts_api(
     artifact_type: str | None = Query(None),
     task_id: int | None = Query(None),
     classification_level: str | None = Query(None),
+    collection_id: int | None = Query(None, ge=1),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    """列出 artifacts(admin/owner: 全部;一般使用者: 自己 owner 或 task 申請人)。"""
+    """列出 artifacts(admin/owner: 全部;一般使用者: 自己 owner 或 task 申請人)。
+
+    ``collection_id`` 把清單收成一個知識庫。知識庫不在 artifacts 表上，
+    由 job、metadata、task、snapshot 彙出來。
+    """
     return artifacts.list_artifacts(
         db, viewer_user_id=current_user.id,
         is_admin=is_admin_tier(current_user),
         artifact_type=artifact_type, task_id=task_id,
         classification_level=classification_level,
+        collection_id=collection_id,
         limit=limit, offset=offset,
     )
 
@@ -769,4 +775,5 @@ def get_artifact_api(
         raise HTTPException(
             status_code=403, detail="無權存取此 artifact"
         ) from None
+    artifacts.attach_collection_scope(db, [artifact])
     return artifact

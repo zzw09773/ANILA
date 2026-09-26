@@ -10,6 +10,7 @@ import type { SlidesArtifact, StudioArtifact } from '../types'
 import { findTheme, type ThemeId } from '../studio/themes'
 import { timeAgo } from '../utils/format'
 import { isDownloadWarning, warningPatch } from './artifactWarning'
+import { listWorkspaceArtifacts } from '../api/artifacts'
 import {
   downloadSlidesJobPptx,
   getSlidesJobStatus,
@@ -174,6 +175,38 @@ export function WSStudio() {
     (collection && byCollection[collection.id]) || EMPTY_ARTIFACTS
   const removeArtifact = useArtifactStore((s) => s.remove)
   const updateArtifact = useArtifactStore((s) => s.update)
+
+  // 打開工作區時向 CSP 要這個知識庫的產出。localStorage 只是先畫出來的快取。
+  useEffect(() => {
+    if (!collection) return
+    const collectionId = collection.id
+    let cancelled = false
+    const pull = () => {
+      const merge = useArtifactStore.getState().mergeServer
+      if (typeof merge !== 'function') return
+      void listWorkspaceArtifacts(collectionId)
+        .then((rows) => {
+          if (!cancelled) merge(collectionId, rows)
+        })
+        .catch(() => {
+          // 這次讀不到就留著快取，下次進工作區再試。
+        })
+    }
+    const persistApi = useArtifactStore.persist
+    if (!persistApi?.hasHydrated || persistApi.hasHydrated()) {
+      pull()
+      return () => {
+        cancelled = true
+      }
+    }
+    const unsubscribe = persistApi.onFinishHydration(() => {
+      if (!cancelled) pull()
+    })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [collection])
 
   // Match the rendered CATEGORIES (all/visual/doc); 'audio'/'study' were
   // dropped from the UI so they no longer belong in the filter type.

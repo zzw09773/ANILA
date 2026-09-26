@@ -35,10 +35,8 @@ export function useJobStream() {
           }
         },
         () => {
-          // SSE dropped (EventSource can't carry our Bearer token, so a
-          // missing/expired cookie session kills the stream silently).
-          // Recover the latest status with a one-shot Bearer-authed fetch
-          // instead of freezing the row on a stale in-flight status.
+          // SSE 斷了（cookie 過期時串流會安靜關掉）。改打一次文件查詢把狀態補上，
+          // 不要把列停在過期的進行中。
           void getDocument(d.doc.id)
             .then((res) => upsertDoc(res.data, res.data.latest_job_id ?? jobId))
             .catch(() => undefined)

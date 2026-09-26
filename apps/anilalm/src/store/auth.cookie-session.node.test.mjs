@@ -131,13 +131,21 @@ if (__mem && typeof globalThis.localStorage === 'undefined') {
   )
 
   const store = mod.useAuthStore
-  assert.equal(store.getState().accessToken, null)
-  assert.equal(store.getState().refreshToken, null)
+  assert.equal(Object.hasOwn(store.getState(), 'accessToken'), false)
+  assert.equal(Object.hasOwn(store.getState(), 'refreshToken'), false)
 
   await store.getState().hydrate()
 
   assert.equal(store.getState().status, 'authed')
   assert.equal(store.getState().user?.username, 'cookie-user')
-  assert.equal(store.getState().accessToken, null)
+  assert.equal(Object.hasOwn(store.getState(), 'accessToken'), false)
+  assert.equal(Object.hasOwn(store.getState(), 'refreshToken'), false)
   assert.equal(storageMod.authStorageHasTokens(storage), false)
+
+  // refresh 回應裡的權杖不得進 store。
+  assert.equal(await store.getState().refresh(), true)
+  assert.equal(store.getState().status, 'authed')
+  assert.equal(Object.hasOwn(store.getState(), 'refreshToken'), false)
+  assert.equal(JSON.stringify(store.getState()).includes('r2'), false)
+  assert.equal(JSON.stringify(store.getState()).includes('a2'), false)
 })

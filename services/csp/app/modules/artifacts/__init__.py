@@ -20,6 +20,7 @@ artifacts` 或 `from app.modules.artifacts import ...`,不得 import 本 package
 """
 
 from app.modules.artifacts.service import (
+    attach_collection_scope,
     create_artifact,
     create_version,
     ensure_artifact_access,
@@ -34,6 +35,7 @@ from app.modules.artifacts.service import (
 )
 
 __all__ = [
+    "attach_collection_scope",
     "create_artifact",
     "create_version",
     "ensure_artifact_access",

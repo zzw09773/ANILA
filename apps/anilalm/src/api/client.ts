@@ -1,10 +1,8 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 
-// Single axios instance reused everywhere. Bearer JWT injected by an
-// interceptor; the auth store owns the tokens and is set via
-// `bindAuthAdapter` after the store is initialised. We can't import the
-// store here directly because the store imports api modules that import
-// this file — circular. The adapter pattern keeps the dep graph clean.
+// 全站共用一個 axios。工作階段是 httpOnly cookie，攔截器只補 CSRF、
+// 在 401 時換發。不能在這裡直接 import auth store：store 會 import
+// 用到這個檔案的 api。用 adapter 把依賴方向保持單向。
 
 /**
  * Base URL for the anila-studio service.
@@ -25,8 +23,8 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 export const STUDIO_BASE_URL: string = import.meta.env.VITE_STUDIO_BASE_URL ?? ''
 
 interface AuthAdapter {
-  getAccessToken(): string | null
-  refresh(): Promise<string | null>
+  // 只回是否換到新的 httpOnly cookie。權杖留在瀏覽器，不進頁面記憶體。
+  refresh(): Promise<boolean>
   logout(): void
 }
 
@@ -53,25 +51,15 @@ function readCookie(name: string): string | null {
   return match ? decodeURIComponent(match[1]) : null
 }
 
-// Double-submit CSRF header for mutating cookie-auth requests. Exported so
-// the streaming chat path (api/chat.ts) — which bypasses this axios client —
-// can attach the same header. Empty when the cookie is absent (e.g. pure
-// Bearer flows, which are CSRF-exempt server-side anyway).
+// 變更類的 cookie 請求要回帶 anila_csrf。沒有這顆 cookie 時不送標頭。
 export function csrfHeader(): Record<string, string> {
   const csrf = readCookie(CSRF_COOKIE)
   return csrf ? { 'X-CSRF-Token': csrf } : {}
 }
 
 client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = adapter?.getAccessToken()
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  // Double-submit CSRF: when there's no Bearer (e.g. the in-memory access token
-  // expired/cleared but the httpOnly session cookie lingers), CSP's CSRF
-  // middleware requires X-CSRF-Token to match the non-httpOnly `anila_csrf`
-  // cookie on mutating requests. Bearer requests are CSRF-exempt server-side,
-  // so sending it always is harmless. Fixes logout 403 after token expiry.
+  // 工作階段只走 httpOnly cookie（withCredentials）。不附 Authorization。
+  // 變更類請求要帶 X-CSRF-Token，值與非 httpOnly 的 anila_csrf cookie 相同。
   const method = (config.method ?? 'get').toLowerCase()
   if (MUTATING_METHODS.has(method)) {
     const csrf = readCookie(CSRF_COOKIE)
@@ -102,9 +90,11 @@ client.interceptors.response.use(
     if (error.response?.status === 401 && !original._retry && !skipRefresh) {
       original._retry = true
       try {
-        const newToken = await adapter.refresh()
-        if (!newToken) throw new Error('refresh returned no token')
-        original.headers.Authorization = `Bearer ${newToken}`
+        const ok = await adapter.refresh()
+        if (!ok) {
+          adapter.logout()
+          return Promise.reject(error)
+        }
         return client(original)
       } catch (refreshErr) {
         adapter.logout()
@@ -114,6 +104,44 @@ client.interceptors.response.use(
     return Promise.reject(error)
   },
 )
+
+/**
+ * 與 axios client 同一套 cookie 工作階段。給不走 axios 的串流與二進位請求用。
+ * 401 時用 refresh cookie 換發一次再送，不把權杖留在頁面裡。
+ */
+export async function fetchWithSession(
+  input: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const method = (init.method ?? 'GET').toLowerCase()
+  const send = () => {
+    // 每次送出都重讀 cookie。refresh 會換發 anila_csrf；沿用舊標頭會被拒成 403。
+    const headers = new Headers(init.headers)
+    if (MUTATING_METHODS.has(method)) {
+      for (const [key, value] of Object.entries(csrfHeader())) {
+        headers.set(key, value)
+      }
+    }
+    return fetch(input, {
+      ...init,
+      credentials: 'include',
+      headers,
+    })
+  }
+  let res = await send()
+  if (res.status !== 401 || !adapter || init.signal?.aborted) return res
+  try {
+    await res.body?.cancel()
+  } catch {
+    // 第一個 401 的 body 沒人讀。取消失敗就讓它自己關掉。
+  }
+  const ok = await adapter.refresh()
+  if (!ok) {
+    adapter.logout()
+    return res
+  }
+  return send()
+}
 
 // Pretty-format an axios error for toast messages. CSP backend returns
 // `{detail: "..."}` or an endpoint-specific detail object on errors;

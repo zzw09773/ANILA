@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.api.studio import router as studio_router
+from app.middleware.csrf import CsrfMiddleware
 from app.api.reports import router as reports_router
 from app.api.mindmaps import router as mindmaps_router
 from app.api.infographics import router as infographics_router
@@ -104,6 +105,8 @@ app.include_router(reports_router)
 app.include_router(mindmaps_router)
 app.include_router(infographics_router)
 app.include_router(datatables_router)
+# 最外層：cookie 工作階段的變更請求先過 CSRF，再進路由。
+app.add_middleware(CsrfMiddleware)
 
 
 @app.get("/health")

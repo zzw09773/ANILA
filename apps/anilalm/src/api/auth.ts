@@ -1,14 +1,9 @@
 import { client } from './client'
-import type { TokenResponse, UserMe } from '../types'
+import type { UserMe } from '../types'
 
-// Body token is optional: after a reload the in-memory copy is gone and
-// CSP reads the httpOnly ``anila_refresh_token`` cookie instead (path
-// ``/api/auth/refresh``). withCredentials on the shared client sends it.
-export const refreshToken = (refresh_token?: string | null) =>
-  client.post<TokenResponse>(
-    '/api/auth/refresh',
-    refresh_token ? { refresh_token } : {},
-  )
+// 換發只靠 httpOnly anila_refresh_token cookie。不把 refresh token 放進
+// 請求本文，回應裡的權杖也不留給呼叫端保存。
+export const refreshToken = () => client.post('/api/auth/refresh', {})
 
 export const getMe = () => client.get<UserMe>('/api/auth/me')
 

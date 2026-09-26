@@ -1,9 +1,7 @@
 import type { JobSnapshot } from '../types'
 
-// Browser EventSource can't carry an Authorization header, so SSE relies
-// on the cookie session that ``_finalize_login`` sets on the
-// ``/api/auth/login`` response. The axios client also sends withCredentials,
-// so the cookie is already in scope when this opens.
+// EventSource 帶不出自訂標頭，所以串流靠登入時種下的 httpOnly cookie。
+// axios 開了 withCredentials，這條 SSE 也帶 withCredentials。
 
 interface StreamHandle {
   close: () => void

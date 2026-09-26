@@ -249,6 +249,7 @@ async def on_create(record: Any, ctx: JobReportContext | None) -> None:
             task_id=ctx.task_id,
             source_snapshot_id=ctx.source_snapshot_id,
             trace_id=ctx.trace_id,
+            collection_id=ctx.collection_id,
         )
     )
 
@@ -294,6 +295,9 @@ async def _finalize(
         except Exception:  # noqa: BLE001
             info = None
         if info is not None and info.storage_ref:
+            metadata = dict(info.result_metadata or {})
+            if ctx.collection_id is not None:
+                metadata["collection_id"] = int(ctx.collection_id)
             result = await job_reporting.register_artifact(
                 bearer=ctx.bearer,
                 job_id=record.job_id,
@@ -304,7 +308,7 @@ async def _finalize(
                 storage_ref=info.storage_ref,
                 content_hash=_sha256(info.primary_bytes),
                 classification_level=None,
-                metadata=info.result_metadata,
+                metadata=metadata or None,
             )
             if result:
                 artifact_id = result.get("artifact_id")

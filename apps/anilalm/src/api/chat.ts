@@ -1,15 +1,12 @@
-// Direct call to /v1/chat/completions (OpenAI-compatible proxy on CSP).
-// Two callsites:
-//   - Streaming chat in WSChat (SSE deltas → typewriter UI)
-//   - One-shot JSON generation in Studio (Report / Slides) where the
-//     entire reply is collected before parsing.
+// 直接打 CSP 的 /v1/chat/completions（OpenAI 相容代理）。
+// 兩處呼叫：
+//   - WSChat 的串流（SSE delta）
+//   - Studio 一次性 JSON（整段回覆收齊再解析）
 //
-// We don't use openai-js because we want zero extra deps for this and
-// the surface we touch is tiny. Bearer JWT goes via fetch's headers
-// directly — the axios interceptor isn't on the path here.
+// 不走 openai-js。認證與 axios 一樣：httpOnly cookie + X-CSRF-Token，
+// 不在頁面裡留權杖。
 
-import { useAuthStore } from '../store/auth'
-import { csrfHeader } from './client'
+import { fetchWithSession } from './client'
 import { resolveKnowledgeChatModel } from './modelRole'
 
 export interface ChatMessage {
@@ -33,11 +30,6 @@ async function resolveModel(model?: string): Promise<string> {
   const explicit = (model || '').trim()
   if (explicit) return explicit
   return resolveKnowledgeChatModel()
-}
-
-function authHeaders(): Record<string, string> {
-  const token = useAuthStore.getState().accessToken
-  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 function tracingHeaders(req: ChatRequest): Record<string, string> {
@@ -232,12 +224,10 @@ export function finaliseChatSse(state: ChatSseState): string {
  * One-shot completion. Returns the full text. Throws on non-2xx.
  */
 export async function chatComplete(req: ChatRequest): Promise<string> {
-  const res = await fetch('/v1/chat/completions', {
+  const res = await fetchWithSession('/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...csrfHeader(),
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
@@ -275,12 +265,10 @@ export async function chatStream(
   onDelta: (delta: string, accumulated: string) => void,
   abortSignal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch('/v1/chat/completions', {
+  const res = await fetchWithSession('/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...csrfHeader(),
       ...tracingHeaders(req),
     },
     body: JSON.stringify({

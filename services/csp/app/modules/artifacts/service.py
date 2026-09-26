@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
@@ -326,15 +327,200 @@ def ensure_artifact_access(
     )
 
 
+def _positive_ints(raw: object) -> list[int]:
+    """把 JSON 清單或單一整數收成正整數。順序保留、重複去掉。"""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                raw = int(text)
+            except ValueError:
+                return []
+    if isinstance(raw, bool):
+        return []
+    if isinstance(raw, int):
+        return [raw] if raw > 0 else []
+    if not isinstance(raw, list):
+        return []
+    found: list[int] = []
+    for item in raw:
+        if isinstance(item, bool):
+            continue
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if number > 0 and number not in found:
+            found.append(number)
+    return found
+
+
+def _union_collection_ids(
+    *,
+    job_collection_id: int | None,
+    metadata: object,
+    task_collection_ids: object,
+    snapshot_collection_ids: object,
+) -> list[int]:
+    """一個產出可能從 job、metadata、task、snapshot 各自帶知識庫。"""
+    found: list[int] = []
+
+    def add(raw: object) -> None:
+        for number in _positive_ints(raw):
+            if number not in found:
+                found.append(number)
+
+    add(job_collection_id)
+    if isinstance(metadata, dict):
+        add(metadata.get("collection_id"))
+        add(metadata.get("collection_ids"))
+    add(task_collection_ids)
+    add(snapshot_collection_ids)
+    return found
+
+
+def _artifact_ids_in_collection(db: Session, collection_id: int) -> set[int]:
+    """這個知識庫底下的 artifact id。
+
+    artifacts 表沒有 collection 欄。知識庫寫在 job、成品 metadata、
+    綁定 task 的 selected_collection_ids，或 snapshot 的 collection_ids。
+    """
+    ids: set[int] = set()
+    job_ids = [
+        job_id
+        for (job_id,) in db.query(ArtifactJob.job_id).filter(
+            ArtifactJob.collection_id == collection_id
+        )
+    ]
+    if job_ids:
+        for (artifact_id,) in db.query(Artifact.id).filter(
+            Artifact.job_id.in_(job_ids)
+        ):
+            ids.add(int(artifact_id))
+        for (artifact_id,) in db.query(ArtifactJob.artifact_id).filter(
+            ArtifactJob.job_id.in_(job_ids),
+            ArtifactJob.artifact_id.isnot(None),
+        ):
+            ids.add(int(artifact_id))
+
+    referenced_tasks = [
+        task_id
+        for (task_id,) in db.query(Artifact.source_task_id).filter(
+            Artifact.source_task_id.isnot(None)
+        ).distinct()
+    ]
+    if referenced_tasks:
+        matched_tasks = [
+            task_id
+            for task_id, raw in db.query(
+                Task.id, Task.selected_collection_ids
+            ).filter(Task.id.in_(referenced_tasks))
+            if collection_id in _positive_ints(raw)
+        ]
+        if matched_tasks:
+            for (artifact_id,) in db.query(Artifact.id).filter(
+                Artifact.source_task_id.in_(matched_tasks)
+            ):
+                ids.add(int(artifact_id))
+
+    referenced_snaps = [
+        snap_id
+        for (snap_id,) in db.query(Artifact.source_snapshot_id).filter(
+            Artifact.source_snapshot_id.isnot(None)
+        ).distinct()
+    ]
+    if referenced_snaps:
+        matched_snaps = [
+            snap_id
+            for snap_id, raw in db.query(
+                SourceSnapshot.id, SourceSnapshot.collection_ids
+            ).filter(SourceSnapshot.id.in_(referenced_snaps))
+            if collection_id in _positive_ints(raw)
+        ]
+        if matched_snaps:
+            for (artifact_id,) in db.query(Artifact.id).filter(
+                Artifact.source_snapshot_id.in_(matched_snaps)
+            ):
+                ids.add(int(artifact_id))
+
+    for artifact_id, metadata in db.query(
+        Artifact.id, Artifact.metadata_json
+    ).filter(Artifact.metadata_json.isnot(None)):
+        if collection_id in _union_collection_ids(
+            job_collection_id=None,
+            metadata=metadata,
+            task_collection_ids=None,
+            snapshot_collection_ids=None,
+        ):
+            ids.add(int(artifact_id))
+    return ids
+
+
+def attach_collection_scope(db: Session, rows: list[Artifact]) -> list[Artifact]:
+    """把知識庫 id 寫到實例上，給讀取契約的 collection_id 用。
+
+    不是資料庫欄位。只活在這次回應裡。
+    """
+    if not rows:
+        return rows
+    job_keys = [row.job_id for row in rows if row.job_id]
+    task_keys = [row.source_task_id for row in rows if row.source_task_id is not None]
+    snap_keys = [
+        row.source_snapshot_id for row in rows if row.source_snapshot_id is not None
+    ]
+    jobs = {
+        job.job_id: job
+        for job in (
+            db.query(ArtifactJob).filter(ArtifactJob.job_id.in_(job_keys)).all()
+            if job_keys else []
+        )
+    }
+    tasks = {
+        task.id: task
+        for task in (
+            db.query(Task).filter(Task.id.in_(task_keys)).all() if task_keys else []
+        )
+    }
+    snaps = {
+        snap.id: snap
+        for snap in (
+            db.query(SourceSnapshot).filter(SourceSnapshot.id.in_(snap_keys)).all()
+            if snap_keys else []
+        )
+    }
+    for row in rows:
+        job = jobs.get(row.job_id) if row.job_id else None
+        task = tasks.get(row.source_task_id) if row.source_task_id is not None else None
+        snap = (
+            snaps.get(row.source_snapshot_id)
+            if row.source_snapshot_id is not None else None
+        )
+        collected = _union_collection_ids(
+            job_collection_id=getattr(job, "collection_id", None),
+            metadata=row.metadata_json,
+            task_collection_ids=getattr(task, "selected_collection_ids", None),
+            snapshot_collection_ids=getattr(snap, "collection_ids", None),
+        )
+        setattr(row, "collection_ids", collected)
+        setattr(row, "collection_id", collected[0] if collected else None)
+    return rows
+
+
 def list_artifacts(
     db: Session, *, viewer_user_id: int, is_admin: bool,
     artifact_type: str | None = None, task_id: int | None = None,
     classification_level: str | None = None,
+    collection_id: int | None = None,
     limit: int = 50, offset: int = 0,
 ) -> list[Artifact]:
     """列出 artifacts(admin: 全部;一般使用者: 自己 owner 或經 task 申請人)。
 
-    filters:``artifact_type`` / ``task_id`` / ``classification_level``。
+    filters:``artifact_type`` / ``task_id`` / ``classification_level`` /
+    ``collection_id``(知識庫，由 job／task／snapshot／metadata 彙出)。
     非 admin 的 owner-scope 用 (owner_user_id == viewer) OR (綁定 task 的
     requester == viewer) 兩路 union。
     """
@@ -357,9 +543,15 @@ def list_artifacts(
         q = q.filter(Artifact.source_task_id == task_id)
     if classification_level is not None:
         q = q.filter(Artifact.classification_level == classification_level)
-    return (
+    if collection_id is not None:
+        matched = _artifact_ids_in_collection(db, collection_id)
+        if not matched:
+            return []
+        q = q.filter(Artifact.id.in_(matched))
+    rows = (
         q.order_by(Artifact.created_at.desc(), Artifact.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
+    return attach_collection_scope(db, rows)

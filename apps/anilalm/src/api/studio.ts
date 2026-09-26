@@ -1,5 +1,4 @@
-import { useAuthStore } from '../store/auth'
-import { STUDIO_BASE_URL } from './client'
+import { fetchWithSession, STUDIO_BASE_URL } from './client'
 import type { TaskBinding } from './tasks'
 import type { components } from './studio-types.gen'
 
@@ -98,25 +97,11 @@ const PPTX_MIME =
   'application/vnd.openxmlformats-officedocument.presentationml.presentation'
 
 /**
- * fetch wrapper for studio calls. Injects the Bearer access token and —
- * mirroring the shared axios `client` interceptor — refreshes once on 401
- * and retries. studio.ts uses raw fetch (streaming/binary) so it does NOT
- * go through `client`; without this, an expired token surfaced as a stuck
- * studio-only 401 while the rest of the app silently auto-refreshed.
+ * Studio 走二進位與串流，不經過 axios。認證與共用 client 相同：
+ * httpOnly cookie、變更類請求的 X-CSRF-Token、401 換發一次。
  */
 async function studioFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  const baseHeaders = (init.headers ?? {}) as Record<string, string>
-  const send = (token: string | null): Promise<Response> =>
-    fetch(input, {
-      ...init,
-      headers: token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders,
-    })
-  let res = await send(useAuthStore.getState().accessToken)
-  if (res.status === 401) {
-    const fresh = await useAuthStore.getState().refresh().catch(() => null)
-    if (fresh) res = await send(fresh)
-  }
-  return res
+  return fetchWithSession(input, init)
 }
 
 /** Resolve a studio-relative path against STUDIO_BASE_URL. */

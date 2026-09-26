@@ -318,6 +318,7 @@ async def test_csp_reporting_full_cycle(reporting_on, respx_mock):
     assert create_body["source_snapshot_id"] == 23
     assert create_body["requester_user_id"] == 7
     assert create_body["employee_id"] == "EMP42"
+    assert create_body["collection_id"] == 5
     assert "requester" not in create_body
     assert created.calls.last.request.headers["Authorization"] == "Bearer BEARER-XYZ"
 
@@ -329,6 +330,7 @@ async def test_csp_reporting_full_cycle(reporting_on, respx_mock):
     assert reg_body["task_id"] == 17
     assert reg_body["source_snapshot_id"] == 23
     assert reg_body["content_hash"] == hashlib.sha256(_PPTX).hexdigest()
+    assert reg_body["metadata"]["collection_id"] == 5
 
     # PATCH /v1/artifact-jobs/{id} — terminal status mapped + artifact_id.
     assert patched.called

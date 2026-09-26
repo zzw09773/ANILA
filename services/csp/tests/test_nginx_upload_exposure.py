@@ -30,6 +30,17 @@ def _upload_blocks(conf: str) -> list[str]:
     return pattern.findall(conf)
 
 
+def test_anilalm_listeners_proxy_instead_of_503() -> None:
+    """443 與 4443 都把 /anilalm 交給 anilalm，不再回 503 維護頁。"""
+    conf = _nginx_conf()
+    assert conf.count("ANILA_LM_NGINX_GATE = open") == 2
+    assert conf.count("location = /anilalm {") == 2
+    assert conf.count("location /anilalm {") == 2
+    assert conf.count("proxy_pass http://$anilalm_addr;") == 2
+    assert "location ~* ^/anilalm" not in conf
+    assert "ANILA LM 尚未開放" not in conf
+
+
 def test_nginx_uploads_allowlist_shape() -> None:
     conf = _nginx_conf()
 

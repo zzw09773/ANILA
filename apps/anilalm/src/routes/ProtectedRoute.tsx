@@ -13,8 +13,7 @@ export function ProtectedRoute() {
   // 跳轉只在「已探測且確定未登入」(status==='unauth')時發生。
   // 'idle'/'checking' 都是「還在確認」→ 渲染 null 等待,不跳轉;
   // 否則 cookie-based SSO 還沒驗完就把 user 踢回 CSP /login(原 bug)。
-  // 改看 status 而非 accessToken:跨 app SSO 接手時 token 留在 httpOnly
-  // cookie,store 的 accessToken 為 null,但 fetchMe 會把 status 設 'authed'。
+  // 看 status。工作階段在 httpOnly cookie，頁面不留 access／refresh token。
   useEffect(() => {
     if (status !== 'unauth') return
     // absolute URL with current port — ANILALM 可能跑在 4443，LoginView 在

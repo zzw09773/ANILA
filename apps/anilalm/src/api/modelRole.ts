@@ -1,5 +1,7 @@
 // 知識庫對話的預設模型來自治理中心的 knowledge_chat 角色。
-// 呼叫端若已帶明確的模型名稱，不要走這裡。
+// 呼叫端若已帶明確的模型名稱，不要走這裡。沒有建置期寫死的模型名。
+
+import { fetchWithSession } from './client'
 
 const ROLE_PATH = '/api/models/roles/knowledge_chat'
 const UNSET = '知識庫對話模型尚未在治理中心設定'
@@ -29,8 +31,11 @@ function detailOf(body: unknown, fallback: string): string {
   return fallback
 }
 
+const sessionFetch: typeof fetch = (input, init) =>
+  fetchWithSession(String(input), init)
+
 export async function resolveKnowledgeChatModel(
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = sessionFetch,
 ): Promise<string> {
   const now = Date.now()
   if (cache && now - cache.at < TTL_MS) {

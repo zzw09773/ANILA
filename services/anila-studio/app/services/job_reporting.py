@@ -129,6 +129,7 @@ async def report_job_created(
     task_id: str | None = None,
     source_snapshot_id: str | None = None,
     trace_id: str | None = None,
+    collection_id: int | None = None,
 ) -> None:
     """POST /v1/artifact-jobs — register the job on the control plane.
 
@@ -151,6 +152,8 @@ async def report_job_created(
         body["source_snapshot_id"] = _as_int(source_snapshot_id)
     if trace_id is not None:
         body["trace_id"] = trace_id
+    if collection_id is not None:
+        body["collection_id"] = int(collection_id)
     url = f"{settings.CSP_BASE_URL}/v1/artifact-jobs"
     resp = await _send("POST", url, bearer=bearer, json_body=body)
     if resp is not None and resp.status_code >= 400:

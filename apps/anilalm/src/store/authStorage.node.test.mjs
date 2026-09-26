@@ -52,6 +52,27 @@ test('durableAuthSlice never includes access or refresh tokens', async () => {
   assert.equal(mod.authStorageHasTokens(storage), false)
 })
 
+test('chat model comes from the knowledge_chat role, not a build-time name', () => {
+  const chat = readFileSync(join(here, '../api/chat.ts'), 'utf8')
+  const modelRole = readFileSync(join(here, '../api/modelRole.ts'), 'utf8')
+  assert.equal(chat.includes('VITE_DEFAULT_CHAT_MODEL'), false)
+  assert.equal(modelRole.includes('VITE_DEFAULT_CHAT_MODEL'), false)
+  assert.match(chat, /resolveKnowledgeChatModel/)
+  assert.match(modelRole, /\/api\/models\/roles\/knowledge_chat/)
+})
+
+test('auth store does not keep access or refresh tokens', () => {
+  const auth = readFileSync(join(here, 'auth.ts'), 'utf8')
+  const client = readFileSync(join(here, '../api/client.ts'), 'utf8')
+  const chat = readFileSync(join(here, '../api/chat.ts'), 'utf8')
+  const studio = readFileSync(join(here, '../api/studio.ts'), 'utf8')
+  assert.equal(/accessToken\s*:/.test(auth), false)
+  assert.equal(/refreshToken\s*:/.test(auth), false)
+  assert.equal(/headers\.Authorization\s*=/.test(client), false)
+  assert.equal(/Authorization:\s*`Bearer/.test(chat), false)
+  assert.equal(/Authorization:\s*`Bearer/.test(studio), false)
+})
+
 test('auth.ts no longer partializes tokens into localStorage', () => {
   const src = readFileSync(join(here, 'auth.ts'), 'utf8')
   // Old bug: partialize returned { accessToken, refreshToken }.
