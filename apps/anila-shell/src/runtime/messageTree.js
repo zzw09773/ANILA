@@ -4,6 +4,7 @@
 
 import { mergeMessageAttachments } from "./messageAttachments.js";
 import { shouldKeepLiveReasoning } from "./reasoningPersist.js";
+import { readThinkingStages } from "./thinkingStages.js";
 
 /**
  * Derive ChatGPT-style pager fields from a client message that already
@@ -155,10 +156,15 @@ export function applyServerPath(prevList, serverMapped, convId) {
     if (liveSummaries.length > serverSummaries.length) {
       next.thinkingSummaries = liveSummaries;
     }
-    const liveStages = Array.isArray(preserved.thinkingStages) ? preserved.thinkingStages : [];
-    const serverStages = Array.isArray(sm.thinkingStages) ? sm.thinkingStages : [];
+    const liveStages = readThinkingStages({ thinking_stages: preserved.thinkingStages });
+    const serverStages = readThinkingStages({ thinking_stages: sm.thinkingStages });
     if (liveStages.length > serverStages.length) {
       next.thinkingStages = liveStages;
+    } else if (
+      Array.isArray(sm.thinkingStages)
+      && serverStages.length < sm.thinkingStages.length
+    ) {
+      next.thinkingStages = serverStages;
     }
     if (!next.thinkingStatus && preserved.thinkingStatus) {
       next.thinkingStatus = preserved.thinkingStatus;

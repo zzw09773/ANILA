@@ -94,6 +94,85 @@ describe("思考階段清單", () => {
     expect(fromServer[0].text).toBe("第一章草稿。");
   });
 
+  it("同一輪裡相同標題不再新增，舊訊息裡重複的階段也只留第一次", () => {
+    const titles = [
+      "需求與設計假設",
+      "增益波束與 EIRP 計算",
+      "功耗與散熱估算",
+      "風險與驗證計畫",
+    ];
+    let stages = [];
+    titles.forEach((title, index) => {
+      stages = applyThinkingStage(
+        stages,
+        { index, title, status: "running" },
+        { now: index + 1 },
+      );
+      if (index > 0) {
+        stages = applyThinkingStage(
+          stages,
+          { index: index - 1, title: titles[index - 1], status: "done" },
+          { now: index + 1 },
+        );
+      }
+    });
+    stages = applyThinkingStage(
+      stages,
+      { index: 4, title: "  需求與設計假設  ", status: "running" },
+      { now: 10 },
+    );
+    stages = applyThinkingStage(
+      stages,
+      { index: 3, title: "風險與驗證計畫", status: "done" },
+      { now: 11 },
+    );
+    stages = applyThinkingStage(
+      stages,
+      { index: 5, title: "第 2 輪：寫水星", status: "running" },
+      { now: 12 },
+    );
+    stages = applyThinkingStage(
+      stages,
+      { index: 6, title: "搜尋過往對話", status: "done" },
+      { now: 13 },
+    );
+    stages = applyThinkingStage(
+      stages,
+      { index: 7, title: "整理答案", status: "running" },
+      { now: 14 },
+    );
+    expect(stages.map((row) => row.title)).toEqual([
+      ...titles,
+      "第 2 輪：寫水星",
+      "搜尋過往對話",
+      "整理答案",
+    ]);
+    expect(stages.find((row) => row.title === "需求與設計假設").status).toBe("done");
+    expect(stages.find((row) => row.title === "風險與驗證計畫").status).toBe("done");
+
+    const duplicated = [
+      ...titles.map((title, index) => ({ index, title, status: "done" })),
+      ...titles.map((title, index) => ({
+        index: index + titles.length,
+        title: `  ${title}  `,
+        status: "done",
+      })),
+    ];
+    expect(readThinkingStages({ thinking_stages: duplicated }).map((row) => row.title)).toEqual(titles);
+    const restored = applyServerPath(
+      [],
+      [{
+        id: "srv-8",
+        dbId: 8,
+        role: "assistant",
+        text: "答案。",
+        thinkingStages: readThinkingStages({ thinking_stages: duplicated }),
+      }],
+      9,
+    );
+    expect(restored[0].thinkingStages.map((row) => row.title)).toEqual(titles);
+  });
+
   it("這則還在本地累積、比伺服器多的階段不會被重新整理蓋掉", () => {
     const live = [
       { index: 0, title: "拆解需求", status: "done" },

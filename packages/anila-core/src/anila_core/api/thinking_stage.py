@@ -314,9 +314,23 @@ class LiveThinkingStages:
         self.content = StageSieve()
 
     def _open_all(self, titles: list[str]) -> list[dict[str, Any]]:
+        # 同一輪裡，整理後標題相同的 STAGE 不再另開一筆。
+        # 正在進行的、以及更早結束的都算。第 N 輪、召回、救援走 open_named。
         events: list[dict[str, Any]] = []
+        seen = {
+            _clean_title(str(item.get("title") or ""))
+            for item in self.book.stages
+        }
+        seen.discard("")
         for title in titles:
-            events.extend(self.book.open(title))
+            key = _clean_title(title)
+            if not key or key in seen:
+                continue
+            opened = self.book.open(title)
+            if not opened:
+                continue
+            events.extend(opened)
+            seen.add(key)
         return events
 
     def feed_reasoning(self, chunk: str) -> tuple[str, list[dict[str, Any]]]:

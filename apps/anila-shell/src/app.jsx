@@ -2235,7 +2235,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           ? lengthBudgetNotice(Boolean(finalText.trim()) || askSlot)
           : streamStateNotice(streamState, Boolean(finalText.trim()) || askSlot),
         error:
-          !lengthBudget && streamState === STREAM_STATE.FAILED
+          // 模型停用的說明已在輸入框上方，氣泡不要再貼同一句。
+          !lengthBudget && streamState === STREAM_STATE.FAILED && !readModelUnavailableError(streamError)
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
             : null,
         ...(lengthBudget && finalText ? { finishReason: "length" } : {}),
@@ -3365,7 +3366,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         incompleteNotice: notice,
         ...thinkingSnap,
         error:
-          !lengthBudget && streamState === STREAM_STATE.FAILED
+          // 模型停用的說明已在輸入框上方，氣泡不要再貼同一句。
+          !lengthBudget && streamState === STREAM_STATE.FAILED && !readModelUnavailableError(streamError)
             ? streamError?.message || "產生回應時發生錯誤，請稍後再試。"
             : null,
         ...(lengthBudget && finalText ? { finishReason: "length" } : {}),

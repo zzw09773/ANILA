@@ -508,6 +508,67 @@ def test_stage_titles_drop_internal_details_and_keep_the_previous_stage(monkeypa
             assert stages == first
 
 
+def test_same_stage_title_is_kept_once_in_one_turn():
+    """思考與正文各寫一次相同 STAGE 時，同一輪只留一份。
+
+    對上正在進行的那筆就略過；對上更早已經結束的也略過。
+    不同標題、第 N 輪、召回與救援仍然各留一筆。
+    """
+    titles = [
+        "需求與設計假設",
+        "增益波束與 EIRP 計算",
+        "功耗與散熱估算",
+        "風險與驗證計畫",
+    ]
+    block = "".join(f"STAGE: {title}\n" for title in titles)
+    live = rs.LiveThinkingStages()
+    reasoning, reasoning_events = live.feed_reasoning(block)
+    visible, content_events = live.feed_content(block + "答案。\n")
+    tail_reasoning, tail_visible, tail_events = live.flush()
+    assert "STAGE:" not in reasoning + visible + tail_reasoning + tail_visible
+    assert visible + tail_visible == "答案。\n"
+    assert [row["title"] for row in live.snapshot()] == titles
+    opened = [
+        row["title"]
+        for row in reasoning_events + content_events + tail_events
+        if row["status"] == "running"
+    ]
+    assert opened == titles
+    assert content_events == []
+
+    repeated_running, running_events = live.feed_content("STAGE: 風險與驗證計畫\n")
+    assert repeated_running == ""
+    assert running_events == []
+    assert live.snapshot()[-1]["status"] == "running"
+    assert [row["title"] for row in live.snapshot()] == titles
+
+    repeated_done, done_events = live.feed_content("STAGE:   需求與設計假設  \n")
+    assert repeated_done == ""
+    assert done_events == []
+    assert [row["status"] for row in live.snapshot()] == ["done", "done", "done", "running"]
+
+    _distinct, distinct_events = live.feed_content("STAGE: 另一步驟\n")
+    assert [row["title"] for row in distinct_events if row["status"] == "running"] == ["另一步驟"]
+    assert live.snapshot()[-2]["status"] == "done"
+    assert live.snapshot()[-1] == {
+        "index": 4,
+        "title": "另一步驟",
+        "status": "running",
+    }
+
+    round_events = live.open_named(rs.round_stage_title(2, "寫水星"))
+    recall_events = live.open_named("搜尋過往對話")
+    rescue_events = live.open_named(rs.RESCUE_STAGE_TITLE)
+    assert [row["title"] for row in round_events if row["status"] == "running"] == ["第 2 輪：寫水星"]
+    assert [row["title"] for row in recall_events if row["status"] == "running"] == ["搜尋過往對話"]
+    assert [row["title"] for row in rescue_events if row["status"] == "running"] == ["整理答案"]
+    assert [row["title"] for row in live.snapshot()][-3:] == [
+        "第 2 輪：寫水星",
+        "搜尋過往對話",
+        "整理答案",
+    ]
+
+
 def test_stream_error_marks_the_running_stage(monkeypatch):
     body = _drive(
         monkeypatch,
