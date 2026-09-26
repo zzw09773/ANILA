@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Outlet, useLocation, useNavigate, useParams } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { getCollection } from '../api/collections'
@@ -14,10 +14,16 @@ import { WSStudio } from '../workspace/WSStudio'
 import { useJobStream } from '../workspace/useJobStream'
 
 export function WorkspacePage() {
-  const { collectionId, conversationId } = useParams<{
-    collectionId: string
+  const { collectionId, conversationId: conversationIdParam } = useParams<{
+    collectionId?: string
     conversationId?: string
   }>()
+  const { pathname } = useLocation()
+  // 父層路由 /c/:collectionId 底下的 conv/:id 不會出現在這裡的 useParams。
+  // 從路徑補上，分享頁 /conv/:id 則本來就在參數裡。
+  const conversationId =
+    conversationIdParam ??
+    (collectionId ? pathname.match(/\/conv\/([^/]+)/)?.[1] : undefined)
   const navigate = useNavigate()
   const { t } = useTheme()
   const setCollection = useWorkspaceStore((s) => s.setCollection)
@@ -40,10 +46,15 @@ export function WorkspacePage() {
   // Bootstrap: collection + docs + conversations. Re-runs whenever the
   // user navigates to a different collection.
   //
+  // 第一則訊息會把網址從 /c/:id 換成 /c/:id/conv/:cid。若把對話 id 放進
+  // 依賴，這段會 reset 並把 loading 設回 true，聊天面板卸載，串流更新
+  // 打在已經卸下來的那份 state，答案要重新整理才看得到。
+  //
   // Conversation share and collection access are separate gates. A
   // recipient with a valid named share must still be able to open the
   // thread when getCollection/listDocuments 403 — Promise.all used to
   // blank the whole page on the first reject (owner 2026-08-21).
+  const bootKey = collectionId ?? `shared:${conversationId ?? ''}`
   useEffect(() => {
     const idNum = Number(collectionId)
     const convNum = conversationId ? Number(conversationId) : NaN
@@ -141,8 +152,9 @@ export function WorkspacePage() {
       cancelled = true
     }
   }, [
+    // conversationId 刻意不在這裡。同一知識庫補上對話網址不能重跑載入。
+    bootKey,
     collectionId,
-    conversationId,
     reset,
     setCollection,
     setConversations,
@@ -296,6 +308,7 @@ export function WorkspacePage() {
       )}
       <WSSidebar />
       <WSChat flex={studioOpen ? 1.4 : 1} />
+      <Outlet />
       {/* Keep WSStudio mounted while closed so in-flight job pollers
           keep running. Unmounting used to freeze pending artifacts at
           "鑄造中" until the user reopened the panel. */}

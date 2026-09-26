@@ -106,8 +106,8 @@ export function nextTrimHitCount(n: number): number | null {
  * both in the same frame (avoids double-count when a proxy emits both).
  */
 export function extractChoiceContent(choice: {
-  delta?: { content?: string }
-  message?: { content?: string }
+  delta?: { content?: string | null }
+  message?: { content?: string | null }
 } | null | undefined): string {
   if (!choice) return ''
   const delta = choice.delta?.content
@@ -117,8 +117,24 @@ export function extractChoiceContent(choice: {
   return ''
 }
 
+// 推理模型（例如 deepseek）先送 reasoning_content，可見回答在後面的 content。
+// 兩者不能接在同一條字串上，否則思考過程會被當成答案落庫。
+export function extractChoiceReasoning(choice: {
+  delta?: { reasoning_content?: string | null; reasoning?: string | null }
+  message?: { reasoning_content?: string | null; reasoning?: string | null }
+} | null | undefined): string {
+  if (!choice) return ''
+  const delta = choice.delta?.reasoning_content || choice.delta?.reasoning
+  if (typeof delta === 'string' && delta) return delta
+  const message = choice.message?.reasoning_content || choice.message?.reasoning
+  if (typeof message === 'string' && message) return message
+  return ''
+}
+
 export interface ChatSseState {
   accumulated: string
+  /** 累積的 reasoning_content，不進回答本文。 */
+  reasoning: string
   finishReason: string | null
   /** Payload message from a terminal `event: anila.error` frame, if any. */
   anilaErrorMessage: string | null
@@ -129,6 +145,7 @@ export interface ChatSseState {
 export function createChatSseState(): ChatSseState {
   return {
     accumulated: '',
+    reasoning: '',
     finishReason: null,
     anilaErrorMessage: null,
     anilaErrorCode: null,
@@ -138,7 +155,8 @@ export function createChatSseState(): ChatSseState {
 /**
  * Reduce one complete SSE event block (lines joined by `\n`, no trailing
  * blank separator). Recognises named `anila.error` and OpenAI data frames
- * with either delta.content or message.content.
+ * with either delta.content or message.content. reasoning_content 只累積到
+ * state.reasoning，不寫進 accumulated。
  */
 export function reduceChatSseEvent(
   state: ChatSseState,
@@ -181,8 +199,16 @@ export function reduceChatSseEvent(
     try {
       const frame = JSON.parse(payload) as {
         choices?: {
-          delta?: { content?: string }
-          message?: { content?: string }
+          delta?: {
+            content?: string | null
+            reasoning_content?: string | null
+            reasoning?: string | null
+          }
+          message?: {
+            content?: string | null
+            reasoning_content?: string | null
+            reasoning?: string | null
+          }
           finish_reason?: string | null
         }[]
       }
@@ -191,6 +217,10 @@ export function reduceChatSseEvent(
       if (text) {
         const accumulated = next.accumulated + text
         next = { ...next, accumulated }
+      }
+      const reasoning = extractChoiceReasoning(choice)
+      if (reasoning) {
+        next = { ...next, reasoning: next.reasoning + reasoning }
       }
       if (choice?.finish_reason) {
         next = { ...next, finishReason: choice.finish_reason }
@@ -259,10 +289,18 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
  * When the stream ends with empty content and finish_reason === 'length',
  * throws Error('EMPTY_LENGTH') — thinking models can burn the whole
  * budget on reasoning before any content (設計文件 §9b).
+ *
+ * onDelta 的第三個參數帶目前的可見回答與推理累積。只有推理進來時 delta
+ * 是空字串，呼叫端用它把氣泡留在「思考中」，不要把推理寫進回答。
  */
+export interface ChatStreamSnapshot {
+  content: string
+  reasoning: string
+}
+
 export async function chatStream(
   req: ChatRequest,
-  onDelta: (delta: string, accumulated: string) => void,
+  onDelta: (delta: string, accumulated: string, snapshot?: ChatStreamSnapshot) => void,
   abortSignal?: AbortSignal,
 ): Promise<string> {
   const res = await fetchWithSession('/v1/chat/completions', {
@@ -305,14 +343,21 @@ export async function chatStream(
       buffer = buffer.slice(sep + 2)
       sep = buffer.indexOf('\n\n')
       const prevLen = state.accumulated.length
+      const prevReasoning = state.reasoning.length
       state = reduceChatSseEvent(state, event)
       if (state.anilaErrorMessage) {
         // Terminal failure — stop reading; finaliseChatSse will throw.
         break
       }
-      if (state.accumulated.length > prevLen) {
+      if (
+        state.accumulated.length > prevLen ||
+        state.reasoning.length > prevReasoning
+      ) {
         const delta = state.accumulated.slice(prevLen)
-        onDelta(delta, state.accumulated)
+        onDelta(delta, state.accumulated, {
+          content: state.accumulated,
+          reasoning: state.reasoning,
+        })
       }
     }
     if (state.anilaErrorMessage) break

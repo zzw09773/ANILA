@@ -73,14 +73,41 @@ interface Citation {
 
 interface ChatRow {
   id: string
+  /** 這一輪在畫面上的穩定鍵。落庫後 id 會改成 srv-，串流更新仍靠這把。 */
+  localKey?: string
   dbId?: number
   role: 'user' | 'assistant'
   content: string
   createdAt: string
   streaming?: boolean
+  /** 已收到 reasoning_content，可見回答還沒開始。 */
+  thinking?: boolean
   citations?: Citation[]
   /** Retrieval failed for this turn — the answer has no document backing. */
   ungrounded?: boolean
+}
+
+// 串流列可能被對話重載蓋掉。用 localKey 找回來；找不到就補回，避免回答只活在請求裡。
+function upsertAssistant(prev: ChatRow[], localKey: string, patch: Partial<ChatRow>): ChatRow[] {
+  let found = false
+  const next = prev.map((row) => {
+    if (row.localKey !== localKey && row.id !== localKey) return row
+    found = true
+    return { ...row, ...patch, localKey }
+  })
+  if (found) return next
+  return [
+    ...next,
+    {
+      id: localKey,
+      localKey,
+      role: 'assistant',
+      content: '',
+      createdAt: new Date().toISOString(),
+      streaming: true,
+      ...patch,
+    },
+  ]
 }
 
 export function WSChat({ flex }: WSChatProps) {
@@ -105,6 +132,10 @@ export function WSChat({ flex }: WSChatProps) {
   const [shareOpen, setShareOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  // 這一輪還在串流時，不能用伺服器快照蓋掉畫面上的暫定回答。
+  const turnOpenRef = useRef(false)
+  // 這一輪開始前就發出的 getConversation，回來時也不能蓋掉剛串完的回答。
+  const historyEpoch = useRef(0)
 
   // 語音輸入。定稿 append 進草稿讓使用者改完再送 —— ASR 不會自己送出訊息。
   // 用 setComposer 的 updater 形式而不是讀 composer 變數:定稿可能在使用者
@@ -132,14 +163,21 @@ export function WSChat({ flex }: WSChatProps) {
   useEffect(() => {
     setErr(null)
     if (!activeConversationId) {
-      setMessages([])
+      // 第一則訊息建立對話時，網址效果可能先把 id 清掉再設回來。
+      // 這段空窗不能把正在串的氣泡清掉。
+      if (!turnOpenRef.current) setMessages([])
       return
     }
+    if (turnOpenRef.current) return
     let cancelled = false
+    const requestedId = activeConversationId
+    const epochAtFetch = historyEpoch.current
     void (async () => {
       try {
-        const { data } = await getConversation(activeConversationId)
-        if (cancelled) return
+        const { data } = await getConversation(requestedId)
+        if (cancelled || turnOpenRef.current) return
+        if (historyEpoch.current !== epochAtFetch) return
+        if (useWorkspaceStore.getState().activeConversationId !== requestedId) return
         const rows: ChatRow[] = data.messages
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m: Message) => {
@@ -161,7 +199,7 @@ export function WSChat({ flex }: WSChatProps) {
           })
         setMessages(rows)
       } catch (e) {
-        if (!cancelled) setErr(explainError(e))
+        if (!cancelled && !turnOpenRef.current) setErr(explainError(e))
       }
     })()
     return () => {
@@ -252,6 +290,10 @@ export function WSChat({ flex }: WSChatProps) {
     setErr(null)
     setBusy(true)
     setComposer('')
+    // 要在 setActiveConversationId 之前抬起來。那個 id 會觸發重載，
+    // 重載若套用快照，暫定回答列會消失，後面的 delta 對不到 id。
+    historyEpoch.current += 1
+    turnOpenRef.current = true
 
     let convId = activeConversationId
     let isFirstTurn = !convId
@@ -287,6 +329,7 @@ export function WSChat({ flex }: WSChatProps) {
         userRow,
         {
           id: tempAssistantId,
+          localKey: tempAssistantId,
           role: 'assistant',
           content: '',
           createdAt: new Date().toISOString(),
@@ -358,18 +401,18 @@ export function WSChat({ flex }: WSChatProps) {
             temperature: 0.4,
             conversationId: convId!,
           },
-          (_delta, accumulated) => {
+          (_delta, accumulated, snapshot) => {
+            const thinking = Boolean(
+              snapshot && snapshot.reasoning.length > 0 && accumulated.length === 0,
+            )
             setMessages((prev) =>
-              prev.map((m) =>
-                m.id === tempAssistantId
-                  ? {
-                      ...m,
-                      content: accumulated,
-                      citations: streamCitations,
-                      ungrounded,
-                    }
-                  : m,
-              ),
+              upsertAssistant(prev, tempAssistantId, {
+                content: accumulated,
+                thinking,
+                streaming: true,
+                citations: streamCitations,
+                ungrounded,
+              }),
             )
           },
           abortRef.current!.signal,
@@ -470,20 +513,17 @@ export function WSChat({ flex }: WSChatProps) {
       })
 
       setMessages((prev) =>
-        prev.map((m) =>
-          m.id === tempAssistantId
-            ? {
-                id: `srv-${asstMsg.id}`,
-                dbId: asstMsg.id,
-                role: 'assistant',
-                content: finalText,
-                createdAt: asstMsg.created_at,
-                streaming: false,
-                citations: citations.length > 0 ? citations : undefined,
-                ungrounded,
-              }
-            : m,
-        ),
+        upsertAssistant(prev, tempAssistantId, {
+          id: `srv-${asstMsg.id}`,
+          dbId: asstMsg.id,
+          role: 'assistant',
+          content: finalText,
+          createdAt: asstMsg.created_at,
+          streaming: false,
+          thinking: false,
+          citations: citations.length > 0 ? citations : undefined,
+          ungrounded,
+        }),
       )
 
       // First-turn title polish: replace the truncated title with the
@@ -501,6 +541,7 @@ export function WSChat({ flex }: WSChatProps) {
       setErr(explainError(e))
       setMessages((prev) => prev.filter((m) => !m.id.startsWith('tmp-')))
     } finally {
+      turnOpenRef.current = false
       setBusy(false)
       abortRef.current = null
     }
@@ -677,7 +718,7 @@ export function WSChat({ flex }: WSChatProps) {
           )}
 
           {messages.map((m) => (
-            <ChatBubble key={m.id} row={m} />
+            <ChatBubble key={m.localKey ?? m.id} row={m} />
           ))}
 
           {err && (
@@ -973,7 +1014,11 @@ export function ChatBubble({ row }: { row: ChatRow }) {
         )}
         {row.streaming && row.content === '' ? (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', color: t.textMuted }}>
-            <ThinkingStatus state="searching" size={20} label="檢索 + 思考中..." />
+            <ThinkingStatus
+              state={row.thinking ? 'working' : 'searching'}
+              size={20}
+              label={row.thinking ? '思考中' : '檢索 + 思考中...'}
+            />
           </div>
         ) : (
           <MarkdownPreview

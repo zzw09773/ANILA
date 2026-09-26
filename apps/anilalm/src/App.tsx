@@ -9,7 +9,12 @@ import { ProtectedRoute } from './routes/ProtectedRoute'
 import { NotFoundPage } from './routes/NotFoundPage'
 import { ErrorBoundary } from './components/ErrorBoundary'
 
-function AppRoutes() {
+// 空節點。對話 id 放在子路由，WorkspacePage 才不會在第一則訊息時被換成另一個實例。
+function WorkspaceConversationRoute() {
+  return null
+}
+
+export function AppRoutes() {
   const hydrate = useAuthStore((s) => s.hydrate)
   useEffect(() => {
     void hydrate()
@@ -19,8 +24,10 @@ function AppRoutes() {
     <Routes>
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/c/:collectionId" element={<WorkspacePage />} />
-        <Route path="/c/:collectionId/conv/:conversationId" element={<WorkspacePage />} />
+        <Route path="/c/:collectionId" element={<WorkspacePage />}>
+          <Route index element={<WorkspaceConversationRoute />} />
+          <Route path="conv/:conversationId" element={<WorkspaceConversationRoute />} />
+        </Route>
         <Route path="/conv/:conversationId" element={<WorkspacePage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
