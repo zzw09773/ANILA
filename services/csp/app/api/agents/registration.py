@@ -301,6 +301,8 @@ class AgentResponse(ApiResponseModel):
     bound_collection_ids: list[int] = Field(default_factory=list)
     health_status: str
     approval_status: str
+    # 底層模型下線等原因。NULL 表示不因此不可用。與健康、核准無關。
+    unavailable_reason: str | None = None
     requires_encryption: bool = False
     # doc 05 §3/§4/§6 registry-upgrade fields (Slice 5a). Optional so existing
     # consumers keep working; surfaced for the developer/admin registry UI.
@@ -356,6 +358,7 @@ def _serialize_agent(agent: Agent) -> dict:
         "bound_collection_id": bound_ids[0] if bound_ids else None,
         "health_status": normalized,
         "approval_status": agent.approval_status,
+        "unavailable_reason": getattr(agent, "unavailable_reason", None),
         "requires_encryption": bool(getattr(agent, "requires_encryption", False)),
         "runtime_type": getattr(agent, "runtime_type", None),
         "agent_version": getattr(agent, "agent_version", None),
@@ -583,7 +586,7 @@ def download_quickstart_bundle(
         default=None,
         description=(
             "選填。不帶時下載通用包：不含 agent id、不含模型名稱。"
-            "帶已註冊 agent 的 id 時預填 ANILA_AGENT_ID，並驗 owner/admin。"
+            "帶已註冊 agent 的 id 時預填 ANILA_AGENT_ID 與底層模型名稱，並驗 owner/admin。"
         ),
     ),
     collection_id: int | None = Query(
@@ -944,10 +947,9 @@ def update_agent(
     if endpoint_changed:
         _enforce_endpoint_url(patch["endpoint_url"])
 
-    # If the caller is replacing base_model_id, keep the same invariant
-    # the register endpoint enforces: the new id must point at an active
-    # model. base_model_id itself is required on the model (not nullable
-    # from the UI side), so reject explicit nulls too.
+    # 底層模型就是這個 agent 實際呼叫的模型。換成別顆，或在下線後
+    # 重新指到一顆仍啟用的模型，都要退回 registered 再送審。
+    base_model_reapproval = False
     if "base_model_id" in patch:
         new_id = patch["base_model_id"]
         if new_id is None:
@@ -961,6 +963,10 @@ def update_agent(
                 status_code=400,
                 detail=f"底層模型「{base.display_name}」已停用",
             )
+        model_changed = new_id != agent.base_model_id
+        resubmit_after_offline = bool(agent.unavailable_reason) and not model_changed
+        if model_changed or resubmit_after_offline:
+            base_model_reapproval = True
 
     from_collection_ids: list[int] | None = None
     to_collection_ids: list[int] | None = None
@@ -1003,15 +1009,17 @@ def update_agent(
             changed.append(field)
     if to_collection_ids is not None:
         changed.append("bound_collection_ids")
-    if not changed:
+    if base_model_reapproval and agent.unavailable_reason:
+        agent.unavailable_reason = None
+        changed.append("unavailable_reason")
+    # 端點或底層模型一變，已核准的組合就失效，退回 registered 再送審。
+    reapproval_required = (
+        agent.approval_status == ApprovalStatus.APPROVED.value
+        and (endpoint_changed or base_model_reapproval)
+    )
+    if not changed and not reapproval_required:
         return _serialize_agent(agent)
 
-    # 任何端點變更都會強制重新核可，避免「核可一次後 owner 改成內網」的
-    # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。
-    # OE-1: 退回 registered(不再清 trace 診斷欄;診斷與核准已脫鉤)。
-    reapproval_required = (
-        endpoint_changed and agent.approval_status == ApprovalStatus.APPROVED.value
-    )
     if reapproval_required:
         agent.approval_status = REGISTER_DEFAULT_APPROVAL
         agent.approved_by = None

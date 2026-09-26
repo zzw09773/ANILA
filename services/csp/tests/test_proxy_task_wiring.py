@@ -326,7 +326,8 @@ class TestUserCallerWithTask:
         )
         assert len(decisions) == 1
         assert decisions[0].resource_type == "agent"
-        assert captured_usage and captured_usage[0]["task_id"] == task.id
+        # 派工這一跳不記 token。task 關聯留在 TaskRun，用量等 agent 打模型。
+        assert captured_usage == []
 
     def test_upstream_failure_marks_run_failed(
         self, client: TestClient, db: Session, monkeypatch,

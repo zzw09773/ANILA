@@ -2262,8 +2262,17 @@ async def update_model(
     if api_key is not None and str(api_key).strip():
         model.api_key_secret_ref = encode_service_token_envelope(str(api_key).strip())
 
+    deactivating = (
+        "is_active" in update_data
+        and update_data["is_active"] is False
+        and bool(model.is_active)
+    )
     for field, value in update_data.items():
         setattr(model, field, value)
+    if deactivating:
+        from app.services.agent_availability import mark_agents_base_model_offline
+
+        mark_agents_base_model_offline(db, model)
 
     if rediscover:
         model.thinking_levels_supported = await _discover_levels_for_row(
@@ -2314,6 +2323,9 @@ def deactivate_model(
         model.is_asr_primary = False
     if getattr(model, "is_platform_embedding", False):
         model.is_platform_embedding = False
+    from app.services.agent_availability import mark_agents_base_model_offline
+
+    mark_agents_base_model_offline(db, model)
     db.commit()
     log_audit_event(
         db,
@@ -2396,6 +2408,9 @@ def purge_model(
     display_name = model.display_name
     # agents.base_model_id will be set NULL via ondelete="SET NULL"
     # user_allowed_models / api_key_allowed_models cascade delete
+    from app.services.agent_availability import mark_agents_base_model_offline
+
+    mark_agents_base_model_offline(db, model, clear_binding=True)
     db.delete(model)
     db.commit()
     log_audit_event(

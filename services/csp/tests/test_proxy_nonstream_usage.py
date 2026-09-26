@@ -76,10 +76,10 @@ def _isolated_agent_upstream(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_nonstreaming_agent_forward_writes_attributed_usage_row(
+async def test_nonstreaming_agent_forward_does_not_write_usage_row(
     db: Session, db_engine, monkeypatch
 ):
-    """非串流 agent 回覆應寫入帶 caller、agent 與 token 數的用量列。"""
+    """派工這一跳仍把 agent 的 usage 帶回回應，但不寫 token_usage。"""
     caller = make_user(db, username="nonstream-usage-caller", role="admin")
     agent = make_agent(
         db,
@@ -111,19 +111,10 @@ async def test_nonstreaming_agent_forward_writes_attributed_usage_row(
         "completion_tokens": 11,
         "total_tokens": 18,
     }
-    queue = usage_writer.get_usage_queue()
-    batch = [queue.get_nowait()]
-    await usage_writer._flush_batch(batch)
-
-    db.expire_all()
-    row = (
+    assert usage_writer.get_usage_queue().empty()
+    assert (
         db.query(TokenUsage)
         .filter(TokenUsage.user_id == caller.id)
-        .one()
+        .count()
+        == 0
     )
-    assert row.user_id == caller.id
-    assert row.caller_agent_id == agent.id
-    assert row.model_id == agent.id
-    assert row.prompt_tokens == 7
-    assert row.completion_tokens == 11
-    assert row.total_tokens == 18

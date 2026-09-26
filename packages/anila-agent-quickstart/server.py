@@ -297,6 +297,10 @@ async def _prepare(app: FastAPI, request: Request, messages: list[dict], deadlin
     if client is None:
         raise llm_mod.UpstreamError("no llm")
     bound = client.bind(deadline)
+    # 派工請求把同一枚 JWT 轉去 CSP；沒有這個方法的測試雙生物件維持原樣。
+    use_dispatch = getattr(bound, "use_dispatch_authorization", None)
+    if use_dispatch is not None:
+        use_dispatch(getattr(request.state, "authorization", None))
 
     holder = {"result": getattr(bound, "result", llm_mod.LlmResult())}
 

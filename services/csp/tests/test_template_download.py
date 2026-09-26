@@ -275,7 +275,7 @@ def test_prefilled_agent_name_and_collection(client, db, monkeypatch, tmp_path):
     assert "COLLECTION_ID: int | None = 9" in agent_src
     assert "註冊名不可變" in agent_src
     assert f"ANILA_AGENT_ID={agent.id}\n" in env_text
-    assert "\nLLM_MODEL=\n" in env_text
+    assert "\nLLM_MODEL=m-prefill\n" in env_text
     assert "LLM_BASE_URL=https://anila.test/v1\n" in env_text
     assert not any(line.startswith("LLM_API_KEY=") for line in env_text.splitlines())
     assert manifest["agent"]["collection_id"] == 9
@@ -642,8 +642,8 @@ def test_unparseable_ca_is_503(client, db, monkeypatch, tmp_path):
     assert "PEM" in resp.json()["detail"]
 
 
-def test_bound_download_ignores_agent_base_model(client, db, monkeypatch, tmp_path):
-    """The registration row's base model is not an LLM destination."""
+def test_bound_download_prefills_registered_base_model(client, db, monkeypatch, tmp_path):
+    """註冊後下載的包要把 agent 的底層模型名稱寫進 LLM_MODEL。"""
     inputs = build_all_inputs(tmp_path)
     _configure(monkeypatch, inputs)
     dev = make_user(db, username="dev_model_gap", role="developer")
@@ -658,8 +658,7 @@ def test_bound_download_ignores_agent_base_model(client, db, monkeypatch, tmp_pa
         env_text = zf.read("anila-agent-quickstart/deployment.env").decode()
     assert f"ANILA_AGENT_ID={agent.id}\n" in env_text
     assert "LLM_BASE_URL=https://anila.test/v1\n" in env_text
-    assert "\nLLM_MODEL=\n" in env_text
-    assert "unmapped-model" not in env_text
+    assert "\nLLM_MODEL=unmapped-model\n" in env_text
 
 
 @pytest.mark.parametrize(
@@ -920,7 +919,7 @@ def test_real_scaffold_bundles_and_prefills_without_touching_verifier(
 
         ast.parse(agent_src)  # prefilled file must still be valid Python
     assert f"ANILA_AGENT_ID={agent.id}\n" in env_text
-    assert "\nLLM_MODEL=\n" in env_text
+    assert "\nLLM_MODEL=m-real\n" in env_text
     assert "LLM_BASE_URL=https://anila.test/v1\n" in env_text
     assert "export LLM_API_KEY" in readme
     assert "LLM_API_KEY=" not in env_text

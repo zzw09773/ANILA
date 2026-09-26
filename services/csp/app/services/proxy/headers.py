@@ -99,13 +99,29 @@ def downstream_identity(user) -> Optional[str]:
     return None
 
 
+def _claim_int(value: object) -> int | None:
+    """正整數才寫進派工 JWT。像 task-1 這種關聯字串只留在標頭。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def build_agent_headers(
     *,
     user_id: int,
     department: int | None,
     agent_id: int,
-    task_id: Optional[str] = None,
+    task_id: Optional[str | int] = None,
     trace_id: Optional[str] = None,
+    conversation_id: Optional[str | int] = None,
 ) -> dict:
     """Build signed-identity headers for downstream AGENTS (P2.1).
 
@@ -123,6 +139,8 @@ def build_agent_headers(
         user_id=user_id,
         department=department,
         agent_id=agent_id,
+        task_id=_claim_int(task_id),
+        conversation_id=_claim_int(conversation_id),
     )
     headers["Authorization"] = f"Bearer {token}"
     if task_id:

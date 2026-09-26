@@ -571,18 +571,20 @@ _AGENT_ID_COMMENT = (
     "# 註冊後把 Console 上的數字 agent id 填在下一行，再執行 ./run.sh restart"
 )
 _MODEL_COMMENT = (
-    "# 填你在 Console 獲准使用的模型名稱。"
-    "API 金鑰不要寫進此檔，在 lab 的 shell export 後再啟動（見 README）"
+    "# 此 agent 實際使用的模型。註冊後下載會預填；更換需重新送審。"
+    "API 金鑰不要寫進此檔。上線用量算提問者；金鑰只在 lab 沒有派工 JWT 時測試（見 README）"
 )
 
 
-def render_deployment_env(profile: SiteProfile, agent_id: int | None) -> bytes:
+def render_deployment_env(
+    profile: SiteProfile,
+    agent_id: int | None,
+    llm_model: str | None = None,
+) -> bytes:
     """The six non-secret keys, in a fixed order.
 
-    ``ANILA_AGENT_ID`` is empty unless this is the optional bound download.
-    ``LLM_MODEL`` is always empty: the platform does not pick the model.
-    ``LLM_API_KEY`` is deliberately absent. The developer exports it in the
-    lab. It is never shipped, and it is never the inbound dispatch JWT.
+    ``ANILA_AGENT_ID`` 與 ``LLM_MODEL`` 只在綁定某個已註冊 agent 時預填。
+    通用包兩個都留空。``LLM_API_KEY`` 不進這個檔。
     """
     lines = [
         f"CSP_BASE_URL={_env_value(profile.csp_base_url)}",
@@ -597,7 +599,11 @@ def render_deployment_env(profile: SiteProfile, agent_id: int | None) -> bytes:
         [
             f"LLM_BASE_URL={_env_value(profile.llm_base_url)}",
             _MODEL_COMMENT,
-            "LLM_MODEL=",
+            (
+                f"LLM_MODEL={_env_value(llm_model.strip())}"
+                if llm_model and llm_model.strip()
+                else "LLM_MODEL="
+            ),
             "LLM_AUTH_REQUIRED=true",
         ]
     )
@@ -622,10 +628,10 @@ def build_quickstart_bundle(
 ) -> BuiltBundle:
     """Assemble the quickstart zip on a temp file. Raises ``BundleError``.
 
-    ``base_model_id`` and ``base_model_name`` are accepted so older callers
-    keep working. They do not select an LLM destination.
+    已綁定 agent 時，``base_model_name`` 寫進 deployment.env 的 LLM_MODEL。
+    通用包不預填模型。``base_model_id`` 只為舊呼叫端保留。
     """
-    del base_model_id, base_model_name
+    del base_model_id
     inputs = _AgentInputs(
         agent_id=agent_id,
         agent_name=agent_name,
@@ -685,7 +691,10 @@ def build_quickstart_bundle(
     )
 
     version = scaffold_version()
-    deployment_env = render_deployment_env(profile, inputs.agent_id)
+    registered_model = None
+    if inputs.agent_id is not None and base_model_name and base_model_name.strip():
+        registered_model = base_model_name.strip()
+    deployment_env = render_deployment_env(profile, inputs.agent_id, registered_model)
 
     tmp_path = _make_temp_zip()
     try:

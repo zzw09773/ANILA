@@ -239,7 +239,7 @@
           <TermField label="API 版本">
             <input v-model="form.api_version" class="term-input" placeholder="v1" />
           </TermField>
-          <TermField label="基礎模型" :error="formErrors.base_model_id" hint="用量歸屬對象">
+          <TermField label="基礎模型" :error="formErrors.base_model_id" hint="此 agent 實際使用的模型；更換需重新送審">
             <select v-model.number="form.base_model_id" class="term-select">
               <option :value="null" disabled>— 選擇基礎模型 —</option>
               <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
@@ -304,7 +304,7 @@
           <TermField label="API 版本">
             <input v-model="editForm.api_version" class="term-input" />
           </TermField>
-          <TermField label="基礎模型">
+          <TermField label="基礎模型" hint="此 agent 實際使用的模型；更換需重新送審">
             <select v-model.number="editForm.base_model_id" class="term-select">
               <option :value="null" disabled>— 選擇基礎模型 —</option>
               <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">

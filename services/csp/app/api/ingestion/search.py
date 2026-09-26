@@ -79,11 +79,17 @@ class SearchPrincipal:
 def _principal_from_dispatch_claims(db: Session, claims: dict) -> SearchPrincipal:
     """Map verified dispatch claims → SearchPrincipal (owner + agent)."""
     from app.models.agent import Agent
+    from app.services.agent_availability import AGENT_TEMPORARILY_UNAVAILABLE
 
     agent_id = int(claims["agent_id"])
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if agent is None:
         raise HTTPException(status_code=401, detail="dispatch token 對應的 agent 不存在")
+    # 與聊天派工同一套：未核准或底層模型下線，過期前的 JWT 也不能搜尋。
+    if agent.approval_status != "approved":
+        raise HTTPException(status_code=403, detail="此 agent 尚未核准")
+    if agent.unavailable_reason:
+        raise HTTPException(status_code=403, detail=AGENT_TEMPORARILY_UNAVAILABLE)
     owner = db.query(User).filter(User.id == agent.owner_user_id).first()
     if owner is None:
         raise HTTPException(status_code=401, detail="agent owner 不存在")

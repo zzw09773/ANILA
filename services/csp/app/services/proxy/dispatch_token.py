@@ -33,6 +33,15 @@ DISPATCH_TOKEN_AUDIENCE = "anila-agent"
 DISPATCH_TOKEN_TTL_MINUTES = 5
 
 
+def _positive_int(value: object) -> int | None:
+    """只有正整數能當任務或對話 id。布林與字串任務代號都不算。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def build_dispatch_claims(
     *,
     user_id: int,
@@ -40,6 +49,8 @@ def build_dispatch_claims(
     agent_id: int,
     issued_at: datetime | None = None,
     expires_at: datetime | None = None,
+    task_id: int | None = None,
+    conversation_id: int | None = None,
 ) -> dict:
     """Build the dispatch-token claims (spec minimalism).
 
@@ -56,7 +67,7 @@ def build_dispatch_claims(
     exp = expires_at or (now + timedelta(minutes=DISPATCH_TOKEN_TTL_MINUTES))
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
-    return {
+    claims = {
         "iss": DISPATCH_TOKEN_ISSUER,
         "aud": DISPATCH_TOKEN_AUDIENCE,
         "sub": str(user_id),
@@ -67,6 +78,14 @@ def build_dispatch_claims(
         "exp": int(exp.timestamp()),
         "jti": uuid.uuid4().hex,
     }
+    # 任務與對話 id 由 CSP 簽進 token。回呼時只信這兩個 claim，不信標頭。
+    signed_task = _positive_int(task_id)
+    if signed_task is not None:
+        claims["task_id"] = signed_task
+    signed_conversation = _positive_int(conversation_id)
+    if signed_conversation is not None:
+        claims["conversation_id"] = signed_conversation
+    return claims
 
 
 def issue_dispatch_token(
@@ -74,6 +93,8 @@ def issue_dispatch_token(
     user_id: int,
     department: int | None,
     agent_id: int,
+    task_id: int | None = None,
+    conversation_id: int | None = None,
 ) -> str:
     """Sign a 5-minute dispatch identity token with CSP's RS256 key + kid.
 
@@ -83,6 +104,8 @@ def issue_dispatch_token(
         user_id=user_id,
         department=department,
         agent_id=agent_id,
+        task_id=task_id,
+        conversation_id=conversation_id,
     )
     return jwt.encode(
         claims,

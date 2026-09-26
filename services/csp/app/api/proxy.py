@@ -9,6 +9,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.middleware.caller import Caller, get_caller
+from app.services.agent_availability import AGENT_TEMPORARILY_UNAVAILABLE
+from app.services.proxy.dispatch_chat import (
+    DispatchModelCall,
+    enforce_dispatched_model_ceiling,
+    resolve_chat_caller,
+)
 from app.models.agent import Agent, UserAgentPermission
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
@@ -24,7 +30,6 @@ from app.services.institutional_kb import (
 )
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
-from app.services.proxy import service as proxy_impl
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.service import resolve_proxy_tuning
@@ -33,7 +38,6 @@ from app.services.proxy.urls import join_upstream_path
 from app.services.proxy_service import (
     _estimate_token_count,
     _extract_response_text,
-    _serialize_request_for_usage,
     build_default_anila_meta,
     downstream_identity,
     proxy_request,
@@ -1107,12 +1111,12 @@ def _resolve_model(
 
 def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None:
     """Return the Agent if agent_name matches an approved agent, else None."""
-    agent = (
-        db.query(Agent)
-        .filter(Agent.name == agent_name, Agent.approval_status == "approved")
-        .first()
-    )
+    agent = db.query(Agent).filter(Agent.name == agent_name).first()
     if agent is None:
+        return None
+    if agent.approval_status != "approved":
+        if agent.unavailable_reason:
+            raise HTTPException(status_code=403, detail=AGENT_TEMPORARILY_UNAVAILABLE)
         return None
     if not check_agent_permission(
         db, user=caller.user, api_key_id=caller.api_key_id, agent_id=agent.id
@@ -1121,6 +1125,8 @@ def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None
             status_code=403,
             detail=f"無權呼叫 agent '{agent_name}'",
         )
+    if agent.unavailable_reason:
+        raise HTTPException(status_code=403, detail=AGENT_TEMPORARILY_UNAVAILABLE)
     return agent
 
 
@@ -1149,15 +1155,20 @@ def list_available_agents(
     # admin + owner 都看得到所有 approved agent;一般 user 必須有
     # UserAgentPermission 顯式授權才看得到。先前漏掉 owner,讓 owner
     # 在 ANILA UI 看到的 agent 清單可能跟 CSP UI (受同樣 bug 影響) 對不上。
+    # 底層模型下線的 agent 不進 Router 清單，與核准、健康狀態無關。
+    available = (
+        Agent.approval_status == "approved",
+        Agent.unavailable_reason.is_(None),
+    )
     if is_admin_tier(user):
-        agents = db.query(Agent).filter(Agent.approval_status == "approved").all()
+        agents = db.query(Agent).filter(*available).all()
     else:
         agents = (
             db.query(Agent)
             .join(UserAgentPermission, UserAgentPermission.agent_id == Agent.id)
             .filter(
                 UserAgentPermission.user_id == user.id,
-                Agent.approval_status == "approved",
+                *available,
             )
             .all()
         )
@@ -1226,12 +1237,81 @@ async def list_models_openai(
     })
 
 
+async def _complete_dispatched_model(
+    request: Request,
+    call: DispatchModelCall,
+    db: Session,
+):
+    """Agent 帶派工 JWT 呼叫自己核准的底層模型。不查提問者的模型授權。"""
+    body = await request.json()
+    model_name = body.get("model") if isinstance(body, dict) else None
+    if not model_name:
+        raise HTTPException(status_code=400, detail="缺少 model 參數")
+    base = call.agent.base_model
+    if base is None and call.agent.base_model_id is not None:
+        base = db.get(ModelRegistry, call.agent.base_model_id)
+    approved_name = base.name if base is not None else "（未指定）"
+    if base is None or model_name != base.name or not base.is_active:
+        if base is not None and model_name == base.name and not base.is_active:
+            raise HTTPException(status_code=403, detail=AGENT_TEMPORARILY_UNAVAILABLE)
+        raise HTTPException(
+            status_code=403,
+            detail=f"此 agent 只核准使用 {approved_name}",
+        )
+    # 分類來自派工 JWT 簽過的任務或對話，不看 X-ANILA-Task-Id 或 body。
+    enforce_dispatched_model_ceiling(db, call, base)
+    stream = bool(body.get("stream", False))
+    user = call.user
+    tuning = resolve_proxy_tuning(db)
+    identity = downstream_identity(user)
+    chat_path = (
+        "/v2/chat/completions" if base.api_version == "v2" else "/v1/chat/completions"
+    )
+    if stream:
+        upstream = proxy_stream(
+            target_url=join_upstream_path(base.endpoint_url, chat_path),
+            api_key_id=None,
+            user_id=user.id,
+            department_id=call.department_id,
+            usage_model_id=base.id,
+            request_body=body,
+            user_identity=identity,
+            model_name=base.name,
+            caller_agent_id=call.agent.id,
+            legacy_runtime_call=True,
+            gateway_api_key=resolve_model_gateway_key(base),
+            model_name_snapshot=base.name,
+            tuning=tuning,
+            model=base,
+        )
+        return StreamingResponse(
+            upstream,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    return await proxy_request(
+        model=base,
+        api_key_id=None,
+        user_id=user.id,
+        department_id=call.department_id,
+        request_body=body,
+        endpoint_path=chat_path,
+        user_identity=identity,
+        caller_agent_id=call.agent.id,
+        legacy_runtime_call=True,
+        tuning=tuning,
+        model_name_snapshot=base.name,
+    )
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    caller: Caller = Depends(get_caller),
+    caller: Caller | DispatchModelCall = Depends(resolve_chat_caller),
     db: Session = Depends(get_db),
 ):
+    if isinstance(caller, DispatchModelCall):
+        return await _complete_dispatched_model(request, caller, db)
     body = await request.json()
     model_name = body.get("model")
     if not model_name:
@@ -1420,17 +1500,11 @@ async def chat_completions(
                 conversation_id=conversation_id,
                 trace_id=usage_trace_id,
                 requires_encryption=agent_requires_encryption,
-                # Sprint 8 X / Phase G — caller attribution.
-                #   target_agent_id  → proxy_service picks the per-agent
-                #                      service token from agent_credentials
-                #                      (5-min in-memory cache) instead of
-                #                      the legacy fleet-shared env var.
-                #   caller_agent_id  → token_usage row for this LLM call
-                #                      gets attributed to the agent so
-                #                      "top-agents" / "by-base-model"
-                #                      dashboards can rollup correctly.
+                # target_agent_id 決定簽派工 JWT，不把模型閘道金鑰送去 agent。
+                # 這一跳不記 token；用量在 agent 回來打底層模型時入帳。
                 target_agent_id=agent.id,
                 caller_agent_id=agent.id,
+                record_usage=False,
                 # Slice 2b-C — task linkage (headers + usage + run finish).
                 task_id=task_ctx.task_id if task_ctx else None,
                 task_trace_id=task_ctx.trace_id if task_ctx else None,
@@ -1485,6 +1559,7 @@ async def chat_completions(
             # Slice 2b-C (doc 05 §4): task/trace ids ride on agent dispatch.
             task_id=task_ctx.task_id if task_ctx else None,
             trace_id=task_ctx.trace_id if task_ctx else None,
+            conversation_id=conversation_id,
         )
         started_at = time.time()
         try:
@@ -1516,43 +1591,7 @@ async def chat_completions(
                 elif agent_requires_encryption and isinstance(existing_meta, dict):
                     existing_meta["classified"] = True
                 _annotate_agent_reply_payload(payload, agent.name)
-                usage = payload.get("usage") or {}
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-                total_tokens = usage.get(
-                    "total_tokens", prompt_tokens + completion_tokens
-                )
-                if not usage:
-                    prompt_tokens = _estimate_token_count(
-                        agent.name, _serialize_request_for_usage(body)
-                    )
-                    completion_tokens = _estimate_token_count(
-                        agent.name, _extract_response_text(payload)
-                    )
-                    total_tokens = prompt_tokens + completion_tokens
-                    logger.warning(
-                        "Agent %s 非串流回應未提供 usage，改用伺服器估算: "
-                        "prompt=%s completion=%s",
-                        agent.name,
-                        prompt_tokens,
-                        completion_tokens,
-                    )
-                if total_tokens > 0:
-                    await proxy_impl.enqueue_usage_task_linked(
-                        api_key_id=caller.api_key_id,
-                        user_id=user.id,
-                        department_id=department_id,
-                        model_id=agent.id,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        request_duration_ms=int((time.time() - started_at) * 1000),
-                        conversation_id=conversation_id,
-                        trace_id=usage_trace_id,
-                        caller_agent_id=agent.id,
-                        task_id=task_ctx.task_id if task_ctx else None,
-                        legacy_runtime_call=task_ctx is None,
-                    )
+                # 派工這一跳不打模型，不寫 token_usage。
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(

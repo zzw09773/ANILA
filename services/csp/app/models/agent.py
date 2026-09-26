@@ -103,6 +103,9 @@ class Agent(Base):
     trace_callback_mode = Column(String(20), nullable=True)
     # health_status: unknown / healthy / unhealthy
     health_status = Column(String(20), nullable=False, default="unknown")
+    # 與 health_status、approval_status 無關。NULL 才可派工。
+    # 底層模型停用或刪除時寫入 base_model_offline。
+    unavailable_reason = Column(String(40), nullable=True, index=True)
     # approval_status(OE-1,3 值):registered / approved / disabled。
     # SYSTEM-MAP:註冊 → admin 指派 → 可用;無連線／trace／安全審查三關。
     # r1_0019 將七值殘餘映射至此三態(usable 的 approved 不變)。

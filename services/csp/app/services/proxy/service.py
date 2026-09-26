@@ -818,6 +818,7 @@ async def _proxy_request_impl(
             agent_id=target_agent_id,
             task_id=task_id,
             trace_id=task_trace_id,
+            conversation_id=conversation_id,
         )
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
@@ -1214,6 +1215,7 @@ async def _proxy_stream_impl(
     usage_kind: str = "inference",
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
+    record_usage: bool = True,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -1244,6 +1246,7 @@ async def _proxy_stream_impl(
             agent_id=target_agent_id,
             task_id=task_id,
             trace_id=task_trace_id,
+            conversation_id=conversation_id,
         )
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
@@ -1571,7 +1574,7 @@ async def _proxy_stream_impl(
     usage_source = "reported" if usage_seen else "estimated"
     if pending_done_block:
         yield pending_done_block
-    if total_tokens > 0:
+    if record_usage and total_tokens > 0:
         # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go through
         # the task-aware variant; every other caller keeps the
         # byte-identical legacy enqueue path.
@@ -1649,6 +1652,7 @@ async def proxy_stream(
     usage_kind: str = "inference",
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
+    record_usage: bool = True,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1690,6 +1694,7 @@ async def proxy_stream(
             usage_kind=usage_kind,
             invocation_id=invocation_id,
             model_name_snapshot=model_name_snapshot,
+            record_usage=record_usage,
         ):
             yield chunk
         _note_proxy_outcome(

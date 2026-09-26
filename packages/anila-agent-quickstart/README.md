@@ -8,11 +8,13 @@
 
 1. 在 Console 下載通用包。用與 `bundle.json` 的 `compatible_lab_image_version` 相同的 lab 映像開一個 lab，把 `anila-agent-quickstart/` 裡的檔案放到工作目錄 `/app`。`ANILA_CA_FILE` 已指到 `/app/ca.pem`。
 2. 在 JupyterLab 只改 `agent.py` 的回答區。`COLLECTION_ID` 選填。範例 `AGENT_NAME` 可以留著；若要改，改完再用同一個名字註冊。註冊之後不要再改。
-3. 在 `deployment.env` 填 `LLM_MODEL`（你在 Console 獲准使用的模型名稱）。平台不指定模型。金鑰只放環境，不要寫進這個檔、也不要提交：
+3. 通用包的 `LLM_MODEL` 留空。註冊並選定底層模型後再下載，會預填那個模型名稱（此 agent 實際呼叫的模型；更換需重新送審）。還沒註冊時，也可先填註冊時要用的名稱。金鑰只放環境，不要寫進這個檔、也不要提交：
 
 ```sh
 export LLM_API_KEY=sk-…
 ```
+
+上線之後，助手收到派工就用那次請求的派工 JWT 呼叫 `LLM_BASE_URL`，模型名稱是 `LLM_MODEL`。用量記在提問者身上，同時標註這個 agent。`LLM_API_KEY` 只在 lab 自己測試、請求裡沒有派工 JWT 時使用，套用開發者自己的模型權限。
 
 4. `./run.sh start`。服務聽埠 8200。
 5. 在 MLSteam 把 port forwarding 指到 8200。
@@ -28,9 +30,9 @@ export LLM_API_KEY=sk-…
 | 啟動被拒，缺 CSP_BASE_URL／ANILA_CA_FILE／LLM_BASE_URL | 用下載包裡的 deployment.env，不要手填站台位址 |
 | 啟動被拒，映像版本不符 | 換 `bundle.json` 寫的那版 lab 映像，或重新下載 zip |
 | `not_registered` | 註冊後把數字 id 填進 ANILA_AGENT_ID，再 `./run.sh restart` |
-| `llm_not_configured` | 填 LLM_MODEL，並在 lab `export LLM_API_KEY` 後重啟 |
+| `llm_not_configured` | 填 LLM_MODEL。lab 測試才要 `export LLM_API_KEY` 後重啟；上線派工不靠這把金鑰 |
 | `jwks_unavailable` | 確認 CSP_BASE_URL 與 ca.pem；不要關 TLS |
-| `upstream_error` | 確認模型名稱是你獲准使用的，且 key 仍有效 |
+| `upstream_error` | 確認 LLM_MODEL 是註冊的底層模型。lab 測試再查金鑰是否仍有效 |
 | `search_failed` | collection 未綁定、JWT 過期，或搜尋被拒 |
 
 若模型和金鑰都還沒設，`/health` 先報 `llm_not_configured`，補上之後才報 `not_registered`。

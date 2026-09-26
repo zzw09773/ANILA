@@ -66,34 +66,48 @@ def make_async_client(*, ca_file: str | None) -> httpx.AsyncClient:
     )
 
 
-class LlmClient:
-    def __init__(self, settings, client: httpx.AsyncClient) -> None:
-        self.settings = settings
-        self.client = client
-        self.deadline = 0.0
-        self.outbound_auth = (
-            f"Bearer {settings.llm_api_key}" if settings.llm_api_key else None
-        )
+def _bearer_for_llm(dispatch_header: str | None, lab_key_header: str | None) -> str | None:
+    """有派工 JWT 就用它；沒有才用 lab 的 LLM_API_KEY。"""
+    if dispatch_header and dispatch_header.strip():
+        text = dispatch_header.strip()
+        if text.lower().startswith("bearer "):
+            return text
+        return f"Bearer {text}"
+    return lab_key_header
+
+
+class LlmCall:
+    """一次請求專用。派工 JWT 與解析結果不放在共用的 LlmClient 上。"""
+
+    def __init__(self, owner: LlmClient, deadline: float) -> None:
+        self._owner = owner
+        self.deadline = deadline
+        self.dispatch_authorization: str | None = None
         self.result = LlmResult()
 
-    def bind(self, deadline: float) -> LlmClient:
-        self.deadline = deadline
-        self.result = LlmResult()
-        return self
+    def use_dispatch_authorization(self, header: str | None) -> None:
+        """這次請求帶來的派工 JWT。空的話 complete 才改用 LLM_API_KEY。"""
+        self.dispatch_authorization = header
 
     async def complete(self, messages, *, instructions: str, context: str) -> LlmStream:
+        settings = self._owner.settings
         payload = {
-            "model": self.settings.llm_model,
+            "model": settings.llm_model,
             "stream": True,
             "messages": _wire_messages(messages, instructions, context),
         }
         headers = {"Accept": "text/event-stream"}
-        if self.outbound_auth:
-            headers["Authorization"] = self.outbound_auth
-        url = f"{self.settings.llm_base_url}/chat/completions"
+        # 在第一個 await 之前就讀走這次物件上的 JWT，避免之後被改寫。
+        auth = _bearer_for_llm(
+            self.dispatch_authorization, self._owner.outbound_auth
+        )
+        if auth:
+            headers["Authorization"] = auth
+        url = f"{settings.llm_base_url}/chat/completions"
+        client = self._owner.client
         try:
-            response = await self.client.send(
-                self.client.build_request("POST", url, headers=headers, json=payload),
+            response = await client.send(
+                client.build_request("POST", url, headers=headers, json=payload),
                 stream=True,
             )
         except httpx.TimeoutException as exc:
@@ -104,6 +118,19 @@ class LlmClient:
             await response.aclose()
             raise UpstreamError(f"http {response.status_code}")
         return LlmStream(_read_stream(response, self.result), result=self.result)
+
+
+class LlmClient:
+    def __init__(self, settings, client: httpx.AsyncClient) -> None:
+        self.settings = settings
+        self.client = client
+        self.outbound_auth = (
+            f"Bearer {settings.llm_api_key}" if settings.llm_api_key else None
+        )
+
+    def bind(self, deadline: float) -> LlmCall:
+        """每次請求一個新物件，並行派工不會共用同一枚 JWT。"""
+        return LlmCall(self, deadline)
 
 
 def _wire_messages(messages, instructions: str, context: str) -> list[dict]:

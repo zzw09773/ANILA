@@ -27,10 +27,11 @@
           範例 <code>AGENT_NAME</code> 可以留著；若要改，改完再用同一個名字註冊。註冊之後不要再改。
         </li>
         <li>
-          在 <code>deployment.env</code> 填 <code>LLM_MODEL</code>（你在 Console 獲准使用的模型名稱）。平台不指定模型。
+          通用包的 <code>LLM_MODEL</code> 留空。註冊並選定底層模型後再下載，會預填那個模型名稱。
           金鑰只放環境，不要寫進這個檔、也不要提交：
           <pre class="code">export LLM_API_KEY=…</pre>
-          這是你自己的金鑰。<code>LLM_BASE_URL</code> 已是 CSP 的 <code>/v1</code>，權限、用量與稽核都留在 CSP。維持下載包裡的這個值。
+          這把金鑰只給 lab 自己測試、請求裡沒有派工 JWT 時使用。上線後助手改帶派工 JWT 呼叫 CSP，用量記在提問者身上。
+          <code>LLM_BASE_URL</code> 已是 CSP 的 <code>/v1</code>。維持下載包裡的這個值。
         </li>
         <li><code>./run.sh start</code>。服務聽埠 8200。</li>
         <li>在 MLSteam 把 port forwarding 指到 8200。</li>
@@ -67,7 +68,7 @@
           </tr>
           <tr>
             <td><code>llm_not_configured</code></td>
-            <td>填 <code>LLM_MODEL</code>，並在 lab <code>export LLM_API_KEY</code> 後重啟。</td>
+            <td>填 <code>LLM_MODEL</code>。lab 測試才 <code>export LLM_API_KEY</code> 後重啟；上線用量算提問者。</td>
           </tr>
           <tr>
             <td><code>jwks_unavailable</code></td>

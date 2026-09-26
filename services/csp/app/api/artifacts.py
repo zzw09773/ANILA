@@ -100,14 +100,16 @@ def _looks_like_dispatch_jwt(token: str) -> bool:
     return aud == DISPATCH_TOKEN_AUDIENCE
 
 
-def _resolve_dispatch_jwt_identity(request: Request, db: Session):
-    """Try Authorization Bearer or X-CSP-Service-Token as a dispatch JWT.
+# 成品寫入與匯出不接受派工 JWT。聊天與知識庫搜尋才是它的用途。
+DISPATCH_JWT_REJECTED_DETAIL = "派工 JWT 僅能用於聊天與知識庫搜尋"
 
-    Returns ``(CallerIdentity(kind="agent"), dispatch_user_id)`` on success,
-    ``None`` if no dispatch JWT was presented. Raises 401 when a
-    dispatch-shaped token fails verify or the agent row is missing.
+
+def _reject_dispatch_jwt(request: Request) -> None:
+    """看到派工 JWT 就拒絕。成品面只收服務憑證，不把提問者身分借給 agent。
+
+    沒有派工形狀的 token 時直接返回，讓 service-client / legacy 繼續。
+    Bearer 或 X-CSP-Service-Token 任一是派工 JWT 都是 401，不改試另一張憑證。
     """
-    from app.models.agent import Agent
     from app.services.proxy.dispatch_token import (
         extract_bearer_token,
         verify_dispatch_token,
@@ -124,45 +126,22 @@ def _resolve_dispatch_jwt_identity(request: Request, db: Session):
     for token in candidates:
         if token.startswith("csk-"):
             continue
-        claims = verify_dispatch_token(token)
-        if claims is None:
-            if _looks_like_dispatch_jwt(token):
-                raise HTTPException(
-                    status_code=401, detail="派工 JWT 無效或已過期"
-                )
-            continue
-        agent_id = int(claims["agent_id"])
-        dispatch_user_id = int(claims["user_id"])
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
-        if agent is None:
+        if verify_dispatch_token(token) is not None or _looks_like_dispatch_jwt(token):
             raise HTTPException(
-                status_code=401, detail="dispatch token 對應的 agent 不存在"
+                status_code=401, detail=DISPATCH_JWT_REJECTED_DETAIL
             )
-        identity = agent_credential_service.CallerIdentity(
-            kind="agent",
-            agent_id=agent.id,
-            service_client_id=None,
-            credential_id=0,
-            is_legacy=False,
-            used_previous_token=False,
-        )
-        request.state.csp_caller = identity
-        return identity, dispatch_user_id
     return None
 
 
 def _resolve_service_token(request: Request, db: Session):
     """回 (matched, identity, dispatch_user_id)。matched=False 代表無有效憑證。
 
-    P2.1 W2 order:
-      1. dispatch JWT (in-task agent callback) via Bearer or X-CSP-Service-Token
+    憑證順序:
+      1. 派工 JWT（Bearer 或 X-CSP-Service-Token）→ 401，不落到其他憑證
       2. service_client ``csk-`` / legacy fleet token via X-CSP-Service-Token
       3. bare agent ``csk-`` → 401 (retired; no dual-accept)
     """
-    dispatch = _resolve_dispatch_jwt_identity(request, db)
-    if dispatch is not None:
-        identity, dispatch_user_id = dispatch
-        return True, identity, dispatch_user_id
+    _reject_dispatch_jwt(request)
 
     token = request.headers.get("X-CSP-Service-Token")
     if not token:
@@ -192,10 +171,10 @@ def _resolve_service_token(request: Request, db: Session):
 def require_service_caller(
     request: Request, db: Session = Depends(get_db)
 ) -> _ServiceCaller:
-    """/v1 寫入面 gate: dispatch JWT、service_client 或 legacy service token。
+    """/v1 寫入面 gate: service_client 或 legacy service token。
 
-    無服務憑證但帶使用者憑證(JWT/cookie)→ 403(此端點不開放使用者
-    直建 artifact/job);完全匿名 → 401。
+    派工 JWT → 401。無服務憑證但帶使用者憑證(JWT/cookie)→ 403
+    (此端點不開放使用者直建 artifact/job);完全匿名 → 401。
     """
     matched, identity, dispatch_user_id = _resolve_service_token(request, db)
     if matched:
@@ -209,11 +188,11 @@ def require_service_caller(
     if has_user_cred:
         raise HTTPException(
             status_code=403,
-            detail="此端點僅接受服務憑證(派工 JWT 或 X-CSP-Service-Token),不開放使用者直建",
+            detail="此端點僅接受服務憑證(X-CSP-Service-Token),不開放使用者直建",
         )
     raise HTTPException(
         status_code=401,
-        detail="缺少派工 JWT 或 X-CSP-Service-Token(服務對服務端點)",
+        detail="缺少 X-CSP-Service-Token(服務對服務端點)",
     )
 
 

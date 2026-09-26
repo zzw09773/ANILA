@@ -73,6 +73,14 @@ def _collection(db, owner, name: str) -> IngestionCollection:
     return coll
 
 
+_DISPATCH_NOT_A_SERVICE_CREDENTIAL = "派工 JWT 僅能用於聊天與知識庫搜尋"
+
+
+def _assert_dispatch_jwt_not_a_service_credential(resp) -> None:
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == _DISPATCH_NOT_A_SERVICE_CREDENTIAL
+
+
 def _bearer_creds(token: str) -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
@@ -219,7 +227,7 @@ def test_a_valid_dispatch_jwt_search_scoped_to_bound_collections(
     client: TestClient, db, monkeypatch,
 ):
     owner = make_user(db, username="w2_owner_a")
-    agent = make_agent(db, owner, name="w2-agent-a")
+    agent = make_agent(db, owner, name="w2-agent-a", approval_status="approved")
     bound = _collection(db, owner, "w2-bound-a")
     other = _collection(db, owner, "w2-unbound-a")
     set_bound_collection_ids(db, agent, [bound.id])
@@ -286,8 +294,8 @@ def test_a_valid_dispatch_jwt_search_scoped_to_bound_collections(
 def test_b_agent_a_jwt_cannot_search_agent_b_collections(db):
     owner_a = make_user(db, username="w2_owner_a2")
     owner_b = make_user(db, username="w2_owner_b2")
-    agent_a = make_agent(db, owner_a, name="w2-agent-a2")
-    agent_b = make_agent(db, owner_b, name="w2-agent-b2")
+    agent_a = make_agent(db, owner_a, name="w2-agent-a2", approval_status="approved")
+    agent_b = make_agent(db, owner_b, name="w2-agent-b2", approval_status="approved")
     coll_b = _collection(db, owner_b, "w2-coll-b")
     set_bound_collection_ids(db, agent_a, [])
     set_bound_collection_ids(db, agent_b, [coll_b.id])
@@ -370,7 +378,7 @@ def test_e_bare_agent_csk_rejected_on_artifacts(client: TestClient, db, monkeypa
     _ = cred  # keep local for readability
 
 
-def test_e_dispatch_jwt_accepted_on_artifacts(client: TestClient, db, monkeypatch):
+def test_e_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monkeypatch):
     owner = make_user(db, username="w2_art_jwt_owner")
     agent = make_agent(db, owner, name="w2-art-jwt-agent")
     token = issue_dispatch_token(
@@ -387,8 +395,8 @@ def test_e_dispatch_jwt_accepted_on_artifacts(client: TestClient, db, monkeypatc
             "requester_user_id": owner.id,
         },
     )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["job_id"] == "w2-jwt-accept"
+    _assert_dispatch_jwt_not_a_service_credential(resp)
+    assert db.get(ArtifactJob, "w2-jwt-accept") is None
 
 
 def test_expired_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monkeypatch):
@@ -492,8 +500,8 @@ def test_f3_agent_cannot_set_arbitrary_requester_user_id(
             "requester_user_id": victim.id,
         },
     )
-    assert resp.status_code == 403, resp.text
-    assert "requester_user_id" in resp.json()["detail"]
+    _assert_dispatch_jwt_not_a_service_credential(resp)
+    assert db.get(ArtifactJob, "w2-f3-arb-req") is None
 
 
 def test_f3_agent_cannot_set_owner_via_employee_id(
@@ -517,13 +525,14 @@ def test_f3_agent_cannot_set_owner_via_employee_id(
             "employee_id": victim.username,
         },
     )
-    assert resp.status_code == 403, resp.text
-    assert "employee_id" in resp.json()["detail"]
+    _assert_dispatch_jwt_not_a_service_credential(resp)
+    assert db.get(ArtifactJob, "w2-f3-emp") is None
 
 
-def test_f3_agent_matching_requester_still_accepted(
+def test_f3_agent_matching_requester_still_rejected(
     client: TestClient, db, monkeypatch,
 ):
+    """即使 requester 與派工 JWT 的 user 相同，成品寫入也不接受這枚 token。"""
     owner = make_user(db, username="w2_f3_ok_owner")
     agent = make_agent(db, owner, name="w2-f3-ok-agent")
     token = issue_dispatch_token(
@@ -540,8 +549,8 @@ def test_f3_agent_matching_requester_still_accepted(
             "requester_user_id": owner.id,
         },
     )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["owner_user_id"] == owner.id
+    _assert_dispatch_jwt_not_a_service_credential(resp)
+    assert db.get(ArtifactJob, "w2-f3-ok") is None
 
 
 # ── F3 laundering PoC: foreign task/job/artifact must be rejected ────────────
@@ -552,9 +561,7 @@ def test_f3_agent_cannot_launder_victim_task_into_artifact(
 ):
     """Reviewer PoC: attacker agent + victim 機密 task → must REJECT.
 
-    Pre-fix: 201 with artifact.owner_user_id=victim, trace_id=victim's,
-    classification_level=機密. Post-fix: 403 and no victim field lands
-    in any created Artifact row.
+    派工 JWT 不能在成品面寫入。被害人的任務欄位不該落到任何 Artifact。
     """
     victim = make_user(db, username="w2_f3_victim_task")
     attacker = make_user(db, username="w2_f3_attacker_task")
@@ -578,7 +585,7 @@ def test_f3_agent_cannot_launder_victim_task_into_artifact(
             "task_id": victim_task.id,
         },
     )
-    assert resp.status_code == 403, resp.text
+    _assert_dispatch_jwt_not_a_service_credential(resp)
     assert db.query(Artifact).count() == before
     leaked = (
         db.query(Artifact)
@@ -591,12 +598,13 @@ def test_f3_agent_cannot_launder_victim_task_into_artifact(
     assert leaked == 0
 
 
-def test_f3_agent_own_task_still_registers_artifact(
+def test_f3_agent_own_task_cannot_register_artifact(
     client: TestClient, db, monkeypatch,
 ):
     owner = make_user(db, username="w2_f3_own_task")
     agent = make_agent(db, owner, name="w2-f3-own-agent")
     task = _make_task(db, owner, level="機密", trace_id="owner-trace-ok")
+    before = db.query(Artifact).count()
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
@@ -612,13 +620,8 @@ def test_f3_agent_own_task_still_registers_artifact(
             "task_id": task.id,
         },
     )
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["classification_level"] == "機密"
-    art = db.get(Artifact, body["artifact_id"])
-    assert art is not None
-    assert art.owner_user_id == owner.id
-    assert art.trace_id == "owner-trace-ok"
+    _assert_dispatch_jwt_not_a_service_credential(resp)
+    assert db.query(Artifact).count() == before
 
 
 def test_f3_agent_cannot_patch_foreign_job(
@@ -650,7 +653,7 @@ def test_f3_agent_cannot_patch_foreign_job(
         headers={"Authorization": f"Bearer {token}"},
         json={"status": "running"},
     )
-    assert resp.status_code == 403, resp.text
+    _assert_dispatch_jwt_not_a_service_credential(resp)
     job = db.get(ArtifactJob, "w2-f3-victim-job")
     assert job is not None
     assert job.status == "queued"  # unchanged
@@ -692,7 +695,7 @@ def test_f3_agent_cannot_version_foreign_artifact(
         headers={"Authorization": f"Bearer {token}"},
         json={"storage_ref": "store://artifacts/attacker-ver.pdf"},
     )
-    assert resp.status_code == 403, resp.text
+    _assert_dispatch_jwt_not_a_service_credential(resp)
     db.refresh(art)
     assert art.owner_user_id == victim.id
     assert art.trace_id == "victim-ver-trace"
@@ -736,7 +739,7 @@ def test_f3_agent_cannot_upsert_over_victim_job(
             "status": "queued",
         },
     )
-    assert resp.status_code == 403, resp.text
+    _assert_dispatch_jwt_not_a_service_credential(resp)
     assert "victim-only" not in resp.text
     assert "victim-secret-trace" not in resp.text
     assert "/victim/secret.pdf" not in resp.text
@@ -783,7 +786,7 @@ def test_f3_agent_cannot_launder_victim_snapshot_into_artifact(
             "source_snapshot_id": snap.id,
         },
     )
-    assert resp.status_code == 403, resp.text
+    _assert_dispatch_jwt_not_a_service_credential(resp)
     assert db.query(Artifact).count() == before
     assert "機密" not in resp.text
 
@@ -830,7 +833,7 @@ def test_f3_agent_cannot_launder_victim_job_into_artifact(
             "job_id": "w2-f2-victim-job-bind",
         },
     )
-    assert resp.status_code == 403, resp.text
+    _assert_dispatch_jwt_not_a_service_credential(resp)
     assert db.query(Artifact).count() == before
 
 
@@ -861,8 +864,10 @@ def test_verify_dispatch_token_enforces_iss_and_aud():
     )) is None
 
 
-def test_f3_same_user_all_four_faces_work(client: TestClient, db, monkeypatch):
-    """Same-user happy path across register job / patch / bind / version."""
+def test_f3_same_user_all_four_faces_reject_dispatch_jwt(
+    client: TestClient, db, monkeypatch,
+):
+    """同一使用者的派工 JWT 在 job、patch、成品、版本四個面都被拒絕。"""
     owner = make_user(db, username="w2_f3_same_user")
     agent = make_agent(db, owner, name="w2-f3-same-agent")
     token = issue_dispatch_token(
@@ -871,6 +876,7 @@ def test_f3_same_user_all_four_faces_work(client: TestClient, db, monkeypatch):
     monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"}
     own = _make_task(db, owner, level="機密", trace_id="own-trace-ok")
+    before = db.query(Artifact).count()
 
     r_job = client.post(
         "/v1/artifact-jobs",
@@ -881,15 +887,15 @@ def test_f3_same_user_all_four_faces_work(client: TestClient, db, monkeypatch):
             "requester_user_id": owner.id,
         },
     )
-    assert r_job.status_code == 201, r_job.text
-    assert r_job.json()["owner_user_id"] == owner.id
+    _assert_dispatch_jwt_not_a_service_credential(r_job)
+    assert db.get(ArtifactJob, "w2-same-own-job") is None
 
     r_patch = client.patch(
         "/v1/artifact-jobs/w2-same-own-job",
         headers=headers,
         json={"status": "running", "progress": 10},
     )
-    assert r_patch.status_code == 200, r_patch.text
+    _assert_dispatch_jwt_not_a_service_credential(r_patch)
 
     r_art = client.post(
         "/v1/artifacts",
@@ -902,21 +908,15 @@ def test_f3_same_user_all_four_faces_work(client: TestClient, db, monkeypatch):
             "job_id": "w2-same-own-job",
         },
     )
-    assert r_art.status_code == 201, r_art.text
-    assert r_art.json()["classification_level"] == "機密"
-    art_id = r_art.json()["artifact_id"]
-    art = db.get(Artifact, art_id)
-    assert art is not None
-    assert art.owner_user_id == owner.id
-    assert art.trace_id == "own-trace-ok"
+    _assert_dispatch_jwt_not_a_service_credential(r_art)
+    assert db.query(Artifact).count() == before
 
     r_ver = client.post(
-        f"/v1/artifacts/{art_id}/versions",
+        "/v1/artifacts/1/versions",
         headers=headers,
         json={"storage_ref": "store://artifacts/own-v2.pdf"},
     )
-    assert r_ver.status_code == 201, r_ver.text
-    assert r_ver.json()["version"] == 2
+    _assert_dispatch_jwt_not_a_service_credential(r_ver)
 
 
 # ── F-4: agent missing-id must collapse to the same 403 as foreign-id ────────
@@ -925,12 +925,7 @@ def test_f3_same_user_all_four_faces_work(client: TestClient, db, monkeypatch):
 def test_poc5_agent_missing_and_foreign_both_403(
     client: TestClient, db, monkeypatch,
 ):
-    """F-4: agent missing id and foreign id both 403 with identical detail.
-
-    The status code alone is not enough — if missing returns a different
-    403 body than foreign, the existence oracle is still open. Mutation
-    target: artifacts._missing_resource agent branch (278-282).
-    """
+    """派工 JWT 在查資源之前就被拒絕，缺漏與他人的 id 回同一句 401。"""
     owner = make_user(db, username="w2_f4_agent_owner")
     victim = make_user(db, username="w2_f4_agent_victim")
     agent = make_agent(db, owner, name="w2-f4-agent")
@@ -1019,10 +1014,9 @@ def test_poc5_agent_missing_and_foreign_both_403(
     for label, missing_call, foreign_call in faces:
         missing = missing_call()
         foreign = foreign_call()
-        assert missing.status_code == 403, (label, missing.text)
-        assert foreign.status_code == 403, (label, foreign.text)
-        # Byte-identical detail is the oracle kill: status alone still
-        # passes if missing/foreign messages diverge.
+        _assert_dispatch_jwt_not_a_service_credential(missing)
+        _assert_dispatch_jwt_not_a_service_credential(foreign)
+        # 兩種 id 的回應必須相同，才不會洩漏資源是否存在。
         assert missing.json()["detail"] == foreign.json()["detail"], (
             label, missing.json()["detail"], foreign.json()["detail"]
         )
