@@ -13,8 +13,8 @@ const {
   RELEASE_GATE_BADGE,
 } = await import('../src/utils/anilalmReleaseGate.js')
 
-test('release gate flag defaults to hidden for this freeze', () => {
-  assert.equal(ANILA_LM_LINK_VISIBLE, false)
+test('release gate flag is open since ANILA LM reopened (2026-09-26)', () => {
+  assert.equal(ANILA_LM_LINK_VISIBLE, true)
 })
 
 test('isAnilaLmPlatformLink uses the backend code, not mutable prose or URL', () => {
