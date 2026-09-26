@@ -20,6 +20,7 @@ import {
   shouldApplyArtifactFence,
 } from "./runtime/artifactRevision.js";
 import { CitationInline } from "./trust.jsx";
+import { isPlatformUrl, neutralizeUntrustedMarkdown } from "./runtime/untrustedOutput.js";
 
 const MarkdownMessageContext = createContext(null);
 
@@ -567,6 +568,11 @@ export function ImageLightbox({ src, alt, onClose }) {
 // 須是 module-level component,react-markdown 才能維持 useState 跨 re-render。
 function MarkdownImage({ node, src, alt, ...rest }) {
   const [open, setOpen] = useState(false);
+  // 非平台網域的圖片不設 src，避免外洩查詢字串被瀏覽器載出去。
+  if (!isPlatformUrl(src)) {
+    const label = alt ? `${alt} ` : "";
+    return <span>{label}{src || ""}</span>;
+  }
   return (
     <span style={{ display: "block", textAlign: "center", margin: "10px 0" }}>
       <img
@@ -786,13 +792,18 @@ const components = {
       <Cited>{children}</Cited>
     </td>
   ),
-  a: ({ node, children, ...props }) => (
-    <a style={{ color: "var(--accent)" }} target="_blank" rel="noopener noreferrer" {...props}>
-      <Cited>{children}</Cited>
-    </a>
-  ),
-  // 生成的圖片(image-generator agent 回傳的 markdown `![](data:image/...)`
-  // / 上傳預覽 / 其他 image)在訊息區塊中央顯示,點擊放大檢視。
+  a: ({ node, children, href, ...props }) => {
+    if (!isPlatformUrl(href)) {
+      return <span>{children}</span>;
+    }
+    return (
+      <a style={{ color: "var(--accent)" }} target="_blank" rel="noopener noreferrer" href={href} {...props}>
+        <Cited>{children}</Cited>
+      </a>
+    );
+  },
+  // 平台圖片用平台網址。data: 與 blob: 不當成可載入的圖片。
+  // 上傳預覽不走這條，訊息裡的 image 在區塊中央顯示，點擊放大檢視。
   img: MarkdownImage,
   hr: () => (
     <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "10px 0" }} />
@@ -882,7 +893,7 @@ export function MarkdownView({
             rehypePlugins={rehypePlugins}
             components={components}
           >
-            {preprocessLatex(text || "")}
+            {neutralizeUntrustedMarkdown(preprocessLatex(text || ""))}
           </ReactMarkdown>
         </div>
       </CitationContext.Provider>

@@ -36,12 +36,13 @@ import {
 } from '../api/chat'
 import { type SearchHit } from '../api/search'
 import {
-  buildSystemPrompt,
+  buildTurnContext,
   retrieveTurnContext,
   RETRIEVAL_FAILED_META_KEY,
   UNGROUNDED_NOTICE,
   type RetrievalStatus,
 } from './retrieval'
+import { INJECTION_NOTICE } from './untrustedOutput'
 import { explainError } from '../api/client'
 import { resolveKnowledgeChatModel } from '../api/modelRole'
 import type { Message } from '../types'
@@ -85,6 +86,8 @@ interface ChatRow {
   citations?: Citation[]
   /** Retrieval failed for this turn — the answer has no document backing. */
   ungrounded?: boolean
+  /** 參考資料裡有疑似指令，伺服器已忽略。 */
+  promptInjectionSuspected?: boolean
 }
 
 // 串流列可能被對話重載蓋掉。用 localKey 找回來；找不到就補回，避免回答只活在請求裡。
@@ -195,6 +198,7 @@ export function WSChat({ flex }: WSChatProps) {
               createdAt: m.created_at,
               citations: Array.isArray(meta?.citations) ? meta.citations : undefined,
               ungrounded: meta?.[RETRIEVAL_FAILED_META_KEY] === true,
+              promptInjectionSuspected: meta?.prompt_injection_suspected === true,
             }
           })
         setMessages(rows)
@@ -379,18 +383,17 @@ export function WSChat({ flex }: WSChatProps) {
 
       let activeHits = hits
       let citations = citationsFrom(activeHits)
+      let promptInjectionSuspected = false
 
       const runStream = (streamHits: SearchHit[]) => {
         const streamCitations = citationsFrom(streamHits)
         citations = streamCitations
+        const turn = buildTurnContext(
+          { status: retrievalStatus, hits: streamHits },
+          promptCtx,
+        )
         const llmMessages: ChatMessage[] = [
-          {
-            role: 'system',
-            content: buildSystemPrompt(
-              { status: retrievalStatus, hits: streamHits },
-              promptCtx,
-            ),
-          },
+          { role: 'system', content: turn.system },
           ...history,
           { role: 'user', content: text },
         ]
@@ -400,11 +403,13 @@ export function WSChat({ flex }: WSChatProps) {
             messages: llmMessages,
             temperature: 0.4,
             conversationId: convId!,
+            externalPassages: turn.passages,
           },
           (_delta, accumulated, snapshot) => {
             const thinking = Boolean(
               snapshot && snapshot.reasoning.length > 0 && accumulated.length === 0,
             )
+            if (snapshot?.promptInjectionSuspected) promptInjectionSuspected = true
             setMessages((prev) =>
               upsertAssistant(prev, tempAssistantId, {
                 content: accumulated,
@@ -412,6 +417,7 @@ export function WSChat({ flex }: WSChatProps) {
                 streaming: true,
                 citations: streamCitations,
                 ungrounded,
+                promptInjectionSuspected,
               }),
             )
           },
@@ -503,6 +509,7 @@ export function WSChat({ flex }: WSChatProps) {
       const persistedMeta: Record<string, unknown> = {}
       if (citations.length > 0) persistedMeta.citations = citations
       if (ungrounded) persistedMeta[RETRIEVAL_FAILED_META_KEY] = true
+      if (promptInjectionSuspected) persistedMeta.prompt_injection_suspected = true
       const { data: asstMsg } = await appendMessage(convId, {
         role: 'assistant',
         content: finalText,
@@ -523,6 +530,7 @@ export function WSChat({ flex }: WSChatProps) {
           thinking: false,
           citations: citations.length > 0 ? citations : undefined,
           ungrounded,
+          promptInjectionSuspected,
         }),
       )
 
@@ -994,6 +1002,12 @@ export function ChatBubble({ row }: { row: ChatRow }) {
       <div ref={bubbleRef} style={{ flex: 1, minWidth: 0 }}>
         {/* 檢索失敗的回答長得跟有根據的回答一模一樣 —— 這條就是唯一
             的差別，所以放在內容上方、用 role="alert" 讓輔助科技也讀得到。*/}
+        {row.promptInjectionSuspected && (
+          <details data-injection-notice="true" style={{ marginBottom: 8 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12, color: t.textMuted }}>回覆詳情</summary>
+            <div style={{ fontSize: 12.5, color: t.text, marginTop: 4 }}>{INJECTION_NOTICE}</div>
+          </details>
+        )}
         {row.ungrounded && (
           <div
             role="alert"

@@ -14,6 +14,12 @@ export interface ChatMessage {
   content: string
 }
 
+export interface ExternalPassagePayload {
+  source: 'kb' | 'agent' | 'attachment' | 'memory'
+  id: string
+  text: string
+}
+
 export interface ChatRequest {
   model: string
   messages: ChatMessage[]
@@ -22,6 +28,8 @@ export interface ChatRequest {
   response_format?: { type: 'json_object' } | { type: 'text' }
   conversationId?: number
   traceId?: string
+  /** 檢索段落。伺服器包裝後才進模型，不放在系統提示裡。 */
+  externalPassages?: ExternalPassagePayload[]
 }
 
 // 沒有可猜的預設模型。呼叫端帶了名稱就用那個；否則問治理中心的
@@ -140,6 +148,8 @@ export interface ChatSseState {
   anilaErrorMessage: string | null
   /** Stable semantic code from a terminal `event: anila.error` frame. */
   anilaErrorCode: string | null
+  /** 伺服器標了參考資料裡的疑似指令。 */
+  promptInjectionSuspected: boolean
 }
 
 export function createChatSseState(): ChatSseState {
@@ -149,6 +159,7 @@ export function createChatSseState(): ChatSseState {
     finishReason: null,
     anilaErrorMessage: null,
     anilaErrorCode: null,
+    promptInjectionSuspected: false,
   }
 }
 
@@ -170,6 +181,21 @@ export function reduceChatSseEvent(
     } else if (line.startsWith('data:')) {
       dataLines.push(line.slice(5).trim())
     }
+  }
+
+  if (eventName === 'anila.meta') {
+    for (const payload of dataLines) {
+      if (!payload || payload === '[DONE]') continue
+      try {
+        const parsed = JSON.parse(payload) as { prompt_injection_suspected?: unknown }
+        if (parsed.prompt_injection_suspected === true) {
+          return { ...state, promptInjectionSuspected: true }
+        }
+      } catch {
+        // 壞掉的 meta 框不當成注入。
+      }
+    }
+    return state
   }
 
   if (eventName === 'anila.error') {
@@ -267,6 +293,9 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
       max_tokens: req.max_tokens,
       response_format: req.response_format,
       stream: false,
+      ...(req.externalPassages?.length
+        ? { anila_external_passages: req.externalPassages }
+        : {}),
     }),
   })
   if (!res.ok) {
@@ -296,6 +325,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
 export interface ChatStreamSnapshot {
   content: string
   reasoning: string
+  promptInjectionSuspected?: boolean
 }
 
 export async function chatStream(
@@ -315,6 +345,9 @@ export async function chatStream(
       temperature: req.temperature ?? 0.4,
       max_tokens: req.max_tokens,
       stream: true,
+      ...(req.externalPassages?.length
+        ? { anila_external_passages: req.externalPassages }
+        : {}),
     }),
     signal: abortSignal,
   })
@@ -344,6 +377,7 @@ export async function chatStream(
       sep = buffer.indexOf('\n\n')
       const prevLen = state.accumulated.length
       const prevReasoning = state.reasoning.length
+      const prevFlag = state.promptInjectionSuspected
       state = reduceChatSseEvent(state, event)
       if (state.anilaErrorMessage) {
         // Terminal failure — stop reading; finaliseChatSse will throw.
@@ -351,12 +385,14 @@ export async function chatStream(
       }
       if (
         state.accumulated.length > prevLen ||
-        state.reasoning.length > prevReasoning
+        state.reasoning.length > prevReasoning ||
+        state.promptInjectionSuspected !== prevFlag
       ) {
         const delta = state.accumulated.slice(prevLen)
         onDelta(delta, state.accumulated, {
           content: state.accumulated,
           reasoning: state.reasoning,
+          promptInjectionSuspected: state.promptInjectionSuspected,
         })
       }
     }

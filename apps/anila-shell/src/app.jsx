@@ -456,6 +456,13 @@ export function kbMetaFields(meta) {
  * server-message reload and live SSE.  Unknown or absent observations remain
  * silent so old messages do not acquire a new claim.
  */
+export function injectionMetaFields(meta) {
+  const m = meta && typeof meta === "object" ? meta : {};
+  return {
+    promptInjectionSuspected: m.prompt_injection_suspected === true,
+  };
+}
+
 export function agentReplyMetaFields(meta) {
   const m = meta && typeof meta === "object" ? meta : {};
   return {
@@ -1416,6 +1423,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 重新載入這一縫。同一份定義也要接在 applyMeta(SSE 現場那一縫)上。
       ...kbMetaFields(meta),
       ...agentReplyMetaFields(meta),
+      ...injectionMetaFields(meta),
       confidence: meta.confidence,
       classified: meta.classified,
       traceId: msg.trace_id || meta.trace_id,
@@ -2870,6 +2878,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // SSE 現場這一縫。同一份定義也要接在 mapServerMessage(重新載入那一縫)上。
       ...kbMetaFields(meta),
       ...agentReplyMetaFields(meta),
+      ...injectionMetaFields(meta),
       latencyMs: meta.latency_ms,
       usage: meta.usage || null,
       classified: meta.classified,

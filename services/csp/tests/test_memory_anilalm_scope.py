@@ -80,7 +80,7 @@ async def inject(db, user, conv):
     )
     for message in body["messages"]:
         content = message.get("content") if isinstance(message, dict) else ""
-        if isinstance(content, str) and "<quoted-memory>" in content:
+        if isinstance(content, str) and "<external-content" in content:
             return content
     return ""
 

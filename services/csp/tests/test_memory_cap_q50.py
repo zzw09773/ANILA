@@ -114,11 +114,13 @@ def _body_text(body: dict) -> str:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
             continue
-        start = content.find("<quoted-memory>")
-        end = content.find("</quoted-memory>")
+        start = content.find("<external-content")
+        end = content.find("</external-content>")
         if start != -1 and end > start:
-            return content[start + len("<quoted-memory>") : end].strip()
-    raise AssertionError("記憶沒有放進不可遵循的引用訊息")
+            inner = content[start:end]
+            newline = inner.find("\n")
+            return inner[newline + 1 :].strip() if newline != -1 else ""
+    raise AssertionError("記憶沒有放進外來內容包裝")
 
 
 class _Request:
@@ -180,9 +182,13 @@ async def test_registered_agent_outbound_payload_contains_no_memory(
     assert _CapturingClient.last_body is not None
     outbound = _CapturingClient.last_body
     assert _MEMORY_SENTINEL not in json.dumps(outbound, ensure_ascii=False)
-    assert outbound["messages"] == [
-        {"role": "user", "content": "agent question"}
-    ]
+    assert outbound["messages"][-1] == {"role": "user", "content": "agent question"}
+    assert not any(
+        isinstance(message, dict)
+        and message.get("role") == "user"
+        and "<external-content" in str(message.get("content"))
+        for message in outbound["messages"]
+    )
 
 
 def _oversized_rows():

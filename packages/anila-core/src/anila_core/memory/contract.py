@@ -1,13 +1,8 @@
-"""Sentinel for wrapping the (untrusted) agent reply during re-composition.
+"""舊的 agent 回覆哨兵。
 
-The Router's reply re-composition wraps the dispatched agent reply in
-``AGENT_REPLY_BEGIN``/``AGENT_REPLY_END`` and tells the model it is DATA to
-rewrite, not instructions. Pure constants — no imports — so any package can
-import without circular-dependency risk.
-
-Note: the Router does NOT extract or forward the user's memory. CSP injects the
-user's long-term memory into every LLM call the Router makes through it
-(including the re-composition call), so no memory-block sentinel is needed here.
+新的外來內容一律走 ``anila_core.security.external_content``。這裡只留下
+哨兵常數與清除函式，避免舊回覆裡的標記還能把包裝提前關掉。
+本模組不匯入其他東西，避免循環依賴。
 """
 from __future__ import annotations
 

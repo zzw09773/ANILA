@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useTheme } from '../theme/ThemeContext'
+import { isPlatformUrl, neutralizeUntrustedMarkdown } from '../workspace/untrustedOutput'
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -13,6 +14,19 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     node.setAttribute('target', '_blank')
     node.setAttribute('rel', 'noopener noreferrer nofollow')
   }
+})
+
+DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+  const name = data.attrName
+  if (name !== 'src' && name !== 'href' && name !== 'srcset') return
+  const value = data.attrValue || ''
+  if (name === 'srcset') {
+    const urls = value.split(',').map((part) => part.trim().split(/\s+/)[0] || '')
+    if (urls.some((url) => url && !isPlatformUrl(url))) data.keepAttr = false
+    return
+  }
+  if (!isPlatformUrl(value)) data.keepAttr = false
+  void node
 })
 
 interface MarkdownPreviewProps {
@@ -107,7 +121,7 @@ export function MarkdownPreview({
   // tags, so we sanitize unconditionally. Allowing standard markdown
   // tags + a few inline elements; explicitly forbid <script>/<iframe>.
   const html = useMemo(() => {
-    const raw = marked.parse(markdown ?? '', { async: false }) as string
+    const raw = marked.parse(neutralizeUntrustedMarkdown(markdown ?? ''), { async: false }) as string
     return DOMPurify.sanitize(raw, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form'],

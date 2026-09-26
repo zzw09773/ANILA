@@ -18,6 +18,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { searchCollection } from '../api/search'
 import {
   buildSystemPrompt,
+  buildTurnContext,
   retrieveTurnContext,
   UNGROUNDED_NOTICE,
 } from './retrieval'
@@ -139,10 +140,13 @@ describe('buildSystemPrompt for the other outcomes', () => {
     const outcome = await retrieveTurnContext(1, 'q')
 
     const prompt = buildSystemPrompt(outcome, CTX)
+    const turn = buildTurnContext(outcome, CTX)
 
-    expect(prompt).toContain('doc-1.pdf')
-    expect(prompt).toContain('doc-2.pdf')
-    expect(prompt).toContain('僅根據上方 2 個段落作答')
+    expect(prompt).toContain('僅根據參考資料中的 2 個段落作答')
+    expect(prompt).not.toContain('本次測試成功率 93.3%')
+    expect(turn.passages.map((p) => p.text).join('\n')).toContain('doc-1.pdf')
+    expect(turn.passages.map((p) => p.text).join('\n')).toContain('doc-2.pdf')
+    expect(turn.passages.map((p) => p.text).join('\n')).toContain('本次測試成功率 93.3%')
     expect(prompt).not.toContain('本次知識庫檢索失敗')
     expect(prompt).not.toContain(ZERO_HIT_CLAIM)
   })

@@ -303,9 +303,11 @@ export const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
 };
 
 // ---- Audit watermark ----
-export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, usage }) => {
+export const INJECTION_NOTICE = "參考資料中有疑似指令，已忽略";
+
+export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, usage, promptInjectionSuspected }) => {
   const [copied, setCopied] = useState(false);
-  if (!traceId) return null;
+  if (!traceId && !promptInjectionSuspected) return null;
   const tokenTotal = usage?.total_tokens || 0;
   const fullText = `trace: ${traceId} · conv: ${conversationId || "—"} · ${timestamp || "—"} · ${latencyMs || "—"}ms${tokenTotal ? ` · ${tokenTotal} tokens` : ""}`;
 
@@ -316,7 +318,11 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
   };
 
   return (
-    <details style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>回覆詳情</summary><button
+    <details style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>回覆詳情</summary>
+    {promptInjectionSuspected ? (
+      <div data-injection-notice="true" style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}>{INJECTION_NOTICE}</div>
+    ) : null}
+    {traceId ? <button
       onClick={copy}
       className="anila-audit-watermark"
       title="複製追蹤資訊"
@@ -338,7 +344,7 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, 
       <span style={{ color: copied ? "var(--success)" : "var(--fg-subtle)" }}>
         {copied ? "已複製" : "複製"}
       </span>
-    </button></details>
+    </button> : null}</details>
   );
 };
 

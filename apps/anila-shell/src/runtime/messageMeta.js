@@ -74,6 +74,13 @@ export function buildPersistMeta(finalMeta, messageState) {
   if (state.classified === true || base.classified === true) {
     base.classified = true;
   }
+  if (
+    base.prompt_injection_suspected === true
+    || state.promptInjectionSuspected === true
+    || state.prompt_injection_suspected === true
+  ) {
+    base.prompt_injection_suspected = true;
+  }
 
   // Sprint 13 PR B1: persist Sprint 9-12 typed event state so reloading
   // a conversation rebuilds the same UI affordances.

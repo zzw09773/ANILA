@@ -973,9 +973,12 @@ def test_q18_branch_does_not_change_prompt_injection(
             ],
         }
         result = _inject_attachments(db, cid, chat, None)
-        sys_content = chat["messages"][0]["content"]
+        external = "\n".join(
+            m["content"] for m in chat["messages"]
+            if m.get("role") == "user" and "<external-content" in str(m.get("content"))
+        )
         usage = get_conversation_attachment_usage(db, cid, 1000)
-        return sys_content, usage, result
+        return external, usage, result
 
     before_sys, before_usage, before_result = _snap()
     assert before_sys.count(body_text) == 1

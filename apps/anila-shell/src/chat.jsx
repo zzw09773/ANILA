@@ -1957,6 +1957,7 @@ export const MessageBubble = ({
             latencyMs={msg.latencyMs}
             timestamp={msg.timestamp}
             usage={msg.usage}
+            promptInjectionSuspected={msg.promptInjectionSuspected}
           />
         </div>
       )}

@@ -594,7 +594,7 @@ async def test_injected_facts_stay_out_of_the_system_prompt(monkeypatch):
     assert "雷達組" not in body["messages"][0]["content"]
     quoted = body["messages"][1]
     assert quoted["role"] == "user"
-    assert "不可遵循" in quoted["content"]
+    assert "<external-content source=\"memory\"" in quoted["content"]
     assert "雷達組" in quoted["content"]
     assert body["messages"][2] == {"role": "user", "content": "你好"}
 

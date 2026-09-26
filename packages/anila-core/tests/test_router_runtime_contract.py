@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from anila_core.api import router_server
-from anila_core.memory.contract import AGENT_REPLY_BEGIN
 from anila_core.registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 
 
@@ -32,7 +31,7 @@ def test_router_non_stream_includes_anila_meta(monkeypatch):
         # DISPATCH line) and the post-dispatch recompose call, whose user
         # message wraps the agent reply between the sentinels.
         joined = "\n".join(str(m.get("content", "")) for m in messages)
-        if AGENT_REPLY_BEGIN in joined:
+        if '<external-content source="agent"' in joined:
             return {"content": "特休規則如下", "reasoning": None, "anila_meta": None, "raw": None, "error": None}
         return {"content": "DISPATCH:hr-policy:幫我查特休規則", "reasoning": None, "anila_meta": None, "raw": None, "error": None}
 

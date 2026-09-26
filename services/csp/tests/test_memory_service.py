@@ -201,7 +201,7 @@ async def test_inject_memory_appends_to_existing_system_message(monkeypatch):
     assert body["messages"][0]["content"] == "client-side rules go here"
     quoted = body["messages"][1]
     assert quoted["role"] == "user"
-    assert "不可遵循" in quoted["content"]
+    assert "<external-content source=\"memory\"" in quoted["content"]
     assert "MEMORY_BLOCK_SENTINEL" in quoted["content"]
     assert body["messages"][2] == {"role": "user", "content": "hello"}
 
