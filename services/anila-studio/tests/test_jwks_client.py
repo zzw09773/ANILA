@@ -204,6 +204,56 @@ async def test_unknown_kid_triggers_single_refetch_then_raises(fast_ttl, csp_bas
         assert route.call_count == 2, "missing kid must trigger exactly one refetch"
 
 
+@pytest.mark.asyncio
+async def test_repeated_unknown_kids_do_not_refetch_until_interval_elapses(
+    fast_ttl, csp_base_url
+):
+    """未知 kid 會重抓一次讓輪替重疊生效，但同一間隔內不再打 CSP。"""
+    from app.services.jwks_client import JwksClient, JwksKeyNotFoundError
+
+    priv = _generate_rsa_keypair()
+    payload = _jwks_payload_for(priv, kid="anila-v1")
+
+    async with respx.mock(base_url=csp_base_url) as router:
+        route = router.get("/.well-known/jwks.json").mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        client = JwksClient()
+        await client.get_public_key("anila-v1")
+        with pytest.raises(JwksKeyNotFoundError):
+            await client.get_public_key("ghost-a")
+        assert route.call_count == 2
+
+        with pytest.raises(JwksKeyNotFoundError, match="rate-limited"):
+            await client.get_public_key("ghost-b")
+        assert route.call_count == 2, "第二個未知 kid 不得再打 JWKS"
+
+
+@pytest.mark.asyncio
+async def test_unknown_kid_refetch_resumes_when_interval_is_zero(
+    fast_ttl, csp_base_url, monkeypatch
+):
+    """間隔歸零後，未知 kid 可以再重抓，限制不是永久只抓一次。"""
+    from app.config import settings
+    from app.services.jwks_client import JwksClient, JwksKeyNotFoundError
+
+    priv = _generate_rsa_keypair()
+    payload = _jwks_payload_for(priv, kid="anila-v1")
+    monkeypatch.setattr(settings, "JWKS_UNKNOWN_KID_REFETCH_SECONDS", 0)
+
+    async with respx.mock(base_url=csp_base_url) as router:
+        route = router.get("/.well-known/jwks.json").mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        client = JwksClient()
+        await client.get_public_key("anila-v1")
+        with pytest.raises(JwksKeyNotFoundError):
+            await client.get_public_key("ghost-a")
+        with pytest.raises(JwksKeyNotFoundError):
+            await client.get_public_key("ghost-b")
+        assert route.call_count == 3
+
+
 # ----------------------------------------------------------------------------
 # 4. HTTP error on fetch → JwksFetchError
 # ----------------------------------------------------------------------------
@@ -680,3 +730,66 @@ async def test_concurrent_cold_start_fetches_only_once(fast_ttl, csp_base_url):
         )
         assert all(isinstance(k, RSAPublicKey) for k in results)
         assert route.call_count == 1, "lock must dedupe concurrent cold-starts"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_unknown_kids_share_one_refetch(fast_ttl, csp_base_url):
+    """同時送達的未知 kid 只打一次 JWKS，其餘請求共用那次結果。"""
+    from app.services.jwks_client import JwksClient, JwksKeyNotFoundError
+
+    priv = _generate_rsa_keypair()
+    payload = _jwks_payload_for(priv, kid="anila-v1")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = {"n": 0}
+
+    async def handler(_request):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            started.set()
+            await release.wait()
+        return httpx.Response(200, json=payload)
+
+    async with respx.mock(base_url=csp_base_url) as router:
+        router.get("/.well-known/jwks.json").mock(side_effect=handler)
+        client = JwksClient()
+        await client.get_public_key("anila-v1")
+        assert calls["n"] == 1
+
+        async def _miss(kid: str):
+            with pytest.raises(JwksKeyNotFoundError):
+                await client.get_public_key(kid)
+
+        first = asyncio.create_task(_miss("ghost-a"))
+        await started.wait()
+        second = asyncio.create_task(_miss("ghost-b"))
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.gather(first, second)
+        assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_kid_refetch_failure_reserves_backoff(fast_ttl, csp_base_url):
+    """未知 kid 的抓取失敗也要佔住間隔，下一發不得立刻再打。"""
+    from app.services.jwks_client import JwksClient, JwksFetchError, JwksKeyNotFoundError
+
+    priv = _generate_rsa_keypair()
+    payload = _jwks_payload_for(priv, kid="anila-v1")
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=payload)
+        return httpx.Response(503, text="down")
+
+    async with respx.mock(base_url=csp_base_url) as router:
+        router.get("/.well-known/jwks.json").mock(side_effect=handler)
+        client = JwksClient()
+        await client.get_public_key("anila-v1")
+        with pytest.raises(JwksFetchError):
+            await client.get_public_key("ghost-a")
+        with pytest.raises(JwksKeyNotFoundError, match="rate-limited"):
+            await client.get_public_key("ghost-b")
+        assert calls["n"] == 2

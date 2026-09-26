@@ -235,3 +235,48 @@ def publish_revocation_sync(
             client.close()
         except Exception:  # noqa: BLE001
             logger.debug("token-revoke sync Redis close failed", exc_info=True)
+
+
+def _kid_revocation_message(kids: list[str]) -> str:
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "event": "jwt_kid_revoke",
+        "revoked_kids": kids,
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def publish_kid_revocations_sync(
+    kids,
+    *,
+    redis_url: Optional[str] = None,
+    timeout: float,
+) -> None:
+    """緊急輪替之後，把退役的 kid 送到既有撤銷通道。失敗只記 log。
+
+    必須在資料庫提交之後呼叫。訂閱端冷啟動改走
+    ``GET /api/auth/revocations`` 的 ``revoked_kids``。
+    """
+    names = [kid for kid in kids if isinstance(kid, str) and kid]
+    if not names:
+        return
+    message = _kid_revocation_message(names)
+    client = None
+    try:
+        client = _make_sync_redis_client(redis_url, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "jwt-kid revoke sync publish skipped: cannot build Redis client (kids=%s)",
+            names,
+        )
+        return
+    try:
+        client.publish(CHANNEL, message)
+    except Exception:  # noqa: BLE001
+        logger.exception("jwt-kid revoke sync publish failed (kids=%s)", names)
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("jwt-kid revoke sync Redis close failed", exc_info=True)

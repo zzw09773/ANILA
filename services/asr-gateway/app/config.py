@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     # settings 只對顯式 kwargs forbid extra),所以 compose 不需要同步改。
     JWT_LEEWAY_SECONDS: int = 60
     JWKS_REFRESH_SECONDS: int = 3600
+    # 與 studio 的 jwks_client 副本一起讀。未知 kid 強制重抓的最短間隔。
+    JWKS_UNKNOWN_KID_REFETCH_SECONDS: int = 30
     REVOCATION_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
     REVOCATION_RECONCILE_INTERVAL_SECONDS: int = 5
     INTERNAL_TIMEOUT_CONNECT: float = 3.0

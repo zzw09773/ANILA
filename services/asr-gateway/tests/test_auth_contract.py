@@ -88,12 +88,11 @@ def csp_access_token(
 
     * `services/csp/app/services/auth_service.py:55` `create_tokens()`
       → `{"sub": str(user.id), "username": ..., "role": ..., "tv": ...}`
-    * `services/csp/app/utils/security.py:208` `create_access_token()`
-      → 再 `update({"exp": ..., "type": "access"})`,RS256 + `kid` header
+    * `services/csp/app/utils/security.py` `create_access_token()`
+      → 再補 `exp`、`iat`、`type`,RS256 + `kid` header
 
-    **這個 claim 集合就是全部** —— 沒有 `iss`、沒有 `aud`、沒有 `jti`、沒有
-    `iat`、沒有 `amr`/`acr`/`sid`/`auth_time`。要新增欄位請先確認 csp 真的簽了
-    它,否則這個測試就會退化成「驗證我剛剛寫的那段程式」而測不到契約。
+    這支替身權杖故意不帶 `iat`：JWKS 是替身、沒有簽發政策，缺 `iat` 仍要驗得過。
+    沒有 `iss`、沒有 `aud`、沒有 `jti`、沒有 `amr`/`acr`/`sid`/`auth_time`。
 
     ⚠ 卡登入(`services/csp/app/api/auth/card.py:166`)呼叫的是同一個
     `create_tokens()`,所以這也就是擁有者的憑證卡會拿到的權杖形狀。
@@ -430,6 +429,23 @@ async def test_is_still_valid_fail_closed_when_cache_down(jwks, cache):
     identity = await auth_mod.authenticate(csp_access_token())
     cache._ready = False
     assert await auth_mod.is_still_valid(identity) is False
+
+
+async def test_revoked_kid_is_rejected_while_jwks_still_returns_the_key(jwks, cache):
+    """緊急輪替公布的 kid 撤銷要立刻擋下，即使 JWKS 替身還拿得出舊公鑰。"""
+    token = csp_access_token()
+    cache._handle_message(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event": "jwt_kid_revoke",
+                "revoked_kids": [KID],
+                "ts": "2026-09-26T00:00:00Z",
+            }
+        )
+    )
+    with pytest.raises(auth_mod.AuthError):
+        await auth_mod.authenticate(token)
 
 
 # ── 端到端:瀏覽器形狀的 cookie 走完整個 WS 握手 ────────────────────────

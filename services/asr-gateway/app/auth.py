@@ -11,7 +11,7 @@
 這個 cookie 名去取權杖。實際上:
 
 - csp 的 `create_tokens()`(services/csp/app/services/auth_service.py:55)
-  只簽 `sub`/`username`/`role`/`tv`,`create_access_token()` 再補 `exp`/`type`
+  只簽 `sub`/`username`/`role`/`tv`,`create_access_token()` 再補 `exp`/`iat`/`type`
   —— **沒有 iss、沒有 aud、沒有 jti、沒有 amr**。
 - csp 發的 cookie 叫 `anila_access_token`(services/csp/app/middleware/cookies.py:33),
   `__Host-` 與 `anila_dev_` 兩個名字平台上沒有任何地方發出。
@@ -71,6 +71,7 @@ class CurrentUserIdentity:
     username: str
     role: str
     token_version: int
+    kid: str = ""
 
 
 def extract_token(websocket: WebSocket) -> str | None:
@@ -120,10 +121,12 @@ async def _verify_jwt(token: str) -> dict:
     except JWTError as exc:
         raise AuthError("無效的存取權杖") from exc
 
+    if not jwks_client.cached_key_allows(kid, payload):
+        raise AuthError("簽章金鑰不在簽發期間內")
     return payload
 
 
-async def _check_revocation(user_id: int, token_version: int) -> None:
+async def _check_revocation(user_id: int, token_version: int, kid: str = "") -> None:
     """fail-closed:清單不可用時拒絕,不降級成放行(同 studio)。
 
     ⚠ 簽名要與 `app/services/revocation_cache.py` 的 `is_revoked(user_id,
@@ -135,6 +138,9 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
     if not cache.ready:
         logger.warning("revocation cache not ready; denying user_id=%s", user_id)
         raise AuthUnavailable("auth deny-list unhealthy")
+    kid_revoked = getattr(cache, "is_kid_revoked", None)
+    if kid and kid_revoked is not None and await kid_revoked(kid):
+        raise AuthError("簽章金鑰已撤銷,請重新登入")
     if await cache.is_revoked(user_id, token_version):
         # ⚠ 這句會變成 WebSocket close reason,RFC 6455 上限 123 bytes ——
         # 中文一字 3 bytes,所以講得比 studio 短。要點一樣:說出成因(被撤銷
@@ -175,12 +181,18 @@ async def authenticate(token: str) -> CurrentUserIdentity:
         raise AuthError("無效的存取權杖") from exc
 
     token_version = int(payload.get("tv", 0))
-    await _check_revocation(user_id, token_version)
+    try:
+        header_kid = jwt.get_unverified_header(token).get("kid")
+    except JWTError:
+        header_kid = ""
+    signing_kid = header_kid if isinstance(header_kid, str) else ""
+    await _check_revocation(user_id, token_version, kid=signing_kid)
     return CurrentUserIdentity(
         id=user_id,
         username=str(payload.get("username") or ""),
         role=str(payload.get("role") or "user"),
         token_version=token_version,
+        kid=signing_kid,
     )
 
 
@@ -196,5 +208,9 @@ async def is_still_valid(identity: CurrentUserIdentity) -> bool:
     """
     cache = revocation_cache_mod.get_revocation_cache()
     if not cache.ready:
+        return False
+    signing_kid = getattr(identity, "kid", "") or ""
+    kid_revoked = getattr(cache, "is_kid_revoked", None)
+    if signing_kid and kid_revoked is not None and await kid_revoked(signing_kid):
         return False
     return not await cache.is_revoked(identity.id, identity.token_version)

@@ -11,9 +11,11 @@ import {
   countMismatchWarning,
   draftValue,
   formatSettingValue,
+  applyWhenLabel,
   groupIntoSections,
   isAtDefault,
   isTextSetting,
+  settingUnit,
   textPreview,
   overviewState,
   replaceRow,
@@ -44,6 +46,7 @@ const EXPECTED = [
   ['proxy.embedding_timeout', 'EMBEDDING_TIMEOUT'],
   ['auth.access_token_expire_minutes', 'ACCESS_TOKEN_EXPIRE_MINUTES'],
   ['auth.refresh_token_expire_days', 'REFRESH_TOKEN_EXPIRE_DAYS'],
+  ['auth.jwt_rotation_days', 'JWT_ROTATION_DAYS'],
   ['limits.department_max_depth', 'ANILA_DEPARTMENT_MAX_DEPTH'],
   ['limits.action_invoke_per_min', 'ANILA_ACTION_INVOKE_PER_MIN'],
   ['limits.attachment_budget_ratio', 'ANILA_ATTACHMENT_BUDGET_RATIO'],
@@ -77,8 +80,8 @@ function row(key, index = 0, overrides = {}) {
   }
 }
 
-test('registry and UI contract contain exactly the nineteen C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 19)
+test('registry and UI contract contain exactly the twenty C settings', () => {
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 20)
   assert.equal(SECTION_DEFS.length, 3)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))
@@ -142,6 +145,23 @@ test('Vue view has no obsolete regions or deferred-application vocabulary', () =
   for (const token of ['boot_override', 'pending', 'restart', 'locked_reason', 'readonly', 'B_EDIT', 'B_LOCKED']) {
     assert.equal(viewSource.toLowerCase().includes(token.toLowerCase()), false, `stale UI token: ${token}`)
   }
+})
+
+test('jwt rotation days lands in the account section and is not a token lifetime', () => {
+  const item = row('auth.jwt_rotation_days')
+  assert.equal(sectionIdFor(item), 'account')
+  assert.equal(applyWhenLabel(item), '下一次金鑰排程檢查就生效')
+  assert.equal(settingUnit(item), '天')
+  assert.equal(applyWhenLabel(row('auth.access_token_expire_minutes')), '下次簽發權杖時生效')
+})
+
+test('emergency jwt rotation explains logout and in-flight dispatch failure', () => {
+  const phrase = '所有人會被登出，進行中的派工權杖會失效'
+  const api = readFileSync(resolve(HERE, '../src/api/jwtKeyring.js'), 'utf8')
+  assert.ok(viewSource.includes(phrase))
+  assert.ok(api.includes(phrase))
+  assert.ok(api.includes('/api/auth/jwt-keyring/emergency-rotation'))
+  assert.ok(viewSource.includes('緊急輪替簽章金鑰'))
 })
 
 test('text settings (router prompts) get a preview cell, a textarea and a reset-to-default', () => {

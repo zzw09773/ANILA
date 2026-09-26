@@ -348,4 +348,17 @@ async def read_status(job_id: str, user_id: int) -> dict[str, Any] | None:
     persisted = await get_job_store().get(job_id)
     if persisted is None or persisted.owner_user_id != user_id:
         return None
-    return persisted.status_view
+    if persisted.status_view:
+        return persisted.status_view
+    # The projection failed when the job was saved (its status view is
+    # empty); answer from the fields the store always has.
+    return {
+        "job_id": persisted.job_id,
+        "state": persisted.state,
+        "artifact_id": (
+            str(persisted.artifact_id) if persisted.artifact_id is not None else None
+        ),
+        "classification_level": persisted.classification_level,
+        "created_at": persisted.created_at or "",
+        "updated_at": persisted.updated_at or persisted.created_at or "",
+    }

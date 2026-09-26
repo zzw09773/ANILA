@@ -26,13 +26,12 @@ Master key derivation:
     )
 
 The fixed salt is intentional — same master key on every process
-boot. ``SECRET_KEY`` is the
-single source of secrecy; rotating it invalidates every stored
-credential. That's the desired kill-switch property.
-
-To rotate the master, or to retire the legacy 100k fallback once every
-row has been re-encrypted, ops can use the helper script in
-``scripts/reencrypt-credentials.py`` (Sprint 6 X / A2 follow-up).
+boot. ``SECRET_KEY`` is the single source of secrecy. Changing it
+without rewriting stored rows makes every sealed credential
+undecryptable. Before switching the env value, run
+``infra/deployment/scripts/reseal-credentials.py`` with the old and
+new secrets. The older ``scripts/reencrypt-credentials.py`` only
+upgrades PBKDF2 100k rows to 600k under the *same* secret.
 """
 
 from __future__ import annotations
@@ -79,8 +78,9 @@ _KNOWN_DEV_SECRETS = frozenset({
 _legacy_fallback_count = 0
 
 
-def _derive_key(*, iters: int = _DERIVATION_ITERS) -> bytes:
-    secret = os.environ.get("SECRET_KEY")
+def _derive_key(*, iters: int = _DERIVATION_ITERS, secret: str | None = None) -> bytes:
+    if secret is None:
+        secret = os.environ.get("SECRET_KEY")
     if not secret:
         raise RuntimeError(
             "SECRET_KEY env var must be set for "
@@ -105,13 +105,14 @@ def _derive_key(*, iters: int = _DERIVATION_ITERS) -> bytes:
     return kdf.derive(secret.encode("utf-8"))
 
 
-def encrypt_credential(plaintext: str) -> tuple[bytes, bytes, bytes]:
+def encrypt_credential(plaintext: str, *, secret: str | None = None) -> tuple[bytes, bytes, bytes]:
     """Return ``(ciphertext, nonce, tag)`` triple for one credential.
 
     Always written with the current PBKDF2 iters (600k). Re-encrypting a
     legacy row with this function silently upgrades it to v2.
+    ``secret`` overrides ``SECRET_KEY`` for a re-seal onto a new master.
     """
-    key = _derive_key()
+    key = _derive_key(secret=secret)
     nonce = os.urandom(_NONCE_BYTES)
     aead = AESGCM(key)
     ct_with_tag = aead.encrypt(nonce, plaintext.encode("utf-8"), None)
@@ -119,7 +120,13 @@ def encrypt_credential(plaintext: str) -> tuple[bytes, bytes, bytes]:
     return ciphertext, nonce, tag
 
 
-def decrypt_credential(ciphertext: bytes, nonce: bytes, tag: bytes) -> str:
+def decrypt_credential(
+    ciphertext: bytes,
+    nonce: bytes,
+    tag: bytes,
+    *,
+    secret: str | None = None,
+) -> str:
     """Reverse of ``encrypt_credential``. Raises on tampering / wrong key.
 
     Tries the current key (600k iters) first; on ``InvalidTag`` falls
@@ -133,14 +140,14 @@ def decrypt_credential(ciphertext: bytes, nonce: bytes, tag: bytes) -> str:
 
     # 試新 key（一律先試 600k；新 row 直接成功）。
     try:
-        aead = AESGCM(_derive_key())
+        aead = AESGCM(_derive_key(secret=secret))
         return aead.decrypt(nonce, blob, None).decode("utf-8")
     except InvalidTag:
         pass
 
     # InvalidTag → 試 legacy 100k key。若連 legacy 也失敗就讓 InvalidTag
     # 一路往上拋（呼叫端能藉此區分「真的被竄改」vs「key 不對」）。
-    aead_legacy = AESGCM(_derive_key(iters=_DERIVATION_ITERS_LEGACY))
+    aead_legacy = AESGCM(_derive_key(iters=_DERIVATION_ITERS_LEGACY, secret=secret))
     plaintext = aead_legacy.decrypt(nonce, blob, None).decode("utf-8")
     _legacy_fallback_count += 1
     logger.info(

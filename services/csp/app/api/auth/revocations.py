@@ -34,9 +34,14 @@ class RevocationEntry(BaseModel):
     ts: str
 
 
+class KidRevocationEntry(BaseModel):
+    kid: str
+
+
 class RevocationListResponse(BaseModel):
     revocations: List[RevocationEntry]
     retention_days: int
+    revoked_kids: List[KidRevocationEntry] = []
 
 
 class RevokeUserTokensRequest(BaseModel):
@@ -144,7 +149,21 @@ def list_revocations(
         .all()
     )
 
+    from app.models.jwt_signing_key import JwtSigningKey
+
+    retired = (
+        db.query(JwtSigningKey)
+        .filter(
+            JwtSigningKey.state == "retired",
+            JwtSigningKey.retired_at.isnot(None),
+            JwtSigningKey.retired_at >= effective_since,
+        )
+        .order_by(JwtSigningKey.retired_at.asc())
+        .all()
+    )
+
     return RevocationListResponse(
+        revoked_kids=[KidRevocationEntry(kid=row.kid) for row in retired],
         revocations=[
             RevocationEntry(
                 user_id=row.user_id,

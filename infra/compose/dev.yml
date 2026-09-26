@@ -327,7 +327,6 @@ services:
       # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
-      JWT_KID: anila-v1
       LOG_LEVEL: INFO
     depends_on:
       csp:

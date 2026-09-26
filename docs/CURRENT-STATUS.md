@@ -64,6 +64,18 @@ worker 已經不讀 `INTERNAL_PLATFORM_API_KEY`、`EMBEDDING_API_KEY`、`VISION_
 
 `.env.example` 已拿掉的鍵：`CSP_SERVICE_TOKEN`。
 
+## JWT 簽章金鑰
+
+CSP 自己保管 RS256 簽章金鑰，放在資料表 `jwt_signing_keys`（遷移 `r1_0052`）。私鑰用既有的憑證加密（由 `SECRET_KEY` 衍生）存放。狀態是 `next` → `active` → `retiring` → `retired`。JWKS（`/.well-known/jwks.json`，快取 `max-age=3600`）公布 `next`、`active`、`retiring`，並帶每把鑰匙的 `anila_key_state`。只有 `active` 拿來簽名。`next` 升成 `active` 之前不能驗權杖。`retiring` 只接受 `iat` 早於退役時間的權杖。沒有 `iat` 的舊權杖只在從 PEM 匯入的那一把上接受。沒有 `kid` 的權杖拒絕。平常讀 active 金鑰不拿資料庫鎖；鎖只用於匯入與輪替，而且鎖內會再確認一次。
+
+預設每 90 天把 `next` 升成 `active`。天數是平台設定 `auth.jwt_rotation_days`（1–365，預設 90），下一次排程檢查就生效。90 天週期會提前 7 天建立 `next` 並公布；而且一把鑰匙至少先公布一個 JWKS 快取週期，才會變成 `active`。同一輪排程裡剛建立的 `next` 不會立刻升上去。舊鑰接著進入 `retiring`，保留時間比 refresh token **允許的最長天數**再多一個快取週期（不是當下畫面上的那個天數），所以平常輪替不會把人登出，5 分鐘的派工權杖也還驗得過。多個 worker 用資料庫 advisory lock；啟動先跑一次，之後每小時再檢查。
+
+第一次啟動、資料表還是空的，會把 `secrets/jwt-private.pem` 以當時的 `JWT_KID` 匯入成 `active`，既有登入與派工權杖繼續有效。匯入之後簽名不再讀這兩個 PEM。服務不會刪除它們。擁有者可以留著當**最初那一把**的備份。後來輪替出去的私鑰只在資料庫裡：要復原整圈鑰匙，還原資料庫備份，並且用同一把 `SECRET_KEY`。不要重產 PEM 來復原，那不會換回已輪替的鑰匙，也會讓人以為舊權杖還能用。
+
+更換 `SECRET_KEY` 之前，先用舊、新兩把密鑰跑 `infra/deployment/scripts/reseal-credentials.py`（先不加 `--apply` 看筆數，確認後再 `--apply`），把 `jwt_signing_keys` 以及其他用同一套密封的憑證轉封。轉封完成、環境改成新密鑰之後才重建 CSP。若 active 私鑰解不開，CSP 啟動時直接拒絕，不會拖到第一次登入才失敗。`scripts/reencrypt-credentials.py` 只升級同一把密鑰的 PBKDF2 迭代次數，不能拿來換 `SECRET_KEY`。
+
+緊急輪替在治理中心「平台設定」（擁有者或管理員、CSRF、寫入稽核）。確認文字是「所有人會被登出，進行中的派工權杖會失效。自行驗證派工權杖的 agent 最多還能接受舊鑰 5 分鐘」。新鑰立刻成為唯一公布的鑰匙，其餘鑰匙退役，並把退役的 `kid` 送到既有的 Redis 撤銷通道。Studio 與 ASR 的撤銷快取會立刻拒絕這些 `kid`，即使 JWKS 快取裡還留著舊公鑰。自行驗證派工權杖的 agent 不讀這份撤銷清單，殘餘窗口最多 5 分鐘。Studio、ASR、anila-core 與 quickstart 遇到不認識的 `kid` 會在同一把鎖裡預留下一次重抓，失敗也要退避，其餘請求共用那一次結果。Studio 不再讀 `JWT_KID`。
+
 ## 生圖（2026-09-26：不部署本機模型）
 
 治理中心「模型角色」多了「生圖模型」（`image_generation`，類型用既有的 `image`）。有設且健康時，Studio 經 CSP `POST /v1/images/generations` 配圖，不直連模型主機。沒設、不健康或請求失敗時，簡報仍用版面、圖示、圖表、表格，以及知識庫文件裡已有的圖，不留空的配圖框。

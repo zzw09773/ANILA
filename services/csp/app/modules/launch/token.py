@@ -18,8 +18,7 @@ from datetime import datetime, timezone
 
 from jose import jwt
 
-from app.config import settings
-from app.utils.security import ALGORITHM, get_private_key
+from app.utils.security import ALGORITHM
 
 LAUNCH_TOKEN_ISSUER = "anila-csp"
 # doc §6 recommends 5–10 min; we mint at the 10-min upper bound.
@@ -69,15 +68,18 @@ def build_launch_claims(
     }
 
 
-def issue_launch_token(claims: dict) -> str:
+def issue_launch_token(claims: dict, *, db=None) -> str:
     """Sign the launch claims with CSP's RS256 private key + active ``kid``.
 
     Same signing path as ``app.utils.security.create_access_token`` so the
     published JWKS verifies both.
     """
+    from app.services.jwt_keyring import active_signing_material
+
+    material = active_signing_material(db)
     return jwt.encode(
         claims,
-        get_private_key(),
+        material.private_pem,
         algorithm=ALGORITHM,
-        headers={"kid": settings.JWT_KID, "typ": "JWT"},
+        headers={"kid": material.kid, "typ": "JWT"},
     )

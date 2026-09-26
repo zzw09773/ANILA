@@ -105,10 +105,12 @@ async def _verify_jwt(token: str) -> dict:
         logger.debug("JWT verify failed: %s", exc)
         raise _unauthorized("無效的存取權杖") from exc
 
+    if not jwks_client.cached_key_allows(kid, payload):
+        raise _unauthorized("簽章金鑰不在簽發期間內")
     return payload
 
 
-async def _check_revocation(user_id: int, token_version: int) -> None:
+async def _check_revocation(user_id: int, token_version: int, kid: str = "") -> None:
     """Consult the cross-service revocation cache.
 
     Fail-closed: if the cache itself is not ready (Redis down / cold-start
@@ -124,6 +126,9 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
             "revocation cache not ready; denying request for user_id=%s", user_id
         )
         raise _service_unavailable("auth deny-list unhealthy")
+    kid_revoked = getattr(cache, "is_kid_revoked", None)
+    if kid and kid_revoked is not None and await kid_revoked(kid):
+        raise _unauthorized("簽章金鑰已撤銷，請重新登入")
     if await cache.is_revoked(user_id, token_version):
         logger.info(
             "rejecting revoked token: user_id=%s tv=%s", user_id, token_version
@@ -179,8 +184,16 @@ async def get_current_user_identity(
         raise _unauthorized("無效的存取權杖") from exc
 
     token_version = int(payload.get("tv", 0))
+    try:
+        header_kid = jwt.get_unverified_header(token).get("kid")
+    except JWTError:
+        header_kid = ""
 
-    await _check_revocation(user_id, token_version)
+    await _check_revocation(
+        user_id,
+        token_version,
+        kid=header_kid if isinstance(header_kid, str) else "",
+    )
 
     return CurrentUserIdentity(
         id=user_id,

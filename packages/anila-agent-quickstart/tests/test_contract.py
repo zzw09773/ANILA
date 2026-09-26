@@ -367,6 +367,37 @@ async def test_expired_token_and_non_text_are_rejected():
     assert image.json()["error"]["code"] == "invalid_request"
 
 
+async def test_cached_next_key_is_not_accepted_for_dispatch():
+    import anila_verify
+
+    key = make_key()
+    jwk = public_jwk(key, "next-kid")
+    jwk["anila_key_state"] = "next"
+    jwk["anila_accept_missing_iat"] = False
+    settings = platform_io.load_settings(_env())
+    cache = platform_io.JwksCache(settings)
+    cache._keys = anila_verify.parse_jwks({"keys": [jwk]})
+    cache._fetched_at = time.monotonic()
+    token = sign_jwt(key, "next-kid", dispatch_claims())
+    with pytest.raises(anila_verify.AnilaVerifyError):
+        await cache.verify(f"Bearer {token}")
+
+
+async def test_unknown_kid_force_refresh_backs_off_after_failure():
+    settings = platform_io.load_settings(_env())
+    cache = platform_io.JwksCache(settings)
+    calls = {"n": 0}
+
+    def _boom(self):
+        calls["n"] += 1
+        raise RuntimeError("jwks down")
+
+    cache._fetch = _boom.__get__(cache, platform_io.JwksCache)
+    assert await cache.refresh(force=True) is False
+    assert await cache.refresh(force=True) is False
+    assert calls["n"] == 1
+
+
 async def test_cold_jwks_failure_stays_unavailable(monkeypatch):
     calls = {"n": 0}
 

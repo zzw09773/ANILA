@@ -37,6 +37,7 @@ from app.models.classification import (
 from app.models.conversation import Conversation, ConversationUserMeta
 from app.models.department import Department
 from app.models.handoff import Handoff
+from app.models.jwt_signing_key import JwtSigningKey
 from app.models.ingestion import (
     AgentLlmCredential,  # back-compat alias for UserLlmCredential
     DocumentRelation,
@@ -117,6 +118,7 @@ __all__ = [
     "IngestionDocument",
     "IngestionEvalRun",
     "IngestionJob",
+    "JwtSigningKey",
     "Message",
     "MessageAction",
     "MessageActionBinding",

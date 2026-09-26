@@ -144,6 +144,11 @@ class RevocationCache:
             ttl=settings.REVOCATION_CACHE_TTL_SECONDS,
             timer=time.time,
         )
+        self._revoked_kids: TTLCache[str, bool] = TTLCache(
+            maxsize=1_000,
+            ttl=settings.REVOCATION_CACHE_TTL_SECONDS,
+            timer=time.time,
+        )
 
         # Readiness gate consumed by ``/health`` and ``auth.py``.
         # False until cold-start sync completes; flips back to False
@@ -179,6 +184,16 @@ class RevocationCache:
         the JWT verifier to enforce fail-closed when Redis is down.
         """
         return self._ready
+
+    async def is_kid_revoked(self, kid: str) -> bool:
+        """True when an emergency rotation has retired this signing kid."""
+        if not isinstance(kid, str) or not kid:
+            return False
+        return bool(self._revoked_kids.get(kid, False))
+
+    def _remember_kid(self, kid: str) -> None:
+        if isinstance(kid, str) and kid:
+            self._revoked_kids[kid] = True
 
     async def is_revoked(self, user_id: int, token_version: int) -> bool:
         """True iff the JWT bearing ``(user_id, token_version)`` has
@@ -360,6 +375,11 @@ class RevocationCache:
             # un-revoke anything.
             self._cache[user_id] = max(self._cache.get(user_id, 0), version)
 
+        for item in body.get("revoked_kids") or []:
+            kid = item.get("kid") if isinstance(item, dict) else item
+            if isinstance(kid, str) and kid:
+                self._remember_kid(kid)
+
         logger.info(
             "cold-start sync pulled %d revocation rows from csp since %s",
             len(entries),
@@ -492,6 +512,14 @@ class RevocationCache:
                 schema_version,
                 SUPPORTED_SCHEMA_VERSION,
             )
+
+        revoked_kids = payload.get("revoked_kids")
+        if isinstance(revoked_kids, list):
+            for kid in revoked_kids:
+                if isinstance(kid, str) and kid:
+                    self._remember_kid(kid)
+            if "user_id" not in payload:
+                return
 
         try:
             user_id = int(payload["user_id"])

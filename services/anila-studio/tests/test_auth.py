@@ -343,6 +343,27 @@ def test_password_change_kills_the_old_token_and_spares_the_new_one(
     assert resp.json()["token_version"] == 1
 
 
+def test_revoked_kid_is_rejected_while_jwks_still_has_the_key(
+    client, real_cache, rsa_keypair
+):
+    """緊急輪替把 kid 送進撤銷快取後，JWKS 快取裡的舊公鑰也不能再驗過。"""
+    import json
+
+    token = _sign_jwt(rsa_keypair["private_pem"], sub="42")
+    real_cache._handle_message(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event": "jwt_kid_revoke",
+                "revoked_kids": ["anila-v1"],
+                "ts": "2026-09-26T00:00:00Z",
+            }
+        )
+    )
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
 def test_revoked_message_is_actionable_and_distinct_from_expired(
     client, real_cache, rsa_keypair
 ):

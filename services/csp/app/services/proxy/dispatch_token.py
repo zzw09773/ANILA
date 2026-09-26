@@ -25,8 +25,7 @@ from typing import Any
 
 from jose import JWTError, jwt
 
-from app.config import settings
-from app.utils.security import ALGORITHM, _public_key_for_kid, get_private_key
+from app.utils.security import ALGORITHM
 
 DISPATCH_TOKEN_ISSUER = "anila-csp"
 DISPATCH_TOKEN_AUDIENCE = "anila-agent"
@@ -95,6 +94,7 @@ def issue_dispatch_token(
     agent_id: int,
     task_id: int | None = None,
     conversation_id: int | None = None,
+    db=None,
 ) -> str:
     """Sign a 5-minute dispatch identity token with CSP's RS256 key + kid.
 
@@ -107,15 +107,18 @@ def issue_dispatch_token(
         task_id=task_id,
         conversation_id=conversation_id,
     )
+    from app.services.jwt_keyring import active_signing_material
+
+    material = active_signing_material(db)
     return jwt.encode(
         claims,
-        get_private_key(),
+        material.private_pem,
         algorithm=ALGORITHM,
-        headers={"kid": settings.JWT_KID, "typ": "JWT"},
+        headers={"kid": material.kid, "typ": "JWT"},
     )
 
 
-def verify_dispatch_token(token: str) -> dict[str, Any] | None:
+def verify_dispatch_token(token: str, db=None) -> dict[str, Any] | None:
     """Verify a CSP-signed dispatch JWT; return claims or None.
 
     Uses ``security._public_key_for_kid`` (same kid rule as access-token
@@ -136,19 +139,15 @@ def verify_dispatch_token(token: str) -> dict[str, Any] | None:
         header = jwt.get_unverified_header(token)
     except JWTError:
         return None
-    public_key = _public_key_for_kid(header.get("kid"))
-    if public_key is None:
-        return None
-    try:
-        claims = jwt.decode(
-            token,
-            public_key,
-            algorithms=[ALGORITHM],
-            audience=DISPATCH_TOKEN_AUDIENCE,
-            issuer=DISPATCH_TOKEN_ISSUER,
-        )
-    except (JWTError, TypeError):
-        # TypeError: jose int()-coerces exp; None/[]/{} must not become HTTP 500.
+    from app.utils.security import _claims_if_issuance_allowed
+
+    claims = _claims_if_issuance_allowed(
+        token,
+        db,
+        audience=DISPATCH_TOKEN_AUDIENCE,
+        issuer=DISPATCH_TOKEN_ISSUER,
+    )
+    if claims is None:
         return None
     # python-jose silently skips exp validation when the claim is absent;
     # the 5-minute TTL is the entire security model — reject missing/non-int.

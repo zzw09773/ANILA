@@ -2,7 +2,7 @@
 """治理頁唯一的即時設定登錄表。
 
 本輪設定收斂後，這裡只宣告真正能在請求期間被消費、而且改完下一個
-請求就生效的十九顆 C 類設定。部署事實、秘密與程式常數不再假裝是
+請求就生效的二十顆 C 類設定。部署事實、秘密與程式常數不再假裝是
 平台設定，也不再由治理頁承諾「重啟後會生效」。
 """
 
@@ -215,6 +215,15 @@ SETTINGS: tuple[SettingSpec, ...] = (
         _closed_int_range(1, 365),
         30,
         "refresh token 有效天數。允許 1–365 天；只影響下一次簽發。",
+    ),
+    _spec(
+        "auth.jwt_rotation_days",
+        "JWT_ROTATION_DAYS",
+        T_INT,
+        _closed_int_range(1, 365),
+        90,
+        "簽章金鑰多少天換成下一把。允許 1–365 天，預設 90。"
+        "下一把會先公布，舊把留到比 refresh token 最長期限還久，平常輪替不會把人登出。",
     ),
     _spec(
         "limits.department_max_depth",

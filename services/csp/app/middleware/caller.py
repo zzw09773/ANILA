@@ -86,6 +86,6 @@ def get_caller(
             raise _unauthorized("API Key 對應的使用者已停用")
         return Caller(user=user, api_key_id=api_key.id)
 
-    payload = decode_token(token)
+    payload = decode_token(token, db=db)
     user = _load_user_from_payload(payload, db, "access")
     return Caller(user=user, api_key_id=None)

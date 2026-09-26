@@ -109,13 +109,63 @@ def jwk_to_public_key(jwk: Mapping[str, Any]) -> RSAPublicKey:
     ).public_key()
 
 
+class _IssuancePolicy:
+    """不用 dataclass：這個檔會被 importlib 直接載入，註解解析會找不到模組。"""
+
+    def __init__(self, state, iat_not_after, accept_missing_iat) -> None:
+        self.state = state
+        self.iat_not_after = iat_not_after
+        self.accept_missing_iat = accept_missing_iat
+
+    def allows(self, payload: Mapping[str, Any]) -> bool:
+        if self.state is None:
+            return True
+        if self.state == "next" or self.state not in ("active", "retiring"):
+            return False
+        iat = payload.get("iat")
+        if iat is None:
+            return self.accept_missing_iat
+        if isinstance(iat, bool):
+            return False
+        try:
+            issued = int(iat)
+        except (TypeError, ValueError):
+            return False
+        if self.state != "retiring":
+            return True
+        if self.iat_not_after is None:
+            return False
+        return issued < self.iat_not_after
+
+
+class _JwksMap(dict):
+    def __init__(self) -> None:
+        super().__init__()
+        self.policies: dict[str, _IssuancePolicy] = {}
+
+
+def _policy_for_jwk(entry: Mapping[str, Any]) -> _IssuancePolicy | None:
+    if "anila_key_state" not in entry:
+        return None
+    state = entry.get("anila_key_state")
+    if not isinstance(state, str):
+        state = None
+    raw = entry.get("anila_iat_not_after")
+    cutoff = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    return _IssuancePolicy(
+        state=state,
+        iat_not_after=cutoff,
+        accept_missing_iat=entry.get("anila_accept_missing_iat") is True,
+    )
+
+
 def parse_jwks(document: Any) -> dict[str, RSAPublicKey]:
     if not isinstance(document, dict):
         raise AnilaVerifyError("JWKS 不是 JSON 物件")
     keys = document.get("keys")
     if not isinstance(keys, list) or not keys:
         raise AnilaVerifyError("JWKS 缺少 keys")
-    out: dict[str, RSAPublicKey] = {}
+    out = _JwksMap()
     for entry in keys:
         if not isinstance(entry, dict):
             raise AnilaVerifyError("JWK 條目不是物件")
@@ -123,6 +173,9 @@ def parse_jwks(document: Any) -> dict[str, RSAPublicKey]:
         if not kid or not isinstance(kid, str):
             raise AnilaVerifyError("JWK 缺少 kid")
         out[kid] = jwk_to_public_key(entry)
+        policy = _policy_for_jwk(entry)
+        if policy is not None:
+            out.policies[kid] = policy
     return out
 
 
@@ -371,13 +424,18 @@ def verify_authorization(
     if public_key is None:
         raise AnilaVerifyError(f"JWKS 沒有 kid={kid!r}")
 
-    return verify_jwt_rs256(
+    payload = verify_jwt_rs256(
         token,
         public_key,
         issuer=issuer,
         audience=audience,
         now=now,
     )
+    policies = getattr(key_map, "policies", None) or {}
+    policy = policies.get(kid)
+    if policy is not None and not policy.allows(payload):
+        raise AnilaVerifyError("簽章金鑰不在簽發期間內")
+    return payload
 
 
 __all__ = [

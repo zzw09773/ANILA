@@ -130,7 +130,7 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="未登入或權杖已過期",
         )
-    payload = decode_token(token)
+    payload = decode_token(token, db=db)
     return _load_user_from_payload(payload, db, "access")
 
 

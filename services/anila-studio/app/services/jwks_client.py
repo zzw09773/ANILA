@@ -15,10 +15,11 @@ Design summary
 * **TTL cache** — refreshed every ``settings.JWKS_REFRESH_SECONDS`` seconds.
   After the TTL elapses the next lookup re-issues the HTTP call before
   returning.
-* **Forced refetch on miss** — looking up an unknown ``kid`` triggers
-  exactly one extra fetch (covers the "key just rotated" case). If still
-  missing we raise rather than return ``None`` so callers can map the
-  failure to a 401 cleanly.
+* **Forced refetch on miss** — an unknown ``kid`` triggers one extra
+  fetch so a key published during overlap can be used before the TTL
+  expires. Further unknown kids in the same process are rate-limited
+  (``JWKS_UNKNOWN_KID_REFETCH_SECONDS``) so a flood of bad kids cannot
+  hammer CSP. A miss after that refetch still raises.
 * **Background refresh task** — :func:`start` launches an
   ``asyncio.create_task`` loop that re-fetches every ``JWKS_REFRESH_SECONDS``
   to keep the cache warm. :func:`stop` cancels it.
@@ -45,6 +46,7 @@ import asyncio
 import base64
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -131,6 +133,54 @@ def _jwk_to_public_key(jwk: dict[str, Any]) -> RSAPublicKey:
     return RSAPublicNumbers(e=e, n=n).public_key()
 
 
+@dataclass(frozen=True)
+class IssuancePolicy:
+    state: str | None
+    iat_not_after: int | None
+    accept_missing_iat: bool
+
+    def allows(self, payload: dict) -> bool:
+        if self.state is None:
+            return True
+        if self.state == "next" or self.state not in ("active", "retiring"):
+            return False
+        iat = payload.get("iat") if isinstance(payload, dict) else None
+        if iat is None:
+            return self.accept_missing_iat
+        if isinstance(iat, bool):
+            return False
+        try:
+            issued = int(iat)
+        except (TypeError, ValueError):
+            return False
+        if self.state != "retiring":
+            return True
+        if self.iat_not_after is None:
+            return False
+        return issued < self.iat_not_after
+
+
+class _KeySet(dict):
+    def __init__(self) -> None:
+        super().__init__()
+        self.policies: dict[str, IssuancePolicy] = {}
+
+
+def _policy_for_entry(entry: dict) -> IssuancePolicy | None:
+    if "anila_key_state" not in entry:
+        return None
+    state = entry.get("anila_key_state")
+    if not isinstance(state, str):
+        state = None
+    raw = entry.get("anila_iat_not_after")
+    cutoff = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    return IssuancePolicy(
+        state=state,
+        iat_not_after=cutoff,
+        accept_missing_iat=entry.get("anila_accept_missing_iat") is True,
+    )
+
+
 def _parse_jwks(payload: Any) -> dict[str, RSAPublicKey]:
     """Validate the JWKS document shape and return a ``kid -> public_key`` map."""
     if not isinstance(payload, dict):
@@ -139,7 +189,7 @@ def _parse_jwks(payload: Any) -> dict[str, RSAPublicKey]:
     if not isinstance(keys, list) or not keys:
         raise JwksPayloadError("JWKS payload missing non-empty 'keys' array")
 
-    out: dict[str, RSAPublicKey] = {}
+    out = _KeySet()
     for entry in keys:
         if not isinstance(entry, dict):
             raise JwksPayloadError("JWKS key entry is not an object")
@@ -147,6 +197,9 @@ def _parse_jwks(payload: Any) -> dict[str, RSAPublicKey]:
         if not kid or not isinstance(kid, str):
             raise JwksPayloadError("JWK missing string 'kid'")
         out[kid] = _jwk_to_public_key(entry)
+        policy = _policy_for_entry(entry)
+        if policy is not None:
+            out.policies[kid] = policy
     return out
 
 
@@ -168,6 +221,8 @@ class JwksClient:
         self._cached_at: float = 0.0
         self._lock = asyncio.Lock()
         self._refresh_task: asyncio.Task[None] | None = None
+        # 未知 kid 強制重抓的時間戳。0 表示這一程還沒因未知 kid 重抓過。
+        self._last_unknown_kid_refetch_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -193,16 +248,40 @@ class JwksClient:
         if key is not None:
             return key
 
-        # Forced refetch on miss — covers rotation that happened mid-TTL
+        # 未知 kid：鎖內先佔住這一段間隔，再抓。同時進來的請求共用結果；
+        # 失敗也留下時間戳，避免亂 kid 把 CSP 打爆。
         logger.info("JWKS cache miss for kid=%s, forcing refetch", kid)
-        await self._refresh_locked(force=True)
-
+        fetched = await self._refetch_unknown_kid()
         key = self._cache.get(kid)
-        if key is None:
+        if key is not None:
+            return key
+        if not fetched:
             raise JwksKeyNotFoundError(
-                f"kid {kid!r} not present in JWKS after forced refetch"
+                f"kid {kid!r} not in cached JWKS; unknown-kid refetch is rate-limited"
             )
-        return key
+        raise JwksKeyNotFoundError(
+            f"kid {kid!r} not present in JWKS after forced refetch"
+        )
+
+    def _unknown_kid_refetch_blocked(self) -> bool:
+        interval = int(getattr(settings, "JWKS_UNKNOWN_KID_REFETCH_SECONDS", 30))
+        if interval <= 0:
+            return False
+        last = self._last_unknown_kid_refetch_at
+        if last <= 0:
+            return False
+        return (time.monotonic() - last) < interval
+
+    async def _refetch_unknown_kid(self) -> bool:
+        """在鎖內預留間隔並抓一次。回傳這次是否真的打了 JWKS。"""
+        async with self._lock:
+            if self._unknown_kid_refetch_blocked():
+                return False
+            self._last_unknown_kid_refetch_at = time.monotonic()
+            new_cache = await self._fetch_jwks()
+            self._cache = new_cache
+            self._cached_at = time.monotonic()
+            return True
 
     async def warm(self) -> None:
         """Eager warm-up — call from FastAPI startup so the first request
@@ -331,6 +410,15 @@ def _reset_for_tests() -> None:
 async def get_public_key(kid: str) -> RSAPublicKey:
     """Return the public key for ``kid`` via the process-wide singleton."""
     return await _get_client().get_public_key(kid)
+
+
+def cached_key_allows(kid: str, payload: dict) -> bool:
+    """快取裡沒有這把鑰匙的簽發政策時放行（舊文件、或測試替身沒填政策）。"""
+    policies = getattr(_get_client()._cache, "policies", None) or {}
+    policy = policies.get(kid)
+    if policy is None:
+        return True
+    return policy.allows(payload)
 
 
 async def start(app: Any) -> None:  # noqa: ARG001 — FastAPI passes the app

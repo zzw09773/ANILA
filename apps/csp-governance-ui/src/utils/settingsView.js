@@ -1,4 +1,4 @@
-// 平台設定總覽的純函式。後端只回 C 類設定（目前十九顆）：每顆可編輯，
+// 平台設定總覽的純函式。後端只回 C 類設定（目前二十顆）：每顆可編輯，
 // 儲存後下一個請求直接讀到新值；這裡不再推導 boot、restart 或唯讀區。
 
 export const UNKNOWN_SECTION_ID = 'unknown-class'
@@ -180,7 +180,7 @@ export function settingUnit(item) {
   const k = item?.key || ''
   if (k.endsWith('_timeout')) return '秒'
   if (k.includes('expire_minutes')) return '分鐘'
-  if (k.includes('expire_days')) return '天'
+  if (k.includes('expire_days') || k.includes('rotation_days')) return '天'
   if (k.includes('top_k')) return '筆'
   if (k.includes('max_depth')) return '層'
   if (k.includes('per_min')) return '次／分'
@@ -191,6 +191,7 @@ export function settingUnit(item) {
 export function applyWhenLabel(item) {
   const k = item?.key || ''
   if (k.startsWith('router.prompt.')) return '儲存後 Router 約 30 秒內套用'
+  if (k === 'auth.jwt_rotation_days') return '下一次金鑰排程檢查就生效'
   if (k.startsWith('auth.')) return '下次簽發權杖時生效'
   return '儲存後下一個請求生效'
 }

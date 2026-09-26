@@ -21,7 +21,8 @@ import base64
 import logging
 import ssl
 import time
-from typing import Any, Callable, Awaitable
+from dataclasses import dataclass
+from typing import Any, Callable, Awaitable, Mapping
 from urllib.parse import urlparse
 
 import httpx
@@ -90,6 +91,54 @@ def jwk_to_public_key(jwk: dict[str, Any]) -> RSAPublicKey:
     ).public_key()
 
 
+@dataclass(frozen=True)
+class IssuancePolicy:
+    state: str | None
+    iat_not_after: int | None
+    accept_missing_iat: bool
+
+    def allows(self, payload: Mapping[str, Any]) -> bool:
+        if self.state is None:
+            return True
+        if self.state == "next" or self.state not in ("active", "retiring"):
+            return False
+        iat = payload.get("iat")
+        if iat is None:
+            return self.accept_missing_iat
+        if isinstance(iat, bool):
+            return False
+        try:
+            issued = int(iat)
+        except (TypeError, ValueError):
+            return False
+        if self.state != "retiring":
+            return True
+        if self.iat_not_after is None:
+            return False
+        return issued < self.iat_not_after
+
+
+class _KeySet(dict):
+    def __init__(self) -> None:
+        super().__init__()
+        self.policies: dict[str, IssuancePolicy] = {}
+
+
+def _policy_for_entry(entry: dict) -> IssuancePolicy | None:
+    if "anila_key_state" not in entry:
+        return None
+    state = entry.get("anila_key_state")
+    if not isinstance(state, str):
+        state = None
+    raw = entry.get("anila_iat_not_after")
+    cutoff = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    return IssuancePolicy(
+        state=state,
+        iat_not_after=cutoff,
+        accept_missing_iat=entry.get("anila_accept_missing_iat") is True,
+    )
+
+
 def parse_jwks(payload: Any) -> dict[str, RSAPublicKey]:
     """Validate JWKS shape and return ``kid -> public_key``."""
     if not isinstance(payload, dict):
@@ -97,7 +146,7 @@ def parse_jwks(payload: Any) -> dict[str, RSAPublicKey]:
     keys = payload.get("keys")
     if not isinstance(keys, list) or not keys:
         raise JwksPayloadError("JWKS payload missing non-empty 'keys' array")
-    out: dict[str, RSAPublicKey] = {}
+    out = _KeySet()
     for entry in keys:
         if not isinstance(entry, dict):
             raise JwksPayloadError("JWKS key entry is not an object")
@@ -105,6 +154,9 @@ def parse_jwks(payload: Any) -> dict[str, RSAPublicKey]:
         if not kid or not isinstance(kid, str):
             raise JwksPayloadError("JWK missing string 'kid'")
         out[kid] = jwk_to_public_key(entry)
+        policy = _policy_for_entry(entry)
+        if policy is not None:
+            out.policies[kid] = policy
     return out
 
 
@@ -134,6 +186,7 @@ class JwksClient:
         ca_file: str | None = None,
         ttl_seconds: int = DEFAULT_JWKS_TTL_SECONDS,
         fetch_fn: FetchFn | None = None,
+        unknown_kid_refetch_interval: float = 30.0,
     ) -> None:
         self._jwks_url = (jwks_url or "").strip()
         self._ca_file = (ca_file or "").strip() or None
@@ -144,6 +197,9 @@ class JwksClient:
         self._lock = asyncio.Lock()
         self._refresh_task: asyncio.Task[None] | None = None
         self.fetch_count: int = 0  # test aid
+        # 未知 kid 重抓的最短間隔（秒）。0 表示不限制。
+        self._unknown_kid_refetch_interval = max(float(unknown_kid_refetch_interval), 0.0)
+        self._last_unknown_kid_refetch_at: float = 0.0
 
     @property
     def jwks_url(self) -> str:
@@ -167,14 +223,40 @@ class JwksClient:
             return key
 
         logger.info("JWKS cache miss for kid=%s, forcing refetch", kid)
-        await self._refresh_locked(force=True)
-
+        fetched = await self._refetch_unknown_kid()
         key = self._cache.get(kid)
-        if key is None:
+        if key is not None:
+            return key
+        if not fetched:
             raise JwksKeyNotFoundError(
-                f"kid {kid!r} not present in JWKS after forced refetch"
+                f"kid {kid!r} not in cached JWKS; unknown-kid refetch is rate-limited"
             )
-        return key
+        raise JwksKeyNotFoundError(
+            f"kid {kid!r} not present in JWKS after forced refetch"
+        )
+
+    def allows_issuance(self, kid: str, payload: Mapping[str, Any]) -> bool:
+        policies = getattr(self._cache, "policies", None) or {}
+        policy = policies.get(kid)
+        if policy is None:
+            return True
+        return policy.allows(payload)
+
+    def _unknown_kid_refetch_blocked(self) -> bool:
+        interval = self._unknown_kid_refetch_interval
+        if interval <= 0 or self._last_unknown_kid_refetch_at <= 0:
+            return False
+        return (time.monotonic() - self._last_unknown_kid_refetch_at) < interval
+
+    async def _refetch_unknown_kid(self) -> bool:
+        async with self._lock:
+            if self._unknown_kid_refetch_blocked():
+                return False
+            self._last_unknown_kid_refetch_at = time.monotonic()
+            new_cache = await self._fetch_jwks()
+            self._cache = new_cache
+            self._cached_at = time.monotonic()
+            return True
 
     async def warm(self) -> None:
         await self._refresh_locked(force=True)

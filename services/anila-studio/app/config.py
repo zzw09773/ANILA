@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
     REDIS_REVOCATION_CHANNEL: str = "anila:auth:token-revoke"
 
-    # JWT verify — only public key needed (csp signs with private).
-    JWT_KID: str = "anila-v1"  # default until JWKS fetch overrides
+    # JWT verify — only the public key from JWKS. kid 由權杖標頭決定，
+    # 不再讀 JWT_KID。
     JWT_ALGORITHMS: tuple[str, ...] = ("RS256",)
     # Sub-second drift tolerance for the iat/exp checks.
     JWT_LEEWAY_SECONDS: int = 60
@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     # Behavioural toggles
     # In tests / dev we may want JWKS cache to refresh faster; default 1hr.
     JWKS_REFRESH_SECONDS: int = 3600
+    # 未知 kid 的強制重抓最短間隔。0 表示不限制。
+    JWKS_UNKNOWN_KID_REFETCH_SECONDS: int = 30
     # Revocation cache TTL (matches csp /api/auth/revocations retention).
     REVOCATION_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
 

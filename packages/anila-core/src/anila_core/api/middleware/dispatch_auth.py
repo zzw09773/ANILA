@@ -133,6 +133,8 @@ class DispatchIdentityMiddleware(BaseHTTPMiddleware):
                 issuer=self._issuer,
                 audience=self._audience,
             )
+            if not self._jwks.allows_issuance(kid, claims):
+                raise DispatchTokenError("signing key is outside its issuance window")
         except JwksFetchError as exc:
             logger.error("JWKS fetch failed during dispatch verify: %s", exc)
             return JSONResponse(

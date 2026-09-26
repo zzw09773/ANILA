@@ -54,6 +54,8 @@ os.environ["ANILA_AUTH_MODE"] = "password"
 # this on would publish tokens during every TestClient startup.
 os.environ["ANILA_SERVICE_CLIENT_AUTO_PROVISION"] = "0"
 os.environ["ANILA_SERVICE_CLIENT_DIR"] = str(Path(_TEST_DB_DIR) / "service-clients")
+# 簽章金鑰圈的週期維護在測試裡關掉，改由測試直接呼叫 advance。
+os.environ["ANILA_JWT_KEYRING_MAINTAINER"] = "0"
 # 外部服務憑證的專用金鑰。測試不寫進 /var，也不啟動背景探測。
 os.environ["ANILA_EXTERNAL_SERVICE_KEY_FILE"] = str(
     Path(_TEST_DB_DIR) / "external-service.key"
@@ -92,6 +94,18 @@ def pytest_configure(config) -> None:
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     _cleanup_test_db_dir()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_jwt_keyring():
+    """每個測試從空的金鑰圈開始，避免上一支測試匯入的 PEM 卡住簽名鑰。"""
+    from app.services.jwt_keyring import reset_stored_keys_for_tests
+    from app.utils.security import _load_keys
+
+    reset_stored_keys_for_tests()
+    _load_keys.cache_clear()
+    yield
+    _load_keys.cache_clear()
 
 
 @pytest.fixture(autouse=True)

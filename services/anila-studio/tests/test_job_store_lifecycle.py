@@ -142,6 +142,25 @@ async def test_read_status_read_through(started_store, monkeypatch):
     assert await job_lifecycle.read_status("nope", 7) is None
 
 
+async def test_read_status_answers_when_saved_view_is_empty(started_store, monkeypatch):
+    """A job whose status projection failed at save time still answers a
+    poll (instead of a 500) from the fields the store always keeps."""
+    monkeypatch.setattr(job_lifecycle, "get_job_store", lambda: started_store)
+    await started_store.put(
+        _persisted(
+            job_id="jy",
+            status_view={},
+            artifact_id="3",
+            created_at="2026-09-26T00:00:00+00:00",
+        )
+    )
+    view = await job_lifecycle.read_status("jy", 7)
+    assert view["job_id"] == "jy"
+    assert view["state"] == "done"
+    assert view["artifact_id"] == "3"
+    assert view["created_at"] == view["updated_at"] == "2026-09-26T00:00:00+00:00"
+
+
 # ---------------------------------------------------------------------------
 # All five pipelines register through the store on create
 # ---------------------------------------------------------------------------

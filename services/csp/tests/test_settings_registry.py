@@ -1,6 +1,6 @@
 """設定收斂的契約測試。
 
-這裡守治理頁仍承諾的十九顆 C 類設定，以及整棵 repo 的 Python env
+這裡守治理頁仍承諾的二十顆 C 類設定，以及整棵 repo 的 Python env
 reader 不得再讀本輪刪掉的 CSP 設定名。
 
 ⚠ 2026-08-17：**部署檔與腳本這一側現在也由本檔掃描**（`*.yml`／`*.yaml`／
@@ -40,6 +40,7 @@ KEEP_KEYS = {
     "proxy.embedding_timeout",
     "auth.access_token_expire_minutes",
     "auth.refresh_token_expire_days",
+    "auth.jwt_rotation_days",
     "limits.department_max_depth",
     "limits.action_invoke_per_min",
     "limits.attachment_budget_ratio",

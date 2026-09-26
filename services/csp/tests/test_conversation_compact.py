@@ -325,12 +325,12 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0051():
+def test_alembic_heads_single_r1_0052():
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0051"], f"alembic head 應為 r1_0051，實得 {heads}"
+    assert heads == ["r1_0052"], f"alembic head 應為 r1_0052，實得 {heads}"
 
     cli = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
@@ -341,7 +341,14 @@ def test_alembic_heads_single_r1_0051():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0051" in cli.stdout
+    assert "r1_0052" in cli.stdout
+
+    keyring = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0052_jwt_signing_keyring.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0052"' in keyring
+    assert 'down_revision: Union[str, None] = "r1_0051"' in keyring
+    assert "jwt_signing_keys" in keyring
 
     head_src = (
         CSP_ROOT / "migrations" / "versions" / "r1_0051_retire_image_generator.py"

@@ -209,7 +209,7 @@ async def refresh(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="缺少 refresh token",
         )
-    payload = decode_token(token)
+    payload = decode_token(token, db=db)
     user = _load_user_from_payload(payload, db, "refresh")
     tokens = create_tokens(user, db, include_lifetimes=True)
     token_lifetimes = tokens.pop(TOKEN_LIFETIMES_KEY, None)

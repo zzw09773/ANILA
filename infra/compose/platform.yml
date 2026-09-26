@@ -557,7 +557,6 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       # 簡報與視覺模型由治理中心的模型角色決定（slides／vision）。
-      JWT_KID: anila-v1
       LOG_LEVEL: INFO
     depends_on:
       csp:

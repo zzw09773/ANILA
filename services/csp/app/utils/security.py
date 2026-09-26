@@ -1,28 +1,13 @@
-"""Password hashing + JWT signing/verification utilities.
+"""密碼雜湊與 JWT 簽章／驗證。
 
-Sprint 9 / anila-studio extraction: JWT algorithm switched from
-symmetric HS256 to asymmetric RS256. CSP holds the private key (PKCS#8
-PEM at the fixed ``secrets/jwt-private.pem`` path) and signs access/refresh
-tokens; anila-studio (and any future downstream verifier) fetches the
-matching public key from ``GET /.well-known/jwks.json`` and verifies
-locally — no shared secret crosses the trust boundary.
+簽章演算法固定 RS256，沒有 HS256 後援。私鑰放在資料庫的金鑰圈
+（``app.services.jwt_keyring``），用 ``SECRET_KEY`` 衍生的憑證加密保存。
+``SECRET_KEY`` 不拿來簽 access／refresh。JWKS 公布 next、active、retiring；
+只拿 active 簽名。驗證只接受帶 kid、且該 kid 仍在公布集合裡的 RS256。
+沒有 kid 的權杖一律拒絕。
 
-Cutover notes:
-
-* No HS256 fallback. Existing tokens issued under HS256 are invalidated
-  on deploy; users re-authenticate once.
-* ``ALGORITHM`` is hard-coded to ``"RS256"``; the JWT wire algorithm is not
-  deployment-configurable.
-* ``settings.SECRET_KEY`` is NOT used for JWT in the RS256 path. It is
-  retained only because ``startup_security`` / ``credential_crypto`` /
-  audit logging still depend on it for non-JWT purposes.
-* ``jwt.decode`` is always called with an explicit ``algorithms=["RS256"]``
-  allowlist, so a token with ``alg=none`` or ``alg=HS256`` is rejected
-  before the verifier ever touches the key — eliminating the classic
-  algorithm-confusion attack against systems that previously accepted HS256.
-* JWT header carries ``kid`` so the verifier can pick the right public
-  key from JWKS. ``kid`` must match ``settings.JWT_KID`` to validate;
-  tokens with missing or unknown ``kid`` are rejected.
+``secrets/jwt-private.pem`` 只在金鑰圈還是空的時候匯入一次，之後不再讀。
+檔案留著當備份，這個模組不會刪它。
 """
 from __future__ import annotations
 
@@ -36,8 +21,6 @@ from pathlib import Path
 
 import bcrypt
 from jose import jwt, JWTError
-
-from app.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -172,14 +155,12 @@ def _load_pem(path: Path, *, label: str) -> bytes:
         # recovery path. Point at the host-side provisioning step instead.
         raise JwtKeyLoadError(
             f"JWT {label} key not found at {path}. "
-            "Provision it from the host, then restart this service: "
-            "`bash infra/deployment/scripts/deploy-prod.sh` (its "
-            "ensure_jwt_keypair step) or, on the intranet host, "
-            "intranet-deploy.sh step [4b]; both write into ./secrets as root. "
-            "Then run infra/deployment/scripts/fix-runtime-ownership.sh so "
-            "the non-root runtime user can read the key. "
-            "Generate the pair with the host-side deployment script; the "
-            "runtime container must not generate keys."
+            "簽章金鑰圈是空的，而且讀不到可匯入的 PEM。"
+            "已上線的環境請還原資料庫備份，並使用同一把 SECRET_KEY 才能解開金鑰；"
+            "不要重產一把新的金鑰來復原，那會讓既有登入與派工權杖全部失效。"
+            "第一次啟動才需要主機上的 secrets/jwt-private.pem 與 jwt-public.pem。"
+            "匯入之後這兩個檔只是備份，服務不會刪除它們，擁有者可以自行留著。"
+            "容器內不能產鑰。"
         )
     try:
         return path.read_bytes()
@@ -193,13 +174,11 @@ def _load_pem(path: Path, *, label: str) -> bytes:
         raise JwtKeyLoadError(
             f"JWT {label} key exists at {path} but is not readable by this "
             f"process (uid {os.geteuid()}): {exc.strerror}. "
-            "The key was provisioned but the ownership alignment step was "
-            "skipped: run infra/deployment/scripts/fix-runtime-ownership.sh "
-            "on the host, then restart this service. That step leaves the "
-            "key owned by whoever created it and only adds group read for "
-            "the runtime user (mode 0640, group = the container's gid); it "
-            "does not move ownership away from the deployer. "
-            "Do not chmod the key world-readable as a workaround."
+            "若資料庫裡已經有金鑰圈，這個 PEM 只是備份，讀不到也不影響簽名，服務不會刪除它。"
+            "若這是第一次匯入，在主機執行 "
+            "infra/deployment/scripts/fix-runtime-ownership.sh 後重啟，"
+            "讓執行身分讀得到檔案（0640，不要改成全世界可讀）。"
+            "還原已輪替的鑰匙要靠資料庫備份與同一把 SECRET_KEY，不是把 PEM 重產一次。"
         ) from exc
 
 
@@ -229,47 +208,71 @@ def _load_keys() -> tuple[bytes, bytes]:
     return private_pem, public_pem
 
 
-def get_private_key() -> bytes:
-    """Return the RS256 signing key (PKCS#8 PEM bytes)."""
-    private_pem, _ = _load_keys()
-    return private_pem
+def get_private_key(db=None) -> bytes:
+    """目前 active 簽章鑰（PKCS#8 PEM）。金鑰圈是空的才會匯入 PEM。"""
+    from app.services.jwt_keyring import active_private_pem
+
+    return active_private_pem(db)
 
 
-def get_public_key() -> bytes:
-    """Return the RS256 verification key (SPKI PEM bytes).
+def get_public_key(db=None) -> bytes:
+    """目前 active 的公鑰（SPKI PEM）。"""
+    from app.services.jwt_keyring import public_pem_for_published_kid
 
-    Exposed so the JWKS endpoint can serialise the public modulus
-    without re-reading from disk.
-    """
-    _, public_pem = _load_keys()
-    return public_pem
+    kid = get_kid(db)
+    pem = public_pem_for_published_kid(kid, db)
+    if pem is None:
+        raise JwtKeyLoadError("金鑰圈沒有可公布的 active 公鑰")
+    return pem
 
 
-def _public_key_for_kid(kid: str | None) -> bytes | None:
-    """Resolve a JWT ``kid`` header value to the matching public key.
+def _public_key_for_kid(kid: str | None, db=None) -> bytes | None:
+    """依 kid 取仍可驗簽的公鑰。next、已退役、沒有 kid 都回 None。"""
+    from app.services.jwt_keyring import verification_material
 
-    Today we host exactly one active key (``settings.JWT_KID``). Future
-    rotations (``anila-v2`` etc.) drop in here without touching the
-    rest of the verify path. A missing or unknown ``kid`` returns None
-    so the verifier can reject the token deterministically.
-    """
     if not kid:
         return None
-    if kid == settings.JWT_KID:
-        return get_public_key()
-    return None
+    material = verification_material(kid, db)
+    if material is None:
+        return None
+    return material.public_pem
+
+
+def _claims_if_issuance_allowed(token: str, db, **decode_kwargs):
+    """驗簽並套用簽發期間。失敗回 None。"""
+    from app.services.jwt_keyring import issuance_allowed, verification_material
+
+    try:
+        header = jwt.get_unverified_header(token)
+    except JWTError:
+        return None
+    if header.get("alg") != ALGORITHM:
+        return None
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        return None
+    material = verification_material(kid, db)
+    if material is None:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            material.public_pem,
+            algorithms=[ALGORITHM],
+            **decode_kwargs,
+        )
+    except (JWTError, TypeError):
+        return None
+    if not issuance_allowed(material, payload):
+        return None
+    return payload
 
 
 # ── Token signing ─────────────────────────────────────────────────────────────
 
-def _jwt_headers() -> dict:
-    """Headers attached to every CSP-signed JWT.
-
-    The ``kid`` lets downstream verifiers pick the right JWKS entry.
-    ``typ`` follows RFC 7519 §5.1 so generic JWT tooling treats the
-    payload correctly.
-    """
-    return {"kid": settings.JWT_KID, "typ": "JWT"}
+def _jwt_headers(db=None) -> dict:
+    """每張 CSP 簽的 JWT 都帶目前 active 的 kid。"""
+    return {"kid": get_kid(db), "typ": "JWT"}
 
 
 def _setting_at_issuance(db, key: str) -> int:
@@ -306,15 +309,17 @@ def create_access_token(
         lifetime_minutes = _setting_at_issuance(
             db, "auth.access_token_expire_minutes"
         )
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=lifetime_minutes
-    )
-    to_encode.update({"exp": expire, "type": "access"})
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=lifetime_minutes)
+    to_encode.update({"exp": expire, "iat": int(now.timestamp()), "type": "access"})
+    from app.services.jwt_keyring import active_signing_material
+
+    material = active_signing_material(db)
     return jwt.encode(
         to_encode,
-        get_private_key(),
+        material.private_pem,
         algorithm=ALGORITHM,
-        headers=_jwt_headers(),
+        headers={"kid": material.kid, "typ": "JWT"},
     )
 
 
@@ -329,62 +334,44 @@ def create_refresh_token(
         lifetime_days = _setting_at_issuance(
             db, "auth.refresh_token_expire_days"
         )
-    expire = datetime.now(timezone.utc) + timedelta(
-        days=lifetime_days
-    )
-    to_encode.update({"exp": expire, "type": "refresh"})
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=lifetime_days)
+    to_encode.update({"exp": expire, "iat": int(now.timestamp()), "type": "refresh"})
+    from app.services.jwt_keyring import active_signing_material
+
+    material = active_signing_material(db)
     return jwt.encode(
         to_encode,
-        get_private_key(),
+        material.private_pem,
         algorithm=ALGORITHM,
-        headers=_jwt_headers(),
+        headers={"kid": material.kid, "typ": "JWT"},
     )
 
 
 # ── Token verification ────────────────────────────────────────────────────────
 
-def decode_token(token: str) -> dict | None:
-    """Verify ``token`` and return its claims, or None on any failure.
+def decode_token(token: str, db=None) -> dict | None:
+    """驗 RS256 權杖。失敗回 None，不丟例外給呼叫端。
 
-    Defence-in-depth:
-
-    1. Reject the token outright if its header is malformed or its
-       ``kid`` is missing/unknown — refusing to look up a key means the
-       generic verify path never has a chance to mis-fire.
-    2. Call ``jwt.decode`` with an explicit ``algorithms=["RS256"]``
-       allowlist so ``alg=none`` and ``alg=HS256`` are rejected before
-       any key material is touched (algorithm-confusion defence).
-    3. Any ``JWTError`` (expired, bad signature, claim mismatch, …)
-       returns None — callers raise the user-facing 401 themselves.
+    沒有 kid、kid 不是 active／retiring、演算法不是 RS256，都不放行。
+    next 只公布、不驗簽。retiring 還要 iat 早於退役時間。
+    ``algorithms=["RS256"]`` 再擋一次 alg=none／HS256。
     """
-    try:
-        header = jwt.get_unverified_header(token)
-    except JWTError:
+    if not token or not isinstance(token, str):
         return None
-    kid = header.get("kid")
-    public_key = _public_key_for_kid(kid)
-    if public_key is None:
-        return None
-    try:
-        return jwt.decode(
-            token,
-            public_key,
-            algorithms=[ALGORITHM],
-        )
-    except JWTError:
-        return None
+    return _claims_if_issuance_allowed(token, db)
 
 
-def verify_token(token: str) -> dict | None:
-    """Alias for ``decode_token`` — kept so callers reading the name
-    understand the intent without surprising them on rename. Both go
-    through the same RS256 verify path."""
-    return decode_token(token)
+def verify_token(token: str, db=None) -> dict | None:
+    """``decode_token`` 的別名。"""
+    return decode_token(token, db=db)
 
 
-def get_kid() -> str:
-    """Active signing key id — exposed for the JWKS endpoint."""
-    return settings.JWT_KID
+def get_kid(db=None) -> str:
+    """目前拿來簽名的 kid。"""
+    from app.services.jwt_keyring import active_kid
+
+    return active_kid(db)
 
 
 __all__ = [

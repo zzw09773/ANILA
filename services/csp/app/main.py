@@ -24,6 +24,7 @@ from app.api.platform_settings import router as platform_settings_router
 from app.api.router_prompts import router as router_prompts_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
+import app.models.jwt_signing_key  # noqa: F401  註冊 jwt_signing_keys
 from app.services.auth_service import require_admin
 
 APP_NAME = "ANILA"
@@ -397,6 +398,20 @@ async def lifespan(app: FastAPI):
         provision_internal_service_clients_once()
         provision_task = await start_internal_service_client_provisioner()
 
+    # 簽章金鑰圈：啟動先匯入或推進一次，之後週期檢查。多個 worker 靠資料庫鎖。
+    from app.services.jwt_keyring import (
+        assert_active_key_decryptable,
+        maintain_jwt_keyring_once,
+        maintainer_enabled as jwt_keyring_maintainer_enabled,
+        start_jwt_keyring_maintainer,
+    )
+
+    keyring_task = None
+    if jwt_keyring_maintainer_enabled():
+        maintain_jwt_keyring_once(strict=True)
+        keyring_task = await start_jwt_keyring_maintainer()
+    assert_active_key_decryptable()
+
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
     # listing + agent-scoped FTS). The pool registers vector / halfvec
@@ -425,6 +440,8 @@ async def lifespan(app: FastAPI):
         ledger_task.cancel()
     if provision_task:
         provision_task.cancel()
+    if keyring_task:
+        keyring_task.cancel()
     if external_probe_task:
         external_probe_task.cancel()
     memory_task.cancel()

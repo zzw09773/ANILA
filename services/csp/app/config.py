@@ -16,13 +16,8 @@ class Settings(BaseSettings):
     # 但保留供 startup_security guard 與 credential_crypto 等模組使用。
     SECRET_KEY: str = "your-secret-key-change-this-in-production"
 
-    # RS256 asymmetric signing material. Private key is PKCS#8 PEM,
-    # public key is SPKI PEM. JWKS endpoint serves the public key under
-    # ``kid = JWT_KID`` so anila-studio (and any future verifier) can
-    # validate CSP-signed JWTs without sharing a symmetric secret.
-    #
-    # Key files are fixed at secrets/jwt-{private,public}.pem in the security
-    # helper; only the deployment key id remains configurable here.
+    # 金鑰圈是空的時候，第一次啟動把 secrets/jwt-{private,public}.pem
+    # 以這個 kid 匯入成 active。之後簽名不再讀 PEM；檔案可以留作備份。
     JWT_KID: str = "anila-v1"
 
     # Admin Account

@@ -9,6 +9,20 @@
 
     <p v-if="countWarning" class="settings-count-warning">{{ countWarning }}</p>
 
+    <TermBox title="簽章金鑰" hint="平常由系統自動輪替，不會把人登出。緊急輪替會立刻換一把新金鑰。">
+      <div class="settings-emergency">
+        <p class="cell-meta">所有人會被登出，進行中的派工權杖會失效。自行驗證派工權杖的 agent 最多還能接受舊鑰 5 分鐘</p>
+        <TermButton
+          variant="danger"
+          :loading="emergencyBusy"
+          label="緊急輪替簽章金鑰"
+          @click="handleEmergencyRotate"
+        />
+        <p v-if="emergencyNotice" class="setting-notice setting-notice--ok" role="status">{{ emergencyNotice }}</p>
+        <p v-if="emergencyError" class="setting-error" role="alert">{{ emergencyError }}</p>
+      </div>
+    </TermBox>
+
     <PageState
       :loading="state === 'loading'"
       :error="state === 'failed' ? (loadError || overviewStateMessage('failed')) : ''"
@@ -144,6 +158,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { getPlatformSettingsOverview, updatePlatformSetting } from '../api/platformSettings'
+import { emergencyRotateJwtSigningKey, JWT_EMERGENCY_CONFIRM } from '../api/jwtKeyring'
+import { useDialog } from '../composables/useDialog'
 import { TermBox, TermButton, TermEmpty, PageHead, PageState } from '../components/cli'
 import {
   canEdit,
@@ -172,6 +188,10 @@ const drafts = ref({})
 const errors = ref({})
 const notices = ref({})
 const saving = ref({})
+const emergencyBusy = ref(false)
+const emergencyNotice = ref('')
+const emergencyError = ref('')
+const { confirm } = useDialog()
 
 const state = computed(() => overviewState({ loaded: loaded.value, error: loadError.value, items: items.value }))
 const sections = computed(() => groupIntoSections(items.value))
@@ -217,6 +237,27 @@ async function load() {
 
 onMounted(load)
 
+async function handleEmergencyRotate() {
+  const ok = await confirm({
+    title: '緊急輪替簽章金鑰',
+    message: `${JWT_EMERGENCY_CONFIRM}。新的簽章立刻生效，其餘金鑰不再公布。`,
+    confirmText: '緊急輪替',
+    danger: true,
+  })
+  if (!ok) return
+  emergencyBusy.value = true
+  emergencyNotice.value = ''
+  emergencyError.value = ''
+  try {
+    await emergencyRotateJwtSigningKey()
+    emergencyNotice.value = JWT_EMERGENCY_CONFIRM
+  } catch (error) {
+    emergencyError.value = extractDetail(error, '緊急輪替失敗')
+  } finally {
+    emergencyBusy.value = false
+  }
+}
+
 async function handleResetToDefault(item) {
   // 「重設」就是把出貨全文存回去：走同一條 PUT，同一筆稽核。
   drafts.value[item.key] = item.default
@@ -246,6 +287,7 @@ async function handleSave(item) {
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .settings-region { display: flex; flex-direction: column; gap: var(--gap-4); min-width: 0; }
+.settings-emergency { display: flex; flex-direction: column; gap: var(--gap-2); padding: var(--gap-3); }
 .cell-strong { color: var(--c-fg-1); font-weight: 600; font-size: var(--t-sm); line-height: var(--lh-tight); overflow-wrap: anywhere; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); overflow-wrap: anywhere; }
 .cell-meta--key { font-family: var(--font-mono); margin-top: 2px; }
