@@ -104,6 +104,14 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 
 憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
 
+## 備份（2026-09-27）
+
+compose 的 `backup` 服務跟資料庫共用 `anila-pgvector:local`。起來先備份一輪，成功後每 24 小時再跑；失敗約 15 分鐘後重試。產出在 repo 的 `share/backups/`（宿主機路徑可用 `ANILA_BACKUP_DIR` 改）。內容是 `pg_dump -Fc`，加上上傳、附件、靜態檔、公開 CA、快速起步 profile、Studio 成品、路由會話、n8n。保留 14 份每日、6 份每月。
+
+`status.json` 只讀掛進 CSP。治理中心儀表板顯示「最後一次備份」。超過 36 小時沒有成功，或最近一輪失敗，走既有告警。
+
+`.env`、`secrets/`、CSP 本地金鑰 volume、nginx 私鑰要另外留一次。模型權重與 Redis 不在每日包裡。另一台用 `docs/runbooks/csp-db-backup-restore.md` 的 rsync 來拉。平台這台不設定對方位址，也不要再跑 `backup-csp-db.sh` 或改 crontab。
+
 ## 尚未當成上線完成的項目
 
 - P2.6 打 tag／重打包
@@ -117,4 +125,4 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 1. Shell／治理測試基線（composer accessible name、群組 `extractError`）
 2. 共用工作站資料夾 localStorage 依帳號隔離
 3. 檢索 `calibrated` 必須對應當下 embedding 模型
-4. DB 備份不可在多個 `csp-db` 時猜第一個；復原清單含附件
+4. （2026-09-27 已處理）備份由 compose 的 `backup` 服務排程，還原含資料庫與檔案。見 `docs/runbooks/csp-db-backup-restore.md`。

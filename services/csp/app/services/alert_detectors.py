@@ -23,6 +23,7 @@ from app.database import SessionLocal, engine
 from app.models.alert import Alert
 from app.services.alert_notifier import notify_alert_opened
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
+from app.services.backup_status import BackupAssessment, assess_backup
 from app.services.storage_paths import (
     ATTACHMENT_STORAGE_ROOT,
     INGESTION_UPLOAD_ROOT,
@@ -51,6 +52,26 @@ DISK_CRIT_PCT = 95.0
 FP_PLATFORM_INGRESS = "platform:ingress"
 FP_DB_SERVER = "db:server_gone"
 FP_DB_POOL = "db:pool_exhausted"
+FP_BACKUP = "backup:stale"
+
+_BACKUP_ALERTS = {
+    "missing": (
+        "還沒有成功的備份",
+        "備份目錄已經掛上，但還沒有成功的狀態。請確認 backup 服務有在跑。",
+    ),
+    "unreadable": (
+        "備份狀態讀不到",
+        "備份狀態檔損壞或無法讀取。請看 backup 服務的日誌。",
+    ),
+    "failed": (
+        "最近一次備份失敗",
+        "最近一次備份沒有成功。請看 backup 服務的日誌，並確認磁碟還有空間。",
+    ),
+    "stale": (
+        "備份超過 36 小時沒有成功",
+        "距離最後一次成功備份已超過 36 小時。請確認 backup 服務有在每天跑。",
+    ),
+}
 
 
 # ── In-memory consecutive counters ───────────────────────────────────────────
@@ -570,6 +591,50 @@ def evaluate_disk(
     return samples
 
 
+# ── 6. Backup freshness (status file from the compose backup service) ────────
+
+
+def evaluate_backup(*, db=None, path=None, now=None) -> str:
+    """開告警：最近一輪失敗，或最後一次成功早於 36 小時。
+
+    掛載目錄不存在時回 ``unwired`` 且不動告警帳（單元測試沒有這份掛載）。
+    成功且還新的時候把同一支指紋結案。
+    """
+    assessment: BackupAssessment = assess_backup(now=now, path=path)
+    reason = assessment.reason
+    if reason == "unwired":
+        return reason
+    if reason == "ok":
+        _with_db(db, resolve_fp=FP_BACKUP)
+        return reason
+    title, message = _BACKUP_ALERTS[reason]
+    parsed = assessment.parsed
+    _with_db(
+        db,
+        emit_kwargs={
+            "fingerprint": FP_BACKUP,
+            "category": "backup",
+            "severity": "high",
+            "title": title,
+            "message": message,
+            "source_type": "backup",
+            "source_id": "platform",
+            "metadata": {
+                "reason": reason,
+                "last_result": parsed.last_result if parsed else None,
+                "last_run_at": parsed.last_run_at.isoformat() if parsed else None,
+                "last_success_at": (
+                    parsed.last_success_at.isoformat()
+                    if parsed and parsed.last_success_at
+                    else None
+                ),
+                "last_size_bytes": parsed.last_size_bytes if parsed else None,
+            },
+        },
+    )
+    return reason
+
+
 # ── Background loop ──────────────────────────────────────────────────────────
 
 ALERT_INTERVAL_SECONDS = 60
@@ -588,6 +653,7 @@ async def _alert_detector_loop() -> None:
         try:
             evaluate_database()
             evaluate_disk()
+            evaluate_backup()
             await evaluate_platform_ingress()
         except asyncio.CancelledError:
             raise
@@ -606,7 +672,7 @@ async def start_alert_detectors() -> asyncio.Task:
     Gateway + agent streaks are event-driven from the proxy path.
     """
     logger.info(
-        "告警偵測背景任務已啟動 (platform/db/disk; gateway/agent via proxy; "
+        "告警偵測背景任務已啟動 (platform/db/disk/backup; gateway/agent via proxy; "
         "SMTP=%s)",
         "unwired",
     )

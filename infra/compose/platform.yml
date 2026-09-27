@@ -55,6 +55,49 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
+  # ── 每日備份（同一張 postgres 映像，不另做要搬的 image）────────────────
+  # 啟動先跑一輪，成功後每 24 小時再跑；失敗約 15 分鐘後重試。
+  # 宿主機目錄預設是 repo 的 share/backups（ANILA_BACKUP_DIR 可改）。
+  # 容器裡寫入路徑固定是 /backups，跟宿主機變數不是同一個字。
+  # 帳密用 csp-db 同一組 CSP_DB_PASSWORD，不新增祕密。
+  # entrypoint 換掉，否則映像會去啟動另一份 Postgres。
+  backup:
+    build:
+      context: ../..
+      dockerfile: infra/docker/pgvector.Dockerfile
+    image: anila-pgvector:local
+    user: "0:0"
+    entrypoint: ["/bin/sh"]
+    command: ["/usr/local/bin/backup-loop.sh"]
+    environment:
+      POSTGRES_USER: csp
+      POSTGRES_PASSWORD: ${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (postgres superuser password)}
+      POSTGRES_DB: csp
+      PGHOST: csp-db
+      ANILA_BACKUP_DIR: /backups
+      ANILA_BACKUP_SRC: /backup-src
+      # 跟 code-server 同一組宿主機 UID，拉備份的帳號才讀得到 dump。
+      BACKUP_FILE_UID: "${UID:-0}"
+      BACKUP_FILE_GID: "${GID:-0}"
+      TZ: Asia/Taipei
+    volumes:
+      - ../../infra/deployment/scripts/backup-loop.sh:/usr/local/bin/backup-loop.sh:ro
+      - ../../infra/deployment/scripts/backup-lib.sh:/usr/local/bin/backup-lib.sh:ro
+      - ../../share/uploads:/backup-src/uploads:ro
+      - ../../share/attachments:/backup-src/attachments:ro
+      - ../../share/static:/backup-src/static:ro
+      - ../../share/pki:/backup-src/pki:ro
+      - "${ANILA_QUICKSTART_PROFILE_DIR:-../../share/quickstart}:/backup-src/quickstart:ro"
+      - anila-studio-artifacts:/backup-src/studio-artifacts:ro
+      - router-sessions:/backup-src/router-sessions:ro
+      - n8n_data:/backup-src/n8n:ro
+      - ${ANILA_BACKUP_DIR:-../../share/backups}:/backups
+    depends_on:
+      csp-db:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *anila-logging
+
   # 憑證子目錄的擁有者必須是 10005，不能由 uid 10001 的 CSP 自己 mkdir。
   # 既有 volume 不會從映像繼承新目錄，所以每次啟動都用 root 補一次。
   csp-credential-dirs:
@@ -248,6 +291,8 @@ services:
       - anila-service-credentials:/run/anila/service-clients
       # 外部服務憑證的金鑰。只掛在 CSP。worker 沒有這一卷，也沒有 SECRET_KEY 以外的解法。
       - anila-csp-local-secrets:/var/anila/csp-local-secrets
+      # 備份狀態。路徑寫死，不另設環境變數。CSP 只讀 status.json。
+      - ${ANILA_BACKUP_DIR:-../../share/backups}:/var/anila/backup-status:ro
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"

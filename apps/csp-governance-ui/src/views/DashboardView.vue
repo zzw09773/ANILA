@@ -23,6 +23,23 @@
       <AlertSummaryCard :raw="alertSummary" :page-error="alertError" />
     </section>
 
+    <TermBox
+      v-if="authStore.isAdmin"
+      title="最後一次備份"
+      :hint="backupError ? '載入失敗' : backupCard.hint"
+      pad="md"
+    >
+      <div v-if="backupError" class="cutover-state">
+        <p class="feedback is-err">! {{ backupError }}</p>
+        <TermButton size="xs" variant="ghost" label="重試" @click="fetchBackupStatus" />
+      </div>
+      <div v-else class="cutover__stats">
+        <TermStat label="時間" :value="backupCard.timeLabel" format="raw" />
+        <TermStat label="結果" :value="backupCard.resultLabel" format="raw" :tone="backupCard.tone === 'warn' ? 'warn' : 'default'" />
+        <TermStat label="大小" :value="backupCard.sizeLabel" format="raw" />
+      </div>
+    </TermBox>
+
 
     <!-- KPI strip ------------------------------------------------------- -->
     <section class="kpi-grid">
@@ -146,7 +163,9 @@ import { useAuthStore } from '../stores/auth'
 import { listPlatformLinks } from '../api/platformLinks'
 import { getHealthOverview } from '../api/health'
 import { getAlertSummary } from '../api/alerts'
+import { getBackupStatus } from '../api/backup'
 import { extractError } from '../api/errors'
+import { summarizeBackupStatus } from '../utils/backupStatus'
 import client from '../api/client'
 import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
 import { formatDate } from '../utils/formatDate'
@@ -189,6 +208,20 @@ const healthLoading = ref(false)
 const healthError = ref('')
 const alertSummary = ref(null)
 const alertError = ref('')
+const backupRaw = ref(null)
+const backupError = ref('')
+const backupTried = ref(false)
+
+const backupCard = computed(() => {
+  if (!backupTried.value) {
+    return { timeLabel: '—', resultLabel: '載入中', sizeLabel: '—', tone: 'ok', hint: '載入中' }
+  }
+  const summary = summarizeBackupStatus(backupRaw.value)
+  return {
+    ...summary,
+    timeLabel: summary.time ? formatDate(summary.time) : '—',
+  }
+})
 
 async function fetchHealthOverview() {
   if (!authStore.isAdmin) return
@@ -202,6 +235,20 @@ async function fetchHealthOverview() {
     healthError.value = extractError(e, '載入服務健康總覽失敗')
   } finally {
     healthLoading.value = false
+  }
+}
+
+async function fetchBackupStatus() {
+  if (!authStore.isAdmin) return
+  backupError.value = ''
+  try {
+    const { data } = await getBackupStatus()
+    backupRaw.value = data
+  } catch (e) {
+    backupRaw.value = null
+    backupError.value = extractError(e, '載入備份狀態失敗')
+  } finally {
+    backupTried.value = true
   }
 }
 
@@ -286,6 +333,7 @@ async function refresh() {
     // 健康總覽與告警摘要(P3.3)也獨立沉澱:健康探測掛掉不該讓用量看起來是 0。
     const health = fetchHealthOverview().catch(() => {})
     const alerts = fetchAlertSummary().catch(() => {})
+    const backup = fetchBackupStatus().catch(() => {})
 
     let usageOk = false
     try {
@@ -314,7 +362,7 @@ async function refresh() {
       }
     }
 
-    await Promise.all([admin, health, alerts])
+    await Promise.all([admin, health, alerts, backup])
     if (usageOk) refreshedAt.value = new Date()
   } finally {
     loading.value = false

@@ -870,10 +870,11 @@ wildcard 憑證 2029 到期;換發後同 §2.2 步驟 1 重抽,`docker compose -
 NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p anila restart csp`。
 （§5.2 的 restart 沒問題：憑證／CA 是**目錄**掛載，不是單檔 inode 綁定，換成新檔後 restart 就能讀到。）
 
-### 5.3 Postgres backup
+### 5.3 備份
 
-權威手順（排程、保留、還原演練）見 [`csp-db-backup-restore.md`](./csp-db-backup-restore.md)。  
-一行備忘：`ANILA_DB_CONTAINER=… ANILA_BACKUP_DIR=/var/backups/anila bash infra/deployment/scripts/backup-csp-db.sh`
+`backup` 服務隨 compose 起來，每天寫入 `share/backups/`。不要改 crontab，也不要再跑 `backup-csp-db.sh`。  
+另一台機器用 runbook 裡的那條 `rsync` 來拉。平台這台不用知道對方位址。  
+手順：[`csp-db-backup-restore.md`](./csp-db-backup-restore.md)。
 
 ### 5.4 加 owner / 模型 gateway key 輪替
 
