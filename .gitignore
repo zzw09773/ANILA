@@ -142,10 +142,9 @@ packages/anila-agent/templete/openai-agents-python/
 packages/anila-agent/templete/antigravity-sdk-python/
 
 # ── runtime data: n8n workflow assets / uploads ───────────────────────────────
-# Static templates (e.g. fina./) and user uploads served by nginx at /static
-# and /uploads. These are workflow-specific runtime data, not source code —
-# back them up out-of-band. README.md is tracked so the directory layout
-# stays self-documenting for fresh checkouts.
+# Static templates and user uploads served by nginx at /static and /uploads.
+# Runtime data, not source code. The compose backup service snapshots them
+# into share/backups/. README.md is tracked so the directory layout stays.
 share/static/
 share/uploads/
 share/attachments/
@@ -159,6 +158,8 @@ share/codeserver-sandbox/
 # 不進版控，避免把現場 origin 當成預設值提交。
 share/quickstart/
 share-dev/quickstart/
+# compose backup 服務的每日產出（資料庫 dump 與檔案 tar）。不進版控。
+share/backups/
 
 # ── Misc dev tooling ──────────────────────────────────────────────────────────
 # Observer / loop process locks
