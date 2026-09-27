@@ -46,3 +46,13 @@ describe('ANILA LM 外連', () => {
     expect(INJECTION_NOTICE).toBe('參考資料中有疑似指令，已忽略')
   })
 })
+
+describe('不是標籤開頭的小於號', () => {
+  it('x < 5 與 y <= 3 原樣保留，<script 仍被擋', async () => {
+    const { neutralizeUntrustedMarkdown } = await import('./untrustedOutput')
+    const out = neutralizeUntrustedMarkdown('x < 5 且 y <= 3，<script>alert(1)</script>')
+    expect(out).toContain('x < 5')
+    expect(out).toContain('y <= 3')
+    expect(out).not.toContain('<script')
+  })
+})

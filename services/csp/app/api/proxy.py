@@ -909,8 +909,12 @@ def _take_external_sidechannel(body: dict) -> tuple[TurnSidechannel, object]:
 
 
 def _apply_output_guard(payload, side: TurnSidechannel):
-    """非串流回答：回聲不當指令、外連改純文字、尾段固定句遮掉。"""
-    if not isinstance(payload, dict):
+    """非串流回答：回聲不當指令、外連改純文字、尾段固定句遮掉。
+
+    只在這一輪真的放進外來內容時才改寫；Studio 等內部呼叫要的是原樣輸出
+    （例如 SVG）；不是對話回合又沒有外來內容，就沒有要防的東西。
+    """
+    if not isinstance(payload, dict) or not side.guard_output:
         return payload
     choices = payload.get("choices")
     if isinstance(choices, list):
@@ -1009,7 +1013,14 @@ async def _guard_sse_stream(
     side: TurnSidechannel,
     actor,
 ) -> AsyncIterator[str]:
-    """串流出口套上輸出檢查。可疑標記由後面的 meta 框補上。"""
+    """串流出口套上輸出檢查。可疑標記由後面的 meta 框補上。
+
+    不是對話介面的回合、也沒有外來內容時原樣轉送（見 ``_apply_output_guard``）。
+    """
+    if not side.guard_output:
+        async for chunk in upstream:
+            yield chunk
+        return
     guard = StreamTextGuard(side.originals, side.protocol_lines)
     buf = ""
     try:
@@ -1695,8 +1706,12 @@ async def chat_completions(
     conv_id_int = _coerce_conversation_id(conversation_id)
     if conv_id_int is not None:
         _require_conversation_access(db, caller, conv_id_int)
+    # 對話回合＝對話介面帶了對話 id，或是 router 的答案通道。Studio 與 CSP
+    # 自己的內部呼叫兩者都沒有：不注入個人記憶，輸出也不改寫。
+    marked = _route_marked(request.headers)
+    side.chat_turn = marked or conv_id_int is not None
     memory_read = None
-    if _target_allows_memory(agent):
+    if side.chat_turn and _target_allows_memory(agent):
         memory_read = await _inject_memory(
             db,
             user.id,
@@ -1725,7 +1740,7 @@ async def chat_completions(
     kb_result = await _retrieve_institutional_kb(
         db,
         user,
-        marked=_route_marked(request.headers),
+        marked=marked,
         query=captured_user_text,
     )
     # 優先順序先附上，規章區塊（含語言提醒）才會留在系統訊息最後一行。

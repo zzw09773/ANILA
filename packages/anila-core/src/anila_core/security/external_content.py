@@ -664,7 +664,11 @@ def _escape_html_open(text: str) -> str:
             break
         pieces.append(text[index:at])
         match = _PLATFORM_AUTOLINK.match(text[at + 1 :])
+        following = text[at + 1 : at + 2]
         if match is not None and is_platform_url(match.group(1)):
+            pieces.append("<")
+        elif not following or not (following.isascii() and (following.isalpha() or following in "/!?")):
+            # 「x < 5」這種不是標籤開頭，原樣保留。
             pieces.append("<")
         else:
             pieces.append(_TAG_LT)
@@ -821,6 +825,18 @@ class TurnSidechannel:
     originals: list[str] = field(default_factory=list)
     protocol_lines: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    # 對話介面送來的一輪（Shell 帶院規標頭）。內部服務（Studio 等）不是。
+    chat_turn: bool = False
+
+    @property
+    def has_external(self) -> bool:
+        """這一輪有沒有經 CSP 放進外來內容（規章、附件、段落、協定行）。"""
+        return bool(self.originals or self.protocol_lines or self.findings)
+
+    @property
+    def guard_output(self) -> bool:
+        """對話介面的回合，或放進了外來內容，才改寫模型輸出。"""
+        return self.chat_turn or self.has_external
 
     @property
     def suspicious(self) -> bool:

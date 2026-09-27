@@ -163,6 +163,8 @@ function escapeHtmlOpen(text) {
   return text.replace(/</g, (match, offset, whole) => {
     const auto = /^(https?:\/\/[^>\s]+)>/.exec(whole.slice(offset + 1));
     if (auto && isPlatformUrl(auto[1])) return "<";
+    // 「x < 5」不是標籤開頭，原樣保留。
+    if (!/^[A-Za-z/!?]/.test(whole.slice(offset + 1, offset + 2))) return "<";
     return TAG_LT;
   });
 }

@@ -12,6 +12,7 @@ from app.api import models as models_api
 from app.api import proxy as proxy_api
 from app.middleware.caller import Caller
 from app.models.agent import Agent
+from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
 from app.services import memory_service, proxy_service
 from app.services.proxy import service as proxy_impl
@@ -124,17 +125,25 @@ def _body_text(body: dict) -> str:
 
 
 class _Request:
-    def __init__(self, body: dict):
+    def __init__(self, body: dict, headers: dict | None = None):
         self._body = body
-        self.headers = {}
+        self.headers = headers or {}
 
     async def json(self):
         return self._body
 
 
-async def _call_chat(db: Session, caller_user, body: dict):
+async def _call_chat(db: Session, caller_user, body: dict, *, chat_turn: bool = True):
+    # 記憶只在對話回合注入：預設模擬對話介面帶著自己的對話 id。
+    headers: dict = {}
+    if chat_turn:
+        conv = Conversation(user_id=caller_user.id, title="q50", origin="anila-ui")
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        headers["X-ANILA-Conversation-Id"] = str(conv.id)
     response = await proxy_api.chat_completions(
-        _Request(body),
+        _Request(body, headers),
         caller=Caller(user=caller_user, api_key_id=None),
         db=db,
     )
@@ -344,3 +353,33 @@ def test_memory_target_predicate_depends_only_on_registered_agent_identity():
 
     assert proxy_api._target_allows_memory(None) is True
     assert proxy_api._target_allows_memory(agent) is False
+
+
+@pytest.mark.asyncio
+async def test_internal_service_call_gets_no_personal_memory(db: Session, monkeypatch):
+    """Studio 等內部呼叫（沒有對話 id、不是 router 答案通道）不注入個人記憶。
+    2026-09-27：記憶曾被塞進 Studio 寫簡報的呼叫。"""
+    caller = make_user(db, username="q50-internal-caller", role="admin")
+    model = make_model(db, name="q50-internal-model")
+
+    called = []
+
+    async def _memory_if_called(*args, **kwargs):
+        called.append(True)
+        return MemoryReadResult(block=_MEMORY_SENTINEL, facts_count=1, chunks=[])
+
+    monkeypatch.setattr(memory_service, "build_memory_block", _memory_if_called)
+
+    await _call_chat(
+        db,
+        caller,
+        {
+            "model": model.name,
+            "stream": False,
+            "messages": [{"role": "user", "content": "寫一份簡報大綱"}],
+        },
+        chat_turn=False,
+    )
+
+    assert called == []
+    assert _MEMORY_SENTINEL not in json.dumps(_CapturingClient.last_body, ensure_ascii=False)

@@ -57,3 +57,13 @@ describe("回覆詳情", () => {
     expect(screen.getByText(INJECTION_NOTICE)).toBeTruthy();
   });
 });
+
+describe("不是標籤開頭的小於號", () => {
+  it("x < 5 與 y <= 3 原樣保留，<script 仍被擋", async () => {
+    const { neutralizeUntrustedMarkdown } = await import("../runtime/untrustedOutput.js");
+    const out = neutralizeUntrustedMarkdown("x < 5 且 y <= 3，<script>alert(1)</script>");
+    expect(out).toContain("x < 5");
+    expect(out).toContain("y <= 3");
+    expect(out).not.toContain("<script");
+  });
+});

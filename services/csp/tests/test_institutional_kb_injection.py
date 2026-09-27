@@ -1054,3 +1054,27 @@ def test_benign_regulation_passage_is_not_flagged(
         .all()
     )
     assert rows == []
+
+
+def test_internal_call_output_is_passed_through_unchanged(
+    client, db, actor, model_target, kb
+):
+    """Studio 等內部呼叫（沒有院規標頭、沒有外來內容）要原樣拿到輸出。
+    2026-09-27 回歸：SVG 的 `<` 被改成 `‹`，簡報結構驗證失敗。"""
+    svg = '<svg viewBox="0 0 10 10"><text x="1" y="5">N+1</text></svg>'
+    _FakeClient.reply_content = svg
+    resp = _chat(client, actor, target=model_target.name, route=None)
+    assert resp.json()["choices"][0]["message"]["content"] == svg
+
+
+def test_less_than_that_is_not_a_tag_survives_the_guard(
+    client, db, actor, model_target, kb
+):
+    """對話回合仍有輸出檢查，但「x < 5」不是標籤，不該被改。"""
+    kb.result = KbResult(state=KbState.SEARCHED_MISS)
+    _FakeClient.reply_content = "條件是 x < 5 且 y <= 3，<script>alert(1)</script>"
+    resp = _chat(client, actor, target=model_target.name, route="direct")
+    answer = resp.json()["choices"][0]["message"]["content"]
+    assert "x < 5" in answer
+    assert "y <= 3" in answer
+    assert "<script" not in answer
