@@ -18,7 +18,6 @@
           <select v-model="selectedModelType" @change="onModelTypeChange" class="term-select">
             <option :value="null">全部</option>
             <option value="llm">llm</option>
-            <option value="vlm">vlm</option>
             <option value="embedding">embedding</option>
             <option value="agent">agent</option>
           </select>

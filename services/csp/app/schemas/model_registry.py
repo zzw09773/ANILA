@@ -11,6 +11,15 @@ ALLOWED_API_VERSIONS = frozenset({"v1", "v2"})
 # App-level only (no DB CHECK). custom_adapter remains rejected at the API.
 ALLOWED_PROTOCOLS = frozenset({"openai_compatible", "triton_grpc"})
 
+# 視覺能力不是登錄類型。現代模型同時是語言模型與視覺模型。
+VLM_TYPE_REJECTED = "沒有獨立的 vlm 類型，請登記為 llm"
+
+
+def reject_retired_vlm_type(value: str | None) -> str | None:
+    if isinstance(value, str) and value.strip().lower() == "vlm":
+        raise ValueError(VLM_TYPE_REJECTED)
+    return value
+
 
 def _validate_classification_ceiling(value: str | None) -> str | None:
     """None = 不設限;otherwise must be a ClassificationLevel storage value."""
@@ -115,7 +124,7 @@ def _validate_gateway_key(v: str | None) -> str | None:
 class ModelCreate(BaseModel):
     name: str
     display_name: str
-    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image' / 'asr'
+    model_type: str  # 'llm' / 'embedding' / 'agent' / 'image' / 'asr'
     endpoint_url: str
     # URL path prefix for OpenAI-compatible endpoints only (v1/v2).
     # Ignored for protocol=triton_grpc (gRPC has no versioned HTTP path).
@@ -154,6 +163,11 @@ class ModelCreate(BaseModel):
     thinking_user_selectable: bool = True
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("model_type")
+    @classmethod
+    def _model_type(cls, v: str) -> str:
+        return reject_retired_vlm_type(v)  # type: ignore[return-value]
 
     @field_validator("api_key")
     @classmethod
@@ -227,6 +241,11 @@ class ModelUpdate(BaseModel):
     top_p: float | None = None
     presence_penalty: float | None = None
     max_tokens: int | None = None
+
+    @field_validator("model_type")
+    @classmethod
+    def _model_type(cls, v: str | None) -> str | None:
+        return reject_retired_vlm_type(v)
 
     @field_validator("api_key")
     @classmethod

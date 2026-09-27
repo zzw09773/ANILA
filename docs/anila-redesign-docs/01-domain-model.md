@@ -301,7 +301,7 @@ ModelEndpoint {
   display_name: string
   endpoint_url: string
   api_version: "v1" | "v2"
-  model_type: "llm" | "embedding" | "vlm" | "image" | "reranker"
+  model_type: "llm" | "embedding" | "image" | "reranker"
   provider_type: "intranet_remote"
   protocol: "openai_compatible" | "custom_adapter"
   api_key_secret_ref?: string
@@ -631,7 +631,7 @@ chunk table 由 `anila-core` 的 `CollectionScopedPgVectorStore` 操作，不在
 
 ### Runtime registry
 
-`model_registry` 已是模型 endpoint SSOT。它支援 `llm/vlm/embedding/agent` model type、router primary flag、health status、internal/external marker、context window 與 base model relation。新設計的 `ModelEndpoint` 可以從這裡擴充，不需要重做。
+`model_registry` 已是模型 endpoint SSOT。它支援 `llm/embedding/agent` model type（視覺能力不是獨立類型，能看圖的模型登記為 llm）、router primary flag、health status、internal/external marker、context window 與 base model relation。新設計的 `ModelEndpoint` 可以從這裡擴充，不需要重做。
 
 `agents` 已有 endpoint URL、router description、input schema、capabilities、approval、health、`base_model_id`、`bound_collection_id`、bootstrap token、credential envelope、`runtime_config`。migration evidence：
 

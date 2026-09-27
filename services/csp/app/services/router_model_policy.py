@@ -19,7 +19,7 @@ from app.models.router_model_grant import RouterModelGrant
 from app.models.user import User
 
 PLATFORM_ROUTER_NAME = "anila-router"
-ROUTER_ELIGIBLE_TYPES = frozenset({"llm", "vlm"})
+ROUTER_ELIGIBLE_TYPES = frozenset({"llm"})
 
 
 @dataclass(frozen=True)

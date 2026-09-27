@@ -89,7 +89,7 @@ def usage_me(
 def usage_summary(
     range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),
     model_id: int | None = None,
-    model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
+    model_type: str | None = Query(None, description="篩選模型類型: llm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -116,7 +116,7 @@ def usage_chart(
     model_id: int | None = None,
     user_id: int | None = None,
     department_id: int | None = None,
-    model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
+    model_type: str | None = Query(None, description="篩選模型類型: llm/embedding/agent"),
     group_by: str = Query("total", regex="^(department|model|user|total)$"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -161,7 +161,7 @@ def usage_chart(
 def top_models(
     limit: int = Query(10, ge=1, le=50),
     range: str = Query("30d", regex="^(4h|12h|24h|7d|30d)$"),
-    model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
+    model_type: str | None = Query(None, description="篩選模型類型: llm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -184,7 +184,7 @@ def top_models(
 def top_users(
     limit: int = Query(10, ge=1, le=50),
     range: str = Query("30d", regex="^(4h|12h|24h|7d|30d)$"),
-    model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
+    model_type: str | None = Query(None, description="篩選模型類型: llm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -223,7 +223,7 @@ def top_users(
 def top_departments(
     limit: int = Query(10, ge=1, le=50),
     range: str = Query("30d", regex="^(4h|12h|24h|7d|30d)$"),
-    model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
+    model_type: str | None = Query(None, description="篩選模型類型: llm/embedding/agent"),
     department_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

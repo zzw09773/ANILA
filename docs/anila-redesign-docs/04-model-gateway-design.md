@@ -50,7 +50,7 @@ ModelEndpoint {
   display_name: string
   endpoint_url: string
   api_version: "v1" | "v2"
-  model_type: "llm" | "embedding" | "vlm" | "image" | "reranker"
+  model_type: "llm" | "embedding" | "image" | "reranker"
   protocol: "openai_compatible" | "custom_adapter"
   network_zone: "intranet"
   api_key_secret_ref: string
@@ -332,7 +332,7 @@ Health check 不應攜帶真實使用者資料。
 id
 name
 display_name
-model_type              # llm / vlm / embedding / agent
+model_type              # llm / embedding / agent
 endpoint_url
 api_version             # v1 / v2
 is_active

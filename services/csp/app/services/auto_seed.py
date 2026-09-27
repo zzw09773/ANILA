@@ -6,6 +6,7 @@ import re
 import hashlib
 
 from app.config import settings
+from app.schemas.model_registry import VLM_TYPE_REJECTED, reject_retired_vlm_type
 from app.database import SessionLocal
 from app.models.agent import Agent, UserAgentPermission
 from app.models.api_key import ApiKey, ApiKeyModelPermission
@@ -219,10 +220,16 @@ def auto_seed():
                         ModelRegistry.name == m["name"]
                     ).first()
                     if not existing:
+                        raw_type = m.get("model_type", "llm")
+                        try:
+                            model_type = reject_retired_vlm_type(raw_type) or "llm"
+                        except ValueError:
+                            logger.warning("%s：%s", VLM_TYPE_REJECTED, m.get("name"))
+                            model_type = "llm"
                         model = ModelRegistry(
                             name=m["name"],
                             display_name=m.get("display_name", m["name"]),
-                            model_type=m.get("model_type", "llm"),
+                            model_type=model_type,
                             endpoint_url=m["endpoint_url"],
                             api_version=m.get("api_version", "v1"),
                             description=m.get("description", ""),

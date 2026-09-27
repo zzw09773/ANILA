@@ -559,7 +559,7 @@ function levelBadgeVariant(level) {
 const collections = ref([])
 const availableModels = ref([])
 const baseModelOptions = computed(() =>
-  availableModels.value.filter(m => m.is_active && (m.model_type === 'llm' || m.model_type === 'vlm'))
+  availableModels.value.filter(m => m.is_active && m.model_type === 'llm')
 )
 
 const pendingCount = computed(() => agents.value.filter(a => isPendingReview(a.approval_status)).length)

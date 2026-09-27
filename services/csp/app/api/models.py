@@ -312,7 +312,7 @@ def _build_response(
 
 @router.get("", response_model=list[ModelResponse])
 def list_models(
-    model_type: str | None = Query(None, description="篩選模型類型: llm/vlm/embedding/agent"),
+    model_type: str | None = Query(None, description="篩選模型類型: llm/embedding/agent"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -371,7 +371,7 @@ async def _run_thinking_probe(
     """
     if not level or level not in PROBEABLE_LEVELS:
         return None
-    if model_type not in ("llm", "vlm") or (protocol or "openai_compatible") != "openai_compatible":
+    if model_type != "llm" or (protocol or "openai_compatible") != "openai_compatible":
         return None
     result = await probe_thinking_effort(probe_target, level)
     if result.status == "rejected":
@@ -963,7 +963,7 @@ def _apply_bulk_import_entries(
 
 
 async def _discover_bulk_created(db: Session, created_names: list[str]) -> None:
-    """Probe newly imported llm/vlm rows in parallel. Timeouts leave NULL."""
+    """Probe newly imported llm rows in parallel. Timeouts leave NULL."""
     if not created_names:
         return
     rows = (

@@ -303,7 +303,6 @@
           <TermField label="類型">
             <select v-model="form.model_type" class="term-select" :disabled="addressOnlyEditor">
               <option value="llm">llm</option>
-              <option value="vlm">vlm</option>
               <option value="embedding">embedding</option>
               <option value="agent">agent</option>
               <option value="image">image</option>
@@ -396,10 +395,10 @@
             :disabled="addressOnlyEditor"
           />
         </TermField>
-        <TermField v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm')" label="可用於 Router">
+        <TermField v-if="form.name !== 'anila-router' && form.model_type === 'llm'" label="可用於 Router">
           <label class="term-check"><input type="checkbox" v-model="form.router_enabled" :disabled="addressOnlyEditor" /> 開放給對話模型選單</label>
         </TermField>
-        <div id="model-grant-editor" v-if="form.name !== 'anila-router' && (form.model_type === 'llm' || form.model_type === 'vlm') && form.router_enabled" class="grant-editor">
+        <div id="model-grant-editor" v-if="form.name !== 'anila-router' && form.model_type === 'llm' && form.router_enabled" class="grant-editor">
           <p class="field-note">可使用對象（全院／部門／群組／個人）。儲存模型時一併寫入。</p>
           <div v-for="(g, idx) in routerGrants" :key="idx" class="grant-row">
             <select v-model="g.scope_type" class="term-select" :disabled="addressOnlyEditor">
@@ -451,7 +450,7 @@
           </select>
         </TermField>
         <div
-          v-if="(form.model_type === 'llm' || form.model_type === 'vlm') && !addressOnlyEditor"
+          v-if="form.model_type === 'llm' && !addressOnlyEditor"
           class="form-section"
         >
           <p class="form-section__title">推理設定</p>
@@ -1091,7 +1090,7 @@ async function openEditModal(model, opts = {}) {
 }
 
 function canEditAudience(model) {
-  return authStore.isAdmin && model.router_enabled && model.name !== "anila-router" && (model.model_type === "llm" || model.model_type === "vlm")
+  return authStore.isAdmin && model.router_enabled && model.name !== "anila-router" && model.model_type === "llm"
 }
 
 function hasMoreActions(model) {

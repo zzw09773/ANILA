@@ -180,7 +180,7 @@ async def probe_thinking_effort(model_like: Any, level: str) -> ProbeResult:
 def _discoverable(model_like: Any) -> bool:
     model_type = getattr(model_like, "model_type", None)
     protocol = (getattr(model_like, "protocol", None) or "openai_compatible").strip()
-    return model_type in ("llm", "vlm") and protocol == "openai_compatible"
+    return model_type == "llm" and protocol == "openai_compatible"
 
 
 async def discover_thinking_levels(

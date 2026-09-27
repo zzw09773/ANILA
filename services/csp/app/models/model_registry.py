@@ -18,7 +18,7 @@ class ModelRegistry(Base):
     # nvidia/NV-embed-V2 and nvidia/nv-embed-v2 must not both exist.
     name = Column(String(200), unique=True, nullable=False, index=True)  # e.g. "aia/asrd"
     display_name = Column(String(200), nullable=False)
-    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image' / 'asr'
+    model_type = Column(String(20), nullable=False)  # 'llm' / 'embedding' / 'agent' / 'image' / 'asr'
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(10), default="v1")  # 'v1' / 'v2'
     # Slice 6a (doc 04 §2): 'openai_compatible' / 'custom_adapter'. formalize 既

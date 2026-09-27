@@ -59,8 +59,8 @@ _COLLECTION_ORIGINS = frozenset({"csp", "anilalm"})
 def _normalized_caption_model(db: Session, name: str | None) -> str | None:
     """Validate a caption-model *intent* against the registry.
 
-    No vision-capability filter exists (model_type='vlm' is a label, not
-    a guarantee). Any registered name is accepted. Unknown names 422 —
+    No vision-capability filter exists. Image support is not a registry
+    type; any registered name is accepted. Unknown names 422 —
     validation lives here, not a DB CHECK, so a new model does not need
     a migration. Empty / omitted → NULL = follow the vision role.
     """
