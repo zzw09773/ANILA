@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import React from "react";
 
-import { KbStateBadge, MessageBubble } from "../chat.jsx";
+import { KbStateBadge, MessageBubble, questionHadAttachments } from "../chat.jsx";
 // ⚠ 元件層的 fixture 刻意呼叫**真的**映射函式,而不是在測試裡手抄一份
 // camelCase。手抄版會跟著 production 漂開,然後這一整組測試就變成在測
 // 測試自己(`dupReplyReconcile.test.js:44` 就是那個形狀)。
@@ -601,5 +601,44 @@ describe("映射縫", () => {
     expect(badge.textContent).toMatch(/不是全部|不完整/);
     expect(badge.querySelectorAll('[data-testid^="kb-source-"]')).toHaveLength(0);
     expect(screen.getByText("查看 2 筆來源")).toBeTruthy();
+  });
+});
+
+describe("提問附了檔案時的院規狀態", () => {
+  afterEach(() => cleanup());
+
+  it("not_searched 改說依附件回答，不說模型的一般知識", () => {
+    const { container } = render(
+      <KbStateBadge state="not_searched" fromAttachments />,
+    );
+    expect(container.textContent).toContain("依附件回答");
+    expect(container.textContent).not.toContain("一般知識");
+  });
+
+  it("searched_miss 保留沒找到條文，後半改成依附件回答", () => {
+    const { container } = render(
+      <KbStateBadge state="searched_miss" fromAttachments />,
+    );
+    expect(container.textContent).toContain("院內規章裡沒找到相關條文");
+    expect(container.textContent).toContain("依附件回答");
+    expect(container.textContent).not.toContain("一般知識");
+  });
+
+  it("命中與檢索失敗的說法不受附件影響", () => {
+    const { container } = render(
+      <KbStateBadge state="search_error" fromAttachments />,
+    );
+    expect(container.textContent).toContain("院內規章檢索失敗");
+  });
+
+  it("只看往前最近的一則使用者訊息", () => {
+    const msgs = [
+      { role: "user", attachments: [{ reference_id: "a" }] },
+      { role: "assistant" },
+      { role: "user", attachments: [] },
+      { role: "assistant" },
+    ];
+    expect(questionHadAttachments(msgs, 1)).toBe(true);
+    expect(questionHadAttachments(msgs, 3)).toBe(false);
   });
 });

@@ -154,6 +154,7 @@ import {
   AgentSelector,
   Composer,
   MessageBubble,
+  questionHadAttachments,
   Sidebar,
 } from "./chat.jsx";
 import {
@@ -4726,7 +4727,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         onPick={(q) => sendMessage(q, [], {})}
                       />
                     ) : (
-                      currentMsgs.map((m) => (
+                      currentMsgs.map((m, idx) => (
                         <React.Fragment key={m.id}>
                           {selectedConv?.compactSummary
                             && compactBoundaryOnPath(currentMsgs, selectedConv.compactBoundaryMessageId)
@@ -4755,6 +4756,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                             onInterruptSubmit={handleInterruptAnswer}
                             conversationStreaming={currentMsgs.some((x) => x.streaming)}
                             isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
+                            questionHadAttachments={m.role === "assistant" && questionHadAttachments(currentMsgs, idx)}
                           />
                         </React.Fragment>
                       ))

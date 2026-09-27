@@ -692,6 +692,26 @@ const KB_STATE_COPY = {
   partial_error: { tone: "warn", label: null }, // 見下面:要帶失敗庫數量
 };
 
+// 提問附了檔案時，答案依據的是附件，不是模型的一般知識。
+const KB_STATE_COPY_WITH_ATTACHMENTS = {
+  not_searched: { tone: "muted", label: "依附件回答" },
+  searched_miss: {
+    tone: "muted",
+    label: "院內規章裡沒找到相關條文，以下依附件回答",
+  },
+};
+
+/** 這則助手回覆對應的提問（往前最近一則使用者訊息）有沒有附件。 */
+export const questionHadAttachments = (msgs, index) => {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const m = msgs[i];
+    if (m?.role === "user") {
+      return Array.isArray(m.attachments) && m.attachments.length > 0;
+    }
+  }
+  return false;
+};
+
 const KB_TONE_COLOR = {
   ok: { fg: "var(--accent)", bg: "var(--accent-soft)", border: "var(--accent)" },
   muted: { fg: "var(--fg-muted)", bg: "var(--bg-subtle)", border: "var(--border)" },
@@ -741,8 +761,14 @@ const KbSourceChip = ({ hit, index }) => {
   );
 };
 
-export const KbStateBadge = ({ state, hits = [], failedCollections = [] }) => {
-  const copy = KB_STATE_COPY[state];
+export const KbStateBadge = ({
+  state,
+  hits = [],
+  failedCollections = [],
+  fromAttachments = false,
+}) => {
+  const copy =
+    (fromAttachments && KB_STATE_COPY_WITH_ATTACHMENTS[state]) || KB_STATE_COPY[state];
   if (!copy) return null;
 
   // partial:失敗庫只有 id(前端沒有庫名的查詢管道),所以說數量不說名字——
@@ -917,6 +943,8 @@ export const MessageBubble = ({
   /** True when any message in this conversation is streaming — locks all pagers/deletes. */
   conversationStreaming = false,
   isLatestAssistant = false,
+  /** 對應的提問附了檔案：院規狀態改說「依附件回答」。 */
+  questionHadAttachments = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1279,6 +1307,7 @@ export const MessageBubble = ({
           state={msg.kbState}
           hits={citationDrawerVisible ? [] : msg.kbHits}
           failedCollections={msg.kbFailedCollections}
+          fromAttachments={questionHadAttachments}
         />
       )}
 
