@@ -82,6 +82,8 @@ export function isHarnessEmptyNotice(text) {
 
 /** Continue is for a half-written answer, not a blank that we already explained. */
 export function canContinueLengthReply(msg) {
+  const doc = msg?.document;
+  if (doc && (doc.referenceId || doc.reference_id)) return false;
   if (msg?.finishReason !== "length") return false;
   const text = msg.text || msg.content || "";
   if (isHarnessEmptyNotice(text)) return false;

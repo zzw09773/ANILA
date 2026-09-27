@@ -42,6 +42,17 @@ class Attachment(Base):
     # Parser page_count when reported; not a budget column — only for prompt labels.
     # Persisted so chat-time injection can show「N 頁」without re-parsing.
     page_count = Column(Integer, nullable=True)
+    # 四級分類。長文附件沿用所屬對話的等級。
+    classification_level = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密",
+    )
+    classification_latched_at = Column(DateTime(timezone=True), nullable=True)
+    classification_source = Column(String(50), nullable=True)
+    classification_event_id = Column(
+        Integer,
+        ForeignKey("classification_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     message = relationship("Message", back_populates="attachments")
     uploader = relationship("User", foreign_keys=[uploaded_by])

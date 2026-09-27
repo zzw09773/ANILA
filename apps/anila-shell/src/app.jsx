@@ -32,9 +32,11 @@ import {
 } from "./runtime/classifyRetryQueue.js";
 import {
   buildPersistMeta,
+  messageDocument,
   resolveAgentNameForPersist,
   resolveAnsweringAgentId,
 } from "./runtime/messageMeta.js";
+import { answerTextForPersist, applyDocumentToMessage } from "./runtime/longDocument.js";
 import {
   AGENT_REPLY_OBSERVATION_KEY,
   agentReplyNotice,
@@ -971,6 +973,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         onText: (acc) => {
           lastStreamAcc = typeof acc === "string" ? acc : "";
           const visible = interruptAt == null ? lastStreamAcc : lastStreamAcc.slice(0, interruptAt);
+          const row = assistantId
+            ? (messagesRef.current[convId] || []).find((m) => m.id === assistantId)
+            : null;
+          if (row?.document) return;
           streamOpts.onText?.(visible);
         },
         onCompact: (payload) => {
@@ -1000,6 +1006,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             });
           }
           streamOpts.onThinkingStage?.(event);
+        },
+        onDocument: (payload) => {
+          if (assistantId) {
+            const row = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+            updateMsg(convId, assistantId, applyDocumentToMessage(row, payload));
+          }
+          streamOpts.onDocument?.(payload);
         },
         onSessionId: (sessionId) => {
           if (assistantId) {
@@ -1438,6 +1451,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingStages: readThinkingStages(meta),
       thinkingStatus: meta.thinking_status || null,
       thinkingElapsedMs: typeof meta.thinking_elapsed_ms === "number" ? meta.thinking_elapsed_ms : null,
+      document: messageDocument(meta),
       thinkingLocked: meta.thinking_locked === true,
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
@@ -2276,6 +2290,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interrupt: persistedInterrupt,
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
+          document: drafted?.document,
           ...thinkingSnap,
         },
       );
@@ -2846,6 +2861,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   function applyMeta(convId, msgId, agentId, meta) {
     const current = (messagesRef.current[convId] || []).find((m) => m.id === msgId);
+    const document = messageDocument(meta);
     const adopted = meta.interrupt
       ? nextInterruptState(current, meta.interrupt, streamSessionIdRef.current.get(msgId))
       : null;
@@ -2890,6 +2906,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingLocked: meta.thinking_locked === true,
       ...(meta.finish_reason === "length" || meta.finish_reason === "stop"
         ? { finishReason: meta.finish_reason }
+        : {}),
+      ...(document
+        ? { document, ...(document.preview ? { text: document.preview } : {}) }
         : {}),
       ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
       // Display-only, but it was showing the wrong agent name on every
@@ -3406,6 +3425,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interrupt: persistedInterrupt,
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
+          document: drafted?.document,
           ...thinkingSnap,
         },
       );
@@ -3595,9 +3615,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         const thinkingSnap = thinkingPump.snapshot({
           hadReasoning: accumulatedReasoning.length > 0,
         });
+        const drafted = (messagesRef.current[convId] || []).find((m) => m.id === placeholderId);
         return {
           ok: true,
-          content: finalText,
+          content: answerTextForPersist(drafted, finalText),
           finalMeta,
           accumulatedTrace,
           accumulatedReasoning,
@@ -3709,9 +3730,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (Array.isArray(snap.thinkingSummaries) && snap.thinkingSummaries.length > 0) {
       thinkingPatch.thinkingSummaries = snap.thinkingSummaries;
     }
+    const savedText = answerTextForPersist(row, combined);
     updateMsg(convId, assistantMsg.id, {
       streaming: false,
-      text: combined,
+      text: savedText,
       finishReason: nextReason,
       ...thinkingPatch,
     });
@@ -3725,7 +3747,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     });
     try {
       const saved = await apiUpdateMessage(authRequest, convId, assistantMsg.dbId, {
-        content: combined,
+        content: savedText,
         metadata: persistMeta,
       });
       if (!saved || typeof saved.id !== "number") {
@@ -3897,11 +3919,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           agents,
         );
         const stageRow = (messagesRef.current[convId] || []).find((m) => m.id === placeholderId);
+        const persistedText = answerTextForPersist(stageRow, finalText);
         const persistMeta = buildPersistMeta(finalMeta, {
           trace: accumulatedTrace,
           reasoning: accumulatedReasoning,
           interrupt: interruptFromMessage(convId, placeholderId),
           thinkingStages: stageRow?.thinkingStages,
+          document: stageRow?.document,
           finishReason: stageRow?.finishReason,
           ...thinkingPump.snapshot({
             hadReasoning: accumulatedReasoning.length > 0,
@@ -3919,7 +3943,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               authRequest,
               convId,
               targetMessageId: assistantMsg.dbId,
-              content: finalText,
+              content: persistedText,
               traceId: finalMeta?.trace_id,
               latencyMs: finalMeta?.latency_ms,
               agentName: agentNameForPersist,
@@ -3931,7 +3955,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               typeof prevUser.dbId === "number" ? prevUser.dbId : undefined;
             savedAssistant = await apiAppendMessage(authRequest, convId, {
               role: "assistant",
-              content: finalText,
+              content: persistedText,
               parentId,
               traceId: finalMeta?.trace_id,
               latencyMs: finalMeta?.latency_ms,

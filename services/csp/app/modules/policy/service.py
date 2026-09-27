@@ -44,6 +44,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.artifact import Artifact, ExportRecord
+from app.models.attachment import Attachment
 from app.models.classification import (
     ClassificationAuthorityAssignment,
     ClassificationEvent,
@@ -184,6 +185,7 @@ _RESOURCE_MODELS: dict[str, type] = {
     "document": IngestionDocument,
     "artifact": Artifact,  # doc 08 §5(Slice 8a)
     "export_record": ExportRecord,  # doc 08 §5(Slice 8a)
+    "attachment": Attachment,
 }
 
 _DECLASSIFICATION_SOURCE = "declassification_approved"

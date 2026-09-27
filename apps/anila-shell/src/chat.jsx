@@ -21,6 +21,7 @@ import {
   isMessageImage,
 } from "./runtime/messageAttachments.js";
 import { canContinueLengthReply } from "./runtime/reservedTurn.js";
+import { LongDocumentCard } from "./longDocumentCard.jsx";
 import { InterruptCard, PausedBadge, normalizeInterrupt } from "./agentic.jsx";
 
 import {
@@ -1555,6 +1556,8 @@ export const MessageBubble = ({
           </>
         );
       })()}
+
+      {msg.document ? <LongDocumentCard document={msg.document} /> : null}
 
       {/* 正文已經寫出、但被長度截斷時，讓使用者從斷點接下去。 */}
       {!msg.streaming && canContinueLengthReply(msg) && typeof onContinue === "function" && (

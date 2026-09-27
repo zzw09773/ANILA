@@ -30,6 +30,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import settings
+from .long_document import (
+    LONG_ANSWER_CHAR_LIMIT,
+    chat_preview,
+    document_filename,
+    should_store_as_document,
+)
 from ..http_pool import (  # OPT-1
     aclose_http_client,
     get_http_client,
@@ -1275,6 +1281,7 @@ async def _resume_router_ask(
                     live_stages = LiveThinkingStages()
                     followup_round = False
                     stream_finish = "stop"
+                    length_continuation_exhausted = False
                     async for ev in _emit_multi_round(
                         caller_api_key,
                         routing_messages,
@@ -1347,6 +1354,7 @@ async def _resume_router_ask(
                             continue
                         if kind == "done":
                             stream_finish = str(ev.get("finish_reason") or "stop")
+                            length_continuation_exhausted = _LENGTH_CONTINUATION_EXHAUSTED.get()
                             break
                     reason_tail, content_tail, stage_events = live_stages.flush()
                     for frame in _thinking_stage_frames(stage_events):
@@ -1431,7 +1439,11 @@ async def _resume_router_ask(
                     if upstream_reasoning:
                         anila_meta["reasoning"] = upstream_reasoning
                     direct_meta = {**anila_meta, "trace": []}
-                    _note_length_finish(direct_meta, stream_finish)
+                    _note_length_finish(
+                        direct_meta,
+                        stream_finish,
+                        continuation_exhausted=length_continuation_exhausted,
+                    )
                     for frame in _stages_on_meta(direct_meta, live_stages, "done"):
                         yield frame
                     yield _make_event("anila.meta", direct_meta)
@@ -1516,7 +1528,11 @@ async def _resume_router_ask(
                 await _abandon()
 
         return StreamingResponse(
-            _events(),
+            _with_long_document(
+                _events(),
+                caller_api_key=caller_api_key,
+                forwarded_headers=anila_headers,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -2776,6 +2792,9 @@ def create_router_app(
         # Per-call dict — never mutate ``anila_headers`` itself, or the signal
         # rides along to every downstream call it must stay off.
         router_llm_headers = {**anila_headers, _ROUTE_HEADER: route_signal}
+        _TURN_CALLER_KEY.set(caller_api_key)
+        _TURN_HEADERS.set(anila_headers)
+        _TURN_MESSAGES.set(messages)
 
         # 關聯 id 仍隨 X-ANILA-* 轉給 CSP（用量、任務）。不再為它開 span session。
         trace_session = None
@@ -2927,6 +2946,7 @@ def create_router_app(
                     await _pin_owner(session_id, agent_id)
 
                 return StreamingResponse(
+                    _with_long_document(
                     _router_streaming_multi_turn(
                         caller_api_key=caller_api_key,
                         forwarded_headers=anila_headers,
@@ -2946,6 +2966,10 @@ def create_router_app(
                         session=sess,
                         pin_owner=_pin_owner_cb,
                         compact_event=compact_event,
+                    ),
+                    caller_api_key=caller_api_key,
+                    forwarded_headers=anila_headers,
+                    prior_text=_continued_prior_text(messages),
                     ),
                     media_type="text/event-stream",
                     headers={
@@ -3020,7 +3044,7 @@ def create_router_app(
                 latency_ms=int((time.time() - started_at) * 1000),
                 route={"decision": "llm_error", "error": llm_response["error"]},
             )
-            return _respond(
+            return await _respond(
                 fallback_content,
                 anila_meta,
                 stream,
@@ -3080,7 +3104,7 @@ def create_router_app(
                         latency_ms=int((time.time() - started_at) * 1000),
                         route={"decision": "llm_error", "error": second["error"]},
                     )
-                    return _respond(
+                    return await _respond(
                         _visible_llm_fallback(second["error"]),
                         anila_meta,
                         stream,
@@ -3148,13 +3172,17 @@ def create_router_app(
             if llm_response.get("reasoning"):
                 anila_meta["reasoning"] = llm_response["reasoning"]
             _stamp_rescue_meta(anila_meta, llm_response)
-            _note_length_finish(anila_meta, llm_response.get("finish_reason"))
+            _note_length_finish(
+                anila_meta,
+                llm_response.get("finish_reason"),
+                continuation_exhausted=bool(llm_response.get("continuation_exhausted")),
+            )
             shown = (
                 llm_text
                 if continue_answer
                 else _forced_visible_text(_strip_ask_syntax(llm_text), route_signal)
             )
-            return _respond(
+            return await _respond(
                 shown,
                 anila_meta,
                 stream,
@@ -3211,7 +3239,7 @@ def create_router_app(
             # fold already carried the same text). Show a deterministic
             # fallback instead.
             fallback = _unregistered_agent_notice(agent_id)
-            return _respond(
+            return await _respond(
                 fallback,
                 anila_meta,
                 stream,
@@ -3340,7 +3368,12 @@ def create_router_app(
                 )
 
             return StreamingResponse(
-                _event_stream(),
+                _with_long_document(
+                    _event_stream(),
+                    caller_api_key=caller_api_key,
+                    forwarded_headers=anila_headers,
+                    prior_text=_continued_prior_text(messages),
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -3483,7 +3516,7 @@ def create_router_app(
                         prose=_strip_ask_syntax(final_text),
                     )
 
-                return _respond(
+                return await _respond(
                     final_text,
                     anila_meta,
                     stream=False,
@@ -3542,7 +3575,7 @@ def create_router_app(
         )
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
-        return _respond(
+        return await _respond(
             agent_response["content"],
             anila_meta,
             stream=False,
@@ -3550,7 +3583,7 @@ def create_router_app(
             compact_event=compact_event,
         )
 
-    def _respond(
+    async def _respond(
         content: str,
         anila_meta: dict[str, Any],
         stream: bool,
@@ -3564,6 +3597,13 @@ def create_router_app(
         helper handles Router-direct answers and degraded fallbacks, which emit
         the full content as a single chunk.
         """
+        content, anila_meta = await _materialize_long_answer(
+            content,
+            anila_meta,
+            caller_api_key=_TURN_CALLER_KEY.get(),
+            forwarded_headers=_TURN_HEADERS.get(),
+            prior_text=_continued_prior_text(_TURN_MESSAGES.get()),
+        )
         anila_meta = _attach_compact_event(anila_meta, compact_event)
         _stamp_request_stages(anila_meta)
         finish = "length" if anila_meta.get("finish_reason") == "length" else "stop"
@@ -3596,6 +3636,9 @@ def create_router_app(
                 if buf:
                     yield _make_chunk("".join(buf), "anila-router")
 
+                document = anila_meta.get("document")
+                if isinstance(document, dict):
+                    yield _make_event("anila.document", document)
                 meta_for_event = {**anila_meta, "trace": []}
                 yield _make_event("anila.meta", meta_for_event)
                 yield _make_chunk("", "anila-router", finish=finish)
@@ -3660,7 +3703,12 @@ def create_router_app(
             if session_id:
                 headers["X-Anila-Session-Id"] = session_id
             return StreamingResponse(
-                _event_stream(),
+                _with_long_document(
+                    _event_stream(),
+                    caller_api_key=_TURN_CALLER_KEY.get(),
+                    forwarded_headers=_TURN_HEADERS.get(),
+                    prior_text=_continued_prior_text(_TURN_MESSAGES.get()),
+                ),
                 media_type="text/event-stream",
                 headers=headers,
             )
@@ -4068,7 +4116,14 @@ def create_router_app(
                     yield frame
 
         return StreamingResponse(
-            _stream_resume(),
+            _with_long_document(
+                _stream_resume(),
+                caller_api_key=caller_api_key,
+                forwarded_headers={
+                    k: v for k, v in request.headers.items()
+                    if k.lower().startswith("x-anila-")
+                },
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -5145,6 +5200,20 @@ _EMPTY_REPLY_FALLBACK = "（模型沒有留下正文。可把思考調低再問�
 # 有正文的 length：同一輪自動再寫，最多三次。仍被截斷才把 finish_reason=length
 # 交回去，Shell 才顯示「繼續」。空正文的 length 仍走上面的救援，只做一次。
 LENGTH_AUTO_CONTINUE_ROUNDS = 3
+# 自動續寫三次之後仍是 length。不放進 done 事件，避免既有相等斷言被多出來的鍵弄壞。
+_LENGTH_CONTINUATION_EXHAUSTED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "anila_length_continuation_exhausted", default=False
+)
+# _respond 定義在端點外面，不能直接看見這一輪的身分與訊息。
+_TURN_CALLER_KEY: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "anila_turn_caller_key", default=""
+)
+_TURN_HEADERS: contextvars.ContextVar[Mapping[str, str] | None] = contextvars.ContextVar(
+    "anila_turn_headers", default=None
+)
+_TURN_MESSAGES: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "anila_turn_messages", default=None
+)
 _CONTINUE_PROMPT = "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。"
 _AUTO_CONTINUE_STAGE = "繼續撰寫"
 # 分輪上限與每則模型呼叫預算都在治理頁。這裡只留出廠預設，
@@ -5465,10 +5534,17 @@ def _stamp_rescue_meta(meta: dict[str, Any], source: Mapping[str, Any] | None) -
     return meta
 
 
-def _note_length_finish(meta: dict[str, Any], finish: object) -> dict[str, Any]:
+def _note_length_finish(
+    meta: dict[str, Any],
+    finish: object,
+    *,
+    continuation_exhausted: bool = False,
+) -> dict[str, Any]:
     """有正文卻被長度截斷時，把 finish_reason 放進 anila.meta，Shell 才能畫「繼續」。"""
     if str(finish or "") == "length":
         meta["finish_reason"] = "length"
+        if continuation_exhausted:
+            meta["continuation_exhausted"] = True
     return meta
 
 
@@ -5628,6 +5704,8 @@ async def _call_llm_non_stream(
     conversation_id the original SPA call carried. Without this, the
     request looks orphaned at CSP and FK-bound features silently no-op.
     """
+    if _auto_continue_left is None:
+        _LENGTH_CONTINUATION_EXHAUSTED.set(False)
     payload = {
         # FIX 5: honour the governance UI's router-primary model when CSP
         # designates one; falls back to settings.model (MODEL env var).
@@ -5768,6 +5846,11 @@ async def _call_llm_non_stream(
                 result["finish_reason"] = "length"
             else:
                 result["finish_reason"] = str(more.get("finish_reason") or "stop")
+            if more.get("continuation_exhausted"):
+                result["continuation_exhausted"] = True
+        elif result["finish_reason"] == "length" and result["content"] and remaining <= 0:
+            result["continuation_exhausted"] = True
+            _LENGTH_CONTINUATION_EXHAUSTED.set(True)
         return result
     except httpx.HTTPStatusError as exc:
         stage = _compact_retry_stage(_compact_retry)
@@ -5916,6 +5999,9 @@ async def _auto_continue_stream(
                 return
             yield ev
         return
+    content = "".join(accumulated).strip()
+    if finish_reason == "length" and content and remaining <= 0:
+        _LENGTH_CONTINUATION_EXHAUSTED.set(True)
     yield {"type": "done", "finish_reason": finish_reason or "stop"}
 
 
@@ -5951,6 +6037,8 @@ async def _stream_llm_sse(
 
     See ``_call_llm_non_stream`` for the rationale of ``forwarded_headers``.
     """
+    if _auto_continue_left is None:
+        _LENGTH_CONTINUATION_EXHAUSTED.set(False)
     payload = {
         # FIX 5: honour the governance UI's router-primary model when CSP
         # designates one; falls back to settings.model (MODEL env var).
@@ -7388,7 +7476,308 @@ async def _stream_agent_sse(
         }
 
 
+def _continued_prior_text(messages: list[dict] | None) -> str:
+    """使用者按了「繼續」時，把上一則助理正文接進這次要存的文件。"""
+    if not REQUEST_CONTINUE.get():
+        return ""
+    for msg in reversed(list(messages or [])):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
+
+
+def _join_answer_parts(prior: str, current: str) -> str:
+    if not prior:
+        return current
+    if not current:
+        return prior
+    if prior[-1] in "\n \t" or current[0] in "\n \t":
+        return prior + current
+    return prior + "\n" + current
+
+
+def _sse_event_name(chunk: str) -> str:
+    for line in chunk.splitlines():
+        if line.startswith("event:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _sse_data(chunk: str) -> str:
+    parts: list[str] = []
+    for line in chunk.splitlines():
+        if line.startswith("data:"):
+            parts.append(line.split(":", 1)[1].strip())
+    return "\n".join(parts)
+
+
+def _sse_delta_text(chunk: str) -> str:
+    if _sse_event_name(chunk):
+        return ""
+    data = _sse_data(chunk)
+    if not data or data == "[DONE]":
+        return ""
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    pieces: list[str] = []
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(content, str):
+            pieces.append(content)
+    return "".join(pieces)
+
+
+def _is_long_document_hold(chunk: str) -> bool:
+    if _sse_event_name(chunk) == "anila.meta":
+        return True
+    data = _sse_data(chunk)
+    if data == "[DONE]":
+        return True
+    if _sse_event_name(chunk) or not data:
+        return False
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        finish = choice.get("finish_reason")
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        content = delta.get("content") if isinstance(delta, dict) else ""
+        if finish and not content:
+            return True
+    return False
+
+
+def _last_meta_payload(held: list[str]) -> dict[str, Any] | None:
+    found: dict[str, Any] | None = None
+    for chunk in held:
+        if _sse_event_name(chunk) != "anila.meta":
+            continue
+        try:
+            payload = json.loads(_sse_data(chunk))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            found = payload
+    return found
+
+
+def _inject_document(chunk: str, document: dict[str, Any]) -> str:
+    if _sse_event_name(chunk) != "anila.meta":
+        return chunk
+    try:
+        payload = json.loads(_sse_data(chunk))
+    except json.JSONDecodeError:
+        return chunk
+    if not isinstance(payload, dict):
+        return chunk
+    payload["document"] = document
+    return _make_event("anila.meta", payload)
+
+
+async def _upload_long_answer(
+    caller_api_key: str,
+    conversation_id: int,
+    filename: str,
+    text: str,
+) -> dict[str, Any] | None:
+    if not caller_api_key:
+        logger.warning("超長回答沒有存成附件：缺少使用者身分")
+        return None
+    url = f"{settings.csp_base_url.rstrip('/')}/api/attachments"
+    try:
+        response = await get_http_client().post(
+            url,
+            headers={"Authorization": f"Bearer {caller_api_key}"},
+            data={"conversation_id": str(conversation_id)},
+            files={"file": (filename, text.encode("utf-8"), "text/markdown")},
+            timeout=60.0,
+        )
+    except Exception:
+        logger.warning("超長回答的附件儲存失敗", exc_info=True)
+        return None
+    if getattr(response, "status_code", 500) >= 400:
+        logger.warning("超長回答的附件儲存失敗：HTTP %s", getattr(response, "status_code", ""))
+        return None
+    try:
+        body = response.json()
+    except Exception:
+        logger.warning("超長回答的附件儲存失敗：回應不是 JSON")
+        return None
+    if not isinstance(body, dict) or not body.get("reference_id"):
+        logger.warning("超長回答的附件儲存失敗：沒有附件編號")
+        return None
+    return body
+
+
+def _document_card(saved: dict[str, Any], text: str, filename: str) -> dict[str, Any]:
+    size = saved.get("size_bytes")
+    if not isinstance(size, int):
+        size = len(text.encode("utf-8"))
+    stored_name = str(saved.get("filename") or filename)
+    title = stored_name[:-3] if stored_name.lower().endswith(".md") else stored_name
+    return {
+        "reference_id": str(saved["reference_id"]),
+        "filename": stored_name,
+        "size_bytes": size,
+        "char_count": len(text),
+        "title": title,
+        "preview": chat_preview(text),
+    }
+
+
+async def _save_long_answer_card(
+    text: str,
+    *,
+    caller_api_key: str,
+    forwarded_headers: Mapping[str, str] | None,
+    continuation_exhausted: bool,
+) -> dict[str, Any] | None:
+    if not should_store_as_document(text, continuation_exhausted=continuation_exhausted):
+        return None
+    logger.info("長回答 %s 字，門檻 %s，改存成附件", len(text), LONG_ANSWER_CHAR_LIMIT)
+    conv_id = _conversation_id_from_headers(forwarded_headers)
+    if conv_id is None:
+        logger.warning("超長回答沒有存成附件：這次請求沒有對話編號")
+        return None
+    filename = document_filename(text)
+    saved = await _upload_long_answer(caller_api_key, conv_id, filename, text)
+    if saved is None:
+        return None
+    return _document_card(saved, text, filename)
+
+
+async def _materialize_long_answer(
+    content: str,
+    anila_meta: dict[str, Any] | None,
+    *,
+    caller_api_key: str,
+    forwarded_headers: Mapping[str, str] | None,
+    prior_text: str = "",
+) -> tuple[str, dict[str, Any]]:
+    meta = dict(anila_meta or {})
+    text = _join_answer_parts(prior_text, content or "")
+    exhausted = bool(meta.get("continuation_exhausted")) or _LENGTH_CONTINUATION_EXHAUSTED.get()
+    card = await _save_long_answer_card(
+        text,
+        caller_api_key=caller_api_key,
+        forwarded_headers=forwarded_headers,
+        continuation_exhausted=exhausted,
+    )
+    if card is None:
+        return content, meta
+    meta["document"] = card
+    return str(card.get("preview") or ""), meta
+
+
+async def _with_long_document(
+    chunks: AsyncIterator[str],
+    *,
+    caller_api_key: str,
+    forwarded_headers: Mapping[str, str] | None,
+    prior_text: str = "",
+) -> AsyncIterator[str]:
+    accumulated: list[str] = []
+    held: list[str] = []
+    holding = False
+    try:
+        async for chunk in chunks:
+            if not isinstance(chunk, str):
+                if holding:
+                    held.append(str(chunk))
+                else:
+                    yield chunk
+                continue
+            piece = _sse_delta_text(chunk)
+            if piece:
+                accumulated.append(piece)
+            if holding or _is_long_document_hold(chunk):
+                holding = True
+                held.append(chunk)
+                continue
+            yield chunk
+    except Exception:
+        for item in held:
+            yield item
+        raise
+    full = _join_answer_parts(prior_text, "".join(accumulated))
+    last_meta = _last_meta_payload(held)
+    exhausted = (
+        _LENGTH_CONTINUATION_EXHAUSTED.get()
+        if last_meta is None
+        else bool(last_meta.get("continuation_exhausted"))
+    )
+    card = await _save_long_answer_card(
+        full,
+        caller_api_key=caller_api_key,
+        forwarded_headers=forwarded_headers,
+        continuation_exhausted=exhausted,
+    )
+    if card is not None:
+        yield _make_event("anila.document", card)
+        for item in held:
+            yield _inject_document(item, card)
+        return
+    for item in held:
+        yield item
+
+
 async def _router_streaming(
+    caller_api_key: str,
+    routing_messages: list[dict],
+    user_messages: list[dict],
+    registry: Any,
+    base_trace: list[dict],
+    started_at: float,
+    *,
+    session_id: str | None = None,
+    session: Session | None = None,
+    pin_owner: PinOwnerFn = None,
+    forwarded_headers: dict[str, str] | None = None,
+    router_llm_headers: dict[str, str] | None = None,
+    route_signal: str,
+    trace_session: Any = None,
+    compact_event: dict[str, Any] | None = None,
+) -> AsyncIterator[str]:
+    async for chunk in _with_long_document(
+        _router_streaming_body(
+            caller_api_key,
+            routing_messages,
+            user_messages,
+            registry,
+            base_trace,
+            started_at,
+            session_id=session_id,
+            session=session,
+            pin_owner=pin_owner,
+            forwarded_headers=forwarded_headers,
+            router_llm_headers=router_llm_headers,
+            route_signal=route_signal,
+            trace_session=trace_session,
+            compact_event=compact_event,
+        ),
+        caller_api_key=caller_api_key,
+        forwarded_headers=forwarded_headers,
+        prior_text=_continued_prior_text(user_messages),
+    ):
+        yield chunk
+
+
+async def _router_streaming_body(
     caller_api_key: str,
     routing_messages: list[dict],
     user_messages: list[dict],
@@ -7453,6 +7842,7 @@ async def _router_streaming(
     thought_confirmed = False
     reasoning_emitted_up_to = 0
     stream_finish = "stop"
+    length_continuation_exhausted = False
     # Forced plain answers are cleaned with ``_strip_dispatch_syntax``, whose
     # final ``.strip()`` can rewrite bytes already sent if each delta is
     # forwarded raw. ``forced_sent`` is the visible prefix already emitted;
@@ -7623,6 +8013,7 @@ async def _router_streaming(
             continue
         if kind == "done":
             stream_finish = str(ev.get("finish_reason") or "stop")
+            length_continuation_exhausted = _LENGTH_CONTINUATION_EXHAUSTED.get()
             break
         if kind == "thinking_stage":
             for frame in _thinking_stage_frames(
@@ -7903,7 +8294,11 @@ async def _router_streaming(
         _remember_rescue(anila_meta)
         direct_meta = {**anila_meta, "trace": []}
         recall_finish = str(second.get("finish_reason") or "")
-        _note_length_finish(direct_meta, recall_finish)
+        _note_length_finish(
+            direct_meta,
+            recall_finish,
+            continuation_exhausted=bool(second.get("continuation_exhausted")),
+        )
         for frame in _stages_on_meta(direct_meta, live_stages, "done"):
             yield frame
         yield _make_event("anila.meta", direct_meta)
@@ -7986,7 +8381,11 @@ async def _router_streaming(
                 anila_meta["reasoning"] = merged_reasoning
             _remember_rescue(anila_meta)
             anila_meta_evt = {**anila_meta, "trace": []}
-            _note_length_finish(anila_meta_evt, stream_finish)
+            _note_length_finish(
+                anila_meta_evt,
+                stream_finish,
+                continuation_exhausted=length_continuation_exhausted,
+            )
             for frame in _stages_on_meta(anila_meta_evt, live_stages, "done"):
                 yield frame
             yield _make_event("anila.meta", anila_meta_evt)
@@ -8029,7 +8428,11 @@ async def _router_streaming(
             anila_meta["reasoning"] = reasoning_text
         _remember_rescue(anila_meta)
         anila_meta_evt = {**anila_meta, "trace": []}
-        _note_length_finish(anila_meta_evt, stream_finish)
+        _note_length_finish(
+            anila_meta_evt,
+            stream_finish,
+            continuation_exhausted=length_continuation_exhausted,
+        )
         for frame in _stages_on_meta(anila_meta_evt, live_stages, "done"):
             yield frame
         yield _make_event("anila.meta", anila_meta_evt)

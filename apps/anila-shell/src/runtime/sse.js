@@ -160,6 +160,7 @@ export async function streamChatCompletion({
   onRescue,
   // 階段標題。{index, title, status}，同一則訊息上一條清單。
   onThinkingStage,
+  onDocument,
   // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
   // 已累積文字保留(onText 已即時寫入),中止不視為錯誤(回傳累積值)。
   signal,
@@ -258,6 +259,7 @@ export async function streamChatCompletion({
         onFinishReason,
         onRescue,
         onThinkingStage,
+        onDocument,
         onError: (payload) => {
           terminalError = payload;
           onError?.(payload);
@@ -337,6 +339,10 @@ export function dispatchSseEvent(event, callbacks) {
   }
   if (event.event === "anila.meta") {
     safeJsonInvoke(event.data, callbacks.onMeta, "anila.meta");
+    return;
+  }
+  if (event.event === "anila.document") {
+    safeJsonInvoke(event.data, callbacks.onDocument, "anila.document");
     return;
   }
   if (event.event === "anila.reasoning") {

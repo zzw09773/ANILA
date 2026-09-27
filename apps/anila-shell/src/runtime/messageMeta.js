@@ -8,6 +8,43 @@
 // on reload `messages.metadata_.trace` is empty and the routing trace
 // disappears from the conversation.
 
+function normalizeDocument(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  const reference_id = typeof doc.reference_id === "string"
+    ? doc.reference_id
+    : (typeof doc.referenceId === "string" ? doc.referenceId : "");
+  if (!reference_id.trim()) return null;
+  const filename = typeof doc.filename === "string" && doc.filename.trim()
+    ? doc.filename.trim()
+    : "回答.md";
+  const title = typeof doc.title === "string" && doc.title.trim()
+    ? doc.title.trim()
+    : filename.replace(/\.md$/i, "");
+  const size = Number(doc.size_bytes ?? doc.sizeBytes);
+  const chars = Number(doc.char_count ?? doc.charCount);
+  return {
+    reference_id: reference_id.trim(),
+    filename,
+    size_bytes: Number.isFinite(size) ? size : 0,
+    char_count: Number.isFinite(chars) ? chars : 0,
+    title,
+    preview: typeof doc.preview === "string" ? doc.preview : "",
+  };
+}
+
+export function messageDocument(meta) {
+  const raw = normalizeDocument(meta?.document);
+  if (!raw) return null;
+  return {
+    referenceId: raw.reference_id,
+    filename: raw.filename,
+    sizeBytes: raw.size_bytes,
+    charCount: raw.char_count,
+    title: raw.title,
+    preview: raw.preview,
+  };
+}
+
 const ACCUMULATED_FALLBACKS = [
   "trace",
   "reasoning",
@@ -123,6 +160,9 @@ export function buildPersistMeta(finalMeta, messageState) {
   if (state.finishReason === "length" || state.finishReason === "stop") {
     base.finish_reason = state.finishReason;
   }
+
+  const document = normalizeDocument(base.document) || normalizeDocument(state.document);
+  if (document) base.document = document;
 
   // Drop undefined-only results (empty-object meta isn't useful to persist).
   const hasAnyValue = Object.values(base).some(

@@ -290,6 +290,32 @@ def extract_attachment_text(
             db.close()
 
 
+def inherit_conversation_classification(db: Session, att: Attachment, user: User) -> None:
+    """附件等級跟所屬對話走。無機密不用再寫一筆事件。"""
+    if att.conversation_id is None:
+        return
+    from app.models.conversation import Conversation
+    from app.modules.policy.service import apply_classification
+
+    conv = db.get(Conversation, att.conversation_id)
+    if conv is None:
+        return
+    level = conv.classification_level or "無機密"
+    if level == "無機密":
+        return
+    apply_classification(
+        db,
+        resource_type="attachment",
+        resource_id=str(att.id),
+        new_level=level,
+        actor_type="user",
+        actor_id=str(user.id),
+        reason="source_selected",
+        source="conversation_propagation",
+    )
+    db.refresh(att)
+
+
 async def upload_attachment(
     db: Session,
     file: UploadFile,
@@ -362,6 +388,7 @@ async def upload_attachment(
     db.add(att)
     db.commit()
     db.refresh(att)
+    inherit_conversation_classification(db, att, user)
     return att
 
 
@@ -453,6 +480,7 @@ def bind_attachments(
     db.commit()
     for att in accepted:
         db.refresh(att)
+        inherit_conversation_classification(db, att, user)
     return accepted
 
 
