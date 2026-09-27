@@ -39,6 +39,7 @@ from app.generated_preamble import ERA_RULES, NATIONAL_TERMINOLOGY
 from app.services.llm_json import extract_json_object
 from app.services.retrieval_status import RETRIEVAL_FAILED_PROMPT_NOTE
 from app.services.studio_config import SLIDES_LLM_MODEL, VISION_LLM_MODEL
+from app.services.studio_grounding import GROUNDING_PROMPT_RULE
 from app.services.studio_model_primary import resolve_model_name
 
 logger = logging.getLogger(__name__)
@@ -327,6 +328,7 @@ def build_generation_prompt(
             "",
             "── 整體內容規則 ──",
             "- 使用**台灣繁體中文**（不只字符繁體、用詞也要台灣本土）。",
+            GROUNDING_PROMPT_RULE,
             f"- 投影片數量：{count_hint}（首張固定為 section_break，規則 1）。",
             "- 每張 3-6 個 bullet（layout 不需要 bullet 也要填 1-2 句保險用）。",
             "- speaker_notes 寫 2-4 句講者口述稿。",

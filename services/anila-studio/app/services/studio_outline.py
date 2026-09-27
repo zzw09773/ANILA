@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.services.llm_json import extract_json_object, loads_lenient
+from app.services.studio_grounding import GROUNDING_PROMPT_RULE
 
 EVIDENCE_KINDS: tuple[str, ...] = (
     "number", "comparison", "process", "list", "definition", "quote", "table",
@@ -105,6 +106,7 @@ def build_outline_prompt(
         "- query 要具體到能在文件裡命中：寫條文用語與名詞，不寫「介紹」「說明」這種空詞。",
         "- 不要寫封面、目錄、結語、資料來源這種投影片（系統會加）。",
         "- 使用台灣繁體中文。",
+        GROUNDING_PROMPT_RULE,
     ])
     parts = [f"知識庫名稱：{collection_name}", f"風格 preset：{preset}"]
     if seed_chunks:
@@ -226,4 +228,5 @@ TWO_PASS_SYSTEM_ADDENDUM = "\n".join([
     "- 每張只用自己的「可用段落」寫；沒有專屬段落才用整體段落。內容要具體到條號、期限、",
     "  對象；不要把同一段話換句話說塞到好幾張。",
     "- 不要自己寫「資料來源」頁，系統會加。",
+    GROUNDING_PROMPT_RULE,
 ])

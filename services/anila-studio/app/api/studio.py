@@ -95,6 +95,12 @@ from app.services.llm_json import (
     loads_lenient as _loads_lenient,
 )
 from app.services.retrieval_status import RETRIEVAL_FAILED_WARNING
+from app.services.studio_grounding import (
+    GROUNDING_TITLE_WARNING,
+    apply_grounding,
+    grounding_retry_instruction,
+    passages_from_chunks,
+)
 from app.services.studio_config import (
     OUTLINE_MAX_TOKENS,
     PER_SLIDE_TOP_K,
@@ -200,23 +206,26 @@ async def _generate_validated_spec(
     retrieval_failed: bool,
     illustrations_enabled: bool = True,
     two_pass: dict[str, Any] | None = None,
-) -> tuple[SlidesSpec, bool]:
+) -> tuple[SlidesSpec, bool, str | None]:
     """LLM → JSON → SlidesSpec, retrying once on validation failure.
 
     ``two_pass={"collection_id": ...}`` turns on outline → per-slide
     retrieval → content (``studio_outline``). Any failure in the outline
     step falls back to the legacy single call, so the deck always ships.
 
-    Returns (spec, fallback_used). When fallback_used=True, the spec is
-    a synthetic safety-net deck explaining the failure to the user; the
-    caller should skip vision QA (which would try to "fix" a deliberately
-    minimal deck and might trigger another LLM call that also fails).
+    Returns (spec, fallback_used, grounding_warning). When fallback_used=True,
+    the spec is a synthetic safety-net deck explaining the failure to the
+    user; the caller should skip vision QA (which would try to "fix" a
+    deliberately minimal deck and might trigger another LLM call that also
+    fails). ``grounding_warning`` is set when a title still named something
+    the source does not contain after one retry; that never fails the job.
 
     ``retrieval_failed`` is threaded straight to the prompt builder so an
     empty ``chunks`` list caused by an error is never described to the
     model as "the knowledge base had no match".
     """
 
+    grounding_warning: str | None = None
     system, user_msg = _build_generation_prompt(
         collection_name, preset, extra_instructions, chunks, images=images,
         retrieval_failed=retrieval_failed,
@@ -228,7 +237,9 @@ async def _generate_validated_spec(
             collection_id=int(two_pass["collection_id"]),
         )
         if planned is not None:
-            outline, chunks, per_slide = planned
+            outline, chunks, per_slide, outline_warning = planned
+            if outline_warning:
+                grounding_warning = outline_warning
             two_pass["outline"] = outline  # the pipeline builds the agenda page from it
             system = system + _outline.TWO_PASS_SYSTEM_ADDENDUM
             user_msg = _outline.build_content_user_prompt(
@@ -257,6 +268,7 @@ async def _generate_validated_spec(
     # makes the autoplaced supporting line look at least vaguely
     # attributable instead of "來源:documents".
     chunk_filenames = [c.get("filename") for c in chunks if c.get("filename")]
+    validated: SlidesSpec | None = None
     for attempt in range(SCHEMA_CORRECTION_PASSES + 1):
         try:
             extracted = _extract_json_object(raw)
@@ -267,7 +279,8 @@ async def _generate_validated_spec(
             # try; rather than 422 we silently patch / demote and let the
             # user see the deck. See `_saturate_spec_dict` for behaviour.
             parsed = _saturate_spec_dict(parsed, chunk_filenames=chunk_filenames)
-            return SlidesSpec.model_validate(parsed), False
+            validated = SlidesSpec.model_validate(parsed)
+            break
         except (ValidationError, ValueError, json.JSONDecodeError) as e:
             last_err = e
             last_raw = raw
@@ -304,19 +317,30 @@ async def _generate_validated_spec(
                 bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
             )
 
-    # Both attempts failed. Per the research file (compass_artifact §F /
-    # Self-Correction Bench arXiv 2507.02778), a third attempt has 64.5%
-    # blind-spot rate and tends to reinforce the original error rather
-    # than fix it. The right move is to FALLBACK to a sane default deck
-    # so the user gets a usable .pptx with a clear explanation of what
-    # went wrong, rather than a 422 toast that destroys their work.
-    logger.error(
-        "Studio spec validation gave up after %d passes; serving fallback deck. "
-        "Last raw (first 500): %s",
-        SCHEMA_CORRECTION_PASSES + 1,
-        last_raw[:500].replace("\n", "⏎"),
+    if validated is None:
+        # Both attempts failed. Per the research file (compass_artifact §F /
+        # Self-Correction Bench arXiv 2507.02778), a third attempt has 64.5%
+        # blind-spot rate and tends to reinforce the original error rather
+        # than fix it. The right move is to FALLBACK to a sane default deck
+        # so the user gets a usable .pptx with a clear explanation of what
+        # went wrong, rather than a 422 toast that destroys their work.
+        logger.error(
+            "Studio spec validation gave up after %d passes; serving fallback deck. "
+            "Last raw (first 500): %s",
+            SCHEMA_CORRECTION_PASSES + 1,
+            last_raw[:500].replace("\n", "⏎"),
+        )
+        return _build_fallback_spec(collection_name, preset, str(last_err)[:300]), True, None
+
+    spec, deck_warning = await _ground_deck(
+        bearer, validated, raw, messages, chunks, chunk_filenames,
+        collection_name=collection_name,
+        extra_instructions=extra_instructions,
+        preset=preset,
     )
-    return _build_fallback_spec(collection_name, preset, str(last_err)[:300]), True
+    if deck_warning:
+        grounding_warning = deck_warning
+    return spec, False, grounding_warning
 
 
 async def _plan_two_pass(
@@ -327,9 +351,13 @@ async def _plan_two_pass(
     seed_chunks: list[dict[str, Any]],
     *,
     collection_id: int,
-) -> tuple["_outline.Outline", list[dict[str, Any]], list[list[int]]] | None:
+) -> tuple["_outline.Outline", list[dict[str, Any]], list[list[int]], str | None] | None:
     """Outline call + per-slide retrieval. None on any failure (caller falls
-    back to the single-pass prompt); never raises."""
+    back to the single-pass prompt); never raises.
+
+    The fourth item is a grounding warning when an outline title still named
+    something the seed passages do not contain after one retry.
+    """
     from app.services.studio_llm import _count_hint
 
     count_hint, min_slides = _count_hint(preset)
@@ -344,6 +372,40 @@ async def _plan_two_pass(
             temperature=0.3, max_tokens=OUTLINE_MAX_TOKENS,
         )
         outline = _outline.parse_outline(raw)
+
+        async def reask(tokens: list[str]) -> dict[str, Any] | None:
+            reply = await _call_llm_chat(
+                bearer, SLIDES_LLM_MODEL,
+                [
+                    {"role": "system", "content": o_system},
+                    {"role": "user", "content": o_user},
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": grounding_retry_instruction(tokens)},
+                ],
+                temperature=0.2, max_tokens=OUTLINE_MAX_TOKENS,
+            )
+            try:
+                return _outline.parse_outline(reply).model_dump()
+            except (ValueError, ValidationError, TypeError):
+                logger.warning("grounding outline retry was not a usable outline")
+                return None
+
+        outcome = await apply_grounding(
+            outline.model_dump(),
+            passages_from_chunks(seed_chunks),
+            kind="outline",
+            reask=reask,
+            collection_name=collection_name,
+            extra_instructions=extra_instructions,
+            preset=preset,
+        )
+        try:
+            outline = _outline.Outline.model_validate(outcome.data)
+        except ValidationError:
+            logger.warning(
+                "grounding strip produced an invalid outline; keeping the previous one",
+            )
+        outline_warning = outcome.warning
     except HTTPException:
         raise  # auth / model errors are real errors, not "no outline"
     except Exception as exc:  # noqa: BLE001
@@ -357,7 +419,57 @@ async def _plan_two_pass(
         "two-pass: outline %d sections / %d slides; %d chunks after per-slide retrieval (seed %d)",
         len(outline.sections), len(outline.all_slides()), len(chunks), len(seed_chunks),
     )
-    return outline, chunks, per_slide
+    return outline, chunks, per_slide, outline_warning
+
+
+async def _ground_deck(
+    bearer: str,
+    spec: SlidesSpec,
+    raw: str,
+    messages: list[dict[str, Any]],
+    chunks: list[dict[str, Any]],
+    chunk_filenames: list[Any],
+    *,
+    collection_name: str,
+    extra_instructions: str | None,
+    preset: str,
+) -> tuple[SlidesSpec, str | None]:
+    """One retry, then strip ungrounded title tokens. Never raises."""
+
+    async def reask(tokens: list[str]) -> dict[str, Any] | None:
+        messages.append({"role": "assistant", "content": raw})
+        messages.append({
+            "role": "user",
+            "content": grounding_retry_instruction(tokens),
+        })
+        reply = await _call_llm_chat(
+            bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        )
+        try:
+            parsed = _loads_lenient(_extract_json_object(reply))
+            parsed = _saturate_spec_dict(parsed, chunk_filenames=chunk_filenames)
+            SlidesSpec.model_validate(parsed)
+            return parsed
+        except (ValidationError, ValueError, json.JSONDecodeError):
+            logger.warning("grounding deck retry was not a valid deck")
+            return None
+
+    outcome = await apply_grounding(
+        spec.model_dump(mode="json"),
+        passages_from_chunks(chunks),
+        kind="deck",
+        reask=reask,
+        collection_name=collection_name,
+        extra_instructions=extra_instructions,
+        preset=preset,
+    )
+    try:
+        return SlidesSpec.model_validate(outcome.data), outcome.warning
+    except (ValidationError, ValueError):
+        logger.warning(
+            "grounding strip produced an invalid deck; shipping the pre-strip spec",
+        )
+        return spec, outcome.warning
 
 
 def _saturate_spec_dict(
@@ -721,7 +833,7 @@ async def _run_pipeline(
         if TWO_PASS_ENABLED and chunks and not payload.skip_retrieval
         else {}
     )
-    spec, used_fallback = await _generate_validated_spec(
+    spec, used_fallback, grounding_warning = await _generate_validated_spec(
         bearer,
         coll.name,
         payload.preset,
@@ -906,6 +1018,7 @@ async def _run_pipeline(
             (FALLBACK_DECK_WARNING, used_fallback),
             (FIX_FAILED_WARNING, fix_failed),
             (VISION_SKIPPED_WARNING, vision_skipped),
+            (GROUNDING_TITLE_WARNING, grounding_warning is not None),
         )
         if fired
     ]

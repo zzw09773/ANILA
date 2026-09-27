@@ -83,7 +83,7 @@ async def test_generate_two_pass_uses_outline_then_content(monkeypatch):
     monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_llm)
     monkeypatch.setattr(studio_mod, "_retrieve_chunks", fake_retrieve)
     seed = [{"filename": "law.pdf", "chunk_key": "c1", "content": "seed", "score": 0.9}]
-    spec, fallback = await studio_mod._generate_validated_spec(
+    spec, fallback, _grounding_warning = await studio_mod._generate_validated_spec(
         "b", "軍人法規", "教學投影片", None, seed, retrieval_failed=False,
         two_pass={"collection_id": 2},
     )
@@ -108,7 +108,7 @@ async def test_generate_falls_back_to_single_pass_when_outline_is_junk(monkeypat
     monkeypatch.setattr(studio_mod, "_call_llm_chat", fake_llm)
     monkeypatch.setattr(studio_mod, "_retrieve_chunks", fake_retrieve)
     seed = [{"filename": "law.pdf", "chunk_key": "c1", "content": "seed", "score": 0.9}]
-    spec, fallback = await studio_mod._generate_validated_spec(
+    spec, fallback, _grounding_warning = await studio_mod._generate_validated_spec(
         "b", "軍人法規", "教學投影片", None, seed, retrieval_failed=False, two_pass={"collection_id": 2},
     )
     assert not fallback and len(spec.slides) == 2
