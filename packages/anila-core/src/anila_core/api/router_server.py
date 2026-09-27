@@ -45,6 +45,7 @@ from ..memory.contract import sanitize_agent_reply
 from ..security.external_content import (
     PRIORITY_RULE_EN,
     PRIORITY_RULE_ZH,
+    RequestPlatformHostsMiddleware,
     TurnSidechannel,
     protocol_signatures,
     strip_priority_copies,
@@ -2700,6 +2701,8 @@ def create_router_app(
         openapi_url=None,
         lifespan=lifespan,
     )
+    # 這次請求的 Host / X-Forwarded-Host 算平台網址，不寫死實驗機 IP。
+    app.add_middleware(RequestPlatformHostsMiddleware)
 
     @app.get("/health")
     async def health() -> dict:

@@ -5,6 +5,7 @@ from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
 from anila_core.api.routing import routed_path
+from anila_core.security.external_content import RequestPlatformHostsMiddleware
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -689,6 +690,8 @@ def log_host_allowlist_state(hosts: list[str]) -> None:
         )
 
 
+# 比 Host 白名單早註冊，白名單仍是最外層。進來的 Host 才算平台網址。
+app.add_middleware(RequestPlatformHostsMiddleware)
 _allowed_hosts = install_host_allowlist(app, settings.ALLOWED_HOSTS)
 
 app.include_router(api_router)

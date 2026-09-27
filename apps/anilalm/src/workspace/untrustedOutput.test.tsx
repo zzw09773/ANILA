@@ -1,5 +1,20 @@
+import { createRequire } from 'node:module'
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+
+const require = createRequire(import.meta.url)
+
+function setPageUrl(href: string): string {
+  // jsdom 不實作跨來源導覽。改文件的 URL，window.location.hostname 才會跟著變。
+  const { implForWrapper } = require('jsdom/lib/jsdom/living/generated/utils')
+  const whatwgURL = require('whatwg-url')
+  const document = implForWrapper(window.document)
+  const url = whatwgURL.parseURL(href)
+  const previous = whatwgURL.serializeURL(document._URL)
+  document._URL = url
+  document._origin = whatwgURL.serializeURLOrigin(url)
+  return previous
+}
 
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import { INJECTION_NOTICE, isPlatformUrl, neutralizeUntrustedMarkdown } from './untrustedOutput'
@@ -40,6 +55,27 @@ describe('ANILA LM 外連', () => {
     )
     expect(container.querySelector('img')).toBeNull()
     expect(container.querySelector("a[href*='evil.example']")).toBeNull()
+  })
+
+  it('頁面自己的主機算平台，別台的實驗 IP 不算', () => {
+    const previous = setPageUrl('https://anila.intranet.example/anilalm/')
+    try {
+      expect(window.location.hostname).toBe('anila.intranet.example')
+      expect(isPlatformUrl('https://anila.intranet.example/anilalm/')).toBe(true)
+      expect(isPlatformUrl('http://ANILA.INTRANET.EXAMPLE/app')).toBe(true)
+      expect(isPlatformUrl('/api/ingestion/images/1/blob')).toBe(true)
+      expect(isPlatformUrl('https://kb.ncsist.org.tw/doc')).toBe(true)
+      expect(isPlatformUrl('http://10.53.100.12/app')).toBe(false)
+      expect(isPlatformUrl('http://172.16.120.35/app')).toBe(false)
+      expect(isPlatformUrl('http://172.16.120.153/app')).toBe(false)
+      expect(isPlatformUrl('http://localhost/app')).toBe(false)
+      const kept = neutralizeUntrustedMarkdown('![圖](https://anila.intranet.example/a.png)')
+      expect(kept).toContain('![圖](https://anila.intranet.example/a.png)')
+      const dropped = neutralizeUntrustedMarkdown('![x](http://10.53.100.12/a.png)')
+      expect(dropped).not.toContain('![x](')
+    } finally {
+      setPageUrl(previous)
+    }
   })
 
   it('回覆詳情的句子固定', () => {
