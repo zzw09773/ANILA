@@ -64,7 +64,6 @@ def _override_all_to_safe(monkeypatch):
         "DATABASE_URL",
         "postgresql://csp_app:RealStrongDbPassword123@db:5432/csp",
     )
-    monkeypatch.setenv("INTERNAL_PLATFORM_API_KEY", "sk-real-internal-" + "a" * 30)
     monkeypatch.setenv("CODESERVER_PASSWORD", "real-codeserver-" + "a" * 20)
 
 

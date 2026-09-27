@@ -56,10 +56,6 @@ _KNOWN_DEFAULTS: dict[str, frozenset[str]] = {
     "ADMIN_PASSWORD": frozenset({"changeme", "password", "admin"}) | _PROD_PLACEHOLDERS,
     "CSP_SERVICE_TOKEN": frozenset({"dev-service-token", "changeme"}) | _PROD_PLACEHOLDERS,
     "DB_PASSWORD": frozenset({"csp_password", "csp", "postgres", "password"}) | _PROD_PLACEHOLDERS,
-    "INTERNAL_PLATFORM_API_KEY": frozenset({
-        "sk-internal-worker-changeme",
-        "sk-changeme",
-    }) | _PROD_PLACEHOLDERS,
     "CODESERVER_PASSWORD": frozenset({"changeme-codeserver", "changeme"}) | _PROD_PLACEHOLDERS,
     # ANILA_HOST 沒有真正的 dev default (compose 端用 ${ANILA_HOST:?} 強制設值),
     # 只需擋 .env.example 的「請填我」placeholder。空值不算 offender — compose

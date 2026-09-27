@@ -97,14 +97,6 @@ class Settings(BaseSettings):
     # narrowing it can never cut the healthcheck or the in-network callers.
     ALLOWED_HOSTS: str = "*"
 
-    # Auto-register models on startup (JSON string)
-    # Format: '[{"name":"llama3-70b","display_name":"Llama 3 70B","model_type":"llm","endpoint_url":"http://vllm:8000","api_version":"v1"}]'
-    AUTO_REGISTER_MODELS: str = ""
-
-    # Auto-register agents on startup (JSON string)
-    # Format: '[{"name":"rag-agent","endpoint_url":"http://rag-agent:24786","description_for_router":"RAG agent"}]'
-    AUTO_REGISTER_AGENTS: str = ""
-
     # Auto-seed API keys/users on startup (JSON string)
     # Format: '[{"username":"smoke-user","key":"sk-...","models":["gpt-4o-mini"],"agents":["rag-agent"]}]'
     AUTO_SEED_API_KEYS: str = ""

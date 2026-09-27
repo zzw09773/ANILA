@@ -185,12 +185,14 @@ async def _candidates(
     return out
 
 
-async def _call_llm(messages: list[dict[str, str]], settings: Any) -> str:
+async def _call_llm(
+    messages: list[dict[str, str]], settings: Any, *, model: str,
+) -> str:
     from ingestion_worker.credential_file import api_key as credential_api_key
     from ingestion_worker.credential_file import reload as reload_credential
 
     body = {
-        "model": settings.relation_llm_model,
+        "model": model,
         "messages": messages,
         "temperature": 0,
         "stream": False,
@@ -224,10 +226,24 @@ async def extract_and_resolve_llm(
 ) -> dict[str, int]:
     """Ingest-time LLM extraction. Returns ``{"extracted": n}`` (0 when skipped).
 
-    Gated by ``enable_relation_llm`` + a non-empty ``relation_llm_url``. Skips
-    cleanly when there are no sibling documents or too many to list.
+    Gated by ``enable_relation_llm`` + a non-empty ``relation_llm_url``.
+    The model name is the Console summary role. Unset skips this step;
+    rule and similarity relations are separate callers.
     """
     if not (settings.enable_relation_llm and settings.relation_llm_url):
+        return {"extracted": 0}
+
+    from ingestion_worker.credential_file import api_key as credential_api_key
+    from ingestion_worker.summary_role import resolve_summary_model
+
+    model_name, message = await resolve_summary_model(
+        base_url=settings.relation_llm_url,
+        api_key=credential_api_key(settings.relation_llm_api_key),
+    )
+    if not model_name:
+        logger.info(
+            "doc %s: 略過 LLM 關聯 — %s", document_id, message,
+        )
         return {"extracted": 0}
 
     async with pool.acquire() as conn:
@@ -251,7 +267,7 @@ async def extract_and_resolve_llm(
                 text, [(cid, t) for cid, t, _nt in cands],
                 max_chars=settings.relation_llm_max_chars,
             )
-            content = await _call_llm(messages, settings)
+            content = await _call_llm(messages, settings, model=model_name)
             edges = parse_llm_relations(
                 content,
                 candidate_ids=set(norm_by_id),

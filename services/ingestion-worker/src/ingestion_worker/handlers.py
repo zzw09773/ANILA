@@ -62,18 +62,65 @@ def _empty_caption_stats(
     }
 
 
-async def _bind_pdf_ocr_if_enabled() -> None:
-    """掃描 PDF 的 OCR 用同一顆視覺角色。旗標沒開就不問 CSP。"""
-    if os.getenv("PDF_OCR_FALLBACK", "false").lower() != "true":
-        return
-    from ingestion_worker.vision_role import bind_pdf_ocr_model
+EMBEDDING_UNSET_MESSAGE = "平台嵌入模型尚未在治理中心設定"
+EMBEDDING_WAIT_SECONDS = 30
 
-    from ingestion_worker.credential_file import api_key as credential_api_key
 
-    await bind_pdf_ocr_model(
-        vision_url=settings.vision_url,
-        api_key=credential_api_key(settings.vision_api_key),
+async def defer_ingest_until_embedding_role(
+    ctx: dict[str, Any],
+    pool: PgPool,
+    document_id: int,
+    arq_job_id: str | None,
+) -> dict[str, Any]:
+    """Leave the document pending and try again after the role is set."""
+    await _update_document_status(
+        pool,
+        document_id,
+        "pending",
+        error_message=EMBEDDING_UNSET_MESSAGE,
     )
+    await _update_job(
+        pool,
+        arq_job_id,
+        status="queued",
+        progress_pct=0,
+        progress_message=EMBEDDING_UNSET_MESSAGE,
+    )
+    redis = ctx.get("redis")
+    reenqueued = False
+    if redis is not None:
+        import uuid
+        from datetime import timedelta
+
+        job = await redis.enqueue_job(
+            "ingest_document",
+            document_id,
+            _job_id=f"ingest-wait-embedding-{document_id}-{uuid.uuid4().hex[:12]}",
+            _defer_by=timedelta(seconds=EMBEDDING_WAIT_SECONDS),
+        )
+        reenqueued = job is not None
+    return {
+        "waiting": True,
+        "message": EMBEDDING_UNSET_MESSAGE,
+        "reenqueued": reenqueued,
+    }
+
+
+async def remember_collection_embedding(
+    pool: PgPool, collection_id: int, model_name: str,
+) -> None:
+    """Fill a blank collection embedding name once the role exists."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE ingestion_collections
+               SET embedding_model = $2
+             WHERE id = $1
+               AND embedding_model IS NULL
+            """,
+            collection_id,
+            model_name,
+        )
 
 
 async def _resolve_caption_intent(
@@ -1139,18 +1186,28 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     embedder: Embedder = ctx["embedder"]
     arq_job_id: str | None = ctx.get("job_id")
 
-    # P4.8: refresh embedder against the current platform designation so
-    # a mid-runtime admin change propagates without restarting the worker.
-    from ingestion_worker.platform_embedding import resolve_from_pool
+    # 嵌入模型名稱只來自治理中心的平台嵌入角色。沒指定就先等，
+    # 不沿用 EMBEDDING_MODEL，也不沿用 worker 啟動時建的那顆 embedder。
+    from ingestion_worker.platform_embedding import (
+        EmbeddingRoleUnset,
+        resolve_from_pool,
+    )
 
+    started_at = datetime.now(timezone.utc)
+    await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
     try:
-        resolved = await resolve_from_pool(
-            pool,
-            settings_fallback_name=settings.embedding_model,
-            settings_fallback_native=getattr(
-                embedder, "native_dim", settings.embedding_dim
-            ),
-        )
+        try:
+            resolved = await resolve_from_pool(
+                pool,
+                settings_fallback_name=settings.embedding_model,
+                settings_fallback_native=getattr(
+                    embedder, "native_dim", settings.embedding_dim
+                ),
+            )
+        except EmbeddingRoleUnset:
+            return await defer_ingest_until_embedding_role(
+                ctx, pool, document_id, arq_job_id,
+            )
         if (
             resolved.name != embedder.model_name
             or resolved.native_dim != embedder.native_dim
@@ -1162,17 +1219,9 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 native_dim=resolved.native_dim,
             )
             ctx["embedder"] = embedder
-    except Exception:
-        logger.exception(
-            "ingest_document: platform embedding resolve failed — "
-            "continuing with existing embedder"
-        )
-
-    started_at = datetime.now(timezone.utc)
-    await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
-    try:
         meta = await _load_document_meta(pool, document_id)
         collection_id = int(meta["collection_id"])
+        await remember_collection_embedding(pool, collection_id, resolved.name)
         storage_path = meta["storage_path"]
         # Bill embedding usage to whoever uploaded the file; fall back
         # to the collection owner when the doc row's uploaded_by is null
@@ -1199,7 +1248,6 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # and tests/test_worker_liveness.py.
         await _update_document_status(pool, document_id, "parsing")
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
-        await _bind_pdf_ocr_if_enabled()
         await refresh_document_parser(pool)
         with open(storage_path, "rb") as f:
             blob = f.read()
@@ -1594,7 +1642,6 @@ async def reresolve_collection_relations(
         )
 
     docs: list[tuple[int, str]] = []
-    await _bind_pdf_ocr_if_enabled()
     await refresh_document_parser(pool)
     for r in rows:
         sp = r["storage_path"]

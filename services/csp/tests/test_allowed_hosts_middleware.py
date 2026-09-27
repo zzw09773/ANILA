@@ -51,36 +51,36 @@ _PLATFORM_YML = _REPO_ROOT / "infra" / "compose" / "platform.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
 _RUNBOOK = _REPO_ROOT / "docs" / "runbooks" / "intranet-deployment-runbook.md"
 
-# `${ALLOWED_HOSTS:-<default>}`
-_COMPOSE_DEFAULT = re.compile(r"^\$\{ALLOWED_HOSTS:-(?P<default>.*)\}$")
-# A line in prose that assigns the knob, as an operator would copy it.
-_ENV_ASSIGNMENT = re.compile(r"^ALLOWED_HOSTS=(?P<value>.+)$", re.MULTILINE)
+# `${ANILA_HOST:?...},localhost,...` — the site name is not a second knob.
+_COMPOSE_FROM_HOST = re.compile(
+    r"^\$\{ANILA_HOST:\?[^}]*\},(?P<rest>.*)$"
+)
+_SAMPLE_HOST = "anila.example.test"
+# A line an operator would copy into .env. That knob is gone.
+_ENV_ASSIGNMENT = re.compile(r"^ALLOWED_HOSTS=", re.MULTILINE)
 
 
 def compose_allowlist_default() -> str:
-    """The allow-list the deployment actually ships, read from compose.
+    """The allow-list the deployment actually ships, with a sample site name.
 
     Read rather than copied. A literal here would keep every test below
-    green after somebody edits `infra/compose/platform.yml`, which is the
-    file that decides what production runs — the tests would be proving
-    things about a string no deployment uses.
+    green after somebody edits `infra/compose/platform.yml`.
     """
     doc = yaml.safe_load(_PLATFORM_YML.read_text(encoding="utf-8"))
     env = doc["services"]["csp"]["environment"]
     assert "ALLOWED_HOSTS" in env, (
         "platform.yml's csp block no longer passes ALLOWED_HOSTS. That line "
         "is the on-switch: app/config.py defaults to '*', so without it the "
-        "Host check is off in every deployment while .env still carries a "
-        "list that looks live. (test_compose_csp_env_passthrough.py guards "
-        "the same line from the other direction.)"
+        "Host check is off in every deployment."
     )
     value = str(env["ALLOWED_HOSTS"])
-    match = _COMPOSE_DEFAULT.match(value)
+    match = _COMPOSE_FROM_HOST.match(value)
     assert match, (
-        f"platform.yml csp.ALLOWED_HOSTS is {value!r} — not the "
-        "`${ALLOWED_HOSTS:-...}` shape this file reads it from"
+        f"platform.yml csp.ALLOWED_HOSTS is {value!r} — expected "
+        "`${ANILA_HOST:?...},<internal callers>`"
     )
-    return match.group("default")
+    assert "${ALLOWED_HOSTS" not in value
+    return f"{_SAMPLE_HOST},{match.group('rest')}"
 
 
 DEPLOYED_ALLOWLIST = compose_allowlist_default()
@@ -89,17 +89,17 @@ DEPLOYED_ALLOWLIST = compose_allowlist_default()
 # the tripwire that makes a compose edit move a test: change the shipped
 # set and this set stops matching, with the diff named in the failure.
 EXPECTED_EFFECTIVE_HOSTS = {
+    _SAMPLE_HOST,
     "localhost",
     "127.0.0.1",
+    "::1",
     "csp",
-    "10.53.100.15",
-    "172.16.120.35",
-    "*.ncsist.org.tw",
+    "router",
+    "anila-studio",
+    "asr-gateway",
+    "ingestion-worker",
+    "ip-literal",
 }
-
-# The one value an operator is told to write that is *not* the shipped set:
-# the documented way out of a lockout.
-RESCUE_VALUE = "*"
 
 # Every Host value recon found a real caller for, with that caller.
 # `(host_header_sent, why)` — the header is sent exactly as the caller
@@ -127,26 +127,47 @@ LEGITIMATE_HOSTS = [
         "one Host",
     ),
     (
-        "anila.ai.ncsist.org.tw",
-        "the intranet FQDN (.env.example ANILA_HOST); nginx forwards it "
-        "verbatim via `proxy_set_header Host $host`, matched by the "
-        "*.ncsist.org.tw wildcard",
+        _SAMPLE_HOST,
+        "ANILA_HOST, forwarded by nginx as Host $host",
     ),
     (
-        "aiops.ai.ncsist.org.tw",
-        "second FQDN under the same wildcard — the entry is a wildcard on "
-        "purpose (nginx map: ~^.+\\.ncsist\\.org\\.tw$), so one more intranet "
-        "name must not need a csp restart",
+        "router",
+        "router calls CSP with Host equal to its own service name when "
+        "the URL is http://csp:8000 only for the target; callers that "
+        "address csp by the name csp are covered above. This entry is "
+        "the compose list's router name, which also reaches csp.",
     ),
     (
-        "10.53.100.15",
-        "the platform host IP; .env.example documents connecting by IP "
-        "(with a cert warning) until the DNS A record exists",
+        "anila-studio",
+        "anila-studio server-to-server calls",
     ),
     (
-        "172.16.120.35",
-        "the trial machine — nginx $is_anila_host allows it and it is the "
-        "ANILA_HOST fallback in platform.yml (n8n)",
+        "asr-gateway",
+        "asr-gateway CSP_BASE_URL",
+    ),
+    (
+        "ingestion-worker",
+        "ingestion-worker calls to CSP",
+    ),
+    (
+        "::1",
+        "IPv6 loopback",
+    ),
+    (
+        "[::1]:8000",
+        "bracketed IPv6 loopback with port",
+    ),
+    (
+        "172.16.120.153",
+        "trial users reach the dev box by IP; any bare IPv4 is allowed",
+    ),
+    (
+        "172.16.120.153:443",
+        "the same address with an explicit port",
+    ),
+    (
+        "2001:db8::1",
+        "a bare IPv6 literal",
     ),
 ]
 
@@ -160,10 +181,10 @@ SPOOFED_HOSTS = [
     # The wildcard is `*.ncsist.org.tw`; the bare apex has no caller and
     # must not be inherited (starlette matches on endswith(".ncsist.org.tw")).
     "ncsist.org.tw",
-    # 10.53.100.12 is the model gateway, not an ingress: nothing reaches
-    # csp with this Host. nginx's map still allows it, so csp is the
-    # narrower of the two here — deliberate, see the runbook.
-    "10.53.100.12",
+    "anila.ai.ncsist.org.tw",
+    "not-the-site.example",
+    "ip-literal",
+    "10.53.100.15.evil.example",
 ]
 
 
@@ -306,7 +327,7 @@ def test_the_csrf_verdict_is_what_the_previous_test_displaces(allowlisted_client
     resp = allowlisted_client.post(
         "/api/users/1/approve",
         headers={
-            "Host": "anila.ai.ncsist.org.tw",
+            "Host": _SAMPLE_HOST,
             "Cookie": f"{ACCESS_COOKIE_NAME}=not-a-real-session",
         },
     )
@@ -412,9 +433,9 @@ def test_port_bearing_entries_are_not_silently_accepted():
 # spellings and must give both the same verdict.
 
 SAME_NAME_DIFFERENT_SPELLING = [
-    "ANILA.AI.NCSIST.ORG.TW",
-    "anila.ai.ncsist.org.tw.",
-    "ANILA.AI.NCSIST.ORG.TW.",
+    "ANILA.EXAMPLE.TEST",
+    "anila.example.test.",
+    "ANILA.EXAMPLE.TEST.",
     "LOCALHOST:8000",
     "CSP",
     "localhost.",
@@ -525,8 +546,8 @@ def test_the_shipped_default_survives_validation():
 
 
 def test_the_rescue_value_survives_validation():
-    """`*` alone is the documented way out and must never be 'malformed'."""
-    assert app.main.parse_allowed_hosts(RESCUE_VALUE) == ["*"]
+    """`*` alone still disables the check. It is not a .env knob anymore."""
+    assert app.main.parse_allowed_hosts("*") == ["*"]
 
 
 # ── The "is it on?" signal the runbook greps for ───────────────────────────
@@ -613,24 +634,19 @@ def test_the_announcement_happens_where_logging_actually_works():
 
 
 def test_the_documented_copies_all_match_the_compose_default():
-    """.env.example and the runbook carry the same list; nobody re-types it.
+    """.env no longer carries ALLOWED_HOSTS. Docs must not tell operators to paste one.
 
-    Acceptance counted six hand-synced copies of this set. This collapses
-    the ones inside the repo's own docs into machine-checked ones, so the
-    remaining hand-sync is compose ⇄ nginx's `$is_anila_host` map — called
-    out in the runbook, and not parseable from here without an nginx
-    config parser (deliberately out of scope).
+    The site name is ANILA_HOST. nginx substitutes the same value.
     """
-    for path in (_ENV_EXAMPLE, _RUNBOOK):
-        text = path.read_text(encoding="utf-8")
-        found = _ENV_ASSIGNMENT.findall(text)
-        assert found, f"{path.name} no longer documents ALLOWED_HOSTS at all"
-        for value in found:
-            assert value in (DEPLOYED_ALLOWLIST, RESCUE_VALUE), (
-                f"{path.name} documents ALLOWED_HOSTS={value!r}, but compose "
-                f"ships {DEPLOYED_ALLOWLIST!r} — an operator copying the docs "
-                "would get a different allow-list than a default `up -d`"
-            )
+    example = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert not _ENV_ASSIGNMENT.search(example), (
+        ".env.example still assigns ALLOWED_HOSTS"
+    )
+    runbook = _RUNBOOK.read_text(encoding="utf-8")
+    assert not _ENV_ASSIGNMENT.search(runbook), (
+        "the runbook still tells operators to set ALLOWED_HOSTS"
+    )
+    assert "10.53.100.15,172.16.120.35" not in runbook
 
 
 def test_the_runbook_documents_both_the_signal_and_the_way_out():

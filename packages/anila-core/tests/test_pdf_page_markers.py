@@ -83,17 +83,35 @@ def _build_pdf(path, n_pages: int, images_per_page: int) -> str:
     return str(path)
 
 
+_SUBJECTS = (
+    "alpha", "bravo", "charlie", "delta", "echo",
+    "foxtrot", "golf", "hotel", "india", "juliet",
+)
+
+
 def _page_texts(n_pages: int) -> list[str]:
-    """What the stubbed extractor returns — one markdown blob per page."""
-    return [f"PAGE-MARKER-{p}\n\nBody text of page {p}.\n" for p in range(1, n_pages + 1)]
+    """What the stubbed extractor returns — one markdown blob per page.
+
+    Each page names a different subject in words. A sentence that only
+    differs by a digit is furniture to the scan detector, and these tests
+    are about page boundaries on a real text layer.
+    """
+    return [
+        (
+            f"PAGE-MARKER-{p}\n\n"
+            f"The distinctive subject on this page is {_SUBJECTS[p - 1]} "
+            f"and the paragraph does not repeat elsewhere in the document.\n"
+        )
+        for p in range(1, n_pages + 1)
+    ]
 
 
 @pytest.fixture
 def stub_extractor(monkeypatch):
     """Replace ``pymupdf4llm.to_markdown`` with a deterministic per-page stub.
 
-    Also pins the parser's own OCR fallback to "no backend": OCR replaces
-    ``content`` wholesale and would erase the markers under test.
+    The stub text is a real text layer. A scan is refused before any
+    marker can be checked, so these pages have to look readable.
     """
 
     def install(pages: list[str]):
@@ -105,8 +123,6 @@ def stub_extractor(monkeypatch):
             return [{"text": t} for t in pages]
 
         monkeypatch.setattr(pymupdf4llm, "to_markdown", fake_to_markdown)
-        monkeypatch.setattr(parser_registry.PdfParser, "_ocr_initialised", True)
-        monkeypatch.setattr(parser_registry.PdfParser, "_ocr_backend", None)
 
     return install
 
@@ -236,7 +252,11 @@ def test_form_feed_inside_page_text_is_not_a_page_boundary(
     reader, and keeps the delimiter unambiguous for every consumer that
     splits on it. Nothing downstream renders U+000C, so nothing is lost.
     """
-    pages = ["page one\fstill page one", "page two", "page\fthree\fbody"]
+    pages = [
+        "page one\fstill page one plus a harbour paragraph unique to the first page",
+        "page two plus a mountain paragraph unique to the second page alone",
+        "page\fthree\fbody plus an orchard paragraph unique to the third page",
+    ]
     stub_extractor(pages)
     path = _build_pdf(tmp_path / "ff.pdf", 3, 1)
 
@@ -255,7 +275,11 @@ def test_blank_page_does_not_renumber_the_pages_after_it(
     tmp_path, stub_extractor
 ) -> None:
     """A blank verso is still a page. Dropping it shifts every later citation."""
-    stub_extractor(["PAGE-MARKER-1 intro", "   ", "PAGE-MARKER-3 conclusion"])
+    stub_extractor([
+        "PAGE-MARKER-1 intro about harbours and the tide tables kept in the annex",
+        "   ",
+        "PAGE-MARKER-3 conclusion about orchards and the kiln records in the annex",
+    ])
     # 0 images on purpose: a page carrying only an image is *not* blank —
     # its placeholder is content, and it must still produce a chunk.
     path = _build_pdf(tmp_path / "blank.pdf", 3, 0)
@@ -278,7 +302,11 @@ def test_page_holding_only_an_image_still_produces_a_chunk(
     Image-heavy specs have these: a full-page diagram with no caption. It
     must stay retrievable, and its page number must stay correct.
     """
-    stub_extractor(["PAGE-MARKER-1 intro", "", "PAGE-MARKER-3 conclusion"])
+    stub_extractor([
+        "PAGE-MARKER-1 intro about harbours and the tide tables kept in the annex",
+        "",
+        "PAGE-MARKER-3 conclusion about orchards and the kiln records in the annex",
+    ])
     path = _build_pdf(tmp_path / "figure.pdf", 3, 1)
 
     parsed, chunks = _parse_and_chunk(path)
@@ -301,78 +329,26 @@ def test_wholly_blank_document_yields_no_chunks() -> None:
     assert get_chunker("pdf-page").chunk("\f\f  \f", {}, {}) == []
 
 
-# ── when the marker cannot be trusted, say so instead of guessing ───────────
-#
-# ``PdfParser`` replaces ``content`` wholesale on OCR fallback, keeping the
-# native pass's page count. So a 4-page scan comes out of the parser as one
-# unmarked blob still labelled ``pages=4``. Neither half is wrong on its own;
-# only comparing them catches it. These tests pin that comparison at both
-# seams — the flag in ``extract_text``, and the warning in the chunker. The
-# OCR path itself belongs to another package and is not touched here.
+# ── a scan is refused, not rewritten into one unmarked blob ────────────────
 
 
-class _StubOcrBackend:
-    """Stands in for an ``OcrBackend``; ``OcrBackend`` is an open Protocol."""
-
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def extract(self, file_path: str) -> str:  # noqa: D102
-        return self._text
-
-
-@pytest.fixture
-def force_ocr(monkeypatch):
-    """Make the parser's OCR fallback fire and return the given text."""
-
-    def install(ocr_text: str):
-        monkeypatch.setattr(parser_registry.PdfParser, "_ocr_initialised", True)
-        monkeypatch.setattr(
-            parser_registry.PdfParser, "_ocr_backend", _StubOcrBackend(ocr_text)
-        )
-        # ``parse()`` imports this lazily from the module, so patching the
-        # module attribute is what reaches it.
-        import anila_core.ingestion.ocr as ocr_mod
-
-        # ``**_kw`` deliberately: the real signature grew ``page_texts`` when
-        # the OCR-trigger work landed, and a stub pinned to the old arity
-        # fails on the merge rather than on the behaviour it is testing.
-        monkeypatch.setattr(
-            ocr_mod, "needs_ocr_fallback", lambda _text, **_kw: True
-        )
-
-    return install
-
-
-@pytest.mark.parametrize(
-    "ocr_text,why",
-    [
-        ("scanned page one two three four", "backend output has no \\f at all"),
-        ("one\ftwo\fthree", "backend output carries its own \\f (Tesseract does)"),
-    ],
-)
-def test_ocr_replacement_turns_the_page_boundary_flag_off(
-    tmp_path, stub_extractor, force_ocr, ocr_text, why
+def test_a_forced_scan_refuses_instead_of_returning_unmarked_text(
+    tmp_path, stub_extractor, monkeypatch
 ) -> None:
-    """``has_page_boundaries`` is measured, so it fails safe when OCR fires.
-
-    The parser still reports ``pages=4`` — that is not this package's to fix.
-    What must not happen is the flag claiming the text is page-delimited when
-    its field count disagrees, because that is what puts a wrong page number
-    in front of a reader.
-    """
+    """A scan must not come back as one unmarked blob still labelled with N pages."""
+    from anila_core.ingestion.errors import ParseError
+    from anila_core.ingestion.ocr import SCANNED_PDF_NEEDS_DOCLING
     from anila_core.ingestion.parsers import extract_text
+    import anila_core.ingestion.ocr as ocr_mod
 
     stub_extractor(_page_texts(4))
+    monkeypatch.setattr(ocr_mod, "needs_ocr_fallback", lambda _text, **_kw: True)
     path = _build_pdf(tmp_path / "scan.pdf", 4, 0)
-    force_ocr(ocr_text)
 
-    text, metadata, _images = extract_text("scan.pdf", open(path, "rb").read(), None)
+    with pytest.raises(ParseError) as exc:
+        extract_text("scan.pdf", open(path, "rb").read(), None)
 
-    assert metadata["ocr_used"] is True
-    assert metadata["page_count"] == 4
-    assert len(text.split("\f")) != 4
-    assert metadata["has_page_boundaries"] is False, why
+    assert exc.value.user_message == SCANNED_PDF_NEEDS_DOCLING
 
 
 def test_page_boundary_flag_stays_on_for_a_normal_pdf(

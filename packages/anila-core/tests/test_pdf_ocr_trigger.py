@@ -40,7 +40,8 @@ import re
 
 import pytest
 
-from anila_core.ingestion.ocr import VisionApiOcrBackend, needs_ocr_fallback
+from anila_core.ingestion.errors import ParseError
+from anila_core.ingestion.ocr import SCANNED_PDF_NEEDS_DOCLING, needs_ocr_fallback
 from anila_core.ingestion.parser_registry import PdfParser
 
 fitz = pytest.importorskip("fitz", reason="pymupdf is part of the [rag] extra")
@@ -327,7 +328,7 @@ def test_glyph_placeholder_density_is_measured_on_real_text_only():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# (a) parser level — the real PdfParser on a real scanned-style PDF
+# parser level — a scan on the native parser asks for Docling
 # ──────────────────────────────────────────────────────────────────────
 
 def test_the_no_tesseract_fixture_still_models_the_image(tmp_path, _no_tesseract):
@@ -342,193 +343,15 @@ def test_the_no_tesseract_fixture_still_models_the_image(tmp_path, _no_tesseract
     )
 
 
-def test_scanned_pdf_reaches_the_ocr_backend(tmp_path, spy, _no_tesseract):
-    path = _scanned_pdf(tmp_path, pages=2)
-    parsed = PdfParser().parse(path)
-
-    assert parsed.metadata["embedded_images"] == 2, "fixture must be image-bearing"
-    assert spy.calls == [path], "scanned PDF did not reach the OCR backend"
-    assert parsed.metadata["ocr_used"] is True
+def test_scanned_pdf_says_docling_is_required(tmp_path, _no_tesseract):
+    with pytest.raises(ParseError) as exc:
+        PdfParser().parse(_scanned_pdf(tmp_path, pages=2))
+    assert exc.value.user_message == SCANNED_PDF_NEEDS_DOCLING
+    assert "Docling" in exc.value.user_message
 
 
-def test_scanned_pdf_without_the_flag_is_unchanged(tmp_path, monkeypatch, _no_tesseract):
-    """Flag off (the owner's default) ⇒ no backend, no behaviour change.
-
-    Also pins that the loss keys are *absent* rather than false: a document
-    that never went near the backend must carry byte-identical metadata.
-    """
-    _use_backend(monkeypatch, None)
-
-    parsed = PdfParser().parse(_scanned_pdf(tmp_path, pages=2))
-
-    assert parsed.metadata["ocr_used"] is False
-    assert "ocr_lossy" not in parsed.metadata
-    assert "ocr_losses" not in parsed.metadata
-    assert "[[IMAGE:" in parsed.content
-
-
-def test_text_pdf_does_not_reach_the_ocr_backend(tmp_path, spy, _no_tesseract):
+def test_text_pdf_is_still_parsed(tmp_path, _no_tesseract):
     parsed = PdfParser().parse(_text_pdf(tmp_path, pages=2, body=PARAGRAPH))
-
-    assert spy.calls == [], "a readable text PDF was sent to OCR"
     assert parsed.metadata["ocr_used"] is False
     assert "contractor" in parsed.content
-
-
-def test_scanned_pdf_with_a_per_page_stamp_still_reaches_the_backend(
-    tmp_path, monkeypatch, _no_tesseract
-):
-    """End-to-end furniture case: a real text layer that is real but too small."""
-    path = _scanned_pdf(tmp_path, pages=4, body=STAMP_CAMSCANNER)
-
-    _use_backend(monkeypatch, None)
-    native = PdfParser().parse(path)
-    assert native.metadata["embedded_images"] == 4
-    # 4 stamps × 19 non-whitespace characters = 76, over the absolute floor.
-    assert native.content.count(STAMP_CAMSCANNER) == 4, "fixture lost its text layer"
-
-    backend = _SpyBackend()
-    _use_backend(monkeypatch, backend)
-    parsed = PdfParser().parse(path)
-
-    assert backend.calls == [path]
-    assert parsed.metadata["ocr_used"] is True
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Y1 / Y2 — taking the OCR result must say what it cost
-#
-# These assert the report against the FINAL content, never that replacement
-# is the right policy.  Under a merge policy the same assertions hold with
-# the counts at zero.
-# ──────────────────────────────────────────────────────────────────────
-
-def test_the_loss_report_agrees_with_the_content_that_came_out(
-    tmp_path, monkeypatch, _no_tesseract
-):
-    """Policy-independent consistency: whatever survived, the report matches."""
-    path = _scanned_pdf(tmp_path, pages=3)
-    _use_backend(monkeypatch, _SpyBackend())
-    parsed = PdfParser().parse(path)
-
-    losses = parsed.metadata["ocr_losses"]
-    n_images = parsed.metadata["embedded_images"]
-
-    assert losses["image_placeholders_dropped"] == (
-        n_images - parsed.content.count("[[IMAGE:")
-    )
-    assert losses["page_boundaries_lost"] is ("\f" not in parsed.content)
-    assert parsed.metadata["ocr_lossy"] is losses["lossy"]
-
-
-def test_replacing_the_native_extraction_reports_the_text_it_destroys(
-    tmp_path, monkeypatch, _no_tesseract
-):
-    """A scan carrying a real text layer: OCR runs and that layer is thrown away.
-
-    Under a merge policy the native text survives inside the result and the
-    reported figure is 0 — the assertion is the equivalence, not the loss.
-    """
-    path = _scanned_pdf(tmp_path, pages=4, body=STAMP_CAMSCANNER)
-
-    _use_backend(monkeypatch, None)
-    native_content = PdfParser().parse(path).content
-
-    _use_backend(monkeypatch, _SpyBackend())
-    parsed = PdfParser().parse(path)
-    losses = parsed.metadata["ocr_losses"]
-
-    survived = _blind_image_ids(native_content) in _blind_image_ids(parsed.content)
-    assert (losses["native_text_chars_dropped"] == 0) is survived
-    if not survived:
-        assert losses["native_text_chars_dropped"] >= 4 * len(
-            "".join(STAMP_CAMSCANNER.split())
-        )
-
-
-def test_pages_the_backend_cap_skipped_are_reported(tmp_path, monkeypatch, _no_tesseract):
-    """The cap's cost must be a number in the report, not only a log line."""
-    path = _scanned_pdf(tmp_path, pages=5)
-    _use_backend(monkeypatch, _SpyBackend(max_pages=2))
-    parsed = PdfParser().parse(path)
-
-    assert parsed.metadata["pages"] == 5
-    assert parsed.metadata["ocr_losses"]["pages_not_ocred"] == 3
-    assert parsed.metadata["ocr_lossy"] is True
-
-
-def test_a_backend_without_a_declared_cap_reports_no_truncation(
-    tmp_path, monkeypatch, _no_tesseract
-):
-    """``max_pages`` is read by duck-typing; a backend without it must not lie."""
-    path = _scanned_pdf(tmp_path, pages=5)
-    _use_backend(monkeypatch, _SpyBackend())
-    parsed = PdfParser().parse(path)
-
-    assert parsed.metadata["ocr_losses"]["pages_not_ocred"] == 0
-
-
-def test_the_loss_report_is_loud_in_the_log_too(
-    tmp_path, monkeypatch, caplog, _no_tesseract
-):
-    """Truncation destroys readable text, so it is an error, not a warning."""
-    path = _scanned_pdf(tmp_path, pages=5)
-    _use_backend(monkeypatch, _SpyBackend(max_pages=2))
-    with caplog.at_level(logging.WARNING, logger="anila_core.ingestion.parser_registry"):
-        PdfParser().parse(path)
-
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert errors, "truncation was not logged at ERROR"
-    assert "built-in OCR page cap" in errors[0].getMessage()
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Y1 — the cap itself must not be deletable in silence
-# ──────────────────────────────────────────────────────────────────────
-
-class _FakeVisionResponse:
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict:
-        return {"choices": [{"message": {"content": self._text}}]}
-
-
-def test_the_backend_page_cap_is_enforced_and_declared(
-    tmp_path, monkeypatch, _no_tesseract
-):
-    """``max_pages`` must actually bound the work AND be readable by the caller.
-
-    Deleting the cap makes this test rasterise and post every page, which is
-    the point: the cap is what makes truncation — and its data loss — happen,
-    so nothing about it may change without a test noticing.
-    """
-    posts: list[dict] = []
-
-    class _FakeClient:
-        def __init__(self, **kwargs) -> None:
-            pass
-
-        def post(self, url, headers=None, json=None):
-            posts.append(json)
-            return _FakeVisionResponse(f"page text {len(posts)}")
-
-        def close(self) -> None:
-            return None
-
-    import anila_core.ingestion.ocr as ocr_module
-
-    monkeypatch.setattr(ocr_module.httpx, "Client", _FakeClient)
-
-    backend = VisionApiOcrBackend(
-        base_url="http://vision.invalid/v1", model="m", max_pages=2
-    )
-    assert backend.max_pages == 2, "the cap must be readable by the caller"
-
-    text = backend.extract(_scanned_pdf(tmp_path, pages=5))
-
-    assert len(posts) == 2, "the page cap did not bound the OCR work"
-    assert text.count("page text") == 2
+    assert "ocr_losses" not in parsed.metadata

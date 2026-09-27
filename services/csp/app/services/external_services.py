@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""外部服務的讀寫、健康探測、以及舊環境變數的一次匯入。
+"""外部服務的讀寫與健康探測。
 
-執行期位址以這張表為準。``DOC_PARSER`` / ``DOCLING_*`` / ``ASR_DECODE_*``
-只在列還空著、而且還沒匯入過時讀一次。日誌只記主機名，不記憑證。
+執行期位址以治理中心這張表為準。開機不再讀 ``DOC_PARSER`` /
+``DOCLING_URL`` / ``ASR_DECODE_*``。日誌不記憑證。
 """
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from anila_core.security.url_guard import (
 
 from app.models.external_service import (
     DOCUMENT_PARSER,
-    RETIRED_LOCAL_ASR_HOST,
     SERVICE_KEYS,
     SPEECH,
     ExternalService,
@@ -463,105 +462,6 @@ def internal_payload(db: Session, service_key: str) -> dict:
     if secret:
         payload["credential"] = secret
     return payload
-
-
-def _mark_seeded(row: ExternalService) -> None:
-    row.env_seeded = True
-    row.updated_at = _utcnow()
-
-
-def import_legacy_env_once(db: Session) -> None:
-    """列是空的、而且還沒匯入過，才把舊環境變數抄進來一次。
-
-    管理員清掉位址之後 ``env_seeded`` 已是 true，重啟不會把 .env 寫回來。
-    """
-    ensure_rows(db)
-    _import_document_parser(_row(db, DOCUMENT_PARSER))
-    _import_speech(_row(db, SPEECH))
-    db.commit()
-
-
-def _import_document_parser(row: ExternalService) -> None:
-    if row.env_seeded or (row.base_url or "").strip() or row.enabled:
-        if not row.env_seeded and ((row.base_url or "").strip() or row.enabled):
-            _mark_seeded(row)
-        return
-    parser = os.environ.get("DOC_PARSER", "").strip().lower()
-    url = os.environ.get("DOCLING_URL", "").strip()
-    token = os.environ.get("DOCLING_SERVICE_TOKEN", "").strip()
-    if parser != "docling" or not url:
-        return
-    try:
-        enforce_base_url(url)
-    except (UnsafeEndpointError, ExternalServiceUrlError) as exc:
-        logger.error(
-            "external_services: 略過文件解析的環境變數匯入（位址未通過出向檢查：%s）",
-            exc.reason,
-        )
-        return
-    row.base_url = display_base_url(url)
-    row.enabled = True
-    if token:
-        row.credential_envelope = encrypt_external_credential(token)
-    row.health_status = "unknown"
-    _mark_seeded(row)
-    logger.info(
-        "external_services: 已從環境變數匯入文件解析位址 host=%s 憑證%s",
-        _host_of(url) or "(no host)",
-        "已寫入" if token else "未設定",
-    )
-
-
-def _import_speech(row: ExternalService) -> None:
-    if row.env_seeded or (row.base_url or "").strip() or row.enabled:
-        if not row.env_seeded and ((row.base_url or "").strip() or row.enabled):
-            _mark_seeded(row)
-        return
-    url = os.environ.get("ASR_DECODE_URL", "").strip()
-    if not url:
-        return
-    host = _host_of(url)
-    if host == RETIRED_LOCAL_ASR_HOST:
-        logger.info(
-            "external_services: 略過已退役的本機語音解碼器 host=%s",
-            host,
-        )
-        return
-    protocol = os.environ.get("ASR_DECODE_PROTOCOL", "native").strip().lower() or "native"
-    if protocol not in ("native", "openai"):
-        logger.error(
-            "external_services: 略過語音環境變數匯入（協定無法辨識：%s）",
-            protocol,
-        )
-        return
-    try:
-        enforce_base_url(url)
-    except (UnsafeEndpointError, ExternalServiceUrlError) as exc:
-        logger.error(
-            "external_services: 略過語音的環境變數匯入（位址未通過出向檢查：%s）",
-            exc.reason,
-        )
-        return
-    if protocol == "openai":
-        secret = os.environ.get("ASR_DECODE_API_KEY", "").strip()
-        model = os.environ.get("ASR_OPENAI_MODEL", "").strip() or "whisper-1"
-    else:
-        secret = os.environ.get("ASR_DECODER_TOKEN", "").strip()
-        model = "whisper-1"
-    row.base_url = display_base_url(url)
-    row.enabled = True
-    row.protocol = protocol
-    row.openai_model = model
-    if secret:
-        row.credential_envelope = encrypt_external_credential(secret)
-    row.health_status = "unknown"
-    _mark_seeded(row)
-    logger.info(
-        "external_services: 已從環境變數匯入語音辨識位址 host=%s protocol=%s 憑證%s",
-        host or "(no host)",
-        protocol,
-        "已寫入" if secret else "未設定",
-    )
 
 
 def rewrap_legacy_credentials(db: Session) -> int:

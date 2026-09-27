@@ -101,7 +101,7 @@ services:
       # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
       ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
       # 單標籤 docker 服務名要列在這裡才過得了 URL guard。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy},docling,router"
+      ANILA_TRUSTED_HOSTS: "docling,router"
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
       ANILA_AUTH_MODE: "${ANILA_AUTH_MODE:-password}"
@@ -113,29 +113,13 @@ services:
       # 10002 是共用目錄（router）。studio 10003、worker 10004 寫在內建名單。
       ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
       ANILA_SERVICE_CLIENT_FILE_GID: "10002"
-      AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"http://gemma4:8000","api_version":"v1","description":"On-prem gemma4 vLLM (anila-models-net) — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
-      # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
-      # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
-      AUTO_REGISTER_AGENTS: >-
-        []
-      # Dev 用獨立 seed key，跟 prod sk-test-user-api-key 區隔開——避免你拿 dev key
-      # 不小心打到 prod CSP，或反過來。
+      # 模型與 agent 只在治理中心登錄。
+      # Dev 用獨立 seed key，跟 prod sk-test-user-api-key 區隔開。
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"],"agents":[]}]
-      # 文件解析位址在治理中心「外部服務」。下面三行只給第一次啟動匯入舊 .env，
-      # 匯入後請從 .env 刪掉。執行期不再用它們決定要打哪一台。空值不會被當成已設定。
-      DOC_PARSER: "${DOC_PARSER:-}"
-      DOCLING_URL: "${DOCLING_URL:-}"
-      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":[],"agents":[]}]
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
-      ASR_DECODE_URL: "${ASR_DECODE_URL:-}"
-      ASR_DECODER_TOKEN: "${ASR_DECODER_TOKEN:-}"
-      ASR_DECODE_PROTOCOL: "${ASR_DECODE_PROTOCOL:-}"
-      ASR_DECODE_API_KEY: "${ASR_DECODE_API_KEY:-}"
-      ASR_OPENAI_MODEL: "${ASR_OPENAI_MODEL:-}"
       # 與 platform.yml 相同：掛目錄，不把缺席的 profile.json 做成目錄。
       # dev 用 share-dev，不撞 live stack 的 share/quickstart。
       ANILA_QUICKSTART_PROFILE: /app/anila-quickstart-profile/profile.json
@@ -212,7 +196,6 @@ services:
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
       EMBEDDING_BASE_URL: http://csp:8000/v1
-      EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/ingestion-worker/token
       CSP_BASE_URL: http://csp:8000
       EMBEDDING_DIM: "4000"
@@ -237,13 +220,12 @@ services:
       # the CSP /v1 proxy → Router → gemma4, metered via the worker system key.
       ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
       RELATION_LLM_URL: "${RELATION_LLM_URL:-http://csp:8000/v1}"
-      RELATION_LLM_MODEL: "${RELATION_LLM_MODEL:-gemma4}"
       RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},docling"
+      ANILA_TRUSTED_HOSTS: "docling"
       # Embedding topic-similarity edges (document-relations / C). Uses the
       # existing document_chunks vectors — no extra model call.
       ENABLE_SIMILARITY_EDGES: "${ENABLE_SIMILARITY_EDGES:-true}"
@@ -366,7 +348,7 @@ services:
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/asr-gateway/token
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-1}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-}"
+      ANILA_TRUSTED_HOSTS: ""
       ASR_PROBE_TIMEOUT_SECONDS: ${ASR_PROBE_TIMEOUT_SECONDS:-8}
       ASR_PROBE_CONNECT_TIMEOUT_SECONDS: ${ASR_PROBE_CONNECT_TIMEOUT_SECONDS:-3}
       ASR_INITIAL_PROMPT: ${ASR_INITIAL_PROMPT:-以下是繁體中文。}
@@ -453,8 +435,10 @@ services:
       - "${NGINX_HTTP_PORT_DEV:-8080}:80"
       - "${NGINX_HTTPS_PORT_DEV:-8443}:443"
       - "${ANILA_UI_HTTPS_PORT_DEV:-9443}:4443"
+    environment:
+      ANILA_HOST: ${ANILA_HOST:-localhost}
     volumes:
-      - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../infra/nginx/anila.conf:/etc/nginx/templates/default.conf.template:ro
       - ../../infra/nginx/certs:/etc/nginx/certs:ro
       - ../../share-dev/static:/usr/share/nginx/share-files/static:ro
       - ../../share-dev/uploads:/usr/share/nginx/share-files/uploads:rw

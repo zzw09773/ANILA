@@ -33,6 +33,8 @@ asksecret() { local p="$1" a; read -rsp "$(c '1;35' '?') ${p}: " a; echo >&2; pr
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=../scripts/prod-env-guard.sh
+source "$REPO_ROOT/infra/deployment/scripts/prod-env-guard.sh"
 
 # 與 build-and-export-for-intranet.sh 對齊:bundle 的 image tag 是以這個 project name
 # 產出的。INCLUDE_ASR 預設 0——平台開機沒語音;要開是開機後第二步
@@ -251,6 +253,9 @@ else
   cp .env.example .env; ok "由 .env.example 建立 .env"
 fi
 
+# 在改寫旗標之前拒絕。否則檔案裡的開發用登入會被洗成正式值，等於幫它過關。
+prod_env_refuse .env || die "正式部署條件不符"
+
 # 預設值來源(選用):image 包裡的 intranet-defaults.env(刻意不進 git,實體隨包帶入
 # air-gap)。提供 ADMIN_PASSWORD / CODESERVER_PASSWORD / CARD_INITIAL_OWNERS /
 # 沒提供的 secret 一律 openssl 隨機生成。GitLab 已撤下,不再生成它的 root 密碼。
@@ -260,7 +265,7 @@ DEFAULTS="$BUNDLE/intranet-defaults.env"
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|SECRET_KEY|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|ASR_DECODER_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|SECRET_KEY|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
         printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
       *) : ;;
@@ -272,51 +277,15 @@ fi
 NEWLY_GENERATED_KEYS=()
 if [ "$REGEN" = 1 ]; then
   info "  secret:有預設用預設,否則 openssl 隨機生成"
-  SECRET_KEY_VALUE="${SECRET_KEY:-${CSP_SECRET_KEY:-$(openssl rand -hex 32)}}"
+  SECRET_KEY_VALUE="${SECRET_KEY:-$(openssl rand -hex 32)}"
   set_env SECRET_KEY                "$SECRET_KEY_VALUE"
-  # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一
-  set_env CSP_SECRET_KEY            "$SECRET_KEY_VALUE"
-  set_env CSP_SERVICE_TOKEN         "${CSP_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
-  set_env ASR_DECODER_TOKEN         "${ASR_DECODER_TOKEN:-$(openssl rand -hex 32)}"
-  set_env INTERNAL_PLATFORM_API_KEY "${INTERNAL_PLATFORM_API_KEY:-sk-internal-$(openssl rand -hex 24)}"
   set_env ADMIN_PASSWORD            "${ADMIN_PASSWORD:-$(openssl rand -base64 24)}"
   set_env CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
   set_env CSP_APP_DB_PASSWORD       "${CSP_APP_DB_PASSWORD:-$(openssl rand -hex 32)}"
   set_env CODESERVER_PASSWORD       "${CODESERVER_PASSWORD:-$(openssl rand -base64 24)}"
 else
-  SECRET_KEY_VALUE="$(get_env SECRET_KEY)"
-  [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(get_env CSP_SECRET_KEY)"
-  [ -n "$SECRET_KEY_VALUE" ] || die ".env 缺 SECRET_KEY / CSP_SECRET_KEY"
   if [ -z "$(get_env SECRET_KEY)" ]; then
-    secret_set SECRET_KEY "$SECRET_KEY_VALUE" "從別名補正名"
-  elif [ -z "$(get_env CSP_SECRET_KEY)" ]; then
-    # alias 缺席=這份 .env 多半寫於本腳本改版前,正是 #7 解析謎(值在、compose
-    # 整檔讀不到)的族群——趁補別名的同一輪,順手把 canonical 行重寫成 set_env 的
-    # 正規形。兩名俱在的 .env 已是本腳本寫過的形,所以不再動它:正規化只做這一族。
-    secret_set SECRET_KEY "$SECRET_KEY_VALUE" "重寫既有行"
-  elif [ "$(get_env CSP_SECRET_KEY)" != "$SECRET_KEY_VALUE" ]; then
-    # SECRET_KEY 是 canonical；既有 alias 若漂移，只修正 alias。
-    secret_set CSP_SECRET_KEY "$SECRET_KEY_VALUE" "重寫既有行"
-  fi
-  if [ -z "$(get_env CSP_SECRET_KEY)" ]; then
-    # 兩行同值是對 compose dotenv 邊角行為的實測防禦,勿刪其一。
-    secret_set CSP_SECRET_KEY "$SECRET_KEY_VALUE" "補別名"
-  fi
-  # ⚠ 刻意的不對稱,不要「修」它:preserve 模式下其他必填 secret 缺席一律 die
-  # (使用者答「保留現有」,腳本就不無中生有;停下點名讓人去密碼管理器拿=好的失敗)。
-  # ASR_DECODER_TOKEN 是唯一例外——它是後加的第八把,既有 .env 必缺,不補則所有
-  # 既有部署重跑必死。這是**遷移期權宜**:第一次正式安裝落地後,這段應改回 die。
-  # 把它改成通則(缺了就生)=重開 preserve 模式悄悄生祕密的洞(1061ecc3 剛關的那個)。
-  if [ -z "$(get_env ASR_DECODER_TOKEN)" ]; then
-    if [ -n "${ASR_DECODER_TOKEN:-}" ]; then
-      ASR_DECODER_TOKEN_VALUE="$ASR_DECODER_TOKEN"
-      ASR_DECODER_TOKEN_KIND="補既有值"
-    else
-      ASR_DECODER_TOKEN_VALUE="$(openssl rand -hex 32)"
-      ASR_DECODER_TOKEN_KIND="新生成"
-      NEWLY_GENERATED_KEYS+=(ASR_DECODER_TOKEN)
-    fi
-    secret_set ASR_DECODER_TOKEN "$ASR_DECODER_TOKEN_VALUE" "$ASR_DECODER_TOKEN_KIND"
+    die ".env 缺 SECRET_KEY"
   fi
 fi
 
@@ -367,7 +336,7 @@ if [ -n "$MGK" ]; then set_env MODEL_GATEWAY_API_KEY "$MGK"; ok "已設 MODEL_GA
 else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後填進 .env 再 'docker compose up -d csp'"; fi
 
 # 必填齊全檢查
-for k in SECRET_KEY CSP_SECRET_KEY CSP_SERVICE_TOKEN ASR_DECODER_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
+for k in SECRET_KEY ADMIN_PASSWORD \
          CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD CODESERVER_WORKSPACE CARD_INITIAL_OWNERS; do
   [ -n "$(get_env "$k")" ] || die ".env 缺必填值: $k"
 done
@@ -376,8 +345,8 @@ ok ".env 就緒 (strict + 卡片登入 + 模型走 .12 gateway)"
 if [ "$REGEN" = 1 ]; then
   echo
   echo "$(c '1;33' '──── 請把以下 secret 存進密碼管理器(只顯示這一次) ────')"
-  for k in ADMIN_PASSWORD SECRET_KEY CSP_SECRET_KEY CSP_SERVICE_TOKEN ASR_DECODER_TOKEN \
-           INTERNAL_PLATFORM_API_KEY CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
+  for k in ADMIN_PASSWORD SECRET_KEY \
+           CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
     printf '  %-26s %s\n' "$k" "$(get_env "$k")"
   done
   echo "$(c '1;33' '──────────────────────────────────────────────────────')"
@@ -436,6 +405,8 @@ docker network inspect anila-models-net >/dev/null 2>&1 \
 
 # ── 6. up ────────────────────────────────────────────────────────────────
 info "[6/7] docker compose up -d --no-build"
+# 互動過程中若 shell 蓋過 .env，或 CARD_* 仍指到測試 CA，這裡再拒一次。
+prod_env_refuse .env || die "正式部署條件不符"
 COMPOSE_BASE_ARGS=(-p "$COMPOSE_PROJECT_NAME" -f compose.yaml)
 if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ]; then
   COMPOSE_BASE_ARGS+=(-f "$ASR_OVERLAY")

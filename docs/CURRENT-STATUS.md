@@ -1,7 +1,7 @@
 # 目前狀態（給交接與代理）
 
 > 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
-> 更新：2026-09-26。HEAD 以 `git log -1` 為準。
+> 更新：2026-09-27。HEAD 以 `git log -1` 為準。
 
 ## 開發線
 
@@ -42,7 +42,7 @@ CSP 在啟動時，以及之後每個週期（預設一小時），為內建名�
 | anila-studio | `/run/anila/service-clients/anila-studio/token` | 服務憑證 `csk-`（`client_type=studio`） | 目錄 gid 10003 `anila-studio-tokens` |
 | ingestion-worker | `/run/anila/service-clients/ingestion-worker/token` | 系統使用者的 `sk-` API key（雜湊存在 `api_keys`，不是 `service_clients`） | 目錄 gid 10004 `anila-worker-tokens` |
 
-子目錄的擁有者是 uid 10005（沒有服務用這個 uid），mode 2770，只有該群組進得去。CSP、studio、worker 都是 uid 10001；若憑證放在同一個他們擁有的目錄，0640 擋不住互讀。`csp-credential-dirs` 在 CSP 啟動前用 root 把這三個目錄建好（既有 volume 也不會漏），並刪掉根目錄的扁平 `<client>.token`。有刪到檔案時留下標記，CSP 把 `router-primary` 輪替一次且不留寬限，複製走的舊檔因此失效。沒有專屬目錄時 CSP 拒絕發布、不退回扁平檔，`/health` 降級。檔案本身是 0640。CSP 加入上述三個群組才能寫；每個消費者只加入自己的群組。上層目錄仍是 gid 10002、mode 2750。日誌不記明文。chmod／chown 失敗，或寫完之後的 mode／gid 不符，這次發布算失敗，readiness 降級。約 30 天輪替一次。服務憑證的上一把在寬限期（預設 24 小時）內仍可通過驗證；worker 的舊 key 同樣留到寬限期，但若那把是環境變數裡的 `INTERNAL_PLATFORM_API_KEY`，換發當下就停用。`ANILA_SERVICE_CLIENT_AUTO_PROVISION=0` 時 `/health` 是 503。
+子目錄的擁有者是 uid 10005（沒有服務用這個 uid），mode 2770，只有該群組進得去。CSP、studio、worker 都是 uid 10001；若憑證放在同一個他們擁有的目錄，0640 擋不住互讀。`csp-credential-dirs` 在 CSP 啟動前用 root 把這三個目錄建好（既有 volume 也不會漏），並刪掉根目錄的扁平 `<client>.token`。有刪到檔案時留下標記，CSP 把 `router-primary` 輪替一次且不留寬限，複製走的舊檔因此失效。沒有專屬目錄時 CSP 拒絕發布、不退回扁平檔，`/health` 降級。檔案本身是 0640。CSP 加入上述三個群組才能寫；每個消費者只加入自己的群組。上層目錄仍是 gid 10002、mode 2750。日誌不記明文。chmod／chown 失敗，或寫完之後的 mode／gid 不符，這次發布算失敗，readiness 降級。約 30 天輪替一次。服務憑證的上一把在寬限期（預設 24 小時）內仍可通過驗證；worker 的舊 key 同樣留到寬限期。環境變數 `INTERNAL_PLATFORM_API_KEY` 不再參與換發。`ANILA_SERVICE_CLIENT_AUTO_PROVISION=0` 時 `/health` 是 503。
 
 三個服務都讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀；CSP 回 401／403 時再讀一次才放棄。路徑有設而檔案不在或讀不到時，不改用別的憑證。`/health`（worker 沒有 HTTP，啟動日誌與 `credential_health()`）的 `token_source` 是 `file`、`file_missing` 或 `file_error`。studio 在 `file_missing`／`file_error` 時 `/health` 是 503。
 
@@ -88,6 +88,10 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 
 這次沒有刪除主機上的 Docker volume。舊的 `anila-platform_gitlab_data` 還在主機上，之後由擁有者自行移除。
 
+## 設定面（2026-09-27）
+
+`.env` 只留站台名稱 `ANILA_HOST`。入向 Host 白名單是它，加上 localhost、127.0.0.1、`::1`、會呼叫 CSP 的 compose 服務名，以及任何裸 IPv4／IPv6。其他主機名拒絕。nginx 的 `map $is_anila_host` 在容器啟動時（官方映像對 `/etc/nginx/templates/*.template` 做 envsubst）代入同一個 `ANILA_HOST`，不用各站改 conf。信任主機在治理中心。模型與 agent 只在治理中心登錄；空的登錄表可以起來，角色顯示「需設定」。沒有平台嵌入角色時，新建知識庫不寫模型名；入庫先等，狀態是「平台嵌入模型尚未在治理中心設定」，角色設好後才繼續。LLM 文件關聯用摘要角色，沒設就略過，規則與相似度關聯照常。掃描 PDF 的文字辨識是 Docling，原生解析器碰到掃描件會說明需要 Docling，不再走視覺模型 OCR。正式部署（`deploy-prod.sh` 與 `intranet-deploy.sh`）拒絕 `ANILA_ALLOW_DEV_SECRET=1`、`CARD_DEV_TRUST_TEST_CA=1`、指到測試 CA 的 `CARD_CA_BUNDLE_PATH`，以及不是 `card-only` 的 `ANILA_AUTH_MODE`。`card-only` 仍保留擁有者的密碼登入。`SECRET_KEY` 必填，不再接受 `CSP_SECRET_KEY` 別名。
+
 ## 外部服務（2026-09-26）
 
 文件解析（Docling）與語音辨識的位址在治理中心「外部服務」，不在 `.env`。
@@ -96,7 +100,7 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 2. 文件解析：填遠端 Docling 的位址、需要的話填憑證、打開啟用。不要把帳密寫進網址。沒啟用時，畫面寫明擷取走內建原生解析器。啟用之後服務中斷，擷取工作會失敗，不會改回原生解析器。
 3. 語音辨識：填遠端解碼器位址、選 native 或 openai、憑證可留空、打開啟用。健康由 CSP 背景探測，畫面只顯示上次結果，不會因為重新整理就把憑證送出去。Shell 與 ANILA LM 只在這一列是啟用且健康時顯示麥克風。頁面載入與回到視窗時各問一次，未啟用時不會去打解碼器。
 4. 要讓瀏覽器連得到語音串流，平台還要帶 `--profile asr` 把 asr-gateway 拉起來。gateway 只負責切句與轉送，位址向 CSP 讀。沒有本機 whisper。
-5. 若部署前 `.env` 裡還有 `DOC_PARSER=docling` 與 `DOCLING_URL`，CSP 第一次啟動會匯入一次（日誌只記主機名）。確認畫面有位址之後，從 `.env` 刪掉 `DOC_PARSER`、`DOCLING_URL`、`DOCLING_SERVICE_TOKEN`，以及 `ASR_DECODE_URL`、`ASR_DECODER_TOKEN`、`ASR_DECODE_PROTOCOL`、`ASR_DECODE_API_KEY`、`ASR_OPENAI_MODEL`。指到 `asr-decoder` 這個舊本機名字的位址不會匯入。
+5. 開機不再從 `.env` 匯入文件解析或語音位址。請在治理中心「外部服務」填。`.env` 裡若還留著 `DOC_PARSER`、`DOCLING_URL`、`DOCLING_SERVICE_TOKEN`、`ASR_DECODE_URL`、`ASR_DECODER_TOKEN`、`ASR_DECODE_PROTOCOL`、`ASR_DECODE_API_KEY`、`ASR_OPENAI_MODEL`，刪掉即可，服務不會讀。
 
 憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
 

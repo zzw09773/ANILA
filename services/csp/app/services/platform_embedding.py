@@ -69,6 +69,32 @@ def _native_dim_of(row: ModelRegistry) -> int:
     return EMBED_DIM
 
 
+def designated_platform_embedding(db: Session) -> Optional[PlatformEmbedding]:
+    """The Console platform_embedding flag only.
+
+    Knowledge-base create uses this. There is no first-active row and no
+    hardcoded model name: an empty designation stores NULL and ingestion
+    waits until an admin sets the role.
+    """
+    designated: ModelRegistry | None = (
+        db.query(ModelRegistry)
+        .filter(
+            ModelRegistry.is_platform_embedding.is_(True),
+            ModelRegistry.model_type == "embedding",
+            ModelRegistry.is_active.is_(True),
+        )
+        .first()
+    )
+    if designated is None:
+        return None
+    native = _native_dim_of(designated)
+    return PlatformEmbedding(
+        model=designated,
+        native_dim=native,
+        truncates=native > EMBED_DIM,
+    )
+
+
 def resolve_platform_embedding(db: Session) -> Optional[PlatformEmbedding]:
     """Return the designated platform embedding, or a soft fallback.
 

@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import sys
@@ -346,20 +347,18 @@ async def lifespan(app: FastAPI):
         _db.close()
     trusted_host_service.register_with_url_guard()
 
-    # 外部服務：舊環境變數只匯入一次，之後 parser 讀這張表。
+    # 外部服務位址在治理中心。這裡只把舊憑證外殼改寫，並讓 parser 讀這張表。
     from app.services.external_services import (
-        import_legacy_env_once,
         register_document_parser_source,
         rewrap_legacy_credentials,
         start_external_service_probe,
     )
     _ext = _SessionLocal()
     try:
-        import_legacy_env_once(_ext)
         rewrap_legacy_credentials(_ext)
     except Exception:
         logging.getLogger(__name__).exception(
-            "external_services: 環境變數匯入失敗"
+            "external_services: 舊憑證外殼改寫失敗"
         )
     finally:
         _ext.close()
@@ -525,6 +524,7 @@ app.add_middleware(CsrfMiddleware)
 #                 csp_backend with `proxy_set_header Host $host`
 #                 (infra/nginx/anila.conf), and its own healthcheck speaks
 #                 to 127.0.0.1:8080
+#   ::1         — the same loopback, when the caller speaks IPv6
 #   csp         — every in-network caller reaches us at http://csp:8000 over
 #                 docker DNS (router, anila-studio, asr-gateway,
 #                 ingestion-worker), so the Host is the service name
@@ -532,9 +532,14 @@ app.add_middleware(CsrfMiddleware)
 # Without the union, an operator who sets ALLOWED_HOSTS to just the FQDN —
 # the obvious thing to type — takes the healthcheck down with it, and
 # `depends_on: csp: service_healthy` then stops nginx from starting at all.
-# The union opens nothing new: nginx's own $is_anila_host map already
-# accepts localhost / 127.0.0.1 from the LAN.
-_INTERNAL_HOSTS = ("localhost", "127.0.0.1", "csp")
+# nginx's $is_anila_host map accepts the same names, plus any bare IP.
+_INTERNAL_HOSTS = ("localhost", "127.0.0.1", "::1", "csp")
+
+# Not a hostname. Starlette wildcards cannot say "any IP" without also
+# matching DNS names (`10.*` is rejected below). This token turns on a
+# separate check: a Host that ipaddress accepts is allowed. IP literals
+# cannot be used for the DNS-rebinding attack this list exists to stop.
+IP_LITERAL_FLAG = "ip-literal"
 
 # The log line the runbook greps for. One token, two verdicts, so that
 # "no line at all" reads as "something is wrong" rather than as "off".
@@ -583,7 +588,9 @@ def _validate_host_pattern(pattern: str) -> None:
             "A wildcard entry must be exactly one leading '*.' followed by a "
             "domain suffix (e.g. '*.ncsist.org.tw'); '*' anywhere else — "
             "including subnet-style values like '10.53.*.15' — is not "
-            "supported. Use '*' on its own to disable the check entirely."
+            "supported. Bare IP addresses are covered by the "
+            f"{IP_LITERAL_FLAG!r} flag, not by a wildcard. "
+            "Use '*' on its own to disable the check entirely."
         )
 
 
@@ -605,12 +612,45 @@ def parse_allowed_hosts(raw: str | None) -> list[str]:
         return ["*"]
     hosts = [normalize_host(h) for h in hosts]
     for pattern in hosts:
+        if pattern == IP_LITERAL_FLAG:
+            continue
         _validate_host_pattern(pattern)
-    return hosts + [h for h in _INTERNAL_HOSTS if h not in hosts]
+    hosts = hosts + [h for h in _INTERNAL_HOSTS if h not in hosts]
+    if IP_LITERAL_FLAG not in hosts:
+        hosts.append(IP_LITERAL_FLAG)
+    return hosts
+
+
+def host_without_port(value: str) -> str:
+    """Host header with the port removed, including bracketed IPv6."""
+    text = value.strip()
+    if text.startswith("["):
+        end = text.find("]")
+        if end != -1:
+            return text[1:end]
+    if text.count(":") >= 2:
+        return text
+    return text.split(":", 1)[0]
+
+
+def is_ip_literal(value: str) -> bool:
+    """True when the Host is a bare IPv4 or IPv6 address, optional port."""
+    bare = host_without_port(value)
+    if not bare:
+        return False
+    try:
+        ipaddress.ip_address(bare)
+    except ValueError:
+        return False
+    return True
 
 
 class HostAllowlistMiddleware(TrustedHostMiddleware):
     """``TrustedHostMiddleware`` with RFC-correct Host comparison.
+
+    ``accept_ip_literals`` is the ``ip-literal`` flag. It is not put in
+    ``allowed_hosts``: that list is exact names and ``*.suffix`` only, and
+    a token sitting there would accept the hostname ``ip-literal``.
 
     The parent compares the raw header, so ``ANILA.AI.NCSIST.ORG.TW`` and a
     trailing-dot FQDN are rejected by an allow-list that contains the same
@@ -624,9 +664,25 @@ class HostAllowlistMiddleware(TrustedHostMiddleware):
     path — only for callers that reach csp:8000 directly.
     """
 
+    def __init__(
+        self,
+        app,
+        allowed_hosts=None,
+        *,
+        accept_ip_literals: bool = False,
+        www_redirect: bool = True,
+    ):
+        self.accept_ip_literals = accept_ip_literals
+        super().__init__(
+            app, allowed_hosts=allowed_hosts, www_redirect=www_redirect,
+        )
+
     async def __call__(self, scope, receive, send):
         if not self.allow_any and scope["type"] in ("http", "websocket"):
             scope = self._normalize_scope_host(scope)
+            if self.accept_ip_literals and _scope_host_is_ip(scope):
+                await self.app(scope, receive, send)
+                return
         await super().__call__(scope, receive, send)
 
     @staticmethod
@@ -649,6 +705,13 @@ class HostAllowlistMiddleware(TrustedHostMiddleware):
         return scope
 
 
+def _scope_host_is_ip(scope) -> bool:
+    for name, value in scope.get("headers") or []:
+        if name == b"host":
+            return is_ip_literal(value.decode("latin-1"))
+    return False
+
+
 def install_host_allowlist(target_app: FastAPI, raw: str | None) -> list[str]:
     """Register the Host allow-list unless it is disabled.
 
@@ -660,7 +723,13 @@ def install_host_allowlist(target_app: FastAPI, raw: str | None) -> list[str]:
     """
     hosts = parse_allowed_hosts(raw)
     if hosts != ["*"]:
-        target_app.add_middleware(HostAllowlistMiddleware, allowed_hosts=hosts)
+        accept_ip = IP_LITERAL_FLAG in hosts
+        names = [host for host in hosts if host != IP_LITERAL_FLAG]
+        target_app.add_middleware(
+            HostAllowlistMiddleware,
+            allowed_hosts=names,
+            accept_ip_literals=accept_ip,
+        )
     return hosts
 
 

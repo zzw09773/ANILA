@@ -685,12 +685,6 @@ def _ensure_api_key(
             )
             return ProvisionOutcome(name, "revoked")
 
-        legacy_hash = _legacy_platform_key_hash()
-        replace_legacy = (
-            current is not None
-            and legacy_hash is not None
-            and _hash_is(current.key_hash, legacy_hash)
-        )
         file_ok = (
             current is not None
             and _api_key_file_matches(directory, name, current.key_hash, gid=gid)
@@ -698,7 +692,6 @@ def _ensure_api_key(
         if (
             current is not None
             and file_ok
-            and not replace_legacy
             and not _api_key_rotation_due(current, now, rotate_after)
         ):
             plaintext_now = _plaintext_placeholder_skip(directory, name, gid=gid)
@@ -706,10 +699,8 @@ def _ensure_api_key(
             write_token_file(directory, name, plaintext_now, gid=gid)
             return ProvisionOutcome(name, "unchanged")
 
-        if current is not None and file_ok and not replace_legacy:
+        if current is not None and file_ok:
             action = "rotated"
-        elif replace_legacy:
-            action = "replaced_legacy"
         elif current is None:
             action = "created"
         else:
@@ -728,11 +719,7 @@ def _ensure_api_key(
         db.add(new_row)
         db.flush()
         if current is not None:
-            if replace_legacy:
-                current.is_active = False
-                current.expires_at = now
-            else:
-                current.expires_at = now + grace
+            current.expires_at = now + grace
         audit = log_audit_event(
             db,
             actor=None,
@@ -799,13 +786,6 @@ def _current_api_key(keys, now: datetime):
 def _api_key_rotation_due(row, now: datetime, rotate_after: timedelta) -> bool:
     anchor = as_utc(row.created_at)
     return anchor is None or now - anchor >= rotate_after
-
-
-def _legacy_platform_key_hash() -> str | None:
-    raw = os.environ.get("INTERNAL_PLATFORM_API_KEY", "").strip()
-    if not raw:
-        return None
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _mint_api_key_parts() -> tuple[str, str, str, str]:

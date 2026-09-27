@@ -32,10 +32,7 @@ from anila_core.storage.adapters.pgvector_store import SourceModelCoverage
 from sqlalchemy.exc import IntegrityError
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
-from app.services.platform_embedding import (
-    LAST_RESORT_EMBEDDING_MODEL,
-    canonical_embedding_model_name,
-)
+from app.services.platform_embedding import canonical_embedding_model_name
 
 from tests.conftest import login, make_user
 
@@ -129,26 +126,27 @@ class TestCreateStoresTheRegistrySpelling:
 
         assert row.embedding_model == REGISTERED
 
-    def test_last_resort_default_is_spelled_the_way_the_model_registers(
+    def test_no_designation_stores_null_instead_of_a_model_name(
         self, client, db
     ):
-        """Nothing registered at all still must not seed the collision.
-
-        This is the branch migration 0014's column default used to
-        mirror: no designation, no registry row, and the platform writes
-        a literal. It has to be the literal the model actually uses.
-
-        Mutant: put ``"nvidia/NV-embed-V2"`` back as the last resort —
-        this fails.
-        """
+        """沒指定平台嵌入角色時，建庫不寫模型名。"""
         user = make_user(db, username="canon_lastresort", role="developer")
         token = login(client, user.username)
 
         row = _create(client, db, token, "canon-bare-kb")
 
-        assert row.embedding_model == LAST_RESORT_EMBEDDING_MODEL
-        assert row.embedding_model == REGISTERED
-        assert row.embedding_model != LIVE_MISCASED
+        assert row.embedding_model is None
+
+    def test_an_undesignated_embedding_is_not_copied_onto_the_collection(
+        self, client, db
+    ):
+        _register_embedding(db, REGISTERED, designated=False)
+        user = make_user(db, username="canon_undesignated", role="developer")
+        token = login(client, user.username)
+
+        row = _create(client, db, token, "canon-undesignated-kb")
+
+        assert row.embedding_model is None
 
     def test_unregistered_name_is_stored_verbatim_not_guessed(self, client, db):
         """No registry match → no invention.

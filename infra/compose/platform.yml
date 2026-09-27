@@ -90,10 +90,8 @@ services:
       # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
       # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
       CSP_APP_DB_PASSWORD: ${CSP_APP_DB_PASSWORD}
-      # ⚠ 舊部署包用的是 CSP_SECRET_KEY;設定併一(Q46)之後正式名稱是 SECRET_KEY。
-      # 兩個都收 —— 沒有這一行,既有 .env 會在 compose 解析階段就停住,
-      # 而且 credential_crypto 的 cipher key 由它派生:換一把＝既有加密憑證全數失效。
-      SECRET_KEY: ${SECRET_KEY:-${CSP_SECRET_KEY:?SECRET_KEY (or legacy CSP_SECRET_KEY) must be set (32+ bytes hex)}}
+      # credential_crypto 的 cipher key 由它派生:換一把＝既有加密憑證全數失效。
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (32+ bytes hex)}
       # auto_seed 初始 admin 帳號密碼。prod 模式 (ANILA_ALLOW_DEV_SECRET=0)
       # 下 startup_security 黑名單擋 changeme/password/admin 與 placeholder,
       # 不傳進容器則 config.py 預設 'changeme' 直接 RuntimeError 拒啟。
@@ -116,7 +114,7 @@ services:
       ANILA_ENV: "${ANILA_ENV:-}"
 
       # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────
-      # 這十行在的理由,跟本檔 PDF_OCR_FALLBACK 那段註解是同一件事:
+      # 這十行在的理由是「沒有 env_file，.env 寫了而這裡沒有對應的一行，值到不了容器」:
       # **沒有 env_file**,所以 `.env` 裡寫了而這裡沒有對應的一行,值根本到不了
       # 容器,而畫面與日誌看起來像是設好了。
       # 削減前它們的通道是設定頁的開機覆蓋(`app.site_url` 曾是頁面可編輯);
@@ -144,28 +142,14 @@ services:
       ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
       # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
       ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
-      # SSRF allow-list — single-label docker service names 預設被擋,
-      # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
-      # ⚠ 尾巴的 `,docling,router` 在 `:-` 預設值**外側**:operator 設
-      # ANILA_TRUSTED_HOSTS 會整份替換括號裡的預設清單,但這兩個 compose
-      # 內部服務名恆在（平台內服務,不是 operator 會想換掉的模型）。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy},docling,router"
-      # **入向** Host header allow-list (TrustedHostMiddleware) —— 跟上面那條
-      # 出向 SSRF allow-list 是兩回事,別搞混。csp 的 library 預設是 "*"(等於
-      # 關著),所以**這一行就是打開它的地方**:沒有它,.env 設 ALLOWED_HOSTS
-      # 不會進到容器,中間層永遠不註冊,而且沒有任何提示
-      # (同 ANILA_ALLOW_GRPC_ENDPOINT 上面那則的坑)。
-      # compose 端預設 ≈ nginx `map $is_anila_host` 的實測放行集(見
-      # infra/nginx/anila.conf 檔頂),差兩項,兩項都是刻意的:
-      #   − 10.53.100.12:模型主機,沒有任何呼叫方拿它當 Host 打 csp
-      #   + csp:容器間走 docker DNS,nginx 那層看不到這個 Host
-      # 所以空 .env 的 `up -d` 是通的。換 prod IP / 加新入口:改 .env 的
-      # ALLOWED_HOSTS,**同步改 nginx 那條 map**(兩份是手工同步的)。
-      # ⚠ 值不帶 port(starlette 比對 host.split(":")[0]);localhost /
-      # 127.0.0.1 / csp 由程式強制併入,拿掉也砍不掉 healthcheck。
-      # ⚠ 萬用字元只支援 `*.suffix` 一種形狀;寫成 `10.53.*.15` 這類子網樣式
-      # csp 會**拒絕啟動**並印出那個 pattern(不會變成開著但每個請求 500)。
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw}"
+      # 出向信任主機在治理中心。這裡只留平台自己要打的 compose 服務名，
+      # 不讀 .env，殘留的模型主機名進不了容器。
+      ANILA_TRUSTED_HOSTS: "docling,router"
+      # 入向 Host 白名單。不讀 ALLOWED_HOSTS：站台名稱只來自 ANILA_HOST，
+      # 後面是容器間會拿來當 Host 打 CSP 的服務名。nginx 的
+      # map $is_anila_host 用同一個 ${ANILA_HOST}，不用各站改 conf。
+      # 萬用字元只支援 `*.suffix`；子網樣式會讓 csp 拒絕啟動。
+      ALLOWED_HOSTS: "${ANILA_HOST:?ANILA_HOST must be set},localhost,127.0.0.1,::1,csp,router,anila-studio,asr-gateway,ingestion-worker,ip-literal"
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
       # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
@@ -208,17 +192,7 @@ services:
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
-      # 平台自己用的模型（主路由、嵌入、簡報、生圖、視覺、摘要、知識庫對話）
-      # 在治理中心「模型角色」指定，不讀這裡的模型名稱。
-      # AUTO_REGISTER_MODELS 只在第一次建立還沒有的列。已存在的列
-      # （含治理中心改過的端點）開機不會被這段蓋回去。
-      AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
-      # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
-      # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
-      # 本機不再種 image-generator。簡報配圖走治理中心的生圖角色。
-      AUTO_REGISTER_AGENTS: >-
-        []
+      # 模型與 agent 只在治理中心登錄。開機不讀 AUTO_REGISTER_*。
       # ingestion-worker 的系統帳號與 sk- 由 CSP 核發，明文只寫進
       # /run/anila/service-clients/ingestion-worker/token。不要再從 .env 種這把 key。
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
@@ -237,28 +211,12 @@ services:
       # get_flux_provider() 住在 anila-studio,而 csp.Dockerfile 沒把 anila-studio
       # COPY 進 csp 映像。真正生效的那一份在下面的 anila-studio 區塊;哪天
       # anila-studio 進了 csp 映像,照那邊的寫法把三行加回來。
-      # ⚠ csp 是 anila_core parser 的第二個消費者:/api/ingestion/chunking-preview
-      # (app/api/ingestion/preview.py:240) 呼叫同一支 extract_text。這裡**寫死
-      # false、不吃 ${PDF_OCR_FALLBACK}**,是刻意讓預覽與 ingest 不一致:
-      # OCR 是 1800 秒等級的同步工作,ingest 有佇列可以扛,HTTP request 沒有。
-      # 寫成常數而不是「不設」,是為了讓這個差異是**決定**而不是漏接 —— 哪天有人
-      # 幫 csp 補上視覺端點,也不會順手把 OCR 開進 request 路徑。
-      # 差異寫在 .env.example 與 services/ingestion-worker/README.md。
-      PDF_OCR_FALLBACK: "false"
-      # 文件解析位址在治理中心「外部服務」。下面三行只給第一次啟動匯入舊 .env，
-      # 匯入後請從 .env 刪掉。執行期不再用它們決定要打哪一台。
-      DOC_PARSER: "${DOC_PARSER:-}"
-      DOCLING_URL: "${DOCLING_URL:-}"
-      DOCLING_SERVICE_TOKEN: "${DOCLING_SERVICE_TOKEN:-}"
+      # 文件解析與語音位址在治理中心。掃描 PDF 的文字辨識是 Docling 的事。
+      # OCR 語言與逾時仍是部署參數
+      # （預覽與 worker 共用同一支 parser）。
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
-      # 語音解碼位址同樣只在第一次啟動匯入。本機 asr-decoder 不會被匯入。
-      ASR_DECODE_URL: "${ASR_DECODE_URL:-}"
-      ASR_DECODER_TOKEN: "${ASR_DECODER_TOKEN:-}"
-      ASR_DECODE_PROTOCOL: "${ASR_DECODE_PROTOCOL:-}"
-      ASR_DECODE_API_KEY: "${ASR_DECODE_API_KEY:-}"
-      ASR_OPENAI_MODEL: "${ASR_OPENAI_MODEL:-}"
       # 快速起步站台 profile（非祕密：csp_base_url、選填 csp_ca_file）。
       # 讀的是掛載目錄裡的 profile.json，不是把單一檔案 bind 到
       # /app/anila-quickstart-profile.json：檔案不存在時 Docker 會在 host
@@ -342,7 +300,7 @@ services:
       REDIS_URL: redis://redis:6379
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
-      EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
+      # 嵌入模型名稱只讀治理中心的平台嵌入角色，不從這裡猜。
       # 嵌入、視覺、關係抽取共用這一個檔。CSP 核發，worker 只讀。
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/ingestion-worker/token
       EMBEDDING_DIM: "4000"
@@ -368,7 +326,7 @@ services:
       SSL_CERT_FILE: ${ANILA_MODEL_CA_FILE-}
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
-      SECRET_KEY: ${SECRET_KEY:-${CSP_SECRET_KEY:?SECRET_KEY (or legacy CSP_SECRET_KEY) must be set (same value as csp)}}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (same value as csp)}
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
@@ -382,33 +340,19 @@ services:
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
-      # 掃描件 PDF 的 OCR fallback。預設 false —— 這幾行在的理由是「不設定就
-      # 傳不進來」:沒有 env_file,所以 .env 寫了 PDF_OCR_FALLBACK=true 而這裡
-      # 沒有對應的一行,旗標根本到不了 worker,而看起來像是開了。
-      # ⚠ 開之前讀 services/ingestion-worker/README.md 的〈心跳〉那節:單份
-      #    文件解析會跳到 1800 秒等級,而本 worker 宣告的預算是 300 秒
-      #    (main.py:71 job_timeout) —— 超出 6 倍,期間其他 ingest 全排隊。
-      # ⚠ 內建頁數上限不要在程式裡任意調大;超過上限的頁連原生抽到的文字都會被取代掉。
-      PDF_OCR_FALLBACK: "${PDF_OCR_FALLBACK:-false}"
-      PDF_OCR_CONCURRENCY: "${PDF_OCR_CONCURRENCY:-4}"
+      # LLM 關聯走 CSP /v1。模型名是治理中心的摘要角色，沒設就略過。
+      ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
+      RELATION_LLM_URL: "http://csp:8000/v1"
+      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
+      RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
       # 文件解析位址向 CSP 問。用上面那份憑證檔，不讀設定表。
       CSP_BASE_URL: http://csp:8000
       # OCR 語言與逾時仍是部署參數。
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
-      # 出向 SSRF allow-list:single-label docker 服務名預設被擋,列進這條才
-      # 放行。docling 是 compose 內部服務,尾巴 `,docling` 在 `:-` 外側,
-      # operator 覆寫 ANILA_TRUSTED_HOSTS 時它仍在(與 asr-gateway 的
-      # `,asr-decoder` 同一形狀)。
-      # ⚠ 兩件事留給後人(2026-08-17 稽核紅線判定「未弱化」,但「未弱化」≠「無變化」):
-      #   ① `,docling` 在 `${...:-}` 預設值**外側**——無論 DOC_PARSER 是不是 docling、
-      #      服務有沒有起,這個名字**恆在**允許清單,operator 無法用 .env 移除。
-      #   ② ingestion-worker 原本沒有 ANILA_TRUSTED_HOSTS 這行,現在會**繼承**
-      #      operator 的整份清單,不是只有 docling。兩者與 asr-decoder 先例字面
-      #      一致、guard 本體未動、空元素解析安全,故不弱化——但要知道這是「加寬
-      #      了 ingestion-worker 的 allow-list 來源」,不是零變化。
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-},docling"
+      # 只放行 compose 內部的 docling。其餘信任主機在治理中心，不讀 .env。
+      ANILA_TRUSTED_HOSTS: "docling"
       PYTHONUNBUFFERED: "1"
     volumes:
       - "../../share/uploads/ingestion:${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
@@ -487,8 +431,12 @@ services:
       - "${NGINX_HTTP_PORT:-80}:80"
       - "${NGINX_HTTPS_PORT:-443}:443"
       - "${ANILA_UI_HTTPS_PORT:-4443}:4443"
+    environment:
+      # 官方映像會把 /etc/nginx/templates/*.template 裡「已存在的」環境變數
+      # 代換進 conf.d。$host 這類 nginx 變數不在環境裡，不會被代換。
+      ANILA_HOST: ${ANILA_HOST:?ANILA_HOST must be set}
     volumes:
-      - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../infra/nginx/anila.conf:/etc/nginx/templates/default.conf.template:ro
       - ../../infra/nginx/certs:/etc/nginx/certs:ro
       - ../../share/static:/usr/share/nginx/share-files/static:ro
       - ../../share/uploads:/usr/share/nginx/share-files/uploads:rw
@@ -739,9 +687,9 @@ services:
     environment:
       TZ: Asia/Taipei
       N8N_PATH: /n8n/
-      N8N_HOST: ${ANILA_HOST:-172.16.120.35}
+      N8N_HOST: ${ANILA_HOST:?ANILA_HOST must be set}
       N8N_PROTOCOL: https
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://${ANILA_HOST}/n8n/}
       NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
       # 後面 nginx 已是 HTTPS,n8n 自己看到 HTTP 所以 cookie 標非 secure 才能登入。
       N8N_SECURE_COOKIE: "false"
@@ -785,7 +733,8 @@ services:
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/asr-gateway/token
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-}"
+      # 不讀 .env 的信任主機清單，避免殘留的模型主機名被灌進來。
+      ANILA_TRUSTED_HOSTS: ""
       # ── 健康探針 timeout ─────────────────────────────────────────────
       # 舊值(2.0s/1.0s,寫死在程式裡)是「decoder 在同一台」調出來的。解碼端
       # 在 WAN 另一頭時會誤報 decoder_unreachable,把一支能用的麥克風藏起來。

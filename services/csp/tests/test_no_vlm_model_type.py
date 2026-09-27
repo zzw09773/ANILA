@@ -187,8 +187,8 @@ def test_llm_can_fill_chat_roles_and_vision(client, db):
         assert by_role[role]["status"] == "ok"
 
 
-def test_auto_seed_stores_vlm_entry_as_llm(db, monkeypatch):
-    """生產變更：開機種子仍把 model_type=vlm 寫進登錄表。"""
+def test_auto_seed_does_not_store_vlm_entries_from_env(db, monkeypatch):
+    """開機不再把 AUTO_REGISTER_MODELS 裡的 vlm 列寫進登錄表。"""
     import json
 
     from app.services import auto_seed
@@ -204,11 +204,8 @@ def test_auto_seed_stores_vlm_entry_as_llm(db, monkeypatch):
             return getattr(self._session, name)
 
     monkeypatch.setattr(auto_seed, "SessionLocal", lambda: _KeepOpen(db))
-    monkeypatch.setattr(auto_seed, "_parse_model_env_vars", lambda: [])
-    monkeypatch.setattr(auto_seed.settings, "AUTO_REGISTER_AGENTS", "")
     monkeypatch.setattr(auto_seed.settings, "AUTO_SEED_API_KEYS", "")
-    monkeypatch.setattr(
-        auto_seed.settings,
+    monkeypatch.setenv(
         "AUTO_REGISTER_MODELS",
         json.dumps(
             [
@@ -222,5 +219,7 @@ def test_auto_seed_stores_vlm_entry_as_llm(db, monkeypatch):
         ),
     )
     auto_seed.auto_seed()
-    row = db.query(ModelRegistry).filter(ModelRegistry.name == "seed-qwen-vl").one()
-    assert row.model_type == "llm"
+    assert (
+        db.query(ModelRegistry).filter(ModelRegistry.name == "seed-qwen-vl").count()
+        == 0
+    )

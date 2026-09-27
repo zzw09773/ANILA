@@ -229,7 +229,7 @@ class CollectionResponse(ApiResponseModel):
     name: str
     description: str | None
     chunking_config: dict[str, Any]
-    embedding_model: str
+    embedding_model: str | None = None
     embedding_dim: int
     status: str
     document_count: int

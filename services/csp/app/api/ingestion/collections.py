@@ -314,9 +314,8 @@ def create_collection(
 ) -> CollectionResponse:
     """Create a new (empty) collection owned by the calling user."""
     from app.services.platform_embedding import (
-        LAST_RESORT_EMBEDDING_MODEL,
         canonical_embedding_model_name,
-        resolve_platform_embedding,
+        designated_platform_embedding,
     )
 
     # FAKE-CONTROLS #56: this column is compared against model_registry
@@ -326,14 +325,8 @@ def create_collection(
     # own spelling rather than whatever arrived.
     embedding_model = canonical_embedding_model_name(db, payload.embedding_model)
     if not embedding_model:
-        resolved = resolve_platform_embedding(db)
-        if resolved is not None:
-            # Already a model_registry name — canonical by construction.
-            embedding_model = resolved.name
-        else:
-            # Last-resort default so collection create never becomes a new
-            # gate before an admin designates a platform embedding.
-            embedding_model = LAST_RESORT_EMBEDDING_MODEL
+        resolved = designated_platform_embedding(db)
+        embedding_model = resolved.name if resolved is not None else None
 
     # Schema validator already normalised the label; re-parse so a future
     # schema drift cannot store a string the latch / bind rule reject.

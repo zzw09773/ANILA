@@ -1140,10 +1140,8 @@ def test_default_list_provisions_studio_token_and_worker_api_key(
     assert worker_key not in caplog.text
 
 
-def test_legacy_worker_env_key_stops_working_once_the_file_is_provisioned(
-    db, tmp_path, monkeypatch
-):
-    """AUTO_SEED 寫進資料庫的舊 sk- 在憑證檔生效後不得再通過驗證。"""
+def test_env_platform_key_does_not_force_replacement(db, tmp_path, monkeypatch):
+    """INTERNAL_PLATFORM_API_KEY 不再讓對得上的現用金鑰立刻失效。"""
     import hashlib
 
     from app.models.api_key import ApiKey
@@ -1174,24 +1172,22 @@ def test_legacy_worker_env_key_stops_working_once_the_file_is_provisioned(
         )
     )
     db.commit()
+    (tmp_path / "ingestion-worker.token").write_text(legacy, encoding="utf-8")
 
     worker = next(
         spec
         for spec in parse_internal_service_clients(None)
         if spec.client_name == "ingestion-worker"
     )
-    ensure_internal_service_clients(
+    outcomes = ensure_internal_service_clients(
         db,
         specs=(worker,),
         directory=tmp_path,
         file_gid=None,
         rotate_after=timedelta(days=30),
     )
-    minted = (tmp_path / "ingestion-worker.token").read_text(encoding="utf-8").strip()
-    assert minted.startswith("sk-")
-    assert minted != legacy
-    assert validate_api_key(db, minted) is not None
-    assert validate_api_key(db, legacy) is None
+    assert outcomes[0].action == "unchanged"
+    assert validate_api_key(db, legacy) is not None
 
 
 def test_grouped_credential_is_inside_a_private_directory(tmp_path):

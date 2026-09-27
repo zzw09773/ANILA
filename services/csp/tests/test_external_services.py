@@ -2,14 +2,11 @@
 """治理中心的外部服務：位址、加密憑證、健康、一次匯入。"""
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 from app.models.audit_log import AuditLog
 from app.models.external_service import DOCUMENT_PARSER, SPEECH, ExternalService
 from app.services.external_service_crypto import open_external_credential
-from app.services.external_services import import_legacy_env_once
 from tests.conftest import login, make_user
 
 SECRET = "plain-secret-do-not-leak"
@@ -226,64 +223,3 @@ def test_probe_stores_status_without_the_secret(client, db, probe_client):
     assert probe_client.calls == []
     assert SECRET not in response.text
 
-
-def test_legacy_docling_env_is_imported_once_and_the_secret_is_not_logged(
-    db, monkeypatch, caplog
-):
-    monkeypatch.setenv("DOC_PARSER", "docling")
-    monkeypatch.setenv("DOCLING_URL", PARSER_URL)
-    monkeypatch.setenv("DOCLING_SERVICE_TOKEN", SECRET)
-    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
-    with caplog.at_level(logging.INFO):
-        import_legacy_env_once(db)
-    assert SECRET not in caplog.text
-    row = db.get(ExternalService, DOCUMENT_PARSER)
-    db.refresh(row)
-    assert row.enabled is True
-    assert row.base_url == PARSER_URL
-    assert row.env_seeded is True
-    assert open_external_credential(row.credential_envelope) == SECRET
-
-    row.enabled = False
-    row.base_url = ""
-    row.credential_envelope = None
-    db.commit()
-    import_legacy_env_once(db)
-    db.refresh(row)
-    assert row.base_url == ""
-    assert row.enabled is False
-
-
-def test_native_doc_parser_and_retired_local_asr_are_not_imported(db, monkeypatch, caplog):
-    monkeypatch.setenv("DOC_PARSER", "native")
-    monkeypatch.setenv("DOCLING_URL", PARSER_URL)
-    monkeypatch.setenv("DOCLING_SERVICE_TOKEN", SECRET)
-    monkeypatch.setenv("ASR_DECODE_URL", "http://asr-decoder:9000")
-    monkeypatch.setenv("ASR_DECODER_TOKEN", SECRET)
-    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
-    with caplog.at_level(logging.INFO):
-        import_legacy_env_once(db)
-    assert SECRET not in caplog.text
-    parser = db.get(ExternalService, DOCUMENT_PARSER)
-    speech = db.get(ExternalService, SPEECH)
-    db.refresh(parser)
-    db.refresh(speech)
-    assert parser.enabled is False
-    assert parser.base_url == ""
-    assert speech.enabled is False
-    assert speech.base_url == ""
-
-
-def test_unsafe_legacy_url_is_not_imported(db, monkeypatch, caplog):
-    monkeypatch.setenv("DOC_PARSER", "docling")
-    monkeypatch.setenv("DOCLING_URL", "http://172.16.120.35:9100")
-    monkeypatch.setenv("DOCLING_SERVICE_TOKEN", SECRET)
-    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
-    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
-    with caplog.at_level(logging.ERROR):
-        import_legacy_env_once(db)
-    assert SECRET not in caplog.text
-    row = db.get(ExternalService, DOCUMENT_PARSER)
-    db.refresh(row)
-    assert row.base_url == ""
-    assert row.enabled is False

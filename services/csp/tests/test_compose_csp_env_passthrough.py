@@ -40,15 +40,11 @@ _OPERATOR_KNOBS = [
     # runbook §3.1b。
     "ANILA_ALLOW_HTTP_ENDPOINT",
     "ANILA_ALLOW_HTTP_AGENT_ENDPOINT",
-    # SSRF allow-list,新增模型 service 要改的那條。
-    "ANILA_TRUSTED_HOSTS",
     # anila-studio ReadTimeout 那次的旋鈕。
     "LLM_TIMEOUT",
-    # 入向 Host 白名單(runbook §3.1d / .env.example)。這一條特別要緊:它
-    # **就是功能的開關本身** —— app/config.py 的預設是 "*",等於中間層不註冊,
-    # 所以少了 compose 這一行,Host 檢查永遠是關的,而 `.env` 裡躺著一份
-    # 看起來已經生效的名單。少了它沒有 400、沒有錯誤,只是保護不存在。
-    "ALLOWED_HOSTS",
+    # 入向 Host 白名單仍必須出現在 compose（否則 library 預設 "*" 把檢查關掉）。
+    # 值來自 ANILA_HOST，不再從同名的 ALLOWED_HOSTS 插值，所以不在下面那條
+    # 「同名變數」檢查裡。
     # 啟動時拒絕 alembic upgrade。沒有這一行,.env 設 1 到不了容器,
     # 每一次 up -d 仍會對活庫跑 migration。
     "ANILA_SKIP_STARTUP_MIGRATIONS",

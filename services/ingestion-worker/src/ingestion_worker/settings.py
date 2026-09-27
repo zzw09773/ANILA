@@ -42,8 +42,11 @@ class WorkerSettings(BaseSettings):
         ),
     )
     embedding_model: str = Field(
-        default="nvidia/nv-embed-v2",
-        description="Embedding model identifier passed to the endpoint.",
+        default="",
+        description=(
+            "Unused for ingest. The model name is the Console "
+            "platform_embedding role."
+        ),
     )
     embedding_api_key: str = Field(
         default="not-set",
@@ -214,12 +217,9 @@ class WorkerSettings(BaseSettings):
         description=(
             "OpenAI-compatible chat endpoint base URL (no /chat/completions "
             "suffix). Empty disables LLM extraction even when "
-            "enable_relation_llm=True — the safe default."
+            "enable_relation_llm=True — the safe default. The model name "
+            "is the Console summary role, not an environment variable."
         ),
-    )
-    relation_llm_model: str = Field(
-        default="gemma4",
-        description="Chat model identifier passed in the completions body.",
     )
     relation_llm_api_key: str = Field(
         default="not-set",

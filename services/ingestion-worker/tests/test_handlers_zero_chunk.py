@@ -225,10 +225,15 @@ async def test_zero_chunk_document_does_not_retry_the_parse(wired):
 
 
 async def test_zero_chunk_document_is_not_counted_into_the_collection(wired):
-    """Unchanged, and asserted so it stays that way: the collection's
-    document_count must not include a document nothing can retrieve."""
+    """The collection's document_count must not include a document nothing
+    can retrieve. A blank embedding name may still be filled from the role."""
     ctx, pool = wired
 
     await handlers.ingest_document(ctx, 41)
 
-    assert not _statements(pool, "ingestion_collections")
+    statements = _statements(pool, "ingestion_collections")
+    assert statements
+    assert all("document_count" not in sql for sql, _args in statements)
+    sql, args = statements[0]
+    assert "embedding_model IS NULL" in sql
+    assert args[1] == "nvidia/nv-embed-v2"

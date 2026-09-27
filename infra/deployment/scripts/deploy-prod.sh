@@ -36,18 +36,12 @@
 #   完整說明:docs/runbooks/restart-vs-recreate.md
 #
 # 環境變數(必要,缺值 fail-loud):
-#   CSP_SERVICE_TOKEN         service-to-service token,csp/router/anila-studio/
-#                             ingestion-worker 都用同一把
-#   INTERNAL_PLATFORM_API_KEY 內部 system worker API key,ingestion-worker /
-#                             模型 stack 用
-#   SECRET_KEY                JWT signing key + agent credential AES key
+#   SECRET_KEY                憑證加密與登入簽章用的密鑰
+#   ANILA_HOST                站台名稱。Host 白名單與 nginx 都從它衍生
 #
-# 環境變數(可選,有合理 default):
-#   LOCAL_LLM_MODEL / LOCAL_LLM_BASE_URL
-#   LOCAL_EMBEDDING_MODEL / LOCAL_EMBEDDING_BASE_URL
-#   ANILA_TRUSTED_HOSTS
-#   ANILA_REMOTE_MODELS=1   模型在別台主機 (如內網 10.53.100.12):跳過本機
-#                           model container 檢查,改 curl *_BASE_URL 探測
+# 環境變數(可選):
+#   ANILA_REMOTE_MODELS=1   模型在別台主機:跳過本機 model container 檢查。
+#                           模型本身在治理中心登錄,這裡不探測 URL。
 #
 # 前置條件(腳本會自動 check):
 #   1. 現在 git branch 是 `prod`(避免不小心在 main 上跑)
@@ -118,15 +112,17 @@ check_docker() {
 }
 
 check_env() {
-  # 必要 env(沒設就停)。compose 與所有 credential consumer 都只接受
-  # SECRET_KEY，避免同一把金鑰有兩個名稱造成漂移。
-  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY SECRET_KEY)
+  # shellcheck source=prod-env-guard.sh
+  source "$REPO_ROOT/infra/deployment/scripts/prod-env-guard.sh"
+  prod_env_refuse "$REPO_ROOT/.env" || fatal "正式部署條件不符"
+  # compose 與憑證加密只接受 SECRET_KEY。訊息只點鍵名。
+  local required=(SECRET_KEY)
   local missing=()
   for v in "${required[@]}"; do
     if [[ -z "${!v:-}" ]]; then
       missing+=("$v")
     elif [[ "${!v}" =~ (changeme|placeholder|example) ]]; then
-      err "$v 看起來是 dev/sample 值: '${!v:0:30}...' — prod 部署請換成真正的 secret"
+      err "$v 看起來是 dev/sample 值 — prod 部署請換成真正的 secret"
       missing+=("$v")
     fi
   done
@@ -135,17 +131,6 @@ check_env() {
        export 它們後重跑,或載入你的 prod .env:
          set -a; source /path/to/prod.env; set +a
          bash infra/deployment/scripts/deploy-prod.sh"
-  fi
-  # ANILA_ALLOW_DEV_SECRET=1 會把 startup_security 的硬擋降成 log warning
-  # (含 P2.7 稽核帳防竄改)。prod 部署必須拒絕——本機開發逃生口不可進 .15。
-  # 對齊 Python ``.strip() == "1"``;同時掃 repo-root ./.env——docker compose
-  # 會讀那個檔,光看 shell env 會漏掉「shell 乾淨但 .env 帶 =1」的半盲路徑。
-  local _allow_dev="${ANILA_ALLOW_DEV_SECRET:-}"
-  _allow_dev="${_allow_dev#"${_allow_dev%%[![:space:]]*}"}"
-  _allow_dev="${_allow_dev%"${_allow_dev##*[![:space:]]}"}"
-  if [[ "$_allow_dev" == "1" ]] || \
-     { [[ -f .env ]] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?ANILA_ALLOW_DEV_SECRET[[:space:]]*=[[:space:]]*['"'"'"]?1['"'"'"]?[[:space:]]*$' .env; }; then
-    fatal "ANILA_ALLOW_DEV_SECRET=1 禁止用於 prod 部署:此旗標會關閉 startup_security 對 dev 預設值與 P2.7 稽核帳防竄改的硬擋(只剩 log warning)。請在 shell 與 .env 都設 ANILA_ALLOW_DEV_SECRET=0 後重跑。"
   fi
   # Slice 6 旗標分域:少了 ANILA_ENV=production,「模型 http fail-closed」硬規則
   # 不會生效(url_guard 以此判定 production)。不擋部署,但大聲提醒。
@@ -166,33 +151,7 @@ check_models_stack() {
       docker network create anila-models-net >/dev/null
     fi
     ok "anila-models-net network 存在 (remote-models mode)"
-
-    local probes=()
-    [[ -n "${GEMMA4_BASE_URL:-}" ]] && probes+=("gemma4|${GEMMA4_BASE_URL}")
-    [[ -n "${LOCAL_LLM_BASE_URL:-}" ]] && probes+=("local-llm|${LOCAL_LLM_BASE_URL}")
-    [[ -n "${LOCAL_EMBEDDING_BASE_URL:-}" ]] && probes+=("embedding|${LOCAL_EMBEDDING_BASE_URL}")
-    if (( ${#probes[@]} == 0 )); then
-      warn "遠端模型模式但 GEMMA4/LOCAL_LLM/LOCAL_EMBEDDING_BASE_URL 都沒設 — chat/embedding 會打不到模型"
-      return
-    fi
-    # gateway 的 /v1 要 Bearer key (My-OpenAI-Frontend);有設就帶上,
-    # 沒設時 401 也會被當探測失敗 — 屬正確行為 (key 沒發就是還沒就緒)。
-    local auth_args=()
-    [[ -n "${MODEL_GATEWAY_API_KEY:-}" ]] && auth_args=(-H "Authorization: Bearer ${MODEL_GATEWAY_API_KEY}")
-    local degraded=0 p name url
-    for p in "${probes[@]}"; do
-      name="${p%%|*}"; url="${p#*|}"
-      # vLLM / OpenAI-compatible server 都有 /v1/models;5s timeout 夠內網用。
-      # -k:這裡只測可達性,內部 CA 的信任鏈由容器內 SSL_CERT_FILE 處理
-      # (見 .env 的 ANILA_MODEL_CA_FILE),host 端 curl 不用裝 CA。
-      if curl -sfk -m 5 ${auth_args[@]+"${auth_args[@]}"} "${url%/}/v1/models" >/dev/null 2>&1; then
-        ok "$name: $url 可達"
-      else
-        warn "$name: $url 探測失敗 (服務沒起 / port 不對 / 防火牆擋)"
-        degraded=1
-      fi
-    done
-    (( degraded > 0 )) && warn "部分遠端模型不可達,csp 仍可起來但對應功能會失敗"
+    # 模型在治理中心登錄。這裡不讀 BASE_URL，也不把位址印出來。
     return
   fi
 

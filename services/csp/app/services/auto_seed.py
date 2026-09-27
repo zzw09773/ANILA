@@ -1,12 +1,14 @@
-"""Auto-register models, agents, and dev credentials from environment variables."""
+"""建立管理員、平台入口模型，以及開發用的 seed 帳號。
+
+模型與 agent 只在治理中心登錄。開機不讀 AUTO_REGISTER_MODELS /
+AUTO_REGISTER_AGENTS，也不再從 MODEL_* 環境變數組端點。
+"""
 import json
 import logging
 import os
-import re
 import hashlib
 
 from app.config import settings
-from app.schemas.model_registry import VLM_TYPE_REJECTED, reject_retired_vlm_type
 from app.database import SessionLocal
 from app.models.agent import Agent, UserAgentPermission
 from app.models.api_key import ApiKey, ApiKeyModelPermission
@@ -21,68 +23,6 @@ ADMIN_USERNAME = "admin"
 # manual Models page row (the 404 is ``模型 'anila-router' 未註冊``).
 PLATFORM_ROUTER_NAME = "anila-router"
 PLATFORM_ROUTER_ENDPOINT = "http://router:9000"
-
-
-def _parse_model_env_vars() -> list[dict]:
-    """Parse per-model env vars with pattern MODEL_<NAME>_<FIELD>.
-
-    Supports:
-      MODEL_LLAMA3_70B_HOST=vllm-llm
-      MODEL_LLAMA3_70B_PORT=8000
-      MODEL_LLAMA3_70B_TYPE=llm
-      MODEL_LLAMA3_70B_DISPLAY_NAME=Llama 3 70B Instruct
-      MODEL_LLAMA3_70B_API_VERSION=v1
-      MODEL_LLAMA3_70B_DESCRIPTION=vLLM deployed model
-      MODEL_LLAMA3_70B_CONTEXT_WINDOW=8192
-      MODEL_LLAMA3_70B_BASE_MODEL=llama3-70b  (for agents)
-
-    Model name: underscores converted to hyphens, lowercased.
-    e.g., MODEL_LLAMA3_70B_HOST -> model name "llama3-70b"
-    """
-    pattern = re.compile(
-        r"^MODEL_(.+?)_(HOST|PORT|TYPE|DISPLAY_NAME|API_VERSION|DESCRIPTION|CONTEXT_WINDOW|BASE_MODEL)$"
-    )
-
-    raw: dict[str, dict[str, str]] = {}
-    for key, value in os.environ.items():
-        m = pattern.match(key)
-        if m:
-            model_key = m.group(1)  # e.g., LLAMA3_70B
-            field = m.group(2)      # e.g., HOST
-            if model_key not in raw:
-                raw[model_key] = {}
-            raw[model_key][field] = value
-
-    models = []
-    for model_key, fields in raw.items():
-        host = fields.get("HOST")
-        if not host:
-            continue
-
-        port = fields.get("PORT", "8000")
-        name = model_key.lower().replace("_", "-")
-        endpoint_url = f"http://{host}:{port}" if not host.startswith("http") else host
-
-        model = {
-            "name": name,
-            "display_name": fields.get("DISPLAY_NAME", name),
-            "model_type": fields.get("TYPE", "llm"),
-            "endpoint_url": endpoint_url,
-            "api_version": fields.get("API_VERSION", "v1"),
-            "description": fields.get("DESCRIPTION", ""),
-        }
-        if "CONTEXT_WINDOW" in fields:
-            try:
-                model["context_window"] = int(fields["CONTEXT_WINDOW"])
-            except ValueError:
-                pass
-        if "BASE_MODEL" in fields:
-            model["base_model"] = fields["BASE_MODEL"]
-
-        models.append(model)
-        logger.info(f"從環境變數解析模型: MODEL_{model_key}_* -> {name}")
-
-    return models
 
 
 def _platform_router_endpoint() -> str:
@@ -147,7 +87,7 @@ def seed_model_skip_reason(model_name: str, inactive_names: set[str]) -> str:
 
 
 def auto_seed():
-    """Run on startup: create admin, auto-register models/agents, seed dev keys."""
+    """Run on startup: create admin, the platform router row, and dev keys."""
     db = SessionLocal()
     try:
         # 1. Ensure admin user exists.
@@ -174,205 +114,7 @@ def auto_seed():
             db.flush()
             logger.info(f"已建立 owner 帳號: {ADMIN_USERNAME}")
 
-        # 2. Auto-register models
-        # Sources: AUTO_REGISTER_MODELS (JSON) + MODEL_*_HOST env vars
-        # Two passes: first register base models, then agents (which may reference base models)
-        models_config = []
-        if settings.AUTO_REGISTER_MODELS:
-            try:
-                models_config = json.loads(settings.AUTO_REGISTER_MODELS)
-            except json.JSONDecodeError as e:
-                logger.error(f"AUTO_REGISTER_MODELS JSON 解析失敗: {e}")
-
-        # Merge per-model env vars (MODEL_*_HOST pattern)
-        env_models = _parse_model_env_vars()
-        existing_names = {m["name"] for m in models_config}
-        for em in env_models:
-            if em["name"] not in existing_names:
-                models_config.append(em)
-            else:
-                logger.debug(f"模型 {em['name']} 已在 JSON 配置中，跳過 env var 版本")
-
-        # 空 endpoint_url = 該 entry 顯式停用。compose 對 optional service
-        # (如 FLUX) 用 `${VAR-default}`,內網沒部署時 .env 設空字串就會走到
-        # 這裡 — 跳過不註冊,避免 seed 出打不通的 dead endpoint 給 Router。
-        disabled_models = [
-            m.get("name", "?") for m in models_config
-            if not str(m.get("endpoint_url") or "").strip()
-        ]
-        if disabled_models:
-            logger.info(
-                f"模型 entry 空 endpoint_url 視為停用,跳過: {', '.join(disabled_models)}"
-            )
-            models_config = [
-                m for m in models_config
-                if str(m.get("endpoint_url") or "").strip()
-            ]
-
-        if models_config:
-            try:
-
-                # Pass 1: register non-agent models first
-                for m in models_config:
-                    if m.get("model_type") == "agent":
-                        continue
-                    existing = db.query(ModelRegistry).filter(
-                        ModelRegistry.name == m["name"]
-                    ).first()
-                    if not existing:
-                        raw_type = m.get("model_type", "llm")
-                        try:
-                            model_type = reject_retired_vlm_type(raw_type) or "llm"
-                        except ValueError:
-                            logger.warning("%s：%s", VLM_TYPE_REJECTED, m.get("name"))
-                            model_type = "llm"
-                        model = ModelRegistry(
-                            name=m["name"],
-                            display_name=m.get("display_name", m["name"]),
-                            model_type=model_type,
-                            endpoint_url=m["endpoint_url"],
-                            api_version=m.get("api_version", "v1"),
-                            description=m.get("description", ""),
-                            context_window=m.get("context_window"),
-                        )
-                        db.add(model)
-                        logger.info(f"自動註冊模型: {m['name']} -> {m['endpoint_url']}")
-                    else:
-                        # OE-2 B3:**不覆寫管理員的編輯**。這裡原本每次開機都把
-                        # endpoint_url 蓋回環境變數的值,於是管理員在治理中心改了端點、
-                        # 看到成功、下次部署就悄悄變回去——靜默還原,而且比報錯難查。
-                        # (2026-07-31 壓力測試實地踩到:改過的 embedding 端點被開機蓋回
-                        # gateway URL,整輪 sweep 全 502。)
-                        # env 負責「建立」,建立之後這一列歸管理員。真要換 seed 位址,
-                        # 就在治理中心改——那才是設定端點的地方,而且有稽核。
-                        if existing.endpoint_url != m["endpoint_url"]:
-                            logger.info(
-                                "模型 %s 的端點與 seed 不同,保留現值(env 只負責建立): %s",
-                                m["name"],
-                                "db≠env",
-                            )
-
-                db.flush()  # Ensure base models have IDs
-
-                # Pass 2: register agent models (may reference base_model by name)
-                for m in models_config:
-                    if m.get("model_type") != "agent":
-                        continue
-                    existing = db.query(ModelRegistry).filter(
-                        ModelRegistry.name == m["name"]
-                    ).first()
-
-                    # Resolve base_model by name
-                    base_model_id = None
-                    base_model_name = m.get("base_model")
-                    if base_model_name:
-                        base = db.query(ModelRegistry).filter(
-                            ModelRegistry.name == base_model_name,
-                            ModelRegistry.is_active.is_(True),
-                        ).first()
-                        if base:
-                            base_model_id = base.id
-                        else:
-                            logger.warning(
-                                f"Agent {m['name']} 的底層模型 '{base_model_name}' 未找到"
-                            )
-
-                    if not existing:
-                        model = ModelRegistry(
-                            name=m["name"],
-                            display_name=m.get("display_name", m["name"]),
-                            model_type="agent",
-                            endpoint_url=m["endpoint_url"],
-                            api_version=m.get("api_version", "v1"),
-                            description=m.get("description", ""),
-                            context_window=m.get("context_window"),
-                            base_model_id=base_model_id,
-                        )
-                        db.add(model)
-                        logger.info(
-                            f"自動註冊 Agent: {m['name']} -> {m['endpoint_url']}"
-                            f" (底層: {base_model_name or '無'})"
-                        )
-                    else:
-                        # OE-2 B3(同上):env 只負責建立,既有列的端點歸管理員。
-                        if base_model_id and existing.base_model_id != base_model_id:
-                            existing.base_model_id = base_model_id
-                            logger.info(f"更新 Agent 底層模型: {m['name']} -> {base_model_name}")
-
-            except Exception as e:
-                logger.error(f"模型自動註冊失敗: {e}")
-
-        # 3. Auto-register agents from AUTO_REGISTER_AGENTS env
-        if settings.AUTO_REGISTER_AGENTS:
-            try:
-                agents_config = json.loads(settings.AUTO_REGISTER_AGENTS)
-                # 同上面 models 的規則:空 endpoint_url = 停用,跳過。
-                disabled_agents = [
-                    a.get("name", "?") for a in agents_config
-                    if not str(a.get("endpoint_url") or "").strip()
-                ]
-                if disabled_agents:
-                    logger.info(
-                        f"Agent entry 空 endpoint_url 視為停用,跳過: {', '.join(disabled_agents)}"
-                    )
-                    agents_config = [
-                        a for a in agents_config
-                        if str(a.get("endpoint_url") or "").strip()
-                    ]
-                for item in agents_config:
-                    existing = db.query(Agent).filter(Agent.name == item["name"]).first()
-
-                    owner_username = item.get("owner_username", ADMIN_USERNAME)
-                    owner = db.query(User).filter(User.username == owner_username).first()
-                    if owner is None:
-                        logger.warning(f"Agent {item['name']} 的 owner '{owner_username}' 不存在，跳過")
-                        continue
-
-                    base_model_id = None
-                    base_model_name = item.get("base_model")
-                    if base_model_name:
-                        base_model = db.query(ModelRegistry).filter(
-                            ModelRegistry.name == base_model_name,
-                            ModelRegistry.is_active.is_(True),
-                        ).first()
-                        if base_model:
-                            base_model_id = base_model.id
-                        else:
-                            logger.warning(
-                                f"Agent {item['name']} 的 base model '{base_model_name}' 未找到"
-                            )
-
-                    if not existing:
-                        existing = Agent(
-                            name=item["name"],
-                            owner_user_id=owner.id,
-                            endpoint_url=item["endpoint_url"],
-                            api_version=item.get("api_version", "v1"),
-                            description_for_router=item.get("description_for_router", ""),
-                            base_model_id=base_model_id,
-                            capabilities=item.get("capabilities"),
-                            input_schema=item.get("input_schema"),
-                            health_status=item.get("health_status", "unknown"),
-                            approval_status=item.get("approval_status", "approved"),
-                        )
-                        if existing.approval_status == "approved":
-                            existing.approved_by = admin.id
-                        db.add(existing)
-                        logger.info(f"自動註冊 agent: {item['name']} -> {item['endpoint_url']}")
-                    else:
-                        # 與模型相同:env 只負責建立。既有列歸管理員,
-                        # 開機不覆寫 description_for_router / approval_status /
-                        # health_status / approved_by(也不改端點與其它欄)。
-                        logger.info(
-                            "agent %s 已存在,保留現值(env 只負責建立)",
-                            item["name"],
-                        )
-
-                db.flush()
-            except json.JSONDecodeError as e:
-                logger.error(f"AUTO_REGISTER_AGENTS JSON 解析失敗: {e}")
-            except Exception as e:
-                logger.error(f"Agent 自動註冊失敗: {e}")
+        # 模型與 agent 只在治理中心登錄。這裡不讀環境變數。
 
         # 4. Auto-seed users + API keys from AUTO_SEED_API_KEYS env
         if settings.AUTO_SEED_API_KEYS:
@@ -485,9 +227,7 @@ def auto_seed():
             except Exception as e:
                 logger.error(f"API key 自動初始化失敗: {e}")
 
-        # Always, even when AUTO_REGISTER_MODELS is empty or failed to parse.
-        # The shell default target is this name; missing row = every first
-        # chat 404s with 「模型 'anila-router' 未註冊」.
+        # 平台對話入口。缺這列時第一次聊天會 404「模型 'anila-router' 未註冊」。
         ensure_platform_router_model(db)
 
         db.commit()

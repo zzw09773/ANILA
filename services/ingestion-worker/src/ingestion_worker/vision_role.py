@@ -1,7 +1,6 @@
 """執行期向 CSP 問視覺角色。快取 45 秒。
 
-ingestion-worker 沒有另一把服務憑證：用既有的 VISION_API_KEY
-（與嵌入同一把 INTERNAL_PLATFORM_API_KEY）當 Bearer。
+ingestion-worker 沒有另一把服務憑證：用既有的系統 API key 檔當 Bearer。
 該帳號是 system，可以呼叫角色目前指向的任何啟用中模型。
 
 沒設、已停用、或問不到：回 (None, 給人看的訊息)。呼叫端略過圖說，
@@ -19,11 +18,19 @@ logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 45.0
 _UNSET = "視覺模型尚未在治理中心設定"
-_cache: dict[str, Any] = {"name": None, "message": None, "at": 0.0, "known": False}
+_caches: dict[str, dict[str, Any]] = {}
+
+
+def _slot(role: str) -> dict[str, Any]:
+    slot = _caches.get(role)
+    if slot is None:
+        slot = {"name": None, "message": None, "at": 0.0, "known": False}
+        _caches[role] = slot
+    return slot
 
 
 def reset_cache() -> None:
-    _cache.update(name=None, message=None, at=0.0, known=False)
+    _caches.clear()
 
 
 def csp_origin(vision_url: str) -> str:
@@ -34,19 +41,27 @@ def csp_origin(vision_url: str) -> str:
     return base.rstrip("/")
 
 
-async def resolve_vision_model(*, vision_url: str, api_key: str) -> tuple[str | None, str]:
+async def resolve_role_model(
+    role: str,
+    *,
+    vision_url: str,
+    api_key: str,
+    unset_message: str,
+) -> tuple[str | None, str]:
+    """問治理中心 ``GET /api/models/roles/{role}``。沒設就回 (None, 訊息)。"""
+    slot = _slot(role)
     now = time.monotonic()
-    if _cache["known"] and now - float(_cache["at"]) < _TTL_SECONDS:
-        if _cache["name"]:
-            return _cache["name"], ""
-        return None, _cache["message"] or _UNSET
+    if slot["known"] and now - float(slot["at"]) < _TTL_SECONDS:
+        if slot["name"]:
+            return slot["name"], ""
+        return None, slot["message"] or unset_message
 
     origin = csp_origin(vision_url)
     if not origin:
-        _remember(None, "無法向治理中心確認視覺模型", now)
-        return None, _cache["message"]
+        _remember(role, None, f"無法向治理中心確認{role}模型", now)
+        return None, slot["message"]
 
-    url = f"{origin}/api/models/roles/vision"
+    url = f"{origin}/api/models/roles/{role}"
     from ingestion_worker.credential_file import api_key as credential_api_key
     from ingestion_worker.credential_file import reload as reload_credential
 
@@ -62,63 +77,64 @@ async def resolve_vision_model(*, vision_url: str, api_key: str) -> tuple[str | 
             if resp.status_code in (401, 403):
                 reload_credential(True)
                 resp = await client.get(url, headers=_headers(api_key))
-    except Exception as exc:  # noqa: BLE001 — 問不到就略過圖說
-        logger.warning("vision role: 連線 csp 失敗（%s）", exc)
-        if _cache["name"]:
-            return _cache["name"], ""
-        return None, "無法向治理中心確認視覺模型"
+    except Exception as exc:  # noqa: BLE001 — 問不到就略過，不猜模型名
+        logger.warning("%s role: 連線 csp 失敗（%s）", role, exc)
+        if slot["name"]:
+            return slot["name"], ""
+        return None, f"無法向治理中心確認{role}模型"
 
     if resp.status_code == 200:
         name = str((resp.json() or {}).get("name") or "").strip()
         if name:
-            _remember(name, "", now)
+            _remember(role, name, "", now)
             return name, ""
-        _remember(None, _UNSET, now)
-        return None, _UNSET
+        _remember(role, None, unset_message, now)
+        return None, unset_message
 
     if resp.status_code in (404, 409):
-        message = _UNSET
+        message = unset_message
         try:
             detail = (resp.json() or {}).get("detail")
             if isinstance(detail, str) and detail.strip():
                 message = detail.strip()
         except Exception:
             pass
-        _remember(None, message, now)
+        _remember(role, None, message, now)
         return None, message
 
-    logger.warning("vision role: csp status=%s", resp.status_code)
-    if _cache["name"]:
-        return _cache["name"], ""
-    return None, "無法向治理中心確認視覺模型"
+    logger.warning("%s role: csp status=%s", role, resp.status_code)
+    if slot["name"]:
+        return slot["name"], ""
+    return None, f"無法向治理中心確認{role}模型"
+
+
+async def resolve_vision_model(*, vision_url: str, api_key: str) -> tuple[str | None, str]:
+    return await resolve_role_model(
+        "vision",
+        vision_url=vision_url,
+        api_key=api_key,
+        unset_message=_UNSET,
+    )
 
 
 def cached_vision_model_name() -> str:
     """同步讀 45 秒快取。過期或尚未問過就回空字串，這裡不發 HTTP。"""
+    slot = _caches.get("vision")
+    if slot is None:
+        return ""
     now = time.monotonic()
     if (
-        _cache["known"]
-        and now - float(_cache["at"]) < _TTL_SECONDS
-        and _cache["name"]
+        slot["known"]
+        and now - float(slot["at"]) < _TTL_SECONDS
+        and slot["name"]
     ):
-        return str(_cache["name"])
+        return str(slot["name"])
     return ""
 
 
-async def bind_pdf_ocr_model(*, vision_url: str, api_key: str) -> None:
-    """PDF OCR 與圖說共用視覺角色。同步解析器只讀上面的快取。"""
-    from anila_core.ingestion.ocr import set_ocr_model_provider
-
-    name, message = await resolve_vision_model(
-        vision_url=vision_url, api_key=api_key,
-    )
-    if not name:
-        logger.warning("ingestion-worker: 略過 PDF OCR — %s", message)
-    set_ocr_model_provider(cached_vision_model_name)
-
-
-def _remember(name: str | None, message: str, now: float) -> None:
-    _cache["name"] = name
-    _cache["message"] = message
-    _cache["at"] = now
-    _cache["known"] = True
+def _remember(role: str, name: str | None, message: str, now: float) -> None:
+    slot = _slot(role)
+    slot["name"] = name
+    slot["message"] = message
+    slot["at"] = now
+    slot["known"] = True

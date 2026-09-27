@@ -86,7 +86,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         role="vision",
         label="視覺模型",
         description=(
-            "Studio 簡報視覺檢查，以及知識庫入庫時的圖片說明與掃描 PDF 的文字辨識。"
+            "Studio 簡報視覺檢查，以及知識庫入庫時的圖片說明。"
             "任何已登記的語言模型都可以擔任。"
         ),
         accepted_types=frozenset({"llm"}),

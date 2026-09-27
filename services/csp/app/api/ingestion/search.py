@@ -276,7 +276,7 @@ class RelatedHit(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
-    embedding_model: str
+    embedding_model: str | None = None
     embedding_dim: int
     results: list[SearchHitOut]
     related: list[RelatedHit] = Field(
@@ -327,7 +327,7 @@ class ImageHitOut(BaseModel):
 
 class ImageSearchResponse(BaseModel):
     query: str
-    embedding_model: str
+    embedding_model: str | None = None
     embedding_dim: int
     results: list[ImageHitOut]
     source_model_mismatch: bool = False
@@ -768,6 +768,11 @@ async def search_collection(
     designated = resolve_platform_embedding(db)
     embed_model = designated.name if designated is not None else coll.embedding_model
     source_filter = designated.name if designated is not None else None
+    if not embed_model:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="平台嵌入模型尚未在治理中心設定",
+        )
 
     # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
     search_query = expand_query(db, payload.query)
@@ -979,6 +984,11 @@ async def search_collection_images(
     designated = resolve_platform_embedding(db)
     embed_model = designated.name if designated is not None else coll.embedding_model
     source_filter = designated.name if designated is not None else None
+    if not embed_model:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="平台嵌入模型尚未在治理中心設定",
+        )
 
     q_vec = await _embed_query(
         db,

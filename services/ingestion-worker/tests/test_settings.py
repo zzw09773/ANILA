@@ -75,7 +75,7 @@ def test_embedding_base_url_default(clean_env):
 
 
 def test_embedding_model_default(clean_env):
-    assert _fresh().embedding_model == "nvidia/nv-embed-v2"
+    assert _fresh().embedding_model == ""
 
 
 def test_embedding_api_key_default(clean_env):
@@ -160,7 +160,7 @@ def test_all_defaults_at_once(clean_env):
         "database_url": "postgresql://csp_app:csp@csp-db:5432/csp",
         "redis_url": "redis://redis:6379",
         "embedding_base_url": "http://host.docker.internal:7011/v1",
-        "embedding_model": "nvidia/nv-embed-v2",
+        "embedding_model": "",
         "embedding_api_key": "not-set",
         "embedding_dim": 4000,
         "embedding_timeout_seconds": 30.0,
@@ -176,7 +176,6 @@ def test_all_defaults_at_once(clean_env):
         "vision_max_image_bytes": 8 * 1024 * 1024,
         "enable_relation_llm": True,
         "relation_llm_url": "",
-        "relation_llm_model": "gemma4",
         "relation_llm_api_key": "not-set",
         "relation_llm_verify_ssl": False,
         "relation_llm_timeout_seconds": 120.0,

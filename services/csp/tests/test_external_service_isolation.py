@@ -14,7 +14,6 @@ from cryptography.exceptions import InvalidTag
 from anila_core.security.credential_crypto import unpack_credential_envelope
 from app.models.external_service import DOCUMENT_PARSER, SPEECH, ExternalService
 from app.models.service_client import ServiceClient
-from app.services.external_services import import_legacy_env_once
 from app.services.service_token_envelope import (
     compute_lookup_hash,
     encode_service_token_envelope,
@@ -304,18 +303,11 @@ def test_userinfo_is_rejected_and_masked_when_already_stored(
     assert "alice" not in listed.text
     assert "docling.example.test" in listed.text
 
-    monkeypatch.setenv("DOC_PARSER", "docling")
-    monkeypatch.setenv("DOCLING_URL", poisoned)
-    monkeypatch.setenv("DOCLING_SERVICE_TOKEN", SECRET)
-    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
     stored.base_url = ""
     stored.enabled = False
     stored.env_seeded = False
     stored.credential_envelope = None
     db.commit()
-    with caplog.at_level(logging.INFO):
-        import_legacy_env_once(db)
-    assert "s3cret" not in caplog.text
     db.refresh(stored)
     assert "s3cret" not in (stored.base_url or "")
 

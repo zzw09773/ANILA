@@ -1,11 +1,4 @@
-"""OE-2 B3 — env seeds a model once; after that the row belongs to the admin.
-
-auto_seed used to reassign endpoint_url on every startup for any model whose
-name appears in AUTO_REGISTER_MODELS. An admin who changed an endpoint in the
-console saw it save, and saw it silently revert on the next deploy — the same
-silent-revert family as the rest of docs/FAKE-CONTROLS.md, and harder to catch
-because the revert happens hours later during an unrelated restart.
-"""
+"""開機不再用環境變數登錄模型或 agent。已存在的列維持管理員寫的值。"""
 from __future__ import annotations
 
 import json
@@ -32,13 +25,8 @@ class _KeepOpen:
 
 def _run_seed(db, monkeypatch, models: list[dict]) -> None:
     monkeypatch.setattr(auto_seed, "SessionLocal", lambda: _KeepOpen(db))
-    monkeypatch.setattr(auto_seed, "_parse_model_env_vars", lambda: [])
-    monkeypatch.setattr(
-        auto_seed.settings,
-        "AUTO_REGISTER_MODELS",
-        json.dumps(models),
-    )
-    monkeypatch.setattr(auto_seed.settings, "AUTO_REGISTER_AGENTS", "")
+    monkeypatch.setenv("AUTO_REGISTER_MODELS", json.dumps(models))
+    monkeypatch.setenv("AUTO_REGISTER_AGENTS", "")
     monkeypatch.setattr(auto_seed.settings, "AUTO_SEED_API_KEYS", "")
     auto_seed.auto_seed()
 
@@ -77,13 +65,8 @@ def test_seed_does_not_reassign_endpoint_url_for_existing_models(db, monkeypatch
 
 def _run_agent_seed(db, monkeypatch, agents: list[dict]) -> None:
     monkeypatch.setattr(auto_seed, "SessionLocal", lambda: _KeepOpen(db))
-    monkeypatch.setattr(auto_seed, "_parse_model_env_vars", lambda: [])
-    monkeypatch.setattr(auto_seed.settings, "AUTO_REGISTER_MODELS", "")
-    monkeypatch.setattr(
-        auto_seed.settings,
-        "AUTO_REGISTER_AGENTS",
-        json.dumps(agents),
-    )
+    monkeypatch.setenv("AUTO_REGISTER_MODELS", "")
+    monkeypatch.setenv("AUTO_REGISTER_AGENTS", json.dumps(agents))
     monkeypatch.setattr(auto_seed.settings, "AUTO_SEED_API_KEYS", "")
     auto_seed.auto_seed()
 
@@ -145,8 +128,7 @@ def test_seed_does_not_clobber_existing_agents(db, monkeypatch):
     assert row.endpoint_url == "http://admin-chosen:9100"
 
 
-def test_seed_still_creates_missing_agents(db, monkeypatch):
-    """The other half: env must still insert an agent that is absent."""
+def test_seed_does_not_create_agents_from_env(db, monkeypatch):
     _run_agent_seed(
         db,
         monkeypatch,
@@ -161,17 +143,10 @@ def test_seed_still_creates_missing_agents(db, monkeypatch):
             }
         ],
     )
-
-    row = db.query(Agent).filter(Agent.name == "brand-new-agent").one()
-    assert row.endpoint_url == "http://env-seed:9100"
-    assert row.description_for_router == "from seed"
-    assert row.approval_status == "approved"
-    assert row.health_status == "unknown"
-    assert row.approved_by is not None
+    assert db.query(Agent).filter(Agent.name == "brand-new-agent").count() == 0
 
 
-def test_seed_still_creates_missing_models(db, monkeypatch):
-    """The other half: env must still be able to seed a model that is absent."""
+def test_seed_does_not_create_models_from_env(db, monkeypatch):
     _run_seed(
         db,
         monkeypatch,
@@ -187,16 +162,12 @@ def test_seed_still_creates_missing_models(db, monkeypatch):
             }
         ],
     )
-
-    row = (
+    assert (
         db.query(ModelRegistry)
         .filter(ModelRegistry.name == "brand-new-llm")
-        .one()
+        .count()
+        == 0
     )
-    assert row.endpoint_url == "http://env-seed:8000/v1"
-    assert row.display_name == "Brand New"
-    assert row.model_type == "llm"
-    assert row.context_window == 8192
 
 
 def test_skip_reason_tells_deactivated_apart_from_unregistered():

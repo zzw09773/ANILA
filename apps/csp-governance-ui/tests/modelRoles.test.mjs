@@ -57,6 +57,7 @@ test('models page mounts the role panel', () => {
   assert.match(panel, /role\.label/)
   assert.match(panel, /role\.description/)
   assert.match(panel, /roleWarning/)
+  assert.match(panel, /需設定/)
   assert.match(panel, /roleAudience/)
   assert.match(panel, /grantModelRoleAllUsers/)
   assert.match(panel, /授權給所有使用者/)

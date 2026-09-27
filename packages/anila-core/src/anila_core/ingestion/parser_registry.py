@@ -852,32 +852,14 @@ class PdfParser:
     HierarchicalChunker can attach them under the surrounding heading.
 
     When digital extraction yields little or mostly ``<?>`` placeholders
-    (font-subsetted PDFs), an optional OCR backend is invoked. The
-    backend is built on each parse from ``VISION_URL`` plus the vision
-    role injected by the caller — see ``ingestion.ocr.build_ocr_backend_from_env``.
+    (a scan or a font-subsetted PDF), parsing stops with a message that
+    Docling is required. This parser does not call a vision model.
 
     ⚠ The ``[[IMAGE:<id>]]`` tokens this parser inserts are **not** text.
     ``needs_ocr_fallback`` strips them before measuring; do not hand it a
     string whose placeholders have already been rewritten into captions,
     or a captioned scan will read as a text document.
-
-    ⚠ Taking the OCR result **replaces** the native extraction, which
-    throws several things away at once. That policy is not decided here,
-    but every loss it causes is measured into ``metadata['ocr_losses']``
-    and logged — see ``_describe_ocr_losses``.
     """
-
-    _ocr_backend = None  # type: ignore[var-annotated]
-    _ocr_initialised = False
-
-    @classmethod
-    def _get_ocr_backend(cls):
-        # 測試把 _ocr_initialised 設成 True 來注入後端。正式路徑每次重建，
-        # 視覺角色換了才不會把舊模型名留到程序結束。
-        if cls._ocr_initialised:
-            return cls._ocr_backend
-        from .ocr import build_ocr_backend_from_env
-        return build_ocr_backend_from_env()
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:
@@ -987,64 +969,31 @@ class PdfParser:
         #     feed carried by the PDF's own text stream is indistinguishable
         #     from one we inserted, and splits a real page in two.
         #
-        # ⚠ It is NOT an invariant of what this function RETURNS. The OCR
-        # fallback below reassigns ``content`` wholesale to backend output
-        # that carries no page structure of its own, so an OCR'd document
-        # typically returns zero ``\f`` while ``metadata["pages"]`` still
-        # says N — and a backend whose text happens to contain ``\f`` would
-        # return a count that is wrong rather than absent. ``ocr_used``
-        # distinguishes the two cases. Nothing downstream may infer page
-        # structure from ``metadata["pages"]`` alone: ``extract_text``
-        # re-derives ``has_page_boundaries`` by counting the fields and
-        # comparing, and the ``pdf-page`` chunker warns when they disagree.
+        # A scan does not return from here: Docling is required, and this
+        # parser does not invent text. ``ocr_used`` on a successful return
+        # is therefore always false. Docling's own parser reports its OCR
+        # separately. Nothing downstream may infer page structure from
+        # ``metadata["pages"]`` alone: ``extract_text`` re-derives
+        # ``has_page_boundaries`` by counting the fields.
         content = "\f\n".join(parts)
-        # Snapshot before the OCR fallback may replace ``content`` wholesale;
-        # the loss report below diffs the two to say what OCR destroyed.
-        native_content = content
-        ocr_used = False
-        ocr_losses: dict[str, Any] | None = None
+        from .errors import ParseError
+        from .ocr import SCANNED_PDF_NEEDS_DOCLING, needs_ocr_fallback
 
-        # Optional OCR fallback for scanned / font-subsetted PDFs.
-        backend = self._get_ocr_backend()
-        if backend is not None:
-            from .ocr import needs_ocr_fallback
-            if needs_ocr_fallback(content, page_texts=page_texts):
-                logger.info(
-                    "PDF %s text extraction looks unusable — running OCR fallback",
-                    path.name,
-                )
-                try:
-                    ocr_text = backend.extract(file_path)
-                    if ocr_text.strip():
-                        content = ocr_text
-                        ocr_used = True
-                        ocr_losses = _describe_ocr_losses(
-                            native_content,
-                            content,
-                            page_count=len(page_chunks),
-                            backend_max_pages=getattr(backend, "max_pages", None),
-                        )
-                        _log_ocr_losses(path.name, ocr_losses, len(page_chunks))
-                except Exception as exc:
-                    logger.warning(
-                        "OCR fallback failed for %s: %s — keeping native extraction",
-                        path.name, exc,
-                    )
+        if needs_ocr_fallback(content, page_texts=page_texts):
+            raise ParseError.corrupt(
+                SCANNED_PDF_NEEDS_DOCLING,
+                details={
+                    "reason": "scanned_pdf_needs_docling",
+                    "filename": path.name,
+                },
+            )
 
         metadata: dict[str, Any] = {
             "title": path.stem,
             "pages": len(page_chunks),
             "embedded_images": len(images),
-            "ocr_used": ocr_used,
+            "ocr_used": False,
         }
-        if ocr_losses is not None:
-            # ``ocr_used: True`` on its own reads as unqualified success.
-            # These two are added exactly when that claim is made, so no
-            # consumer can render "OCR applied" without the losses sitting
-            # in the same dict. Absent when no OCR ran — a document that
-            # never went near the backend keeps byte-identical metadata.
-            metadata["ocr_lossy"] = ocr_losses["lossy"]
-            metadata["ocr_losses"] = ocr_losses
 
         return ParsedDocument(
             content=content,
@@ -1052,95 +1001,6 @@ class PdfParser:
             source_path=file_path,
             format="pdf",
             images=images,
-        )
-
-
-def _describe_ocr_losses(
-    native: str,
-    replacement: str,
-    page_count: int,
-    backend_max_pages: int | None,
-) -> dict[str, Any]:
-    """Report, in structured form, what taking the OCR result throws away.
-
-    ``PdfParser`` currently *replaces* the native extraction with the OCR
-    result. Whether that should instead be a merge, or a refusal, is an open
-    policy question and deliberately not decided here — but every loss the
-    current policy causes is measured and reported, because each one
-    surfaces in a different subsystem and all of them look like success:
-
-    * ``native_text_chars_dropped`` — pages the OCR never covered (the page
-      cap) had their extracted text discarded with everything else.
-    * ``page_boundaries_lost`` — the OCR result carries no ``\\f``, so the
-      ``pdf-page`` chunker sees one page and "see page 4 of doc.pdf" breaks.
-    * ``image_placeholders_dropped`` — ``ParsedDocument.images`` still holds
-      the refs, but the anchors they were meant to be rewritten into are
-      gone, so the captioning step captions into nothing.
-    * ``pages_not_ocred`` — how many pages the backend's cap skipped.
-
-    Every field is derived by comparing the two strings, so the report stays
-    truthful if the replace/merge policy changes: under a merge, ``native``
-    survives inside ``replacement`` and the counts fall to zero on their own.
-    """
-    from .ocr import strip_image_placeholders
-
-    native_survives = native in replacement
-    native_real_chars = len("".join(strip_image_placeholders(native).split()))
-    pages_not_ocred = (
-        max(0, page_count - backend_max_pages) if backend_max_pages else 0
-    )
-
-    losses: dict[str, Any] = {
-        "native_text_chars_dropped": 0 if native_survives else native_real_chars,
-        "page_boundaries_lost": "\f" in native and "\f" not in replacement,
-        "image_placeholders_dropped": max(
-            0, native.count("[[IMAGE:") - replacement.count("[[IMAGE:")
-        ),
-        "pages_not_ocred": pages_not_ocred,
-    }
-    losses["lossy"] = bool(
-        losses["native_text_chars_dropped"]
-        or losses["page_boundaries_lost"]
-        or losses["image_placeholders_dropped"]
-        or losses["pages_not_ocred"]
-    )
-    return losses
-
-
-def _log_ocr_losses(name: str, losses: dict[str, Any], page_count: int) -> None:
-    """Say out loud what the OCR result cost, one line per kind of loss."""
-    if not losses["lossy"]:
-        return
-    if losses["pages_not_ocred"]:
-        # The only loss that destroys text the user can read in the original.
-        logger.error(
-            "OCR of %s covered %d of its %d pages — the remaining %d were not "
-            "OCR'd AND their extracted text was discarded by the replacement. "
-            "The built-in OCR page cap must be large enough to cover the document "
-            "AND small enough that the job fits the worker's job_timeout; when both "
-            "cannot hold, do not OCR this document.",
-            name,
-            page_count - losses["pages_not_ocred"],
-            page_count,
-            losses["pages_not_ocred"],
-        )
-    if losses["native_text_chars_dropped"]:
-        logger.warning(
-            "OCR of %s replaced the native extraction: %d characters of "
-            "natively extracted text discarded.",
-            name, losses["native_text_chars_dropped"],
-        )
-    if losses["page_boundaries_lost"]:
-        logger.warning(
-            "OCR of %s dropped the \\f page markers — the pdf-page chunker "
-            "will see one page and page-number citations will be wrong.",
-            name,
-        )
-    if losses["image_placeholders_dropped"]:
-        logger.warning(
-            "OCR of %s dropped %d [[IMAGE:…]] anchor(s) while keeping the "
-            "image refs — captions will have nowhere to be written back to.",
-            name, losses["image_placeholders_dropped"],
         )
 
 

@@ -62,7 +62,7 @@ Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（�
 
 > 📌 **計畫性停機也是紅的。** 你自己 `docker compose stop ingestion-worker` 之後，這張卡會紅**最多 3601 秒**才退成黃色的「此部署未啟用」。卡片分不出「你關的」跟「它掛的」——維護期間看到紅燈是預期行為，不用追。
 
-> ⚠ **`PDF_OCR_FALLBACK` 的天花板不是這個 3601 秒。** 預設 `false`。一旦開成 `true`，抽不到文字的 PDF 會逐頁走 OCR／VLM，解析時間從幾十秒跳到接近 1800 秒等級。這段文字以前拿 1800 秒去比 3601 秒的心跳 TTL、說「餘裕從約 40 倍縮到約 2 倍」——**比錯對象了**。先撞到的是 `src/ingestion_worker/main.py:71` 的 `job_timeout = 300`（同檔 :21 寫「5 分鐘一份」）。**1800 秒不是吃掉餘裕，是超出宣告預算 6 倍。**
+掃描 PDF 的文字辨識是 Docling（遠端文件解析服務的 EasyOCR）。原生解析器抽不到文字層時會直接說明需要 Docling，不再用視覺模型逐頁辨識。
 >
 > 而且它不會乾脆地被砍掉：`extract_text` 是**同步**呼叫（`handlers.py:736`），照本節下面那張表會佔住 arq 的事件迴圈；arq 用 `asyncio.wait_for` 執行 `job_timeout`（`arq/worker.py:591`），**而 `wait_for` 打不斷阻塞的同步呼叫，計時器在迴圈被佔住時連跑都跑不了**。所以結果是不確定的兩種壞：要嘛整份跑完、300 秒的預算被無聲超過（期間**佇列裡其他 ingest 全部排隊等**）；要嘛迴圈一放開計時器就補跳，把已經花掉的 1800 秒 VLM 全部作廢並重試（`max_tries=3`）。兩種都不是「5 分鐘一份」承諾的事。
 >
@@ -72,7 +72,7 @@ Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（�
 >
 > ⚠ **這條規則換掉了一組破綻，也換來另一組。** 舊規則（每頁平均字數）被「每頁一個夠長的標示」整組打死；新規則不吃長度，但吃「重複程度」。**下面每一條都是實測出來的，不是推想的**（`needs_ocr_fallback` 直接餵資料量的）：
 >
-> **A. 漏抓：掃描件判成「有文字」→ 不會 OCR，而且沒有任何訊息**
+> **A. 漏抓：掃描件判成「有文字」→ 不會要求改走 Docling**
 >
 > | 情況 | 例 | 為什麼漏 |
 > |---|---|---|
@@ -84,33 +84,20 @@ Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（�
 >
 > 📌 **只變數字的不算漏**：`Page 3 of 250 - Section 4.2` 這種**只有數字在變**的頁首會被正規化成同一行，照樣抓得到。會漏的是**換字**，不是換數字。
 >
-> **B. 誤觸發：真的有文字的文件被判成掃描件 → 它的文字會被 OCR 結果整份取代**
+> **B. 誤觸發：真的有文字的文件被判成掃描件 → 解析直接說明需要 Docling**
 >
 > | 情況 | 實測 | 後果 |
 > |---|---|---|
 > | 大量**制式表單**（欄位標籤重複、填的值不同） | 250 份 → 判成掃描件 | 標籤被當裝飾丟掉，剩下的值太短撐不起每頁 20 字 |
 > | **版型統一的簡報** | 60 頁 → 判成掃描件 | 每頁只有標題＋一兩句，扣掉重複的版面文字就不夠 |
 >
-> ⚠ **B 比 A 嚴重。** A 只是「維持現狀、沒有變好」；B 是**把本來讀得到的文字換掉**，而且照上面那段的算法，一份 250 頁的文件跑 OCR **必然撞爛 300 秒的 `job_timeout`**（250 頁遠超過推算的約 16 頁預算）。**如果你要收的就是制式表單或簡報，不要開這個旗標。**
+> 上面這張表說的是「什麼樣子會被當成掃描件」。現在的結果不是送去視覺模型，而是請使用者改走 Docling。
 >
-> ⚠ **另一格單獨的漏**：**單頁**掃描件，如果那一頁的標示本身就超過 40 字。一頁的文件沒有「重複」可言，分不出裝飾和內容。例：一張 `CONFIDENTIAL - NCSIST Internal Use Only - Page 1 of 1` 的單頁掃描 → 判成有文字、不會走 OCR。多頁不受影響。
+> ⚠ **另一格單獨的漏**：**單頁**掃描件，如果那一頁的標示本身就超過 40 字。一頁的文件沒有「重複」可言，分不出裝飾和內容。例：一張 `CONFIDENTIAL - NCSIST Internal Use Only - Page 1 of 1` 的單頁掃描 → 判成有文字，不會要求 Docling。多頁不受影響。
 >
-> 判斷本身有測試守著（`packages/anila-core/tests/test_pdf_ocr_trigger.py`）。但**仍然沒有任何測試會在你把旗標打開的時候提醒你成本**——那是這段文字的工作。
+> 判斷本身有測試守著（`packages/anila-core/tests/test_pdf_ocr_trigger.py`）。
 >
-> ⚠ **內建 PDF OCR 頁數上限（100）調大是錯的方向。** 它同時是兩件事的上限：能 OCR 幾頁，以及這個 job 要跑多久。調大 → 更久 → 更確定撞上上面那個 300 秒衝突。要選的值是「`ceil(頁數 ÷ PDF_OCR_CONCURRENCY) × 單頁 VLM 秒數` 塞得進 300 秒」的值；**拿上面 1800 秒／100 頁／並行 4 反推，單頁約 72 秒，也就是大約 16 頁**（推算值，不是量到的）。**一份文件如果需要比這更多頁，它就不該走這條路。**
->
-> ⚠ **而超出上限的頁，會連它原生抽到的文字一起不見。** OCR 成功時 `content` 是被**整份取代**的，不是合併，所以一份 120 頁（前 100 頁掃描、後 20 頁是真文字）的文件，OCR 只蓋前 100 頁，**後 20 頁那 1880 個字一個都不會留下**。這件事以前只有一行 log。現在四種損失都寫進 `metadata`，而且是跟 `ocr_used` 放在同一個 dict 裡（`ocr_lossy` + `ocr_losses`），因為 `ocr_used: True` 單獨看起來就像成功：
->
-> | `ocr_losses` 欄位 | 意思 | 會在哪裡爆出來 |
-> |---|---|---|
-> | `native_text_chars_dropped` | 被丟掉的原生抽取字數 | 那些頁在檢索上直接消失 |
-> | `pages_not_ocred` | 超過上限、沒被 OCR 的頁數 | 同上，而且是使用者在原稿上讀得到的字 |
-> | `page_boundaries_lost` | OCR 結果沒有 `\f` | `pdf-page` chunker 把整份看成一頁，「第 4 頁」的引用全錯 |
-> | `image_placeholders_dropped` | `[[IMAGE:…]]` 錨點沒了、`.images` 還在 | caption 步驟照跑照付 VLM，但寫不回任何地方 |
->
-> ⚠ **`ocr_lossy` / `ocr_losses` 不是警報，現在沒有任何人看得到它。** `handlers.py:736` 拿到的 `parse_meta` 只傳給 `chunker.chunk`（`:804`）就結束了，**沒有寫進資料庫、沒有進文件狀態、UI 上沒有任何地方會顯示**。使用者看到的仍然只是「已索引」。唯一看得到的是 **worker 的 log**（截斷是 ERROR、其餘三項是 WARNING），而那要你自己去翻。**別假設它會通知你**——要它變成看得到的東西，得有人把它接上文件狀態，那是還沒做的事。
->
-> ⚠ **csp 不吃這組旗標，這是刻意的。** csp 的 `/api/ingestion/chunking-preview`（`services/csp/app/api/ingestion/preview.py:240`）呼叫**同一支** `extract_text`，但 `infra/compose/platform.yml` 的 csp 區塊把 `PDF_OCR_FALLBACK` **寫死成 `"false"`**，不吃 `${PDF_OCR_FALLBACK}`。理由：OCR 是 1800 秒等級的同步工作，ingest 有佇列可以扛，HTTP request 沒有。**後果是預覽與實際 ingest 會給出不同的分塊**——掃描件在預覽裡看起來仍然是空的／只有圖片佔位符，實際 ingest 才會走 OCR。**看到這個差異不要當成 bug。**
+預覽與入庫走同一支解析器。掃描件兩邊都會看到同一句：需要 Docling。
 
 > ⚠ **為什麼心跳不調快。** 三個 handler 全部在 arq 的事件迴圈上做同步工作：`extract_text` 量到 400 頁 PDF 佔住迴圈 33–89 秒、1000 頁 81–103 秒（同一份程式碼，區間差異來自主機負載），而 `evaluate_strategies` 與 `reresolve_collection_relations` 是**逐份文件跑迴圈**（一個 collection 可以有上百份）。心跳的 TTL 一旦短於這個時間，**正在正常工作的 worker 就會被畫成死的** —— 而那正是這張卡最不能犯的錯。3601 秒蓋得住平台會收的任何文件（單檔上限 50 MB）。
 >
@@ -213,18 +200,18 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `DATABASE_URL` | `postgresql://csp_app:csp@csp-db:5432/csp` | asyncpg DSN，**必須**用 `csp_app` 角色（受 RLS，非 superuser） |
 | `REDIS_URL` | `redis://redis:6379` | Arq 佇列後端 |
 | `EMBEDDING_BASE_URL` | `http://csp:8000/v1`（compose 預設；`host.docker.internal` 已被 url_guard 結構性拒絕） | embedding endpoint |
-| `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | `nvidia/NV-embed-V2` / `not-set` | 模型 / Bearer token |
+| `EMBEDDING_MODEL` | （空） | 不再當模型名。嵌入名稱只來自治理中心的平台嵌入角色 |
 | `EMBEDDING_DIM` / `EMBEDDING_TIMEOUT_SECONDS` | `4000` / `30.0` | 截斷維度（對齊 halfvec(4000)）/ 逾時 |
 | `UPLOAD_DIR` | `/var/anila/ingestion-uploads` | 與 CSP 共用的上傳 blob 目錄 |
 | `SSL_CERT_FILE` | 未設定 | 內部 HTTPS VLM/OCR 的選用 CA bundle；`verify=True` 不因自簽憑證而關閉 |
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `5` | 連線池（亦上限並行度） |
 | `ENABLE_IMAGE_CAPTIONS` | `true` | VLM caption 總開關 |
 | `VISION_URL` | `""`（compose `http://csp:8000/v1`） | VLM endpoint；空字串停用 caption |
-| `VISION_API_KEY` | `not-set` | 呼叫 CSP 的 token。圖說與 PDF OCR 用哪顆模型由治理中心的視覺角色決定 |
+| `VISION_API_KEY` | `not-set` | 呼叫 CSP 的 token。圖說用哪顆模型由治理中心的視覺角色決定 |
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | 並行 / 逾時 / 超過跳過 caption |
 | `ENABLE_RELATION_LLM` | `true` | LLM 關係抽取總開關 |
 | `RELATION_LLM_URL` | `""` | 空字串停用 LLM 邊 |
-| `RELATION_LLM_MODEL` / `RELATION_LLM_API_KEY` / `RELATION_LLM_VERIFY_SSL` | `gemma4` / `not-set` / `false` | 模型 / token / TLS |
+| `RELATION_LLM_API_KEY` / `RELATION_LLM_VERIFY_SSL` | `not-set` / `false` | token / TLS。模型是治理中心的摘要角色，沒設就略過 LLM 關聯 |
 | `RELATION_LLM_TIMEOUT_SECONDS` / `RELATION_LLM_MAX_CHARS` / `RELATION_LLM_MAX_CANDIDATES` | `120.0` / `12000` / `200` | 逾時 / 輸入上限 / 候選上限 |
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding 相似邊總開關 |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | 每文件連 K 個近鄰 / cosine 下限 / 超過略過重算 |
@@ -236,7 +223,7 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 
 ## 與其他服務的關係
 
-- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（Model Gateway 的每服務金鑰；compose 由 `INTERNAL_PLATFORM_API_KEY` 注入）。外連前 `anila-core` 依 `ANILA_ENV` / `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
+- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（CSP 寫進憑證檔，worker 只讀）。外連前 `anila-core` 依 `ANILA_ENV` / `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
 - **csp-db**：以 `csp_app`（受 RLS）連線；RLS-scoped 寫入用 `SET LOCAL anila.collection_id`。讀 documents / collections / eval_runs / user_llm_credentials，寫 chunks / images / `document_relations` / 狀態 / 計數。
 - **Redis**：Arq 佇列後端。
 - **共用上傳目錄**：CSP 寫、worker 讀；captioned 圖存 `<UPLOAD_DIR>/anila-images/<doc_id>/`。

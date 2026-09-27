@@ -435,32 +435,23 @@ D 全綠 = port/key/模型 ID/TLS 四件事一次確認完。F(FQDN 解析)要�
 ### 2.3 `.env` 關鍵值速查 (完整範本見 `.env.example`,已是內網拓撲)
 
 ```bash
-ANILA_ALLOW_DEV_SECRET=0          # prod 模式,dev 預設值一律拒啟
+ANILA_ALLOW_DEV_SECRET=0          # prod 模式,dev 預設值一律拒啟;正式部署看到 1 直接拒絕
 ANILA_ALLOW_HTTP_ENDPOINT=0       # 模型走 https,不用開
 ANILA_ALLOW_PRIVATE_ENDPOINT=0
 ANILA_ALLOW_GRPC_ENDPOINT=0       # 只有要接 Triton gRPC embedder 才設 1,見 §3.1c
-ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw   # FQDN 解到私網 IP,要點名放行
+# 信任主機在治理中心「信任主機」頁，不要寫 ANILA_TRUSTED_HOSTS。
 
-ANILA_HOST=anila.ai.ncsist.org.tw
-# 入向 Host 白名單(≠ 上面那條出向 SSRF)。不填就用這個值,見 §3.1d;
-# 換 IP／FQDN 要跟 nginx 的 $is_anila_host map 一起改,鎖住自己時設 * 自救。
-ALLOWED_HOSTS=localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw
-ANILA_AUTH_MODE=card-only
+ANILA_HOST=<你的 FQDN 或 IP>      # 入向 Host 白名單與 nginx map 都從這一顆衍生,見 §3.1d
+ANILA_AUTH_MODE=card-only         # 正式部署只接受這個值;擁有者的密碼登入仍在
 CARD_INITIAL_OWNERS=1147259       # 你的員工編號;加同事用 CSV
 
-ANILA_REMOTE_MODELS=1             # deploy-prod.sh preflight 改 curl 遠端探測
-LOCAL_LLM_MODEL=openai/gpt-oss-20b              # gateway 的 RESPONSE_ID,大小寫敏感
-LOCAL_LLM_BASE_URL=https://aiagent2.ai.ncsist.org.tw
-LOCAL_EMBEDDING_MODEL=nvidia/nv-embed-v2        # ≠ 預設 nvidia/NV-embed-V2!
-LOCAL_EMBEDDING_BASE_URL=https://aiagent2.ai.ncsist.org.tw
-MODEL_GATEWAY_API_KEY=<在 aiagent2 平台簽發>
+ANILA_REMOTE_MODELS=1             # deploy-prod.sh preflight 不檢查本機模型容器
+MODEL_GATEWAY_API_KEY=<在閘道平台簽發>
 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
-GEMMA4_BASE_URL=                  # 空 = 內網無 gemma4,auto_seed 跳過
-# 主路由、簡報、生圖、視覺、摘要、知識庫對話：部署後到治理中心「模型 → 模型角色」指定。
-# 不要在 .env 寫 LLM_MODEL / ANILALM_DEFAULT_CHAT_MODEL / VISION_MODEL。
-# 本機不再跑生圖服務。沒設生圖角色時，簡報不配生成圖片。
-ENABLE_IMAGE_CAPTIONS=false       # 內網無 VLM,文件圖片以 [image] 處理
+# 模型與 agent 在治理中心登錄。空的登錄表可以起來,角色顯示「需設定」。
+# 不要在 .env 寫 LOCAL_* / GEMMA4_BASE_URL / AUTO_REGISTER_* / LLM_MODEL。
+ENABLE_IMAGE_CAPTIONS=false       # 沒有視覺角色時,文件圖片以 [image] 處理
 ```
 
 ---
@@ -752,106 +743,37 @@ docker exec anila-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
 > 缺那一行的版本,`.env` 怎麼改都沒有作用,而且沒有任何錯誤訊息:`printenv` 是
 > 空的、行為一模一樣。上面那條 `printenv` 就是用來看穿這件事的。
 
-### 3.1d 入向 Host 白名單 `ALLOWED_HOSTS`(換 IP／換 FQDN 時會踩到)
+### 3.1d 入向 Host 白名單（換 IP／換 FQDN 時改 `ANILA_HOST`）
 
-csp 的 `TrustedHostMiddleware`:Host header 不在名單內 → `400 Invalid host header`,
-請求碰不到任何路由。它是 08-06 CSRF 修補之後的第二層,擋的是「Host 裡夾路徑」
-那類偽造;因為註冊在最外層,偽造的 Host 在被其他中間層讀到之前就死了。
+csp 的 Host 檢查：Host header 不在名單內 → `400 Invalid host header`，
+請求碰不到任何路由。名單是 `ANILA_HOST` 加上 localhost、127.0.0.1，
+以及會呼叫 CSP 的 compose 服務名。`.env` 不要再寫另一份名單。
 
-⚠ 跟 `ANILA_TRUSTED_HOSTS` **是兩回事**:那條是**出向** SSRF 白名單(csp 可以打誰),
-這條是**入向**(誰可以打 csp)。名字像,救不了對方。
+nginx 的 `map $host $is_anila_host` 在容器啟動時代入同一個 `ANILA_HOST`，
+再加上 localhost 與 127.0.0.1。換站只改 `.env` 的 `ANILA_HOST`，然後
+`docker compose up -d`。不用改 nginx conf。
 
-```bash
-# 預設值(.env 不寫這行也是這個值,compose 端已內建):
-ALLOWED_HOSTS=localhost,127.0.0.1,csp,10.53.100.15,172.16.120.35,*.ncsist.org.tw
-```
+信任主機（csp 可以打誰）在治理中心，跟這條入向名單是兩件事。
 
-- **不帶 port**。比對只看 `host.split(":")[0]`,寫成 `csp:8000` 永遠不會命中。
-- `localhost` / `127.0.0.1` / `csp` **由程式強制併入**,從 `.env` 刪掉也刪不掉。
-  它們不是政策而是這套部署的結構:csp 自己的 healthcheck 打 `localhost:8000`、
-  nginx 的 loopback 探測轉發 `Host: 127.0.0.1`、router／studio／asr-gateway／
-  ingestion-worker 一律走 `http://csp:8000`。少了任何一個,`depends_on:
-  csp: service_healthy` 會讓 nginx 根本起不來。
-- **這份跟 `infra/nginx/anila.conf` 檔頂的 `map $host $is_anila_host` 是同一組意圖的
-  兩份手抄本（集合刻意不相等：csp 這邊多 `csp`、少 `10.53.100.12`，見下）
-  ——改一邊就要重新推導另一邊。** 只改 nginx:Host 進得了 nginx 但被 csp 擋 → 瀏覽器
-  看到 400,而 `docker ps` 全綠。只改這邊:nginx 先回 444,csp 這條沒機會生效。
-- csp 這邊**沒有** `10.53.100.12`(nginx 有)。那是模型主機,沒有任何呼叫方會用它
-  當 Host 打 csp。真的要從那個位址進來,兩邊都要加。
-
-換 prod IP / DNS 上線改用 FQDN 的動作(跟 §3.1c 同一套姿勢):
+換站：
 
 ```bash
-# 1. .env 改 ALLOWED_HOSTS(以及 ANILA_HOST),同步改 nginx 那條 map
-# 2. 套用:一定是 up -d(recreate);docker restart 不重載 .env
-docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
-# 3. recreate 過要 reload nginx,否則上游 IP 是舊的 → 全站 502 但容器全綠
-docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
-# 4. 確認名單真的到了容器裡,而且檢查真的開著
-docker exec anila-csp-1 printenv ALLOWED_HOSTS
-docker compose -p anila logs csp 2>&1 | grep 'host allow-list:'
-# 5. 驗行為(csp 容器沒裝 curl,用 python;在 host 上驗 nginx 那一段用 curl -k)
-curl -sk -o /dev/null -w '%{http_code}\n' https://<你的FQDN>/health      # 200
-curl -sk -o /dev/null -w '%{http_code}\n' -H 'Host: evil.example' \
-     https://10.53.100.15/health                                          # 444(nginx 先擋)
+# 1. .env 只改 ANILA_HOST
+# 2. docker compose up -d
+# 3. 確認檢查開著
+docker compose logs csp 2>&1 | grep 'host allow-list:'
 ```
 
-第 4 步那條 grep **一定會有輸出**,兩種狀態各印一行(2026-08-06 對真 uvicorn
-開機實測逐字):
+那條 grep 一定會有輸出。開著是 `ENFORCED`，後面列出實際生效的名稱。
+`DISABLED` 表示檢查沒開（`*`），這是 WARNING。一行都沒有表示開機沒走到
+那一步。這行在 lifespan 印，標籤是 `host allow-list:`。
 
-```
-csp - INFO - host allow-list: ENFORCED — 6 host(s): localhost, 127.0.0.1, csp, 10.53.100.15, 172.16.120.35, *.ncsist.org.tw
-csp - WARNING - host allow-list: DISABLED — ALLOWED_HOSTS is '*', every incoming Host header is accepted
-```
+`Host` 比對不分大小寫、忽略結尾的點。`ANILA_HOST` 寫成大寫或結尾多一個點，
+與名單上的那一個是同一個名字。
 
-- `ENFORCED` = 開著,而且後面**列出實際生效的名單**(含程式併入的那三個)——
-  要對的是這一行,不是 `.env` 裡寫了什麼。
-- `DISABLED` = 沒開(`*`)。這是 WARNING,不是 INFO。
-- **一行都沒有 = 開機沒走到那一步**(第三種狀態,不是「沒開」)。往上翻
-  startup_security / alembic 的錯誤,見 §3.2。
-- ⚠ 這行在 **lifespan** 印,不在 import 期 —— import 期 `setup_logging()` 還沒跑,
-  root logger 沒有 handler,那時候印什麼都會被丟掉。舊版就是這樣,grep 永遠是空的。
-
-`Host` 比對**不分大小寫、忽略結尾的那個點**(RFC:主機名大小寫不敏感、DNS 根
-標籤可省)。`ANILA.AI.NCSIST.ORG.TW`、`anila.ai.ncsist.org.tw.` 與名單上的
-`*.ncsist.org.tw` 是同一個名字,三者同樣放行;`ncsist.org.tw.evil.com` 不是。
-
-#### 症狀對照表
-
-| 看到的 | 多半是 | 去哪裡 |
-|---|---|---|
-| 容器全綠,瀏覽器 `400 Invalid host header` | Host 過得了 nginx 但不在 csp 名單 —— 換 IP／FQDN 只改了一邊 | 下面的 🔓 自救 |
-| 瀏覽器直接被切線(空回應),csp 完全沒收到 | nginx 的 `$is_anila_host` 先回 444 | 改 `infra/nginx/anila.conf` 檔頂那條 map |
-| **csp 起不來**,log 最後一行是 `ALLOWED_HOSTS contains a malformed wildcard pattern: '…'` | 名單裡有壞掉的萬用字元(最常見:想涵蓋整個網段而寫成 `10.53.*.15`) | 照錯誤訊息點名的那個 pattern 改掉;只支援 `*.suffix` 一種形狀 |
-| csp healthy 一陣子後轉 unhealthy,nginx 一直起不來 | **不該再看到這個** —— 舊版壞 pattern 會註冊成功、每個請求(含 `/health`)500。現在改成開機就拒絕(上一列) | 若真的看到,先跑 🔓 自救,再回報 |
-
-> 為什麼壞 pattern 要讓 csp 直接起不來:starlette 用 `assert` 檢查 pattern,而
-> FastAPI 是**延遲**建立中間層的 —— 註冊當下不會炸,炸在第一個請求。那條路徑的
-> 終點是「healthy → unhealthy → `depends_on: csp: service_healthy` → nginx 永遠
-> 起不來」,一個 typo 換一次全院停機,而且沒有任何訊息點名它。開機就拒絕、並把
-> 那個 pattern 印出來,是這棵樹處理壞設定的既有姿勢(見 §3.2 startup_security)。
-
-#### 🔓 把自己鎖在外面了怎麼自救
-
-```bash
-# 立刻恢復:把檢查整個關掉(* = 停用),平台馬上回來
-#   在 .env 把 ALLOWED_HOSTS 改成一顆星,然後 recreate(不是 restart):
-docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
-docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
-# 確認:這一行要從 ENFORCED 變成 DISABLED(不是「變成沒有」)
-docker compose -p anila logs csp 2>&1 | grep 'host allow-list:'
-```
-
-平台回來之後再查該補哪個 Host:從 csp 的 access log 找那個被擋的 Host,加進
-`ALLOWED_HOSTS`(以及 nginx 的 map),再把 `*` 換回名單。**先恢復服務,再查原因**
-—— 這條開關的存在就是為了不用在停機狀態下除錯。
-
-> 🔧 長期照顧:這份名單在 repo 裡有兩個真來源 —— `infra/compose/platform.yml`
-> 的 csp 區塊(csp 用的)與 `infra/nginx/anila.conf` 檔頂的 `map $is_anila_host`
-> (nginx 用的)。`.env.example` 與本檔的兩處抄本已由
-> `services/csp/tests/test_allowed_hosts_middleware.py` 自動比對,漂開會紅;
-> **compose ⇄ nginx map 這一對仍是手工同步的**,沒有測試看著。改任何一邊都要
-> 想到另一邊,兩者刻意差兩項(csp 多 `csp`、少 `10.53.100.12`,理由見 compose 註解)。
+把自己鎖在外面時：把 `ANILA_HOST` 改成瀏覽器實際用來開站的那個名稱，
+再 `docker compose up -d`。localhost 與 `csp` 寫死在名單裡，healthcheck
+與容器互打不會因為改錯站名而一起消失。
 
 ### 3.2 startup_security 一定要過
 

@@ -98,7 +98,7 @@ class IngestionCollection(Base):
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     chunking_config = Column(JSONValue, nullable=False)
-    embedding_model = Column(String(200), nullable=False)
+    embedding_model = Column(String(200), nullable=True)
     embedding_dim = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="active")
     document_count = Column(Integer, nullable=False, default=0)

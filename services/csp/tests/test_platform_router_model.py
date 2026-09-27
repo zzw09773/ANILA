@@ -70,7 +70,4 @@ def test_regular_user_may_use_anila_router_without_a_grant(db: Session):
 def test_compose_keeps_router_on_the_ssrf_allow_list():
     platform = Path(__file__).resolve().parents[3] / "infra" / "compose" / "platform.yml"
     text = platform.read_text()
-    assert ",docling,router" in text or ",router,docling" in text or ",router" in text
-    # Must sit outside ${ANILA_TRUSTED_HOSTS:-...} so an operator override
-    # cannot drop the compose-internal service name (same shape as docling).
-    assert "},docling,router" in text or "},router" in text
+    assert 'ANILA_TRUSTED_HOSTS: "docling,router"' in text
