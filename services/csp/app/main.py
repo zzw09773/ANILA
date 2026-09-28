@@ -300,6 +300,13 @@ def setup_logging():
 async def lifespan(app: FastAPI):
     setup_logging()
 
+    # Several workers and no Redis would each keep a private admission
+    # board and split the per-model cap. One worker (pytest, local
+    # uvicorn) may use the in-process board. Log handlers exist now, so
+    # the refusal is visible before the rest of startup.
+    from app.services.model_gate import require_model_gate
+    require_model_gate()
+
     # Sprint 5 X / M1: refuse to boot when known-dev defaults are still in
     # place (SECRET_KEY / admin / service token / DB password). Skipping
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
@@ -408,7 +415,7 @@ async def lifespan(app: FastAPI):
     from app.services.audit_ledger import start_audit_checkpointer
     from app.services.background_leader import run_single_leader
     from app.services.health_checker import start_health_checker
-    from app.services.usage_writer import start_usage_writer
+    from app.services.usage_writer import start_usage_writer, stop_usage_writer
     from app.services.internal_service_clients import (
         auto_provision_enabled,
         provision_internal_service_clients_once,
@@ -503,11 +510,7 @@ async def lifespan(app: FastAPI):
     else:
         for task in singleton_tasks:
             task.cancel()
-    usage_writer_task.cancel()
-    try:
-        await usage_writer_task
-    except asyncio.CancelledError:
-        pass
+    await stop_usage_writer(usage_writer_task)
     await close_pool()
 
 

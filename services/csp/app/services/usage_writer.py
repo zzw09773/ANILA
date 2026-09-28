@@ -1,7 +1,9 @@
 """Async queue-based usage writer to avoid SQLite write contention."""
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 from app.database import SessionLocal
 from app.models.token_usage import TokenUsage
@@ -11,6 +13,11 @@ logger = logging.getLogger(__name__)
 _usage_queue: asyncio.Queue | None = None
 USAGE_BATCH_SIZE = 100
 USAGE_FLUSH_INTERVAL_SECONDS = 5
+SHUTDOWN_DRAIN_SECONDS = 10
+# Armed by stop_usage_writer so the drain and the lifespan wait share it.
+_shutdown_deadline: float | None = None
+_shutdown_pending = 0
+_shutdown_logged = False
 
 
 def get_usage_queue() -> asyncio.Queue:
@@ -95,30 +102,131 @@ def queue_usage_nowait(item: dict) -> None:
     get_usage_queue().put_nowait(payload)
 
 
-async def _flush_batch(batch: list[dict]) -> list[dict]:
+def _remember_uncommitted(count: int) -> None:
+    global _shutdown_pending
+    _shutdown_pending = count
+
+
+def _uncommitted_count() -> int:
+    queued = _usage_queue.qsize() if _usage_queue is not None else 0
+    return _shutdown_pending + queued
+
+
+def _log_uncommitted(count: int) -> None:
+    global _shutdown_logged
+    if count <= 0 or _shutdown_logged:
+        return
+    _shutdown_logged = True
+    logger.error("關閉時仍有 %s 筆用量沒寫入", count)
+
+
+def _clear_shutdown_state() -> None:
+    global _shutdown_deadline, _shutdown_logged
+    _shutdown_deadline = None
+    _shutdown_logged = False
+    _remember_uncommitted(0)
+
+
+def _connect_timeout_listener(remaining: float):
+    """Bound a new libpq connect to the drain budget.
+
+    libpq treats 0 as "wait forever" and rounds values below 2 seconds
+    up to 2. A shorter budget must not start that connect.
+    """
+    seconds = int(remaining)
+
+    def _inject(dialect, conn_rec, cargs, cparams):
+        if seconds < 2:
+            raise TimeoutError("用量寫入的關閉期限不夠建立新的資料庫連線")
+        cparams["connect_timeout"] = seconds
+
+    return _inject
+
+
+def _limit_checkout(db, deadline: float) -> None:
+    """Check out a pooled connection without waiting past ``deadline``."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("用量寫入的關閉期限已到")
+    bind = db.get_bind()
+    pool = getattr(bind, "pool", None)
+    previous = getattr(pool, "_timeout", None)
+    capped = isinstance(previous, (int, float))
+    registered = False
+    listener = None
+    if capped:
+        pool._timeout = min(float(previous), remaining)
+    try:
+        dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+        if dialect_name == "postgresql" and hasattr(bind, "dispatch"):
+            listener = _connect_timeout_listener(remaining)
+            event.listen(bind, "do_connect", listener)
+            registered = True
+        db.connection()
+    finally:
+        if capped:
+            pool._timeout = previous
+        if registered and listener is not None:
+            event.remove(bind, "do_connect", listener)
+
+
+def _apply_statement_timeout(db, deadline: float | None) -> None:
+    """Keep the next statement inside the time still left on ``deadline``."""
+    if deadline is None:
+        return
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("用量寫入的關閉期限已到")
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+        return
+    ms = max(1, int(remaining * 1000))
+    db.execute(
+        text("SELECT set_config('statement_timeout', :ms, true)"),
+        {"ms": str(ms)},
+    ).scalar()
+
+
+async def _flush_batch(batch: list[dict], *, deadline: float | None = None) -> list[dict]:
     """Write a batch. Return the rows that still need a commit.
 
     A failed commit leaves the rows in the returned list. The caller
     must not drop them. Duplicate ``invocation_id`` rows are skipped.
+
+    When ``deadline`` is set, pooling and statements stop at that
+    monotonic time instead of the engine's 30s pool timeout.
     """
     if not batch:
+        _remember_uncommitted(0)
         return []
+    _remember_uncommitted(len(batch))
+    if deadline is not None and time.monotonic() >= deadline:
+        return list(batch)
     db = SessionLocal()
     try:
+        if deadline is not None:
+            _limit_checkout(db, deadline)
+            _apply_statement_timeout(db, deadline)
         db.bulk_insert_mappings(TokenUsage, batch)
         db.commit()
         logger.info(f"已寫入 {len(batch)} 筆用量記錄")
+        _remember_uncommitted(0)
         return []
     except Exception as e:
         db.rollback()
         if not _is_invocation_conflict(e):
             logger.error(f"寫入用量記錄失敗: {e}")
+            _remember_uncommitted(len(batch))
             return list(batch)
         written = 0
         skipped = 0
         pending: list[dict] = []
         for index, item in enumerate(batch):
+            if deadline is not None and time.monotonic() >= deadline:
+                pending.extend(batch[index:])
+                break
             try:
+                _apply_statement_timeout(db, deadline)
                 db.add(TokenUsage(**{k: v for k, v in item.items() if hasattr(TokenUsage, k)}))
                 db.commit()
                 written += 1
@@ -136,13 +244,50 @@ async def _flush_batch(batch: list[dict]) -> list[dict]:
                 pending.extend(batch[index:])
                 break
         logger.info(f"用量批次含重複 invocation_id：寫入 {written} 筆、略過 {skipped} 筆")
+        _remember_uncommitted(len(pending))
         return pending
     finally:
         db.close()
 
 
+def _take_queued(queue: asyncio.Queue, batch: list[dict]) -> None:
+    while True:
+        try:
+            batch.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return
+
+
+async def _drain_on_shutdown(queue: asyncio.Queue, batch: list[dict]) -> list[dict]:
+    """Commit whatever is still queued. Stop at the shared shutdown deadline."""
+    armed = _shutdown_deadline
+    deadline = armed if armed is not None else time.monotonic() + SHUTDOWN_DRAIN_SECONDS
+    while True:
+        _take_queued(queue, batch)
+        _remember_uncommitted(len(batch))
+        if not batch:
+            return []
+        if time.monotonic() >= deadline:
+            return batch
+        batch = await _flush_batch(batch, deadline=deadline)
+        if not batch:
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _take_queued(queue, batch)
+            _remember_uncommitted(len(batch))
+            return batch
+        await asyncio.sleep(min(1.0, remaining))
+
+
 async def _usage_writer_loop():
     """Background task: flush usage queue periodically or when batch is full."""
+    global _shutdown_logged
+    # A deadline already armed belongs to this shutdown. Don't replace it
+    # with a fresh 10s budget once the task is finally scheduled.
+    if _shutdown_deadline is None:
+        _shutdown_logged = False
+        _remember_uncommitted(0)
     queue = get_usage_queue()
     batch: list[dict] = []
 
@@ -173,12 +318,13 @@ async def _usage_writer_loop():
                     await asyncio.sleep(1)
 
         except asyncio.CancelledError:
-            # Flush remaining on shutdown
-            if batch:
-                left = await _flush_batch(batch)
-                if left:
-                    logger.error("關閉時仍有 %s 筆用量沒寫入", len(left))
-            break
+            try:
+                left = await _drain_on_shutdown(queue, batch)
+            except asyncio.CancelledError:
+                _log_uncommitted(_uncommitted_count())
+                raise
+            _log_uncommitted(len(left))
+            raise
         except Exception as e:
             logger.error(f"用量寫入迴圈錯誤: {e}")
             await asyncio.sleep(1)
@@ -189,3 +335,30 @@ async def start_usage_writer() -> asyncio.Task:
     task = asyncio.create_task(_usage_writer_loop())
     logger.info("用量寫入背景任務已啟動")
     return task
+
+
+async def stop_usage_writer(task: asyncio.Task) -> None:
+    """Cancel the writer and wait only until the drain deadline.
+
+    Checkout, statements, and this wait all use that one deadline.
+    If the task is still running when time is up, the uncommitted
+    count is logged and shutdown continues.
+    """
+    global _shutdown_deadline
+    deadline = time.monotonic() + SHUTDOWN_DRAIN_SECONDS
+    _shutdown_deadline = deadline
+    task.add_done_callback(lambda _task: _clear_shutdown_state())
+    task.cancel()
+    remaining = deadline - time.monotonic()
+    if remaining < 0:
+        remaining = 0.0
+    done, _pending_tasks = await asyncio.wait({task}, timeout=remaining)
+    if task not in done:
+        _log_uncommitted(_uncommitted_count())
+        return
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("用量寫入任務在關閉時失敗")

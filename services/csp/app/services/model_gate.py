@@ -7,6 +7,8 @@ burst cannot take the next slot while someone else is waiting.
 
 The decision function ``apply`` is pure. ``MemoryBoard`` and ``RedisBoard``
 both call it under a lock, so tests and production share one algorithm.
+A process-local board is only for one worker (pytest, or uvicorn with no
+extra workers). Several workers and no ``REDIS_URL`` refuse to start.
 """
 
 from __future__ import annotations
@@ -276,6 +278,60 @@ class RedisBoard:
 _board: MemoryBoard | RedisBoard | None = None
 
 
+def _argv(pid: int) -> list[str]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "surrogateescape") for part in raw.split(b"\0") if part]
+
+
+def _workers_in(argv: list[str]) -> int | None:
+    for index, arg in enumerate(argv):
+        if arg == "--workers" and index + 1 < len(argv):
+            try:
+                return max(1, int(argv[index + 1]))
+            except ValueError:
+                return 2
+        if arg.startswith("--workers="):
+            try:
+                return max(1, int(arg.split("=", 1)[1]))
+            except ValueError:
+                return 2
+    return None
+
+
+def process_worker_count() -> int:
+    """Uvicorn ``--workers`` on this process or its parent. Pytest is one."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return 1
+    for pid in (os.getpid(), os.getppid()):
+        found = _workers_in(_argv(pid))
+        if found is not None:
+            return found
+    return 1
+
+
+def require_model_gate() -> None:
+    """Refuse to boot when several workers would each keep a private board."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if os.environ.get("REDIS_URL"):
+        return
+    count = process_worker_count()
+    if count <= 1:
+        return
+    logger.error(
+        "模型排隊拒絕啟動：沒有 REDIS_URL，而這個 process 是 %s 個 worker 之一。"
+        "程序內計數板會把同時處理上限拆開，所以不啟動。",
+        count,
+    )
+    raise RuntimeError(
+        f"沒有 REDIS_URL，{count} 個 worker 不能改用程序內的模型排隊計數板"
+    )
+
+
 def get_board() -> MemoryBoard | RedisBoard:
     global _board
     if _board is not None:
@@ -285,8 +341,10 @@ def get_board() -> MemoryBoard | RedisBoard:
         return _board
     url = os.environ.get("REDIS_URL")
     if not url:
-        _board = MemoryBoard()
-        return _board
+        if process_worker_count() <= 1:
+            _board = MemoryBoard()
+            return _board
+        require_model_gate()
     import redis.asyncio as aioredis
 
     client = aioredis.from_url(url, decode_responses=True, socket_timeout=1.0)
