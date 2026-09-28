@@ -14,6 +14,7 @@ import {
   resetFeedbackClient,
   setListImpl,
   setConvImpl,
+  setPostImpl,
 } from './helpers/feedbackClientMock.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -118,6 +119,41 @@ test('FeedbackView 用插值顯示正文，沒有 v-html，並走 getConversatio
   assert.match(VIEW_SRC, /getConversationAll/)
   assert.match(VIEW_SRC, /<TermModal/)
   assert.match(VIEW_SRC, /查看被評分回覆/)
+})
+
+test('打開頁面不標已讀；按鈕只送到畫面上最新的評分時間，請求中停用', async () => {
+  let release
+  const hold = new Promise((resolve) => { release = resolve })
+  setPostImpl(() => hold.then(() => ({ data: { count: 0 } })))
+  setListImpl(async () => ({
+    data: {
+      items: [
+        row({ rated_at: '2026-09-01T00:00:00+00:00' }),
+        row({ message_id: 8, rated_at: '2026-09-20T03:04:05+00:00' }),
+        row({ message_id: 9, rated_at: null }),
+      ],
+      summary: { total: 3, up: 0, down: 3, with_comment: 1 },
+    },
+  }))
+  const { app } = mountView()
+  await flush()
+  const marked = () => calls.filter((c) => c.method === 'post' && c.url === '/api/admin/feedback/read')
+  assert.equal(marked().length, 0)
+  const button = document.querySelector('[data-testid="mark-feedback-read"]')
+  assert.ok(button)
+  assert.equal(button.disabled, false)
+  button.click()
+  await flush()
+  assert.equal(marked().length, 1)
+  assert.equal(marked()[0].body.read_at, '2026-09-20T03:04:05+00:00')
+  assert.equal(button.disabled, true)
+  button.click()
+  await flush()
+  assert.equal(marked().length, 1)
+  release()
+  await flush()
+  assert.equal(button.disabled, false)
+  app.unmount()
 })
 
 test('掛載清單時不預抓對話正文；點了才 GET view=all', async () => {

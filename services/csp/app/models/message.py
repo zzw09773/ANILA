@@ -58,6 +58,8 @@ class Message(Base):
     rating = Column(String(8), nullable=True)
     # Optional fine score beside the thumb: up→6–10, down→1–5; NULL = thumb only.
     rating_score = Column(Integer, nullable=True)
+    # 這次評分寫入的時間。NULL＝遷移前的舊列，未讀通知不把它算進去。
+    rated_at = Column(DateTime(timezone=True), nullable=True, index=True)
     # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"

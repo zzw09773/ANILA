@@ -21,6 +21,7 @@ from app.services.alert_service import (
     resolve_alert,
     summarize_alerts,
 )
+from app.services.feedback_notice import count_unread_feedback
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import require_admin
 from app.services.endpoint_author_service import can_see_endpoint_address
@@ -151,7 +152,9 @@ def alert_summary(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return summarize_alerts(db)
+    payload = summarize_alerts(db)
+    payload["unread_feedback_count"] = count_unread_feedback(db, admin)
+    return payload
 
 
 @router.post("/{alert_id}/ack", response_model=AlertResponse)

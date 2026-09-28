@@ -51,6 +51,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import require_admin
+from app.services.feedback_notice import mark_feedback_read
 from app.schemas.base import ApiResponseModel
 from app.schemas.contracts.classification import (
     ClassificationLevel,
@@ -73,6 +74,7 @@ FEEDBACK_ITEM_KEYS = frozenset(
         "agent_name",
         "classification_level",
         "message_created_at",
+        "rated_at",
         "username",
     }
 )
@@ -99,6 +101,7 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_name", "模型"),
     ("classification_level", "密等"),
     ("message_created_at", "訊息時間"),
+    ("rated_at", "評分時間"),
     ("username", "使用者"),
     ("conversation_id", "對話 ID"),
     ("message_id", "訊息 ID"),
@@ -127,6 +130,8 @@ class FeedbackItem(ApiResponseModel):
     agent_name: str | None = None
     classification_level: str
     message_created_at: datetime
+    # 這次評分寫入的時間。舊列是 null。頁面「全部標為已讀」只推到載入列裡最新的這個。
+    rated_at: datetime | None = None
     username: str | None = None
 
 
@@ -210,6 +215,7 @@ def _item_from_row(
         agent_name=msg.agent_name,
         classification_level=level,
         message_created_at=msg.created_at,
+        rated_at=msg.rated_at,
         username=username,
     )
 
@@ -362,6 +368,28 @@ def _export_csv(
     )
 
 
+class FeedbackReadUpdate(BaseModel):
+    """畫面上實際載到的最新評分時間。沒帶就不推進水位。"""
+
+    read_at: datetime
+
+
+class FeedbackReadResult(BaseModel):
+    count: int
+
+
+@router.post("/read", response_model=FeedbackReadResult)
+def mark_all_feedback_read(
+    body: FeedbackReadUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FeedbackReadResult:
+    """把這位管理員的已讀水位推到給定時間，且不會比原本更早。其他管理員不動。"""
+    count = mark_feedback_read(db, admin, body.read_at)
+    db.commit()
+    return FeedbackReadResult(count=count)
+
+
 @router.get("", response_model=FeedbackListResponse)
 def list_feedback(
     rating: Literal["up", "down"] | None = Query(
@@ -373,7 +401,7 @@ def list_feedback(
         7,
         ge=1,
         le=90,
-        description="回看幾天(依訊息 created_at;評分沒有獨立時間戳)",
+        description="回看幾天(依訊息 created_at)。未讀通知另看 rated_at。",
     ),
     only_with_comment: bool = Query(
         False, description="只看有文字留言的(差評追查常用)"

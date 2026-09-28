@@ -8,6 +8,10 @@ import client from './client'
 export const listFeedback = (params = {}) =>
   client.get('/api/admin/feedback', { params })
 
+/** 把已讀水位推到這一頁載到的最新評分時間。其他管理員不受影響。 */
+export const markFeedbackRead = (readAt) =>
+  client.post('/api/admin/feedback/read', { read_at: readAt })
+
 /**
  * 依「目前畫面上的篩選」匯出 CSV(同一支端點、同一份白名單,一樣不含正文)。
  * 匯出的是整個篩選結果而非當前這頁,所以刻意不帶 limit;

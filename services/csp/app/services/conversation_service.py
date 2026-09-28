@@ -1499,6 +1499,8 @@ def set_message_rating(
         msg.rating_score = None
 
     msg.rating = rating
+    # 未讀通知靠這個時間。清掉評分就不再算；舊列維持 NULL，不會在上線時被喊出來。
+    msg.rated_at = None if rating is None else datetime.now(timezone.utc)
     # Structured feedback rides in metadata_['feedback']. air-gap 環境下這是
     # 平台團隊評估模型品質的主要訊號。清除評分時一併清掉回饋。
     meta = dict(msg.metadata_ or {})

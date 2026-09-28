@@ -8,6 +8,12 @@
         </p>
       </div>
       <div class="page-head__chips">
+        <TermButton
+          data-testid="mark-feedback-read"
+          label="全部標為已讀"
+          :disabled="marking"
+          @click="markAllRead"
+        />
         <TermBadge variant="danger" dot>差評 · {{ summary.down }}</TermBadge>
         <TermBadge variant="ok" dot>好評 · {{ summary.up }}</TermBadge>
         <TermBadge dot>有留言 · {{ summary.with_comment }}</TermBadge>
@@ -176,7 +182,8 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { listFeedback, exportFeedbackCsv, getConversationAll } from '../api/feedback'
+import { listFeedback, exportFeedbackCsv, getConversationAll, markFeedbackRead } from '../api/feedback'
+import { refreshOpenAlertBanner } from '../utils/openAlertBanner'
 import { extractError } from '../api/errors'
 import { formatDate } from '../utils/formatDate'
 import { createRatedReplySession } from '../utils/feedbackRatedReply'
@@ -185,6 +192,7 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from 
 const items = ref([])
 const summary = ref({ total: 0, up: 0, down: 0, with_comment: 0 })
 const pageError = ref('')
+const marking = ref(false)
 const exporting = ref(false)
 const exportNote = ref('')
 const filters = ref({
@@ -206,6 +214,34 @@ function buildParams() {
   if (filters.value.agent_name.trim()) params.agent_name = filters.value.agent_name.trim()
   if (filters.value.model_name.trim()) params.model_name = filters.value.model_name.trim()
   return params
+}
+
+function newestRatedAt(rows) {
+  let best = null
+  let bestMs = -Infinity
+  for (const item of rows || []) {
+    if (!item?.rated_at) continue
+    const ms = Date.parse(item.rated_at)
+    if (!Number.isFinite(ms) || ms <= bestMs) continue
+    bestMs = ms
+    best = item.rated_at
+  }
+  return best
+}
+
+async function markAllRead() {
+  if (marking.value) return
+  const readAt = newestRatedAt(items.value)
+  if (!readAt) return
+  marking.value = true
+  try {
+    await markFeedbackRead(readAt)
+    refreshOpenAlertBanner()
+  } catch {
+    // 這次沒標成就留著通知，清單照常。
+  } finally {
+    marking.value = false
+  }
 }
 
 async function fetchData() {
