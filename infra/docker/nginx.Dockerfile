@@ -4,3 +4,5 @@ USER root
 RUN apk update && apk upgrade --no-cache libuuid \
     && rm -rf /var/cache/apk/* \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
+# nginx.conf is mounted by compose (dev uses the stock image, so COPY here
+# would not reach that stack). Both stacks bind the same file.

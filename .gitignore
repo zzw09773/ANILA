@@ -160,6 +160,8 @@ share/quickstart/
 share-dev/quickstart/
 # compose backup 服務的每日產出（資料庫 dump 與檔案 tar）。不進版控。
 share/backups/
+# 負載測試在本機產生的簽章金鑰，只給隔離 stack 第一次匯入。
+tools/loadtest/.jwt/
 
 # ── Misc dev tooling ──────────────────────────────────────────────────────────
 # Observer / loop process locks

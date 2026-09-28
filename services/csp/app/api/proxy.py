@@ -26,6 +26,7 @@ from anila_core.security.external_content import (
 )
 from app.database import SessionLocal, get_db
 from app.services.audit_service import log_audit_event
+from app.services.proxy.snapshot import snapshot_model
 from app.middleware.caller import Caller, get_caller
 from app.services.agent_availability import AGENT_TEMPORARILY_UNAVAILABLE
 from app.services.proxy.dispatch_chat import (
@@ -82,6 +83,33 @@ def _endpoint_display_for(
         db=db,
         caller=caller_user,
     )
+
+
+def pause_request_session(db: Session) -> None:
+    """Return the pooled connection before an await that is not the model call.
+
+    The session stays usable. A later query checks a connection out again
+    for that query only.
+    """
+    db.commit()
+
+
+def release_request_session(db: Session) -> None:
+    """Commit the short transaction and do not keep the connection.
+
+    Call after auth, grants, memory, KB and attachment writes, and before
+    the fair-queue wait or any upstream model call. ``close`` expunges ORM
+    rows. After it returns, only attributes already loaded into ``__dict__``
+    (or a ``snapshot_model`` copy) are safe to read. Touching an expired
+    relationship checks a connection back out. Usage, audit and the memory
+    write open their own sessions later.
+    """
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.close()
 
 def _coerce_conversation_id(raw: str | None) -> int | None:
     """Convert the X-ANILA-Conversation-Id header to int for FK use.
@@ -506,6 +534,9 @@ async def _inject_attachments_async(
             from app.services.document_excerpt import maybe_excerpt_generated
 
             query = _extract_latest_user_message(body) or ""
+            # Excerpt embedding is an upstream call. The request transaction
+            # must not stay open across it.
+            db.commit()
             for row in cited_rows:
                 raw = text_by_id.get(row.id)
                 if not raw:
@@ -1013,20 +1044,32 @@ def _audit_injection(db: Session, actor, findings: list[Finding]) -> None:
             db.rollback()
         except Exception:
             pass
+        raise
 
 
 def _audit_injection_later(actor, findings: list[Finding]) -> None:
-    """串流收尾時請求的 session 可能已經關了，另開一筆。"""
+    """串流收尾時請求的 session 可能已經關了，另開一筆。
+
+    寫不進去就換一個 session 再試。三次都失敗就讓這次請求失敗，
+    不把稽核事件丟掉。
+    """
     if not findings:
         return
     snap = None
     if actor is not None:
         snap = SimpleNamespace(id=getattr(actor, "id", None), username=getattr(actor, "username", None))
-    db = SessionLocal()
-    try:
-        _audit_injection(db, snap, findings)
-    finally:
-        db.close()
+    last: Exception | None = None
+    for _attempt in range(3):
+        db = SessionLocal()
+        try:
+            _audit_injection(db, snap, findings)
+            return
+        except Exception as exc:
+            last = exc
+        finally:
+            db.close()
+    assert last is not None
+    raise last
 
 
 def _take_external_sidechannel(body: dict) -> tuple[TurnSidechannel, object]:
@@ -1756,6 +1799,7 @@ async def _complete_dispatched_model(
     db: Session,
 ):
     """Agent 帶派工 JWT 呼叫自己核准的底層模型。不查提問者的模型授權。"""
+    pause_request_session(db)
     body = await request.json()
     model_name = body.get("model") if isinstance(body, dict) else None
     if not model_name:
@@ -1777,25 +1821,34 @@ async def _complete_dispatched_model(
     user = call.user
     tuning = resolve_proxy_tuning(db)
     identity = downstream_identity(user)
+    base_snap = snapshot_model(base)
+    user_id = user.id
+    department_id = call.department_id
+    caller_agent_id = call.agent.id
     chat_path = (
-        "/v2/chat/completions" if base.api_version == "v2" else "/v1/chat/completions"
+        "/v2/chat/completions"
+        if base_snap.api_version == "v2"
+        else "/v1/chat/completions"
     )
+    target_url = join_upstream_path(base_snap.endpoint_url, chat_path)
+    gateway_api_key = resolve_model_gateway_key(base_snap)
+    release_request_session(db)
     if stream:
         upstream = proxy_stream(
-            target_url=join_upstream_path(base.endpoint_url, chat_path),
+            target_url=target_url,
             api_key_id=None,
-            user_id=user.id,
-            department_id=call.department_id,
-            usage_model_id=base.id,
+            user_id=user_id,
+            department_id=department_id,
+            usage_model_id=base_snap.id,
             request_body=body,
             user_identity=identity,
-            model_name=base.name,
-            caller_agent_id=call.agent.id,
+            model_name=base_snap.name,
+            caller_agent_id=caller_agent_id,
             legacy_runtime_call=True,
-            gateway_api_key=resolve_model_gateway_key(base),
-            model_name_snapshot=base.name,
+            gateway_api_key=gateway_api_key,
+            model_name_snapshot=base_snap.name,
             tuning=tuning,
-            model=base,
+            model=base_snap,
         )
         return StreamingResponse(
             upstream,
@@ -1803,17 +1856,17 @@ async def _complete_dispatched_model(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     return await proxy_request(
-        model=base,
+        model=base_snap,
         api_key_id=None,
-        user_id=user.id,
-        department_id=call.department_id,
+        user_id=user_id,
+        department_id=department_id,
         request_body=body,
         endpoint_path=chat_path,
         user_identity=identity,
-        caller_agent_id=call.agent.id,
+        caller_agent_id=caller_agent_id,
         legacy_runtime_call=True,
         tuning=tuning,
-        model_name_snapshot=base.name,
+        model_name_snapshot=base_snap.name,
     )
 
 
@@ -1825,6 +1878,7 @@ async def chat_completions(
 ):
     if isinstance(caller, DispatchModelCall):
         return await _complete_dispatched_model(request, caller, db)
+    pause_request_session(db)
     body = await request.json()
     side, client_passages = _take_external_sidechannel(body)
     model_name = body.get("model")
@@ -1833,6 +1887,7 @@ async def chat_completions(
 
     stream: bool = body.get("stream", False)
     user = caller.user
+    user_id = user.id
     department_id = user.department_id
     user_email = user.email
     # 員編 forwarded as the downstream wire identity (None for non-card
@@ -1865,6 +1920,7 @@ async def chat_completions(
     side.artifact_turn = _studio_artifact_turn(request, db)
     side.chat_turn = (not side.artifact_turn) and (marked or conv_id_int is not None)
     memory_read = None
+    pause_request_session(db)
     if side.chat_turn and _target_allows_memory(agent):
         memory_read = await _inject_memory(
             db,
@@ -1875,6 +1931,7 @@ async def chat_completions(
         )
     # P1.5: whole-document attachment injection (after memory). Failures are
     # recorded on attach_inject for anila_meta.trace; chat still proceeds.
+    pause_request_session(db)
     attach_inject = await _inject_attachments_async(
         db,
         conv_id_int,
@@ -1899,6 +1956,7 @@ async def chat_completions(
     )
     # 院內規章檢索（Q39）：header 在就檢索並注入；不在就一次都不查。狀態在下面
     # 四個出口上明帶。詳見 ``_route_marked`` 上方那一段。
+    pause_request_session(db)
     kb_result = await _retrieve_institutional_kb(
         db,
         user,
@@ -2060,7 +2118,7 @@ async def chat_completions(
             teed = _tee_stream_capture_assistant(
                 guarded,
                 on_complete=lambda assistant_text: _schedule_memory_write(
-                    user_id=user.id,
+                    user_id=user_id,
                     conversation_id=None if side.artifact_turn else conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
@@ -2072,6 +2130,7 @@ async def chat_completions(
             # 出口 1/4（agent SSE）：kb 包在最外層，狀態是最後一個寫入者。
             traced = _sse_with_kb_meta(traced, kb_meta)
             traced = _sse_with_injection_notice(traced, side)
+            release_request_session(db)
             return StreamingResponse(
                 traced,
                 media_type="text/event-stream",
@@ -2102,6 +2161,9 @@ async def chat_completions(
             trace_id=task_ctx.trace_id if task_ctx else None,
             conversation_id=conversation_id,
         )
+        agent_name = agent.name
+        endpoint_display = _endpoint_display_for(db, user, agent.endpoint_url)
+        release_request_session(db)
         started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=tuning.llm_timeout) as client:
@@ -2113,33 +2175,32 @@ async def chat_completions(
                 ct = resp.headers.get("content-type", "")
                 preview = resp.text[:8].lstrip()
                 if "text/event-stream" in ct or preview.startswith("data:"):
-                    payload = _aggregate_sse_to_chat_completion(resp.text, agent.name)
+                    payload = _aggregate_sse_to_chat_completion(resp.text, agent_name)
                 else:
                     payload = resp.json()
                 existing_meta = payload.get("anila_meta")
                 if not existing_meta:
                     # Caller-facing detail names the agent, never the
                     # upstream address (twin of the model-proxy fix).
-                    _ep = _endpoint_display_for(
-                        db, user, agent.endpoint_url
-                    )
                     payload["anila_meta"] = build_default_anila_meta(
-                        agent.name,
-                        detail=f"CSP proxy -> {agent.name}（{_ep}）",
+                        agent_name,
+                        detail=f"CSP proxy -> {agent_name}（{endpoint_display}）",
                         latency_ms=int((time.time() - started_at) * 1000),
                         classified=agent_requires_encryption,
                     )
                 elif agent_requires_encryption and isinstance(existing_meta, dict):
                     existing_meta["classified"] = True
-                _annotate_agent_reply_payload(payload, agent.name)
+                _annotate_agent_reply_payload(payload, agent_name)
                 # 派工這一跳不打模型，不寫 token_usage。
                 before_echo = len(side.findings)
                 _apply_output_guard(payload, side)
+                # 連線已在出向之前歸還。這筆稽核用同一個 session 再開一筆短交易，
+                # 測試覆寫的 get_db 才看得到，也不會在等模型時占著連線。
                 _audit_injection(db, user, side.findings[before_echo:])
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
-                    user_id=user.id,
+                    user_id=user_id,
                     conversation_id=None if side.artifact_turn else conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
@@ -2155,7 +2216,7 @@ async def chat_completions(
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Agent %s 上游 HTTP 錯誤 url=%s: %s",
-                agent.name,
+                agent_name,
                 target,
                 e,
             )
@@ -2165,13 +2226,13 @@ async def chat_completions(
                     "failed",
                     error={
                         "code": f"http_{e.response.status_code}",
-                        "message": f"Agent「{agent.name}」上游回應錯誤",
+                        "message": f"Agent「{agent_name}」上游回應錯誤",
                     },
                 )
             raise _HTTPException(
                 status_code=e.response.status_code,
                 detail=(
-                    f"Agent「{agent.name}」上游回應錯誤"
+                    f"Agent「{agent_name}」上游回應錯誤"
                     f"（HTTP {e.response.status_code}）"
                 ),
             )
@@ -2179,7 +2240,7 @@ async def chat_completions(
             # Fixed caller-facing text; exception may embed the URL.
             logger.error(
                 "Agent %s 呼叫失敗 url=%s: %s",
-                agent.name,
+                agent_name,
                 target,
                 e,
                 exc_info=True,
@@ -2190,12 +2251,12 @@ async def chat_completions(
                     "failed",
                     error={
                         "code": "agent_call_failed",
-                        "message": f"Agent「{agent.name}」呼叫失敗",
+                        "message": f"Agent「{agent_name}」呼叫失敗",
                     },
                 )
             raise _HTTPException(
                 status_code=502,
-                detail=f"Agent「{agent.name}」呼叫失敗",
+                detail=f"Agent「{agent_name}」呼叫失敗",
             )
 
     if resolved_model is None:
@@ -2260,23 +2321,35 @@ async def chat_completions(
     from app.services.auto_seed import PLATFORM_ROUTER_NAME
     if model.name == PLATFORM_ROUTER_NAME and side.protocol_lines:
         body["anila_protocol_corpus"] = list(side.protocol_lines)[:50]
+    model_snap = snapshot_model(model)
+    endpoint_display = _endpoint_display_for(
+        db,
+        user,
+        model_snap.endpoint_url,
+        is_internal=bool(model_snap.is_internal),
+    )
+    api_key_id = caller.api_key_id
+    # 用量桶只跟已驗證的 Studio 工作權杖走，不讀呼叫端自填的來源標頭。
+    usage_source = "studio" if side.artifact_turn else None
+    request_type = "studio" if side.artifact_turn else "chat"
+    release_request_session(db)
     if stream:
         chat_path = (
             "/v2/chat/completions"
-            if model.api_version == "v2"
+            if model_snap.api_version == "v2"
             else "/v1/chat/completions"
         )
-        target_url = join_upstream_path(model.endpoint_url, chat_path)
+        target_url = join_upstream_path(model_snap.endpoint_url, chat_path)
         upstream = proxy_stream(
             target_url=target_url,
-            api_key_id=caller.api_key_id,
-            user_id=user.id,
+            api_key_id=api_key_id,
+            user_id=user_id,
             department_id=department_id,
-            usage_model_id=model.id,
+            usage_model_id=model_snap.id,
             request_body=body,
             user_email=user_email,
             user_identity=user_identity,
-            model_name=model.name,
+            model_name=model_snap.name,
             conversation_id=conversation_id,
             trace_id=usage_trace_id,
             requires_encryption=inherited_encryption,
@@ -2288,22 +2361,17 @@ async def chat_completions(
             caller_authorization=caller_authorization,
             extra_headers=router_extra_headers,
             usage_kind=usage_kind,
-            model_name_snapshot=model.name,
-            endpoint_display=_endpoint_display_for(
-                db,
-                user,
-                model.endpoint_url,
-                is_internal=bool(getattr(model, "is_internal", False)),
-            ),
+            model_name_snapshot=model_snap.name,
+            endpoint_display=endpoint_display,
             tuning=tuning,
-            model=model,
-            request_type="studio" if side.artifact_turn else "chat",
+            model=model_snap,
+            request_type=request_type,
         )
         guarded = _guard_sse_stream(upstream, side, user)
         teed = _tee_stream_capture_assistant(
             guarded,
             on_complete=lambda assistant_text: _schedule_memory_write(
-                user_id=user.id,
+                user_id=user_id,
                 conversation_id=None if side.artifact_turn else conv_id_int,
                 user_message=captured_user_text,
                 assistant_message=assistant_text,
@@ -2321,9 +2389,9 @@ async def chat_completions(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     payload = await proxy_request(
-        model=model,
-        api_key_id=caller.api_key_id,
-        user_id=user.id,
+        model=model_snap,
+        api_key_id=api_key_id,
+        user_id=user_id,
         user_identity=user_identity,
         department_id=department_id,
         request_body=body,
@@ -2335,21 +2403,17 @@ async def chat_completions(
         task_trace_id=task_ctx.trace_id if task_ctx else None,
         task_run_id=task_ctx.task_run_id if task_ctx else None,
         legacy_runtime_call=task_ctx is None,
-        endpoint_display=_endpoint_display_for(
-            db,
-            user,
-            model.endpoint_url,
-            is_internal=bool(getattr(model, "is_internal", False)),
-        ),
+        endpoint_display=endpoint_display,
         tuning=tuning,
-        usage_source="studio" if side.artifact_turn else None,
+        usage_source=usage_source,
         caller_authorization=caller_authorization,
         extra_headers=router_extra_headers,
         usage_kind=usage_kind,
-        model_name_snapshot=model.name,
+        model_name_snapshot=model_snap.name,
     )
     before_echo = len(side.findings)
     _apply_output_guard(payload, side)
+    # 同上：出向期間 session 是關的，收尾再開一筆短交易寫稽核。
     _audit_injection(db, user, side.findings[before_echo:])
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
@@ -2459,6 +2523,7 @@ async def resume_agent_session(
                 f"{type(exc).__name__}\"}}\n\n"
             )
 
+    db.close()
     return StreamingResponse(
         _passthrough_stream(),
         media_type="text/event-stream",
@@ -2499,6 +2564,7 @@ async def embeddings_v1(
     caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
+    pause_request_session(db)
     body = await request.json()
     model_name = body.get("model")
     if not model_name:
@@ -2506,25 +2572,33 @@ async def embeddings_v1(
 
     input_type = _pop_input_type(body)
 
-    model = _resolve_model(db, caller, model_name, request)
+    model = snapshot_model(_resolve_model(db, caller, model_name, request))
+    user = caller.user
+    endpoint_display = _endpoint_display_for(
+        db,
+        user,
+        model.endpoint_url,
+        is_internal=bool(getattr(model, "is_internal", False)),
+    )
+    tuning = resolve_proxy_tuning(db)
+    user_id = user.id
+    identity = downstream_identity(user)
+    department_id = user.department_id
+    api_key_id = caller.api_key_id
+    release_request_session(db)
     return await proxy_request(
         model=model,
-        api_key_id=caller.api_key_id,
-        user_id=caller.user.id,
-        user_identity=downstream_identity(caller.user),
-        department_id=caller.user.department_id,
+        api_key_id=api_key_id,
+        user_id=user_id,
+        user_identity=identity,
+        department_id=department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
-        endpoint_display=_endpoint_display_for(
-            db,
-            caller.user,
-            model.endpoint_url,
-            is_internal=bool(getattr(model, "is_internal", False)),
-        ),
+        endpoint_display=endpoint_display,
         # Public OpenAI-compat surface (incl. ingestion-worker) defaults to
         # documents; ``input_type: "query"`` opts a caller onto the query side.
         embedding_input_role=input_type,
-        tuning=resolve_proxy_tuning(db),
+        tuning=tuning,
     )
 
 
@@ -2534,6 +2608,7 @@ async def embeddings_v2(
     caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
+    pause_request_session(db)
     body = await request.json()
     model_name = body.get("model")
     if not model_name:
@@ -2541,23 +2616,31 @@ async def embeddings_v2(
 
     input_type = _pop_input_type(body)
 
-    model = _resolve_model(db, caller, model_name, request)
+    model = snapshot_model(_resolve_model(db, caller, model_name, request))
+    user = caller.user
+    endpoint_display = _endpoint_display_for(
+        db,
+        user,
+        model.endpoint_url,
+        is_internal=bool(getattr(model, "is_internal", False)),
+    )
+    tuning = resolve_proxy_tuning(db)
+    user_id = user.id
+    identity = downstream_identity(user)
+    department_id = user.department_id
+    api_key_id = caller.api_key_id
+    release_request_session(db)
     return await proxy_request(
         model=model,
-        api_key_id=caller.api_key_id,
-        user_id=caller.user.id,
-        user_identity=downstream_identity(caller.user),
-        department_id=caller.user.department_id,
+        api_key_id=api_key_id,
+        user_id=user_id,
+        user_identity=identity,
+        department_id=department_id,
         request_body=body,
         endpoint_path="/v2/embeddings",
-        endpoint_display=_endpoint_display_for(
-            db,
-            caller.user,
-            model.endpoint_url,
-            is_internal=bool(getattr(model, "is_internal", False)),
-        ),
+        endpoint_display=endpoint_display,
         embedding_input_role=input_type,
-        tuning=resolve_proxy_tuning(db),
+        tuning=tuning,
     )
 
 
@@ -2612,6 +2695,7 @@ async def images_generations(
     沒設回 404、已停用或健康狀態不是 healthy 回 409，都不打上游。
     呼叫端帶來的 model／網址一律不用，只轉角色目前那一顆。
     """
+    pause_request_session(db)
     try:
         body = await request.json()
     except Exception as exc:
@@ -2660,30 +2744,40 @@ async def images_generations(
         task_ctx=task_ctx,
         conv_id_int=None,
     )
+    model_snap = snapshot_model(model)
+    user = caller.user
+    endpoint_display = _endpoint_display_for(
+        db,
+        user,
+        model_snap.endpoint_url,
+        is_internal=bool(model_snap.is_internal),
+    )
+    tuning = resolve_proxy_tuning(db)
+    studio_turn = _studio_artifact_turn(request, db)
+    user_id = user.id
+    identity = downstream_identity(user)
+    department_id = user.department_id
+    api_key_id = caller.api_key_id
     forwarded = {
-        "model": model.name,
+        "model": model_snap.name,
         "prompt": prompt,
         "n": 1,
         "size": size,
         "response_format": "b64_json",
     }
+    release_request_session(db)
     return await proxy_request(
-        model=model,
-        api_key_id=caller.api_key_id,
-        user_id=caller.user.id,
-        user_identity=downstream_identity(caller.user),
-        department_id=caller.user.department_id,
+        model=model_snap,
+        api_key_id=api_key_id,
+        user_id=user_id,
+        user_identity=identity,
+        department_id=department_id,
         request_body=forwarded,
         endpoint_path="/v1/images/generations",
-        endpoint_display=_endpoint_display_for(
-            db,
-            caller.user,
-            model.endpoint_url,
-            is_internal=bool(getattr(model, "is_internal", False)),
-        ),
-        tuning=resolve_proxy_tuning(db),
-        usage_source="studio" if _studio_artifact_turn(request, db) else None,
-        model_name_snapshot=model.name,
+        endpoint_display=endpoint_display,
+        tuning=tuning,
+        usage_source="studio" if studio_turn else None,
+        model_name_snapshot=model_snap.name,
         task_id=task_ctx.task_id if task_ctx else None,
         task_trace_id=task_ctx.trace_id if task_ctx else None,
         task_run_id=task_ctx.task_run_id if task_ctx else None,

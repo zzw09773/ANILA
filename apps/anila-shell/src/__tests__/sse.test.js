@@ -107,6 +107,22 @@ describe("dispatchSseEvent", () => {
     expect(typeof onTrace.mock.calls[0][0].at).toBe("number");
   });
 
+  it("routes anila.queue to onQueue", () => {
+    const onQueue = vi.fn();
+    dispatchSseEvent(
+      {
+        event: "anila.queue",
+        data: '{"position":2,"message":"目前使用人數較多，排隊中，你是第 2 位"}',
+        raw: "",
+      },
+      { onQueue, accumulator: makeAccumulator() },
+    );
+    expect(onQueue).toHaveBeenCalledWith({
+      position: 2,
+      message: "目前使用人數較多，排隊中，你是第 2 位",
+    });
+  });
+
   it("routes anila.meta to onMeta", () => {
     const onMeta = vi.fn();
     dispatchSseEvent(

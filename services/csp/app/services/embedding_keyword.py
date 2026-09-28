@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 
 from sqlalchemy.orm import Session
 
@@ -21,6 +20,7 @@ async def maybe_rerank(db: Session, user, query: str, hits: list):
     try:
         from app.services.memory_service import _summary_model
         from app.services.proxy.service import proxy_request, resolve_proxy_tuning
+        from app.services.proxy.snapshot import snapshot_model
 
         model = _summary_model(db)
         if model is None:
@@ -29,19 +29,12 @@ async def maybe_rerank(db: Session, user, query: str, hits: list):
             return hits
         raw_ver = getattr(model, "api_version", None)
         api_version = raw_ver if raw_ver in ("v1", "v2") else "v1"
-        snapshot = SimpleNamespace(
-            id=getattr(model, "id", 0),
-            name=model.name,
-            model_type=getattr(model, "model_type", "llm"),
-            endpoint_url=model.endpoint_url,
-            api_version=api_version,
-            protocol=getattr(model, "protocol", None) or "openai_compatible",
-            api_key_secret_ref=getattr(model, "api_key_secret_ref", None),
-            classification_ceiling=getattr(model, "classification_ceiling", None),
-            is_active=getattr(model, "is_active", True),
-            display_name=getattr(model, "display_name", model.name),
-            is_internal=bool(getattr(model, "is_internal", False)),
-        )
+        snapshot = snapshot_model(model)
+        snapshot.api_version = api_version
+        if not getattr(snapshot, "protocol", None):
+            snapshot.protocol = "openai_compatible"
+        if not getattr(snapshot, "model_type", None):
+            snapshot.model_type = "llm"
         numbered = "\n".join(
             f"{index}. {(getattr(getattr(hit, 'chunk', None), 'content', '') or '')[:180]}"
             for index, hit in enumerate(hits, start=1)

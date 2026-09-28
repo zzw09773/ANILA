@@ -266,4 +266,5 @@ def test_retention_job_starts_and_stops_with_the_app():
 
     src = inspect.getsource(lifespan)
     assert "start_attachment_retention" in src
-    assert "retention_task.cancel()" in src
+    assert "run_single_leader" in src
+    assert "task.cancel()" in src

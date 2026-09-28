@@ -200,7 +200,13 @@ def _bearer(user) -> dict[str, str]:
 
 def test_backup_status_requires_admin(client, db, tmp_path, monkeypatch):
     path = tmp_path / "status.json"
-    path.write_text(_status(), encoding="utf-8")
+    # The HTTP handler uses the wall clock. A fixed timestamp goes stale
+    # 36 hours after it, so this file is always one hour old.
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.write_text(
+        _status(last_run_at=stamp, last_success_at=stamp),
+        encoding="utf-8",
+    )
     monkeypatch.setattr("app.services.backup_status.BACKUP_STATUS_PATH", path)
 
     assert client.get("/api/admin/backup-status").status_code == 401

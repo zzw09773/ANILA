@@ -116,6 +116,7 @@
               </div>
               <div class="cell-meta">{{ model.name }}</div>
               <div v-if="model.base_model_name" class="cell-base">↳ base: {{ model.base_model_name }}</div>
+              <div class="cell-meta" data-testid="model-concurrency">同時 {{ model.inflight == null ? '—' : model.inflight }}／上限 {{ model.max_concurrent == null ? '不限' : model.max_concurrent }}，排隊 {{ model.queue_length == null ? '—' : model.queue_length }}</div>
               <div class="cell-caps">
                 <TermBadge v-if="model.protocol" variant="" class="cap-chip">{{ protocolLabel(model.protocol) }}</TermBadge>
                 <TermBadge v-for="cap in capabilityChips(model)" :key="cap" variant="info" class="cap-chip">{{ cap }}</TermBadge>
@@ -547,6 +548,19 @@
               />
             </TermField>
           </div>
+          <TermField label="同時處理上限" optional hint="留空＝不限 · 1–10000">
+            <input
+              :value="form.max_concurrent ?? ''"
+              type="number"
+              step="1"
+              min="1"
+              max="10000"
+              class="term-input"
+              placeholder="不限"
+              data-testid="model-max-concurrent"
+              @input="form.max_concurrent = parseOptionalInteger($event.target.value)"
+            />
+          </TermField>
         </div>
       </div>
       <template #footer>
@@ -815,7 +829,7 @@ const defaultForm = () => ({
   thinking_effort: 'none', thinking_levels_supported: null,
   thinking_user_selectable: true,
   temperature: null, top_p: null,
-  presence_penalty: null, max_tokens: null,
+  presence_penalty: null, max_tokens: null, max_concurrent: null,
 })
 const form = ref(defaultForm())
 const routerGrants = ref([])
@@ -1063,6 +1077,7 @@ async function openEditModal(model, opts = {}) {
     top_p: model.top_p ?? null,
     presence_penalty: model.presence_penalty ?? null,
     max_tokens: model.max_tokens ?? null,
+    max_concurrent: model.max_concurrent ?? null,
   }
   routerGrants.value = []
   grantsLoadState.value = 'pending'
@@ -1151,7 +1166,7 @@ function buildModelPayload() {
   // openai_compatible 下打了字再切協定 —— 值還留在 form 裡。不丟掉的話
   // 就是「存了一把永遠不會被用到的金鑰」,比不顯示欄位更誤導。
   if (payload.protocol === 'triton_grpc') delete payload.api_key
-  for (const key of ['thinking_effort', 'temperature', 'top_p', 'presence_penalty', 'max_tokens']) {
+  for (const key of ['thinking_effort', 'temperature', 'top_p', 'presence_penalty', 'max_tokens', 'max_concurrent']) {
     if (payload[key] === '' || payload[key] === undefined || Number.isNaN(payload[key])) {
       payload[key] = null
     }

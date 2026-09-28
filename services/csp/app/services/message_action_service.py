@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
 import uuid
@@ -726,8 +727,51 @@ def _invoke_limit(db: Session) -> int:
     return int(get_setting(db, "limits.action_invoke_per_min"))
 
 
-def _check_rate_limit(db: Session, user_id: int) -> None:
+_rate_redis = None
+
+
+def _production_rate_redis():
+    """Shared counter when several CSP workers are up. Tests stay in memory."""
+    global _rate_redis
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    url = os.environ.get("REDIS_URL")
+    if not url:
+        return None
+    if _rate_redis is None:
+        import redis
+
+        _rate_redis = redis.Redis.from_url(
+            url, decode_responses=True, socket_timeout=0.5, socket_connect_timeout=0.5,
+        )
+    return _rate_redis
+
+
+def _check_rate_limit(db: Session, user_id: int, client=None) -> None:
     limit = _invoke_limit(db)
+    redis_client = client if client is not None else _production_rate_redis()
+    if redis_client is not None:
+        window = int(time.time() // 60)
+        key = f"anila:action-invoke:{user_id}:{window}"
+        try:
+            count = int(redis_client.incr(key))
+            # Every increment. A missed expire on the first one would
+            # otherwise leave a key with no TTL.
+            redis_client.expire(key, 120)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("action rate limit redis failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="暫時無法確認動作呼叫次數，請稍後再試",
+            ) from exc
+        if count > limit:
+            raise HTTPException(
+                status_code=429,
+                detail="動作呼叫過於頻繁，請稍候再試",
+            )
+        return
     now = time.monotonic()
     window = 60.0
     stale = [

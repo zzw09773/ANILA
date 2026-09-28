@@ -166,6 +166,32 @@ def test_refresh_token_rejected_as_access(db, client_with_caller):
     assert resp.status_code == 401
 
 
+def test_get_caller_commits_before_returning(db):
+    """Auth is a sync dependency, so it runs off the event loop.
+
+    If it returns with a transaction still open, that connection stays
+    checked out until the endpoint starts. Under concurrency the pool
+    fills and the next synchronous checkout blocks the loop.
+    """
+    from starlette.requests import Request
+
+    user = make_user(db, username="releaser")
+    db.commit()
+    token = _issue_access_token(user)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "query_string": b"",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        }
+    )
+    caller = get_caller(request, db)
+    assert caller.user.id == user.id
+    assert not db.in_transaction()
+
+
 def test_caller_dataclass_is_immutable(db):
     """Caller is frozen so middleware cannot accidentally mutate identity."""
     user = make_user(db, username="erin")

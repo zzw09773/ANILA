@@ -218,6 +218,19 @@ def stream_failure_user_message(
     return "產生回應時發生錯誤，請稍後再試。"
 
 
+def format_anila_queue_status(position: int) -> str:
+    """SSE status while this user waits for a model slot."""
+    from app.services.model_gate import queue_status_message
+
+    payload = {"position": int(position), "message": queue_status_message(position)}
+    return (
+        "event: anila.queue\n"
+        + "data: "
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n\n"
+    )
+
+
 def format_anila_stream_error(message: str, *, code: str | None = None) -> str:
     """Terminal SSE frame carrying a user-visible stream failure."""
     payload: dict[str, str] = {"message": message}
@@ -1179,38 +1192,51 @@ async def proxy_request(
     ``record_usage=False`` skips token_usage enqueue (dim probe / internal
     checks that must not pollute dashboards).
     """
+    from app.services.model_gate import ModelAdmission, ModelSlotDenied
+
+    admission = ModelAdmission.maybe(model, user_id)
+    pulse_task: asyncio.Task | None = None
     try:
-        result = await _proxy_request_impl(
-            model=model,
-            api_key_id=api_key_id,
-            user_id=user_id,
-            department_id=department_id,
-            request_body=request_body,
-            endpoint_path=endpoint_path,
-            user_email=user_email,
-            user_identity=user_identity,
-            conversation_id=conversation_id,
-            trace_id=trace_id,
-            requires_encryption=requires_encryption,
-            target_agent_id=target_agent_id,
-            caller_agent_id=caller_agent_id,
-            caller_client_id=caller_client_id,
-            task_id=task_id,
-            task_trace_id=task_trace_id,
-            legacy_runtime_call=legacy_runtime_call,
-            endpoint_display=endpoint_display,
-            embedding_input_role=embedding_input_role,
-            record_usage=record_usage,
-            usage_source=usage_source,
-            tuning=tuning,
-            caller_authorization=caller_authorization,
-            extra_headers=extra_headers,
-            usage_kind=usage_kind,
-            invocation_id=invocation_id,
-            model_name_snapshot=model_name_snapshot,
-            request_type_override=request_type_override,
-            max_response_bytes=max_response_bytes,
-        )
+        try:
+            if admission is not None:
+                await admission.wait_granted()
+                pulse_task = asyncio.create_task(admission.pulse_forever())
+            result = await _proxy_request_impl(
+                model=model,
+                api_key_id=api_key_id,
+                user_id=user_id,
+                department_id=department_id,
+                request_body=request_body,
+                endpoint_path=endpoint_path,
+                user_email=user_email,
+                user_identity=user_identity,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                requires_encryption=requires_encryption,
+                target_agent_id=target_agent_id,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
+                task_id=task_id,
+                task_trace_id=task_trace_id,
+                legacy_runtime_call=legacy_runtime_call,
+                endpoint_display=endpoint_display,
+                embedding_input_role=embedding_input_role,
+                record_usage=record_usage,
+                usage_source=usage_source,
+                tuning=tuning,
+                caller_authorization=caller_authorization,
+                extra_headers=extra_headers,
+                usage_kind=usage_kind,
+                invocation_id=invocation_id,
+                model_name_snapshot=model_name_snapshot,
+                request_type_override=request_type_override,
+                max_response_bytes=max_response_bytes,
+            )
+        except ModelSlotDenied as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"message": exc.message, "code": exc.code},
+            ) from exc
     except HTTPException as exc:
         if task_run_id is not None:
             finalize_task_run(
@@ -1222,6 +1248,11 @@ async def proxy_request(
                 },
             )
         raise
+    finally:
+        if pulse_task is not None:
+            pulse_task.cancel()
+        if admission is not None:
+            await admission.release()
     if task_run_id is not None:
         finalize_task_run(task_run_id, "completed")
     return result
@@ -1582,7 +1613,49 @@ async def _proxy_stream_impl(
                         yield _emit(block, event_name, data)
     except (GeneratorExit, asyncio.CancelledError):
         # 消費端正在收掉這條 generator:同步 re-raise,不 yield 任何東西。
-        # 暫存的 named meta 已經沒有收件人,直接丟。
+        # 暫存的 named meta 已經沒有收件人,直接丟。已產生的用量仍要入列，
+        # 而且不能在關閉路徑上 await。
+        if record_usage:
+            try:
+                (
+                    partial_prompt,
+                    partial_completion,
+                    partial_total,
+                    partial_source,
+                    partial_reasoning,
+                    _partial_reasoning_source,
+                ) = _resolve_collected_usage(estimate_if_missing=True)
+                if not usage_seen:
+                    partial_source = "unavailable"
+                partial = {
+                    "api_key_id": api_key_id,
+                    "user_id": user_id,
+                    "department_id": department_id,
+                    "model_id": usage_model_id,
+                    "prompt_tokens": partial_prompt,
+                    "completion_tokens": partial_completion,
+                    "total_tokens": partial_total,
+                    "request_duration_ms": int((time.time() - start_time) * 1000),
+                    "conversation_id": conversation_id,
+                    "trace_id": trace_id,
+                    "request_type": request_type,
+                    "caller_agent_id": caller_agent_id,
+                    "caller_client_id": caller_client_id,
+                    "invocation_id": invocation_id,
+                    "usage_kind": usage_kind,
+                    "token_source": partial_source,
+                    "outcome": "partial",
+                    "model_name_snapshot": model_name_snapshot,
+                    "reasoning_tokens": partial_reasoning,
+                }
+                if task_id is not None or legacy_runtime_call:
+                    partial["task_id"] = task_id
+                    partial["legacy_runtime_call"] = bool(legacy_runtime_call)
+                from app.services.usage_writer import queue_usage_nowait
+
+                queue_usage_nowait(partial)
+            except Exception:
+                logger.exception("中斷的串流沒有排入用量")
         raise
     except httpx.TimeoutException as exc:
         if _in_consumer_teardown(exc):
@@ -1726,10 +1799,18 @@ async def proxy_stream(
     dangling in ``running``). No-op — and byte-identical behavior — for
     legacy task-less callers (``task_run_id is None``).
     """
+    from app.services.model_gate import ModelAdmission, ModelSlotDenied
+
     status = "completed"
     error: dict | None = None
     model_type = "agent" if target_agent_id is not None else "llm"
+    admission = ModelAdmission.maybe(model, user_id)
+    pulse_task: asyncio.Task | None = None
     try:
+        if admission is not None:
+            async for position in admission.wait_positions():
+                yield format_anila_queue_status(position)
+            pulse_task = asyncio.create_task(admission.pulse_forever())
         async for chunk in _proxy_stream_impl(
             target_url=target_url,
             api_key_id=api_key_id,
@@ -1774,6 +1855,10 @@ async def proxy_stream(
         status = "failed"
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         raise
+    except ModelSlotDenied as exc:
+        status = "failed"
+        error = {"code": exc.code, "message": exc.message}
+        yield format_anila_stream_error(exc.message, code=exc.code)
     except HTTPException as exc:
         # StreamingResponse already committed HTTP 200 before the first
         # chunk; re-raising here becomes "response already started" and the
@@ -1829,5 +1914,9 @@ async def proxy_stream(
             stream_failure_user_message(exc, model_name=model_name)
         )
     finally:
+        if pulse_task is not None:
+            pulse_task.cancel()
+        if admission is not None:
+            await admission.release()
         if task_run_id is not None:
             finalize_task_run(task_run_id, status, error=error)

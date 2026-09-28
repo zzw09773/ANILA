@@ -93,6 +93,17 @@ def _validate_optional_float(value, *, lo: float, hi: float, name: str) -> float
     return number
 
 
+def _validate_optional_max_concurrent(value):
+    """Empty means unlimited. A cap is a positive integer, not a bool."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("同時處理上限須為空值或正整數")
+    if value < 1 or value > 10000:
+        raise ValueError("同時處理上限須為 1 到 10000 的整數，留空表示不限")
+    return value
+
+
 def _validate_optional_max_tokens(value) -> int | None:
     value = _empty_to_none(value)
     if value is None:
@@ -155,6 +166,8 @@ class ModelCreate(BaseModel):
     top_p: float | None = None
     presence_penalty: float | None = None
     max_tokens: int | None = None
+    # 空值 = 不限。模型登記者設定同時處理上限。
+    max_concurrent: int | None = None
     # r1_0039/r1_0040 的兩個治理旗標先前只存在於 ModelUpdate,於是新增模型
     # 時 UI 勾了「開放給對話模型選單」/「允許使用者自選思考」會被 pydantic
     # 靜默丟掉,列上永遠吃到 ORM 預設(false / true),HTTP 卻回 200。
@@ -214,6 +227,11 @@ class ModelCreate(BaseModel):
     def _max_tokens(cls, v):
         return _validate_optional_max_tokens(v)
 
+    @field_validator("max_concurrent", mode="before")
+    @classmethod
+    def _max_concurrent(cls, v):
+        return _validate_optional_max_concurrent(v)
+
 
 class ModelUpdate(BaseModel):
     display_name: str | None = None
@@ -241,6 +259,7 @@ class ModelUpdate(BaseModel):
     top_p: float | None = None
     presence_penalty: float | None = None
     max_tokens: int | None = None
+    max_concurrent: int | None = None
 
     @field_validator("model_type")
     @classmethod
@@ -291,6 +310,11 @@ class ModelUpdate(BaseModel):
     @classmethod
     def _max_tokens(cls, v):
         return _validate_optional_max_tokens(v)
+
+    @field_validator("max_concurrent", mode="before")
+    @classmethod
+    def _max_concurrent(cls, v):
+        return _validate_optional_max_concurrent(v)
 
 
 class ThinkingProbeResult(BaseModel):
@@ -344,6 +368,9 @@ class ModelResponse(ApiResponseModel):
     top_p: float | None = None
     presence_penalty: float | None = None
     max_tokens: int | None = None
+    max_concurrent: int | None = None
+    inflight: int | None = None
+    queue_length: int | None = None
     # Present only on create / update, and only when a thinking level was
     # actually probed. list / get never probe, so they leave it null.
     thinking_probe: ThinkingProbeResult | None = None

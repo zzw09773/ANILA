@@ -92,6 +92,8 @@ interface ChatRow {
   keywordFallback?: boolean
   /** 參考資料裡有疑似指令，伺服器已忽略。 */
   promptInjectionSuspected?: boolean
+  /** 模型排隊中的提示。正文一到就清掉。 */
+  queueMessage?: string | null
 }
 
 // 串流列可能被對話重載蓋掉。用 localKey 找回來；找不到就補回，避免回答只活在請求裡。
@@ -429,6 +431,7 @@ export function WSChat({ flex }: WSChatProps) {
                 ungrounded,
                 keywordFallback,
                 promptInjectionSuspected,
+                queueMessage: snapshot?.queueMessage ?? null,
               }),
             )
           },
@@ -1062,7 +1065,7 @@ export function ChatBubble({ row }: { row: ChatRow }) {
             <ThinkingStatus
               state={row.thinking ? 'working' : 'searching'}
               size={20}
-              label={row.thinking ? '思考中' : '檢索 + 思考中...'}
+              label={row.queueMessage ? row.queueMessage : row.thinking ? '思考中' : '檢索 + 思考中...'}
             />
           </div>
         ) : (

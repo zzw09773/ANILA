@@ -1412,6 +1412,20 @@ export const MessageBubble = ({
           ? displayPreface
           : (bodyExtract.thinking ? bodyExtract.body : (visibleParts.body || ""));
         const continuation = visibleParts.continuation;
+        const queueStatus = msg.streaming && msg.queueNotice ? (
+          <div
+            role="status"
+            data-testid="model-queue-status"
+            style={{
+              margin: "0 0 8px",
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--fg-subtle)",
+            }}
+          >
+            {msg.queueNotice}
+          </div>
+        ) : null;
         const rescueStatus = msg.streaming && msg.rescueNotice ? (
           <div
             role="status"
@@ -1605,6 +1619,7 @@ export const MessageBubble = ({
               {settled.map((item) => renderSummary(item))}
               {interrupt?.status === "answered" ? renderActiveCard() : null}
               {thinkingSummary}
+              {queueStatus}
               {rescueStatus}
               {continuation ? renderBody(continuation, Boolean(msg.streaming)) : null}
               {interrupt && interrupt.status !== "answered" ? renderActiveCard() : null}
@@ -1616,6 +1631,7 @@ export const MessageBubble = ({
         return (
           <>
             {thinkingSummary}
+            {queueStatus}
             {rescueStatus}
             {renderBody(
               displayBody,

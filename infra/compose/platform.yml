@@ -47,10 +47,47 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - csp-pgdata:/var/lib/postgresql/data
+    # Modest on purpose. 256MB fits the 62GB dev box beside the live stack
+    # and Docker's default /dev/shm. The EPYC host can raise shared_buffers
+    # later in this same command. max_connections stays 120 because PgBouncer
+    # holds the client fan-out. Changing these needs a Postgres restart.
+    shm_size: 512mb
+    command:
+      - postgres
+      - -c
+      - max_connections=120
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=8MB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U csp -d csp"]
       interval: 5s
       timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *anila-logging
+
+  # Transaction pool. CSP and the worker connect here. Migrations and the
+  # backup job stay on csp-db so session-level DDL is not pooled away.
+  pgbouncer:
+    build:
+      context: ../..
+      dockerfile: infra/docker/pgbouncer.Dockerfile
+    environment:
+      PGBOUNCER_USER: csp_app
+      PGBOUNCER_PASSWORD: ${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}
+      PGBOUNCER_DB: csp
+      PGBOUNCER_HOST: csp-db
+    expose:
+      - "5432"
+    depends_on:
+      csp-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5432"]
+      interval: 5s
+      timeout: 3s
       retries: 10
     restart: unless-stopped
     logging: *anila-logging
@@ -124,7 +161,8 @@ services:
       # 兩條 DB URL 拆開:csp_app 是 RLS-enforced 的 runtime role,
       # csp 是只給 migration 用的 superuser。混用會讓 document_chunks
       # 的 RLS 失效 (superuser 自動 bypass)。
-      DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}@csp-db:5432/csp
+      DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}@pgbouncer:5432/csp
+      REDIS_URL: redis://redis:6379/0
       MIGRATION_DATABASE_URL: postgresql://csp:${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (same as csp-db POSTGRES_PASSWORD)}@csp-db:5432/csp
       # CSP and ingestion-worker resolve the shared upload root from one
       # deployment variable; the volume targets below use it too.
@@ -298,7 +336,9 @@ services:
     depends_on:
       csp-credential-dirs:
         condition: service_completed_successfully
-      csp-db:
+      pgbouncer:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       # 遠端 docling:與 ingestion-worker 同一條 required:false 規則——開
       # docling-local profile 才等,沒開也不擋 csp 啟動。
@@ -309,8 +349,8 @@ services:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
       timeout: 5s
-      retries: 6
-      start_period: 20s
+      retries: 12
+      start_period: 180s
     restart: unless-stopped
     logging: *anila-logging
 
@@ -334,7 +374,7 @@ services:
       context: ../..
       dockerfile: services/ingestion-worker/Dockerfile
     environment:
-      DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
+      DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@pgbouncer:5432/csp
       REDIS_URL: redis://redis:6379
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
@@ -397,7 +437,7 @@ services:
       - ../../share/pki:/etc/anila/pki:ro
       - anila-service-credentials:/run/anila/service-clients:ro
     depends_on:
-      csp-db:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -442,8 +482,8 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 6
-      start_period: 20s
+      retries: 12
+      start_period: 180s
     restart: unless-stopped
     logging: *anila-logging
 
@@ -473,7 +513,12 @@ services:
       # 官方映像會把 /etc/nginx/templates/*.template 裡「已存在的」環境變數
       # 代換進 conf.d。$host 這類 nginx 變數不在環境裡，不會被代換。
       ANILA_HOST: ${ANILA_HOST:?ANILA_HOST must be set}
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
+      - ../../infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../../infra/nginx/anila.conf:/etc/nginx/templates/default.conf.template:ro
       - ../../infra/nginx/certs:/etc/nginx/certs:ro
       - ../../share/static:/usr/share/nginx/share-files/static:ro

@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import logging
-from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import httpx
@@ -240,6 +239,7 @@ def _build_response(
     db: Session | None = None,
     is_service_token: bool = False,
     router_conversation_count: int = 0,
+    gate_metrics: dict | None = None,
 ) -> dict:
     """Serialize a model row.
 
@@ -307,6 +307,21 @@ def _build_response(
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }
+    cap = getattr(model, "max_concurrent", None)
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        cap = None
+    data["max_concurrent"] = cap
+    if gate_metrics is None and getattr(model, "id", None) is not None:
+        from app.services.model_gate import read_metrics
+
+        gate_metrics = read_metrics([int(model.id)])
+    pair = None if not gate_metrics else gate_metrics.get(int(model.id))
+    if pair is None:
+        data["inflight"] = None
+        data["queue_length"] = None
+    else:
+        data["inflight"] = int(pair[0])
+        data["queue_length"] = int(pair[1])
     return data
 
 
@@ -339,14 +354,19 @@ def list_models(
         query = query.filter(or_(*clauses))
     # 對話數是全站數字，只給管理員看，避免一般使用者從清單推知別人用了多少。
     counts = _router_conversation_counts(db) if is_admin_tier(current_user) else {}
+    rows = query.all()
+    from app.services.model_gate import read_metrics
+
+    metrics = read_metrics([m.id for m in rows])
     return [
         _build_response(
             m,
             caller=current_user,
             db=db,
             router_conversation_count=counts.get(m.id, 0),
+            gate_metrics=metrics,
         )
-        for m in query.all()
+        for m in rows
     ]
 
 
@@ -1845,19 +1865,11 @@ async def set_platform_embedding(
 
     # Snapshot fields the probe needs, then release the pooled connection
     # before the outbound HTTP call (same posture as _embed_query).
-    from types import SimpleNamespace
+    from app.services.proxy.snapshot import snapshot_model
 
-    probe_snap = SimpleNamespace(
-        id=model.id,
-        name=model.name,
-        display_name=model.display_name,
-        model_type=model.model_type,
-        endpoint_url=model.endpoint_url,
-        api_version=model.api_version,
-        protocol=model.protocol or "openai_compatible",
-        api_key_secret_ref=model.api_key_secret_ref,
-        is_active=model.is_active,
-    )
+    probe_snap = snapshot_model(model)
+    if not getattr(probe_snap, "protocol", None):
+        probe_snap.protocol = "openai_compatible"
     # 逾時／重試在 commit 之前解（commit 把池化連線還回去，之後不該再查 DB）。
     probe_tuning = resolve_proxy_tuning(db)
     db.commit()
@@ -2161,19 +2173,20 @@ async def update_model(
     # values about to be written rather than the row itself, so a 422 leaves
     # the session clean (``get_db`` closes without rolling back).
     pending_key = update_data.get("api_key")
-    probe_target = SimpleNamespace(
-        id=model.id,
-        name=model.name,
-        model_type=update_data.get("model_type") or model.model_type,
-        protocol=effective_protocol,
-        endpoint_url=effective_url,
-        api_version=update_data.get("api_version") or model.api_version,
-        api_key_secret_ref=(
-            encode_service_token_envelope(str(pending_key).strip())
-            if pending_key is not None and str(pending_key).strip()
-            else model.api_key_secret_ref
-        ),
+    from app.services.proxy.snapshot import snapshot_model
+
+    probe_target = snapshot_model(model)
+    probe_target.model_type = update_data.get("model_type") or model.model_type
+    probe_target.protocol = effective_protocol
+    probe_target.endpoint_url = effective_url
+    probe_target.api_version = update_data.get("api_version") or model.api_version
+    probe_target.api_key_secret_ref = (
+        encode_service_token_envelope(str(pending_key).strip())
+        if pending_key is not None and str(pending_key).strip()
+        else model.api_key_secret_ref
     )
+    if "max_concurrent" in update_data:
+        probe_target.max_concurrent = update_data["max_concurrent"]
     thinking_probe = None
     if (
         "thinking_effort" in update_data

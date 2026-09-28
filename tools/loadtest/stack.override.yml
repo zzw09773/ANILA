@@ -1,0 +1,30 @@
+# Isolated from the daily dev project (anila-platform-dev) and from live.
+# Own project name, network, nginx container, and named volumes.
+name: anila-loadtest
+
+services:
+  csp-db:
+    volumes: !override
+      - loadtest-pgdata2:/var/lib/postgresql/data
+  csp:
+    volumes:
+      - ./tools/loadtest/.jwt:/app/secrets:ro
+  redis:
+    volumes: !override
+      - loadtest-redis:/data
+  nginx:
+    container_name: anila-nginx-loadtest
+
+networks:
+  default:
+    name: anila-loadtest-net
+
+volumes:
+  loadtest-pgdata2:
+  loadtest-redis:
+  anila-service-credentials-dev:
+    name: anila-loadtest-service-credentials
+  anila-csp-local-secrets-dev:
+    name: anila-loadtest-csp-secrets
+  anila-studio-artifacts-dev:
+    name: anila-loadtest-studio-artifacts

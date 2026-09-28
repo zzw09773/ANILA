@@ -42,13 +42,22 @@ def test_allowed_hosts_is_derived_from_anila_host_not_a_site_list():
 
 def test_nginx_map_uses_anila_host_and_has_no_lab_entries():
     text = _NGINX.read_text(encoding="utf-8")
-    match = re.search(
-        r"map \$host \$is_anila_host \{(?P<body>.*?)\n\}",
+    named = re.search(
+        r"map \$host \$anila_named_host \{(?P<body>.*?)\n\}",
         text,
         re.S,
     )
-    assert match, "nginx map $is_anila_host disappeared"
-    body = match.group("body")
+    builtin = re.search(
+        r"map \$host \$anila_builtin_host \{(?P<body>.*?)\n\}",
+        text,
+        re.S,
+    )
+    assert named, "nginx map $anila_named_host disappeared"
+    assert builtin, "nginx map $anila_builtin_host disappeared"
+    assert "$is_anila_host" in text
+    # 站台名稱單獨一張 map。跟 localhost 寫在一起時，dev 預設
+    # ANILA_HOST=localhost 會變成重複鍵，nginx 起不來。
+    body = named.group("body") + builtin.group("body")
     assert "${ANILA_HOST}" in body
     assert "localhost" in body
     assert "127.0.0.1" in body

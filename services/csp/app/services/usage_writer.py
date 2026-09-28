@@ -88,24 +88,36 @@ def _is_invocation_conflict(exc: BaseException) -> bool:
     return "invocation_id" in msg or "uq_token_usage_invocation_id" in msg
 
 
-async def _flush_batch(batch: list[dict]):
-    """Write a batch of usage records to the database."""
+def queue_usage_nowait(item: dict) -> None:
+    """Queue one usage row without awaiting. Safe while a stream is closing."""
+    payload = dict(item)
+    payload.setdefault("request_timestamp", datetime.now(timezone.utc))
+    get_usage_queue().put_nowait(payload)
+
+
+async def _flush_batch(batch: list[dict]) -> list[dict]:
+    """Write a batch. Return the rows that still need a commit.
+
+    A failed commit leaves the rows in the returned list. The caller
+    must not drop them. Duplicate ``invocation_id`` rows are skipped.
+    """
     if not batch:
-        return
+        return []
     db = SessionLocal()
     try:
         db.bulk_insert_mappings(TokenUsage, batch)
         db.commit()
         logger.info(f"已寫入 {len(batch)} 筆用量記錄")
-        return
+        return []
     except Exception as e:
         db.rollback()
         if not _is_invocation_conflict(e):
             logger.error(f"寫入用量記錄失敗: {e}")
-            return
+            return list(batch)
         written = 0
         skipped = 0
-        for item in batch:
+        pending: list[dict] = []
+        for index, item in enumerate(batch):
             try:
                 db.add(TokenUsage(**{k: v for k, v in item.items() if hasattr(TokenUsage, k)}))
                 db.commit()
@@ -116,10 +128,15 @@ async def _flush_batch(batch: list[dict]):
                     skipped += 1
                     continue
                 logger.error(f"寫入用量記錄失敗: {row_exc}")
+                pending.extend(batch[index:])
+                break
             except Exception as row_exc:
                 db.rollback()
                 logger.error(f"寫入用量記錄失敗: {row_exc}")
+                pending.extend(batch[index:])
+                break
         logger.info(f"用量批次含重複 invocation_id：寫入 {written} 筆、略過 {skipped} 筆")
+        return pending
     finally:
         db.close()
 
@@ -148,15 +165,19 @@ async def _usage_writer_loop():
                 except asyncio.QueueEmpty:
                     break
 
-            # Flush if batch is full or timeout elapsed
+            # Flush if batch is full or timeout elapsed. Keep every row
+            # whose commit did not succeed.
             if len(batch) >= USAGE_BATCH_SIZE or (batch and queue.empty()):
-                await _flush_batch(batch)
-                batch = []
+                batch = await _flush_batch(batch)
+                if batch:
+                    await asyncio.sleep(1)
 
         except asyncio.CancelledError:
             # Flush remaining on shutdown
             if batch:
-                await _flush_batch(batch)
+                left = await _flush_batch(batch)
+                if left:
+                    logger.error("關閉時仍有 %s 筆用量沒寫入", len(left))
             break
         except Exception as e:
             logger.error(f"用量寫入迴圈錯誤: {e}")

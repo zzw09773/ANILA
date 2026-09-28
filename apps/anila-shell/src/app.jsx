@@ -982,7 +982,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             ? (messagesRef.current[convId] || []).find((m) => m.id === assistantId)
             : null;
           if (row?.document) return;
+          if (assistantId && visible) {
+            updateMsg(convId, assistantId, { queueNotice: null });
+          }
           streamOpts.onText?.(visible);
+        },
+        onQueue: (payload) => {
+          const line = typeof payload?.message === "string" ? payload.message : "";
+          if (assistantId && line) {
+            updateMsg(convId, assistantId, { queueNotice: line });
+          }
+          streamOpts.onQueue?.(payload);
         },
         onCompact: (payload) => {
           queueCompact(payload);

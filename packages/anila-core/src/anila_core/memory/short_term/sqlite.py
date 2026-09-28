@@ -94,14 +94,28 @@ _conn_cache_lock = asyncio.Lock()
 
 
 async def _ensure_schema_migrations(conn: "aiosqlite.Connection") -> None:
-    """Apply additive SQLite schema changes for existing session DB files."""
-    cursor = await conn.execute("PRAGMA table_info(session_owners)")
+    """Apply additive SQLite schema changes for existing session DB files.
+
+    Several router workers open the same file on first start. Read the
+    columns only after a write lock, then read them again, so two
+    processes cannot both decide the column is missing and both ALTER.
+    """
+    await conn.commit()
+    await conn.execute("BEGIN IMMEDIATE")
     try:
-        columns = {str(row[1]) for row in await cursor.fetchall()}
-    finally:
-        await cursor.close()
-    if "owner_key_hash" not in columns:
-        await conn.execute("ALTER TABLE session_owners ADD COLUMN owner_key_hash TEXT")
+        cursor = await conn.execute("PRAGMA table_info(session_owners)")
+        try:
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+        finally:
+            await cursor.close()
+        if "owner_key_hash" not in columns:
+            await conn.execute(
+                "ALTER TABLE session_owners ADD COLUMN owner_key_hash TEXT"
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
 
 
 async def _get_connection(db_path: str) -> "aiosqlite.Connection":
@@ -115,6 +129,12 @@ async def _get_connection(db_path: str) -> "aiosqlite.Connection":
         import aiosqlite
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(db_path)
+        # Several router workers share this file. WAL lets readers proceed
+        # while one writer commits, and the busy timeout waits out a lock
+        # instead of failing the request. Memory databases never reach here.
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
         # `executescript` runs the multi-statement schema in one call; commit
         # afterwards so the cache observers see a consistent DB.
         await conn.executescript(_SCHEMA)

@@ -1,7 +1,7 @@
 # 目前狀態（給交接與代理）
 
 > 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
-> 更新：2026-09-27。HEAD 以 `git log -1` 為準。
+> 更新：2026-09-28。HEAD 以 `git log -1` 為準。
 
 ## 工作守則（給人也給 AI 助手；取代已刪除的 `AGENTS.md`）
 
@@ -19,6 +19,32 @@
 - 分支：`main`（單一開發線；舊七分支模型已進 `docs/archive/agents-seven-branch-model.md`，不要再切 `prod-intranet-card` 那種線）
 - 專案權威：`PLAN.md`（現況與順序）、`SYSTEM-MAP.md`（規格）
 - `CLAUDE.md` **不存在**。環境事實看本頁與 `PLAN.md`，不要去找那份檔。
+
+## 容量（2026-09-28）
+
+平台自己要撐住平常 300–500 人、尖峰約 3000 人同時在線。模型主機不是我們的；模型再慢，平台也要活著，而且要公平。
+
+CSP 與 Router 的 uvicorn worker 數在容器啟動時看 CPU（`os.cpu_count` 與 cgroup quota 取較小）。CSP 是 `max(2, min(2×CPU, 32))`：串流是 I/O，但一個卡住的 event loop 會拖住該 process 上所有連線，所以一核兩個 worker；32 是天花板，避免 128 執行緒各自帶一份資料庫連線。Router 是 `max(2, min(CPU, 8))`：同樣是 I/O，但每個 worker 都寫同一份會話 SQLite，少一點 process 才不會搶寫鎖。這台開發機 24 核會得到 CSP 32、Router 8；EPYC 128 執行緒也是這兩個數字。Studio 與 ASR 維持一個 process。Studio 的工作清單在記憶體裡，多開 worker 會拆開。
+
+用量寫入每個 worker 各跑一份：佇列在 process 裡面，只有 leader 寫的話其他 worker 的用量會消失。寫入要等資料庫 commit 成功才從佇列拿掉；commit 失敗就留著重試。其餘週期工作（健康檢查、警報、備份狀態、稽核封存、記憶體整理、附件保留、向量清理、憑證週期核發、金鑰圈週期維護、外部服務探測）用 Redis 鎖 `anila:csp:background-leader` 選一個 worker。續租和釋放是比對 token 的 Lua，對不上就立刻停掉迴圈，不會把別人剛拿到的鎖延長或刪掉。鎖過期才換人。Redis 不在時這些迴圈暫停。每個 worker 仍會做啟動時那一次憑證核發與金鑰圈，並開自己的連線池。啟動遷移在 Postgres 上先拿 session advisory lock，所以多個 worker 同時起來只會有一個在跑 `upgrade head`。pytest 沒有 Redis，迴圈在那一個 process 裡照舊跑。
+
+Postgres 前面有 PgBouncer（transaction pooling）。CSP 與 worker 的 `DATABASE_URL` 指到它；遷移與備份仍直連 `csp-db`。每個 CSP process 的 SQLAlchemy 池是 2+2，ingestion 池最多 2。32 個 worker 不會把 `max_connections=120` 吃滿。執行期的 `SET` 只用 `SET LOCAL` 或 `set_config(..., true)`。Postgres 設 `max_connections=120`、`shared_buffers=256MB`、`work_mem=8MB`，`shm_size` 512MB。256MB 是故意保守：開發機只有 62GB，而且要跟線上那套一起跑；EPYC 以後要加大，改同一條 command 再重啟資料庫。
+
+nginx `worker_processes auto`、`worker_connections 16384`。`/v1/`、`/v2/` 的串流關掉 proxy buffering，讀寫逾時 3600 秒。連線數是整台 nginx 共用 16384，不按來源 IP 算，所以整棟樓共用一個出口 IP 時，3000 條長連線不會被單一 IP 上限擋下。速率仍是每個來源 IP 每秒 100、瞬間 burst 4000（`nodelay`）。`X-Forwarded-For` 預設不改寫來源位址；只有在設定裡明確列出的上游代理才打開 `real_ip`。
+
+每個模型在治理中心有「同時處理上限」。留空就是不限。有數字時，CSP 用 Redis 信號量跨 process 計數；聊天、嵌入、內部補全、探針都用同一份欄位快照，不會因為自己組了一個沒有這個欄位的物件而繞過上限。多出來的人排隊，依使用者輪流：A 先送 50 筆、B 隨後送 1 筆時，B 排在 A 的下一筆之後，不會等 A 剩下的 49 筆。一個人的連發不能插到別人前面。Redis 鎖一時拿不到時，已經在排隊的人維持原位繼續等；還沒排進去的才回「暫時無法確認使用人數」。串流在等待時收到 `anila.queue`，Shell 與 ANILA LM 顯示「目前使用人數較多，排隊中，你是第 N 位」。等超過 120 秒改顯示「排隊超過 120 秒，請稍後再試」。Studio 與 worker 的非串流呼叫只等、不送那個事件。模型清單顯示目前處理中與排隊人數。使用者中途斷線時，已經產生的用量記成 `partial`（沒有上游 usage 時來源是 `unavailable`）。
+
+聊天代理在叫上游模型之前會把 SQLAlchemy 連線還回池子：授權、授權範圍、記憶、規章、附件先做完並 commit，串流與公平排隊期間不占連線，用量、稽核、記憶寫入另開短交易。`get_caller` 是同步依賴，跑在 threadpool；它若帶著未提交的交易回到 event loop，連線會一路占到端點開始，池子滿了之後下一次同步 checkout 會把整個 worker 卡住。所以授權結束時就 commit。
+
+負載工具在 `tools/loadtest/`，不進映像。它用自己的 compose project `anila-loadtest`、網路 `anila-loadtest-net` 和獨立 volume，結束時會清掉，不重建每天用的 `anila-platform-dev`，也不碰線上那套。2026-09-28 在這台 24 核、62GB 的機器上，假模型（第一個 token 前 0.3 秒、每秒 30 個、400 token）走 nginx → CSP，三檔都沒有 5xx 或逾時：
+
+| 人數 | 完成 | TTFT p50 | TTFT p95 | TTFB p50 | TTFB p95 |
+| --- | --- | --- | --- | --- | --- |
+| 300 | 300/300 | 0.866s | 1.111s | 0.527s | 0.806s |
+| 1000 | 1000/1000 | 1.892s | 3.968s | 1.562s | 3.608s |
+| 3000 | 3000/3000 | 8.873s | 20.319s | 7.260s | 18.338s |
+
+TTFT 變長是 32 個 process 一起消化 3000 條串流，不是資料庫池逾時。EPYC 多出來的核不會把 worker 加過 32，所以 CSP 的 process 數與這台相同；多出來的核給 nginx（`worker_processes auto`）和作業系統。記憶體 755GB 對這台 62GB，而且線上那套不會跟測試搶同一台機器。
 
 ## 啟動與測試
 
@@ -133,7 +159,7 @@ compose 的 `backup` 服務跟資料庫共用 `anila-pgvector:local`。起來先
 - Q53 人資 Oracle（`csiih.vihbuy`）等資安放行 `oracledb` wheel
 - G9 對話密等標記介面
 - `app.jsx`／`router_server.py` 大檔拆分（等主流程測試穩定後再抽）
-- 真模型負載測試（現有 loadtest 是 stub embedding）
+- 真模型主機的負載（`tools/loadtest/` 量的是平台自己，模型是可調速度的假上游）
 
 ## 本輪工程債（2026-09-18 抽查）
 

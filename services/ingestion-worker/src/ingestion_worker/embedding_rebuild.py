@@ -30,6 +30,31 @@ _BATCH = 16
 _LOCK = 40580058
 
 
+def direct_lock_dsn(database_url: str) -> str:
+    """Session advisory locks need a connection the pooler will not rotate.
+
+    Transaction pooling gives the server connection back at each commit.
+    A ``pg_try_advisory_lock`` taken on that connection does not cover the
+    next statement. When the URL host is the pooler, dial ``csp-db`` with
+    the same credentials. Any other host is already a direct connection.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(database_url)
+    if (parts.hostname or "") != "pgbouncer":
+        return database_url
+    hostport = parts.netloc.rsplit("@", 1)[-1]
+    if not hostport.startswith("pgbouncer"):
+        return database_url
+    new_host = "csp-db" + hostport[len("pgbouncer") :]
+    if "@" in parts.netloc:
+        auth = parts.netloc.rsplit("@", 1)[0]
+        netloc = f"{auth}@{new_host}"
+    else:
+        netloc = new_host
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 @dataclass(frozen=True)
 class IngestTarget:
     model_id: int
@@ -159,24 +184,34 @@ async def embed_ingest_targets(
 
 
 async def rebuild_embeddings(ctx: dict) -> dict:
-    """One resumable pass. Re-enqueues itself while rows remain."""
+    """One resumable pass. Re-enqueues itself while rows remain.
+
+    The advisory lock is session-scoped, so it is taken on a direct
+    connection and held until the pass finishes. The pooled connection
+    commits between batches; under transaction pooling that would move
+    the lock onto a server connection the next statement does not use.
+    """
     pool = ctx["pool"]
     started = time.monotonic()
-    async with pool.acquire() as conn:
+    lock_conn = await asyncpg.connect(direct_lock_dsn(settings.database_url))
+    try:
         try:
-            locked = await conn.fetchval("SELECT pg_try_advisory_lock($1)", _LOCK)
+            locked = await lock_conn.fetchval("SELECT pg_try_advisory_lock($1)", _LOCK)
         except Exception:
             logger.exception("embedding rebuild could not take its lock")
             return {"status": "skipped"}
         if not locked:
             return {"status": "busy"}
         try:
-            return await _pass(ctx, conn, started)
+            async with pool.acquire() as conn:
+                return await _pass(ctx, conn, started)
         finally:
             try:
-                await conn.execute("SELECT pg_advisory_unlock($1)", _LOCK)
+                await lock_conn.execute("SELECT pg_advisory_unlock($1)", _LOCK)
             except Exception:
                 logger.exception("embedding rebuild unlock failed")
+    finally:
+        await lock_conn.close()
 
 
 async def _pass(ctx: dict, conn: asyncpg.Connection, started: float) -> dict:

@@ -150,6 +150,8 @@ export interface ChatSseState {
   anilaErrorCode: string | null
   /** 伺服器標了參考資料裡的疑似指令。 */
   promptInjectionSuspected: boolean
+  /** 模型佇列狀態。有正文之後清掉。 */
+  queueMessage: string | null
 }
 
 export function createChatSseState(): ChatSseState {
@@ -160,6 +162,7 @@ export function createChatSseState(): ChatSseState {
     anilaErrorMessage: null,
     anilaErrorCode: null,
     promptInjectionSuspected: false,
+    queueMessage: null,
   }
 }
 
@@ -219,6 +222,22 @@ export function reduceChatSseEvent(
     return { ...state, anilaErrorMessage: message || '串流發生錯誤' }
   }
 
+  if (eventName === 'anila.queue') {
+    let message: string | null = null
+    for (const payload of dataLines) {
+      if (!payload || payload === '[DONE]') continue
+      try {
+        const parsed = JSON.parse(payload) as { message?: unknown }
+        if (typeof parsed.message === 'string' && parsed.message) {
+          message = parsed.message
+        }
+      } catch {
+        // 壞掉的排隊框不當成回答。
+      }
+    }
+    return { ...state, queueMessage: message }
+  }
+
   let next = state
   for (const payload of dataLines) {
     if (!payload || payload === '[DONE]') continue
@@ -242,7 +261,7 @@ export function reduceChatSseEvent(
       const text = extractChoiceContent(choice)
       if (text) {
         const accumulated = next.accumulated + text
-        next = { ...next, accumulated }
+        next = { ...next, accumulated, queueMessage: null }
       }
       const reasoning = extractChoiceReasoning(choice)
       if (reasoning) {
@@ -326,6 +345,7 @@ export interface ChatStreamSnapshot {
   content: string
   reasoning: string
   promptInjectionSuspected?: boolean
+  queueMessage?: string | null
 }
 
 export async function chatStream(
@@ -378,6 +398,7 @@ export async function chatStream(
       const prevLen = state.accumulated.length
       const prevReasoning = state.reasoning.length
       const prevFlag = state.promptInjectionSuspected
+      const prevQueue = state.queueMessage
       state = reduceChatSseEvent(state, event)
       if (state.anilaErrorMessage) {
         // Terminal failure — stop reading; finaliseChatSse will throw.
@@ -386,13 +407,15 @@ export async function chatStream(
       if (
         state.accumulated.length > prevLen ||
         state.reasoning.length > prevReasoning ||
-        state.promptInjectionSuspected !== prevFlag
+        state.promptInjectionSuspected !== prevFlag ||
+        state.queueMessage !== prevQueue
       ) {
         const delta = state.accumulated.slice(prevLen)
         onDelta(delta, state.accumulated, {
           content: state.accumulated,
           reasoning: state.reasoning,
           promptInjectionSuspected: state.promptInjectionSuspected,
+          queueMessage: state.queueMessage,
         })
       }
     }

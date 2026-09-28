@@ -45,6 +45,7 @@ _SNAPSHOT_FIELDS = (
     "top_p",
     "presence_penalty",
     "max_tokens",
+    "max_concurrent",
 )
 
 

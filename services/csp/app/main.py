@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 import logging
 import os
@@ -62,16 +63,47 @@ def _alembic_config():
     return cfg
 
 
+# Session lock so every uvicorn worker can call upgrade, and only one
+# of them applies revisions. Released when this connection closes.
+_STARTUP_MIGRATION_LOCK = 2147483001
+
+
 def _run_alembic_upgrade() -> None:
     """Run `alembic upgrade head` programmatically at startup.
 
     Alembic itself reads ``MIGRATION_DATABASE_URL`` in ``migrations/env.py``
     (superuser ``csp``). Do not point this at the runtime ``csp_app`` engine:
     a fresh volume has no ``csp_app`` role until revision 0014.
+
+    Postgres takes a session advisory lock first. The other workers block
+    on that lock and then see an already-current schema.
     """
     from alembic import command
 
-    command.upgrade(_alembic_config(), "head")
+    url = _migration_database_url()
+    lock_engine = create_engine(url)
+    try:
+        if lock_engine.dialect.name != "postgresql":
+            command.upgrade(_alembic_config(), "head")
+            return
+        with lock_engine.connect() as conn:
+            conn.execute(
+                text(
+                    f"SELECT pg_advisory_lock({int(_STARTUP_MIGRATION_LOCK)})"
+                )
+            )
+            conn.commit()
+            try:
+                command.upgrade(_alembic_config(), "head")
+            finally:
+                conn.execute(
+                    text(
+                        f"SELECT pg_advisory_unlock({int(_STARTUP_MIGRATION_LOCK)})"
+                    )
+                )
+                conn.commit()
+    finally:
+        lock_engine.dispose()
 
 
 def _alembic_available() -> bool:
@@ -365,25 +397,18 @@ async def lifespan(app: FastAPI):
     finally:
         _ext.close()
     register_document_parser_source()
-    external_probe_task = await start_external_service_probe()
 
-    # Start background tasks
+    # Periodic loops (health, alerts, backup status, retention, keyring
+    # maintainer, embedding cleanup, memory writer) must run in exactly
+    # one worker. Usage is not one of them: each worker fills its own
+    # queue and must flush that queue itself. Each worker still does the
+    # replica-safe startup pass below, because /health and the router
+    # token file cannot wait for leader election.
     from app.services.alert_detectors import start_alert_detectors
     from app.services.audit_ledger import start_audit_checkpointer
+    from app.services.background_leader import run_single_leader
     from app.services.health_checker import start_health_checker
     from app.services.usage_writer import start_usage_writer
-
-    health_task = await start_health_checker()
-    writer_task = await start_usage_writer()
-    alert_task = await start_alert_detectors()
-    # P2.7 稽核帳日級雜湊鏈。熱路徑不受影響 — 封存是每天一次的背景工作。
-    ledger_task = await start_audit_checkpointer()
-
-    # Internal service credentials (router-primary, and any client named in
-    # ANILA_INTERNAL_SERVICE_CLIENTS). One pass before we report healthy so
-    # the router, which waits on this healthcheck, finds the token file.
-    # The periodic task repeats the same ensure. Tests set
-    # ANILA_SERVICE_CLIENT_AUTO_PROVISION=0 and skip both.
     from app.services.internal_service_clients import (
         auto_provision_enabled,
         provision_internal_service_clients_once,
@@ -391,21 +416,7 @@ async def lifespan(app: FastAPI):
     )
     from app.services.memory_service import start_memory_idle_loop
     from app.services.attachment_retention import start_attachment_retention
-
-    memory_task = start_memory_idle_loop()
-    retention_task = start_attachment_retention()
     from app.services.embedding_swap import start_embedding_cleanup
-
-    embedding_cleanup_task = start_embedding_cleanup()
-
-    provision_task = None
-    if auto_provision_enabled():
-        # Failures are recorded for /health. Startup continues so the
-        # process can report degraded instead of exiting before the probe.
-        provision_internal_service_clients_once()
-        provision_task = await start_internal_service_client_provisioner()
-
-    # 簽章金鑰圈：啟動先匯入或推進一次，之後週期檢查。多個 worker 靠資料庫鎖。
     from app.services.jwt_keyring import (
         assert_active_key_decryptable,
         maintain_jwt_keyring_once,
@@ -413,10 +424,44 @@ async def lifespan(app: FastAPI):
         start_jwt_keyring_maintainer,
     )
 
-    keyring_task = None
+    async def _start_singleton_loops():
+        tasks = []
+        external_probe_task = await start_external_service_probe()
+        health_task = await start_health_checker()
+        alert_task = await start_alert_detectors()
+        # P2.7 稽核帳日級雜湊鏈。熱路徑不受影響 — 封存是每天一次的背景工作。
+        ledger_task = await start_audit_checkpointer()
+        memory_task = start_memory_idle_loop()
+        retention_task = start_attachment_retention()
+        embedding_cleanup_task = start_embedding_cleanup()
+        tasks.extend(
+            [
+                external_probe_task,
+                health_task,
+                alert_task,
+                ledger_task,
+                memory_task,
+                retention_task,
+                embedding_cleanup_task,
+            ]
+        )
+        if auto_provision_enabled():
+            tasks.append(await start_internal_service_client_provisioner())
+        if jwt_keyring_maintainer_enabled():
+            tasks.append(await start_jwt_keyring_maintainer())
+        return [task for task in tasks if task is not None]
+
+    # Internal service credentials. One pass before we report healthy so
+    # the router, which waits on this healthcheck, finds the token file.
+    # Tests set ANILA_SERVICE_CLIENT_AUTO_PROVISION=0 and skip both.
+    if auto_provision_enabled():
+        # Failures are recorded for /health. Startup continues so the
+        # process can report degraded instead of exiting before the probe.
+        provision_internal_service_clients_once()
+
+    # 簽章金鑰圈：每個 worker 啟動先匯入或推進一次（資料庫鎖）。週期檢查只在 leader。
     if jwt_keyring_maintainer_enabled():
         maintain_jwt_keyring_once(strict=True)
-        keyring_task = await start_jwt_keyring_maintainer()
     assert_active_key_decryptable()
 
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
@@ -424,7 +469,7 @@ async def lifespan(app: FastAPI):
     # listing + agent-scoped FTS). The pool registers vector / halfvec
     # / jsonb codecs per-connection, so SQLAlchemy-side queries are
     # untouched. Skip silently if the env / DB isn't available so a
-    # pre-0014 schema doesn't crash startup.
+    # pre-0014 schema doesn't crash startup. One pool per worker.
     from app.services.ingestion_pool import open_pool, close_pool
     try:
         await open_pool()
@@ -434,26 +479,35 @@ async def lifespan(app: FastAPI):
             "will return 503 until the pool comes back.", exc,
         )
 
+    # Every worker, including the one that is not the leader. The queue
+    # is process-local; a leader-only writer never sees the other rows.
+    usage_writer_task = await start_usage_writer()
+
+    leader_task = None
+    singleton_tasks: list = []
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # One process, and TestClient expects the loops to be running
+        # before the first request. The Redis election is covered on its own.
+        singleton_tasks = await _start_singleton_loops()
+    else:
+        leader_task = asyncio.create_task(run_single_leader(_start_singleton_loops))
+
     yield
 
-    # Cleanup
-    if health_task:
-        health_task.cancel()
-    if writer_task:
-        writer_task.cancel()
-    if alert_task:
-        alert_task.cancel()
-    if ledger_task:
-        ledger_task.cancel()
-    if provision_task:
-        provision_task.cancel()
-    if keyring_task:
-        keyring_task.cancel()
-    if external_probe_task:
-        external_probe_task.cancel()
-    memory_task.cancel()
-    retention_task.cancel()
-    embedding_cleanup_task.cancel()
+    if leader_task is not None:
+        leader_task.cancel()
+        try:
+            await leader_task
+        except asyncio.CancelledError:
+            pass
+    else:
+        for task in singleton_tasks:
+            task.cancel()
+    usage_writer_task.cancel()
+    try:
+        await usage_writer_task
+    except asyncio.CancelledError:
+        pass
     await close_pool()
 
 

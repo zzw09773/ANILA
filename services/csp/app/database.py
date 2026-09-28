@@ -2,10 +2,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.config import settings
 
+# Several uvicorn workers each keep a pool. PgBouncer sits in front, so a
+# small pool per process is enough: 32 workers × (2 + 2) = 128 clients,
+# and the pooler multiplexes those onto far fewer Postgres sessions.
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=2,
+    max_overflow=2,
+    pool_timeout=30,
     pool_pre_ping=True,
     echo=False,
 )

@@ -62,6 +62,10 @@ class PgPool:
             min_size=self._min_size,
             max_size=self._max_size,
             command_timeout=self._command_timeout,
+            # PgBouncer transaction mode hands back a different server
+            # connection each transaction. A named prepared statement from
+            # the previous one would then fail. Disable the cache.
+            statement_cache_size=0,
             init=self._init_connection,
         )
 

@@ -6,8 +6,6 @@ import logging
 import math
 import re
 from collections.abc import Callable, Sequence
-from types import SimpleNamespace
-
 from app.services.proxy.usage import _estimate_token_count
 
 logger = logging.getLogger(__name__)
@@ -172,19 +170,11 @@ async def embed_sections_for_excerpt(user, query: str, section_texts: list[str])
         model = designated_platform_embedding(db)
         if model is None:
             return None
-        snapshot = SimpleNamespace(
-            id=model.id,
-            name=model.name,
-            model_type=model.model_type,
-            endpoint_url=model.endpoint_url,
-            api_version=model.api_version,
-            protocol=getattr(model, "protocol", None) or "openai_compatible",
-            api_key_secret_ref=model.api_key_secret_ref,
-            classification_ceiling=model.classification_ceiling,
-            is_active=model.is_active,
-            display_name=getattr(model, "display_name", model.name),
-            is_internal=bool(getattr(model, "is_internal", False)),
-        )
+        from app.services.proxy.snapshot import snapshot_model
+
+        snapshot = snapshot_model(model)
+        if not getattr(snapshot, "protocol", None):
+            snapshot.protocol = "openai_compatible"
         tuning = resolve_proxy_tuning(db)
         user_id = user.id
         department_id = getattr(user, "department_id", None)
@@ -192,7 +182,7 @@ async def embed_sections_for_excerpt(user, query: str, section_texts: list[str])
         api_version = snapshot.api_version if snapshot.api_version in ("v1", "v2") else "v1"
         endpoint_display = visible_endpoint_url(
             snapshot.endpoint_url,
-            is_internal=snapshot.is_internal,
+            is_internal=bool(getattr(snapshot, "is_internal", False)),
             db=db,
             caller=user,
         )

@@ -62,4 +62,4 @@ USER anila
 
 EXPOSE 9000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000", "--log-level", "info"]
+CMD ["python", "-m", "anila_core.runtime.serve", "--role", "router", "--app", "main:app", "--port", "9000"]

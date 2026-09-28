@@ -325,7 +325,7 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0061():
+def test_alembic_heads_single_r1_0062():
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -337,21 +337,31 @@ def test_alembic_heads_single_r1_0061():
     ).read_text(encoding="utf-8")
     assert 'revision: str = "r1_0058"' in retry
     assert 'down_revision: Union[str, None] = "r1_0057"' in retry
-    head = (
+    previous = (
         CSP_ROOT / "migrations" / "versions" / "r1_0059_dimension_agnostic_embeddings.py"
     ).read_text(encoding="utf-8")
-    assert 'revision: str = "r1_0059"' in head
-    assert 'down_revision: Union[str, None] = "r1_0058"' in head
-    cfg = Config(str(CSP_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
-    script = ScriptDirectory.from_config(cfg)
-    heads = list(script.get_heads())
+    assert 'revision: str = "r1_0059"' in previous
+    assert 'down_revision: Union[str, None] = "r1_0058"' in previous
+    feedback = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0060_feedback_read_state.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0060"' in feedback
+    assert 'down_revision: Union[str, None] = "r1_0059"' in feedback
     created = (
         CSP_ROOT / "migrations" / "versions" / "r1_0061_attachment_created_at_not_null.py"
     ).read_text(encoding="utf-8")
     assert 'revision: str = "r1_0061"' in created
     assert 'down_revision: Union[str, None] = "r1_0060"' in created
-    assert heads == ["r1_0061"], f"alembic head 應為 r1_0061，實得 {heads}"
+    head = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0062_model_max_concurrent.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0062"' in head
+    assert 'down_revision: Union[str, None] = "r1_0061"' in head
+    cfg = Config(str(CSP_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
+    script = ScriptDirectory.from_config(cfg)
+    heads = list(script.get_heads())
+    assert heads == ["r1_0062"], f"alembic head 應為 r1_0062，實得 {heads}"
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -368,7 +378,7 @@ def test_alembic_heads_single_r1_0061():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0061" in cli.stdout
+    assert "r1_0062" in cli.stdout
     nullable = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0055_collection_embedding_model_nullable.py"

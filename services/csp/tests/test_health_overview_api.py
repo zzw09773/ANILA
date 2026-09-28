@@ -556,8 +556,8 @@ def _is_anila_host_allowlist() -> set[str]:
     conf = (
         Path(__file__).resolve().parents[3] / "infra" / "nginx" / "anila.conf"
     ).read_text(encoding="utf-8")
-    block = re.search(r"map \$host \$is_anila_host \{(.*?)\n\}", conf, re.DOTALL)
-    assert block, "anila.conf 找不到 $is_anila_host map"
+    block = re.search(r"map \$host \$anila_builtin_host \{(.*?)\n\}", conf, re.DOTALL)
+    assert block, "anila.conf 找不到 $anila_builtin_host map"
     return set(re.findall(r'"([^"]+)"\s+1;', block.group(1)))
 
 

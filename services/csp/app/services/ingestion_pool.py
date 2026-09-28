@@ -39,7 +39,8 @@ async def open_pool() -> None:
         raise RuntimeError(
             "DATABASE_URL not set; ingestion pool needs an asyncpg DSN."
         )
-    _pool = PgPool(dsn, min_size=1, max_size=8)
+    # One small pool per worker. 32 workers × 2 stays well under PgBouncer.
+    _pool = PgPool(dsn, min_size=1, max_size=2)
     await _pool.open()
     logger.info("Ingestion PgPool opened (csp_app runtime, RLS-enforced)")
 

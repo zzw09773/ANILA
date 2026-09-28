@@ -387,26 +387,24 @@ async def _embed_query(
     # attribute touch before commit is NOT a load guarantee under either
     # posture. The snapshot is the guarantee: after db.commit() releases the
     # pooled connection, proxy_request must not re-checkout via lazy reload.
-    model_snapshot = SimpleNamespace(
-        id=model.id,
-        name=model.name,
-        model_type=model.model_type,
-        endpoint_url=model.endpoint_url,
-        api_version=model.api_version,
-        protocol=getattr(model, "protocol", None) or "openai_compatible",
-        api_key_secret_ref=model.api_key_secret_ref,
-        classification_ceiling=model.classification_ceiling,
-        is_active=model.is_active,
-        display_name=getattr(model, "display_name", model.name),
-        is_internal=bool(getattr(model, "is_internal", False)),
-    )
+    from app.services.proxy.snapshot import snapshot_model
+
+    model_snapshot = snapshot_model(model)
+    if not getattr(model_snapshot, "protocol", None):
+        model_snapshot.protocol = "openai_compatible"
     user_id = user.id
     department_id = user.department_id
     identity = downstream_identity(user)
     api_version = model_snapshot.api_version if model_snapshot.api_version in ("v1", "v2") else "v1"
-    # 逾時／重試四顆在 commit 之前解 —— commit 之後連線已經還回池子，
-    # 再查一次 platform_settings 會把它重新握在手上直到出向 HTTP 回來。
+    # 逾時、顯示用網址都在 commit 之前算完。developer／admin 的 endpoint
+    # grant 查詢會重新 checkout；不能留到 embed 上游的 await 之後。
     tuning = resolve_proxy_tuning(db)
+    endpoint_display = visible_endpoint_url(
+        model_snapshot.endpoint_url,
+        is_internal=bool(getattr(model_snapshot, "is_internal", False)),
+        db=db,
+        caller=user,
+    )
     db.commit()
 
     body = {"model": model_name, "input": query}
@@ -418,12 +416,7 @@ async def _embed_query(
         department_id=department_id,
         request_body=body,
         endpoint_path=f"/{api_version}/embeddings",
-        endpoint_display=visible_endpoint_url(
-            model_snapshot.endpoint_url,
-            is_internal=model_snapshot.is_internal,
-            db=db,
-            caller=user,
-        ),
+        endpoint_display=endpoint_display,
         # Query-side: must not silently fall through to Triton's documents input.
         embedding_input_role="query",
         tuning=tuning,

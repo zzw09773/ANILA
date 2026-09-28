@@ -81,6 +81,8 @@ class ModelRegistry(Base):
     top_p = Column(Float, nullable=True)
     presence_penalty = Column(Float, nullable=True)
     max_tokens = Column(Integer, nullable=True)
+    # NULL = no platform cap. A positive value is the fair-queue slot count.
+    max_concurrent = Column(Integer, nullable=True)
 
     # Slice 6a (doc 04 §2): owner department（SET NULL）。
     owner_department_id = Column(

@@ -132,7 +132,10 @@ def resolve_chat_caller(
     if token and not token.startswith(("sk-", "csk-")):
         claims = verify_dispatch_token(token)
         if claims is not None:
-            return dispatch_model_call(db, claims)
+            call = dispatch_model_call(db, claims)
+            if db.in_transaction():
+                db.commit()
+            return call
         if _dispatch_audience(token):
             raise HTTPException(status_code=401, detail="派工 JWT 無效或已過期")
     return get_caller(request, db)

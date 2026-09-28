@@ -9,3 +9,4 @@ import-linter==2.12
 # ScriptDirectory。runtime requirements.txt 已釘同版；此處再釘一次，避免有人
 # 把 runtime alembic 拿掉後 collect 又變成 ERROR。
 alembic==1.14.1
+pytest-xdist>=3.5

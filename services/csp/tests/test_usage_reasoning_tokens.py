@@ -637,6 +637,26 @@ def test_stream_cancelled_after_named_meta_is_reraised(monkeypatch):
         )
 
 
+def test_cancelled_mid_stream_queues_partial_usage(monkeypatch):
+    from app.services import usage_writer
+
+    usage_writer._usage_queue = asyncio.Queue()
+    with pytest.raises(asyncio.CancelledError):
+        _run_proxy_stream(
+            monkeypatch,
+            [
+                'data: {"choices":[{"index":0,"delta":{"content":"partial"},'
+                '"finish_reason":null}]}',
+                "",
+            ],
+            fail_exc=asyncio.CancelledError(),
+        )
+    item = usage_writer.get_usage_queue().get_nowait()
+    assert item["outcome"] == "partial"
+    assert item["token_source"] == "unavailable"
+    assert item["completion_tokens"] > 0
+
+
 # ---------------------------------------------------------------------------
 # 消費端收掉串流(client disconnect / task cancel)時的關閉路徑。
 #

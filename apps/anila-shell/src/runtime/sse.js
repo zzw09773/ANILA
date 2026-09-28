@@ -160,6 +160,8 @@ export async function streamChatCompletion({
   onFinishReason,
   // 思考用完輸出額度：Router 關掉思考再整理一次答案。
   onRescue,
+  // 模型同時處理上限已滿，排隊中的位置。
+  onQueue,
   // 階段標題。{index, title, status}，同一則訊息上一條清單。
   onThinkingStage,
   onDocument,
@@ -264,6 +266,7 @@ export async function streamChatCompletion({
         onUnknownEvent,
         onFinishReason,
         onRescue,
+        onQueue,
         onThinkingStage,
         onDocument,
         onError: (payload) => {
@@ -341,6 +344,10 @@ export function dispatchSseEvent(event, callbacks) {
       callbacks.onTrace && ((step) => callbacks.onTrace({ at: Date.now(), ...(step || {}) })),
       "anila.trace",
     );
+    return;
+  }
+  if (event.event === "anila.queue") {
+    safeJsonInvoke(event.data, callbacks.onQueue, "anila.queue");
     return;
   }
   if (event.event === "anila.meta") {

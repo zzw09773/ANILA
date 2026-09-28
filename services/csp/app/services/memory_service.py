@@ -322,10 +322,9 @@ async def _embed_via_proxy(
     flipping this flag alone would just make the existing rows wrong.
     See ``tests/test_memory_embed_not_metered.py``.
     """
-    from types import SimpleNamespace
-
     from anila_core.embeddings.dims import fit_stored_vector
     from app.services.proxy.service import proxy_request, resolve_proxy_tuning
+    from app.services.proxy.snapshot import snapshot_model
 
     resolved = _resolved_for_embed(db, model_id=model_id)
     if resolved is None:
@@ -338,19 +337,12 @@ async def _embed_via_proxy(
     native_dim = resolved.native_dim
     raw_ver = getattr(model, "api_version", None)
     api_version = raw_ver if raw_ver in ("v1", "v2") else "v1"
-    model_snapshot = SimpleNamespace(
-        id=getattr(model, "id", 0),
-        name=model.name,
-        model_type=getattr(model, "model_type", "embedding"),
-        endpoint_url=model.endpoint_url,
-        api_version=api_version,
-        protocol=getattr(model, "protocol", None) or "openai_compatible",
-        api_key_secret_ref=getattr(model, "api_key_secret_ref", None),
-        classification_ceiling=getattr(model, "classification_ceiling", None),
-        is_active=getattr(model, "is_active", True),
-        display_name=getattr(model, "display_name", model.name),
-        is_internal=bool(getattr(model, "is_internal", False)),
-    )
+    model_snapshot = snapshot_model(model)
+    model_snapshot.api_version = api_version
+    if not getattr(model_snapshot, "protocol", None):
+        model_snapshot.protocol = "openai_compatible"
+    if not getattr(model_snapshot, "model_type", None):
+        model_snapshot.model_type = "embedding"
     # 逾時／重試四顆在這裡解（**還握著連線的時候**），凍結成 tuning 往下傳；
     # commit 之後 proxy 那一層就不該再碰 DB 了。
     tuning = resolve_proxy_tuning(db)

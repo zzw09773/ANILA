@@ -83,7 +83,20 @@ def get_caller(
         user = api_key.user
         if not user or not user.is_active:
             raise _unauthorized("API Key 對應的使用者已停用")
+        _release_auth_connection(db)
         return Caller(user=user, api_key_id=api_key.id)
 
     user = resolve_presented_user(token, db)
+    _release_auth_connection(db)
     return Caller(user=user, api_key_id=None)
+
+
+def _release_auth_connection(db: Session) -> None:
+    """Sync dependencies run in a threadpool. Commit before returning so the
+    connection is back in the pool before the event loop starts the endpoint.
+
+    Otherwise the open transaction sits checked out while other requests run,
+    the pool fills, and a later synchronous checkout blocks the loop.
+    """
+    if db.in_transaction():
+        db.commit()
