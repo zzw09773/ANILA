@@ -530,6 +530,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const deepThinkNextRef = useRef(false);
   const [conversations, setConversations] = useState([]);
   const [selectedConvId, setSelectedConvId] = useState(null);
+  const [composerCite, setComposerCite] = useState(null);
   const [modelUnavailable, setModelUnavailable] = useState(null);
   const [draftRestore, setDraftRestore] = useState(null);
 
@@ -3131,6 +3132,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // Enter 的先落庫);樹的形狀則由伺服器的單一交易保證。這一段刻意
     // 不等前一輪的串流:按下 Enter 的當下文字就要到伺服器上。
     let head = null;
+    let pinAttachments = Promise.resolve();
     const applyTurnHead = (resolved) => {
       const savedUser = resolved.userSaved;
       const reserved = resolved.assistantSaved;
@@ -3166,7 +3168,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         persistError: null,
       });
       if (bindIds.length > 0) {
-        apiBindAttachments(authRequest, {
+        pinAttachments = apiBindAttachments(authRequest, {
           conversationId: convId,
           referenceIds: bindIds,
           messageId: savedUser.id,
@@ -3229,6 +3231,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           return resolved;
         }
         applyTurnHead(resolved);
+        await pinAttachments;
         await flushPendingCompact(convId, messagesRef.current[convId] || []);
         return resolved;
       })
@@ -3322,6 +3325,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           payload,
           conversationId: persistable ? convId : undefined,
           taskId,
+          attachmentRefs: bindIds,
           assistantId,
           onText: (acc) => {
             finalText = acc;
@@ -4148,6 +4152,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               messages: [{ role: "user", content: buildUserContent(text, attachments) }],
             },
             conversationId: typeof col.id === "number" ? col.id : undefined,
+            attachmentRefs: attachmentBindIds(attachments),
             onText: (acc) => {
               setCompareMsgs((prev) => ({
                 ...prev,
@@ -4781,6 +4786,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                             conversationStreaming={currentMsgs.some((x) => x.streaming)}
                             isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
                             questionHadAttachments={m.role === "assistant" && questionHadAttachments(currentMsgs, idx)}
+                            onCiteDocument={(attachment) => setComposerCite(attachment)}
                           />
                         </React.Fragment>
                       ))
@@ -4909,6 +4915,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                           ? "ANILA 會幫你找合適的助手"
                           : `已指定助手 · ${activeAgent.name}`
                       }
+                      queuedAttachment={composerCite}
+                      onQueuedAttachmentConsumed={() => setComposerCite(null)}
                       onUpload={async (file) => {
                         let convId = selectedConvId;
                         if (typeof convId !== "number") {

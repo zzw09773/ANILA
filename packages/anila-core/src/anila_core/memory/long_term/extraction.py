@@ -39,13 +39,14 @@ EXTRACTION_SYSTEM_PROMPT = f"""你是事實萃取器。只從使用者親口說�
 忽略助理的話與短期狀態（當下情緒、今日天氣、剛才的問題）。
 {_FACT_KEY_RULES}
 
-回傳 JSON 陣列，每個物件包含 key/value/confidence。
+回傳 JSON 陣列，每個物件包含 key、value、confidence、kind。
+kind 只能是 preference 或 fact。語氣、格式、稱呼、語言是 preference，其餘是 fact。
 若無事實可萃，回 [] 空陣列。
 
 範例輸出格式（key 與 value 都是抽象佔位，請以實際抽取的內容替換；
 絕對不要在輸出中保留 `<...>` 佔位符或範例文字本身）：
 [
-  {{"key": "<fact_category>", "value": "<concrete_value>", "confidence": <0.0-1.0>}}
+  {{"key": "<fact_category>", "value": "<concrete_value>", "confidence": <0.0-1.0>, "kind": "fact"}}
 ]
 
 只輸出 JSON，不要前言、不要解釋、不要 ```json 代碼塊。"""
@@ -81,10 +82,11 @@ summary 依下列順序寫，全文最多 600 字：
 4. 助理提供了什麼，只用一句話帶過。不要逐字抄寫助理的回答，不要寫路徑、主機、設定名稱或錯誤訊息。
 
 facts：只有使用者親口講的內容。助理說的話不是事實。短期狀態不要收。沒有就給空陣列。
+每個事實帶 kind：preference 或 fact。語氣、格式、稱呼、語言是 preference，其餘是 fact。
 {_FACT_KEY_RULES}
 
 格式（尖括號是佔位，不要原樣輸出）：
-{{"summary":"<短摘要>","facts":[{{"key":"<類別>","value":"<使用者原話裡的內容>","confidence":0.0}}]}}
+{{"summary":"<短摘要>","facts":[{{"key":"<類別>","value":"<使用者原話裡的內容>","confidence":0.0,"kind":"fact"}}]}}
 """
 
 
@@ -168,5 +170,21 @@ def parse_extraction_response(raw: str) -> list[dict[str, Any]]:
         except (TypeError, ValueError):
             conf_f = 1.0
         conf_f = max(0.0, min(1.0, conf_f))
-        valid.append({"key": key, "value": value, "confidence": conf_f})
+        valid.append({
+            "key": key,
+            "value": value,
+            "confidence": conf_f,
+            "kind": _fact_kind(key, item.get("kind")),
+        })
     return valid
+
+
+def _fact_kind(key: str, raw: object) -> str:
+    """語氣與格式是 preference。沒標、或標了不認識的值，當成 fact。"""
+    if isinstance(raw, str):
+        kind = raw.strip().lower()
+        if kind in {"preference", "fact"}:
+            return kind
+    if key.startswith("preference."):
+        return "preference"
+    return "fact"

@@ -71,6 +71,15 @@ class UserFact(Base):
     # not a FK because messages aren't a first-class table.
     source_message_id = Column(Integer, nullable=True)
     confidence = Column(Float, nullable=False, default=1.0)
+    # preference：語氣、格式、稱呼、語言，每一輪都注入。
+    # fact：其餘穩定事實，只在與這一輪問題相近時注入。舊列沒標的當成 fact。
+    kind = Column(
+        String(20), nullable=False, default="fact", server_default="fact"
+    )
+    # halfvec(4000) at the SQL layer. Writes use raw SQL on Postgres.
+    embedding = Column(Text, nullable=True)
+    embedding_source_model = Column(String(200), nullable=True)
+    embedding_native_dim = Column(Integer, nullable=True)
     # 使用者在記憶頁改過的事實。整理對話時不得用逐字稿裡的舊值蓋掉。
     user_edited = Column(
         Boolean, nullable=False, default=False, server_default="false"

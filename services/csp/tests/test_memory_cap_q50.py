@@ -200,10 +200,15 @@ async def test_registered_agent_outbound_payload_contains_no_memory(
     )
 
 
+async def _relevant_vector(*_args, **_kwargs):
+    """事實只在與這一輪相近時注入。這組測試要的是上限，向量一律對得上。"""
+    return [1.0, 0.0], "embed-test", 2
+
+
 def _oversized_rows():
     facts = [
-        SimpleNamespace(key="fact.new", value="FACT_NEW_" + "n" * 2100),
-        SimpleNamespace(key="fact.old", value="FACT_OLD_" + "o" * 2100),
+        SimpleNamespace(id=2, key="fact.new", value="FACT_NEW_" + "n" * 2100),
+        SimpleNamespace(id=1, key="fact.old", value="FACT_OLD_" + "o" * 2100),
     ]
     chunks = [
         RetrievedChunk(
@@ -269,6 +274,7 @@ async def test_non_agent_model_outbound_payload_contains_bounded_memory(
         return chunks
 
     monkeypatch.setattr(memory_service, "retrieve_relevant_chunks", _retrieve)
+    monkeypatch.setattr(memory_service, "_embed", _relevant_vector)
 
     response = await _call_chat(
         db,
@@ -325,9 +331,10 @@ async def test_bulk_imported_label_does_not_change_memory_payload(
         memory_service,
         "get_user_facts",
         lambda *args, **kwargs: [
-            SimpleNamespace(key="fact.bulk", value="BULK_IMPORT_MEMORY")
+            SimpleNamespace(id=1, key="fact.bulk", value="BULK_IMPORT_MEMORY")
         ],
     )
+    monkeypatch.setattr(memory_service, "_embed", _relevant_vector)
 
     async def _retrieve(*args, **kwargs):
         return []

@@ -389,8 +389,10 @@ async def lifespan(app: FastAPI):
         start_internal_service_client_provisioner,
     )
     from app.services.memory_service import start_memory_idle_loop
+    from app.services.attachment_retention import start_attachment_retention
 
     memory_task = start_memory_idle_loop()
+    retention_task = start_attachment_retention()
 
     provision_task = None
     if auto_provision_enabled():
@@ -446,6 +448,7 @@ async def lifespan(app: FastAPI):
     if external_probe_task:
         external_probe_task.cancel()
     memory_task.cancel()
+    retention_task.cancel()
     await close_pool()
 
 

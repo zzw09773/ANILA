@@ -159,6 +159,32 @@ describe("sent user bubble shows an image preview", () => {
     expect(notice.textContent).not.toMatch(/檢索/);
   });
 
+  it("過期上傳顯示檔名與保存期限，不再連到已刪的檔", () => {
+    const { container } = render(
+      <MessageBubble
+        msg={userMsg({
+          attachments: [{
+            name: "過期筆記.txt",
+            kind: "image",
+            contentType: "image/png",
+            referenceId: "gone-1",
+            extractStatus: "expired",
+          }],
+        })}
+        agents={[]}
+      />,
+    );
+    expect(container.textContent).toContain("過期筆記.txt");
+    expect(container.textContent).toContain("已超過保存期限（30 天），檔案已刪除");
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    expect(attachmentPreviewSrc({
+      kind: "image",
+      referenceId: "gone-1",
+      extractStatus: "expired",
+    })).toBeNull();
+  });
+
   it("keeps documents as a filename chip", () => {
     const { container } = render(
       <MessageBubble

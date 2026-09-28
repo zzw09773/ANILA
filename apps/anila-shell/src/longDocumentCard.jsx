@@ -7,7 +7,7 @@ import {
   formatFileSize,
 } from "./runtime/longDocument.js";
 
-export function LongDocumentCard({ document: doc }) {
+export function LongDocumentCard({ document: doc, onCite }) {
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState("");
   const [error, setError] = useState("");
@@ -60,6 +60,18 @@ export function LongDocumentCard({ document: doc }) {
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <button type="button" onClick={openDoc}>開啟</button>
         <button type="button" onClick={download}>下載</button>
+        {typeof onCite === "function" ? (
+          <button
+            type="button"
+            onClick={() => onCite({
+              referenceId: doc.referenceId,
+              name: doc.filename || `${doc.title || "文件"}.md`,
+              kind: "file",
+            })}
+          >
+            引用到訊息
+          </button>
+        ) : null}
       </div>
       {error ? <p style={{ margin: "8px 0 0", fontSize: 13 }}>{error}</p> : null}
       {open ? (

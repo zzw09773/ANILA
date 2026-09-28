@@ -466,6 +466,23 @@ describe("streamChatCompletion mid-stream anila.error", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
+
+  it("選中的附件編號跟著這一輪送出", async () => {
+    const { streamChatCompletion } = await import("../runtime/sse.js");
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      headers: { get: () => null },
+      body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await streamChatCompletion({
+      url: "/v1/chat/completions",
+      payload: { model: "demo", messages: [] },
+      attachmentRefs: ["ref-1", " ref-2 "],
+    });
+    expect(fetchMock.mock.calls[0][1].headers["X-ANILA-Attachment-Refs"]).toBe("ref-1,ref-2");
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("streamSessionAnswer mid-stream anila.error", () => {

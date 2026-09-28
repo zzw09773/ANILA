@@ -7602,11 +7602,15 @@ async def _upload_long_answer(
         logger.warning("超長回答沒有存成附件：缺少使用者身分")
         return None
     url = f"{settings.csp_base_url.rstrip('/')}/api/attachments"
+    headers = {"Authorization": f"Bearer {caller_api_key}"}
+    service_token = _current_service_token()
+    if service_token:
+        headers["X-CSP-Service-Token"] = service_token
     try:
         response = await get_http_client().post(
             url,
-            headers={"Authorization": f"Bearer {caller_api_key}"},
-            data={"conversation_id": str(conversation_id)},
+            headers=headers,
+            data={"conversation_id": str(conversation_id), "origin": "generated"},
             files={"file": (filename, text.encode("utf-8"), "text/markdown")},
             timeout=60.0,
         )

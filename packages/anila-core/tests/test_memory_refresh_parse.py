@@ -8,6 +8,20 @@ from anila_core.memory.long_term.extraction import (
 )
 
 
+def test_parse_extraction_marks_preference_and_defaults_unknown_to_fact():
+    """語氣、格式這類要標成 preference；沒寫 kind 的舊格式當成 fact。"""
+    from anila_core.memory.long_term.extraction import parse_extraction_response
+
+    raw = """[
+      {"key":"語氣","value":"請用條列","confidence":0.8,"kind":"preference"},
+      {"key":"單位","value":"雷達組","confidence":0.9}
+    ]"""
+    facts = parse_extraction_response(raw)
+    assert [fact.get("kind") for fact in facts] == ["preference", "fact"]
+    assert "kind" in EXTRACTION_SYSTEM_PROMPT
+    assert "preference" in EXTRACTION_SYSTEM_PROMPT
+
+
 def test_parse_memory_refresh_keeps_summary_and_user_facts():
     raw = """
     好的。
@@ -18,7 +32,9 @@ def test_parse_memory_refresh_keeps_summary_and_user_facts():
     """
     parsed = parse_memory_refresh_response(raw)
     assert parsed["summary"] == "使用者要一份條列報告"
-    assert parsed["facts"] == [{"key": "unit", "value": "雷達組", "confidence": 0.9}]
+    assert parsed["facts"] == [
+        {"key": "unit", "value": "雷達組", "confidence": 0.9, "kind": "fact"}
+    ]
 
 
 def test_parse_memory_refresh_rejects_garbage():

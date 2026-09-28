@@ -71,6 +71,23 @@ describe("長文文件卡", () => {
     expect(String(fetchMock.mock.calls.at(-1)[0])).toContain("/api/attachments/ref-1");
   });
 
+  it("引用到訊息把這份文件放進 composer 用的附件", () => {
+    const onCiteDocument = vi.fn();
+    render(
+      <MessageBubble
+        msg={assistant({ document: messageDocument({ document: card }) })}
+        agents={[]}
+        onCiteDocument={onCiteDocument}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "引用到訊息" }));
+    expect(onCiteDocument).toHaveBeenCalledWith({
+      referenceId: "ref-1",
+      name: "年度報告.md",
+      kind: "file",
+    });
+  });
+
   it("沒有文件卡時，截斷的回答仍可繼續", () => {
     render(
       <MessageBubble

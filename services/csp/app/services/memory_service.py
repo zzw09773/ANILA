@@ -111,6 +111,21 @@ def reset_summary_role_warning() -> None:
     _summary_role_warnings.clear()
 
 
+_fact_embed_warnings: set[str] = set()
+
+
+def reset_fact_embed_warning() -> None:
+    """測試用。正式路徑不要呼叫。"""
+    _fact_embed_warnings.clear()
+
+
+def _warn_fact_embed_once(message: str) -> None:
+    if message in _fact_embed_warnings:
+        return
+    _fact_embed_warnings.add(message)
+    logger.warning("memory_service: %s", message)
+
+
 def _warn_summary_role_once(message: str | None) -> None:
     if not message or message in _summary_role_warnings:
         return
@@ -490,6 +505,200 @@ def get_user_facts(
     return q.order_by(UserFact.updated_at.desc()).all()
 
 
+def _stored_kind(fact: dict[str, Any] | UserFact) -> str:
+    """沒有 kind、或值不認識的列當成 fact。preference.* 的 key 仍是偏好。"""
+    raw = fact.get("kind") if isinstance(fact, dict) else getattr(fact, "kind", None)
+    key = fact.get("key") if isinstance(fact, dict) else getattr(fact, "key", "")
+    if isinstance(raw, str) and raw.strip().lower() in {"preference", "fact"}:
+        kind = raw.strip().lower()
+    else:
+        kind = "fact"
+    if str(key or "").startswith("preference."):
+        return "preference"
+    return kind
+
+
+def _is_preference(fact: UserFact | Any) -> bool:
+    return _stored_kind(fact) == "preference"
+
+
+def _fact_embed_text(fact: UserFact | dict[str, Any]) -> str:
+    if isinstance(fact, dict):
+        return f"{fact.get('key')}: {fact.get('value')}"
+    return f"{fact.key}: {fact.value}"
+
+
+def _save_fact_embedding(db: Session, row: UserFact, fact: dict[str, Any]) -> None:
+    """把已算好的向量寫進列。沒有向量就清掉，避免舊句子的向量對上新內容。"""
+    if "embedding" not in fact:
+        return
+    embedding = fact.get("embedding")
+    source_model = fact.get("embedding_source_model")
+    native_dim = fact.get("embedding_native_dim")
+    literal = _vec_to_pg_literal(embedding) if embedding else None
+    if db.get_bind().dialect.name == "postgresql":
+        if literal:
+            db.execute(
+                text(
+                    """
+                    UPDATE user_facts
+                       SET embedding = CAST(:vec AS halfvec),
+                           embedding_source_model = :model,
+                           embedding_native_dim = :dim
+                     WHERE id = :id
+                    """
+                ),
+                {
+                    "vec": literal,
+                    "model": source_model,
+                    "dim": native_dim,
+                    "id": row.id,
+                },
+            )
+        else:
+            db.execute(
+                text(
+                    """
+                    UPDATE user_facts
+                       SET embedding = NULL,
+                           embedding_source_model = NULL,
+                           embedding_native_dim = NULL
+                     WHERE id = :id
+                    """
+                ),
+                {"id": row.id},
+            )
+        return
+    row.embedding = literal
+    row.embedding_source_model = source_model
+    row.embedding_native_dim = native_dim
+
+
+def _fact_vector_for_model(fact: UserFact, source_model: str) -> list[float] | None:
+    stored_model = getattr(fact, "embedding_source_model", None) or ""
+    if stored_model.lower() != (source_model or "").lower():
+        return None
+    parsed = _parse_vec(getattr(fact, "embedding", None))
+    if not _vector_is_finite(parsed):
+        return None
+    return parsed
+
+
+async def _attach_fact_embeddings(
+    db: Session,
+    facts: list[dict[str, Any]],
+    *,
+    user_id: int,
+) -> list[dict[str, Any]]:
+    """寫入前算好向量。嵌入失敗仍留下事實，下次取用再補。"""
+    prepared: list[dict[str, Any]] = []
+    for fact in facts:
+        item = dict(fact)
+        item["kind"] = _stored_kind(item)
+        if item["kind"] == "preference":
+            item["embedding"] = None
+            prepared.append(item)
+            continue
+        try:
+            vector, source_model, native_dim = await _embed(
+                db,
+                _fact_embed_text(item),
+                user_id=user_id,
+                embedding_input_role="document",
+            )
+        except Exception:
+            _warn_fact_embed_once(
+                "fact embedding failed while saving; row kept without a vector"
+            )
+            item["embedding"] = None
+            prepared.append(item)
+            continue
+        if _vector_is_finite(vector):
+            item["embedding"] = vector
+            item["embedding_source_model"] = source_model
+            item["embedding_native_dim"] = native_dim
+        else:
+            item["embedding"] = None
+        prepared.append(item)
+    return prepared
+
+
+async def _backfill_fact_embedding(
+    db: Session,
+    fact: UserFact,
+    *,
+    user_id: int,
+) -> list[float] | None:
+    try:
+        vector, source_model, native_dim = await _embed(
+            db,
+            _fact_embed_text(fact),
+            user_id=user_id,
+            embedding_input_role="document",
+        )
+    except Exception:
+        _warn_fact_embed_once(
+            "fact embedding unavailable; injecting preferences only"
+        )
+        return None
+    if not _vector_is_finite(vector):
+        return None
+    _save_fact_embedding(
+        db,
+        fact,
+        {
+            "embedding": vector,
+            "embedding_source_model": source_model,
+            "embedding_native_dim": native_dim,
+        },
+    )
+    db.commit()
+    return vector
+
+
+async def _relevant_facts(
+    db: Session,
+    facts: list[UserFact],
+    query: str,
+    *,
+    user_id: int,
+) -> list[UserFact]:
+    """只留下與這一輪問題的餘弦相似度達到門檻的事實，並套用 top-k。"""
+    if not facts or not (query or "").strip():
+        return []
+    top_k = int(get_setting(db, "memory.retrieve_top_k"))
+    threshold = float(get_setting(db, "memory.retrieve_min_cosine"))
+    try:
+        query_vector, source_model, _native = await _embed(
+            db,
+            query,
+            user_id=user_id,
+            embedding_input_role="query",
+        )
+    except Exception:
+        _warn_fact_embed_once(
+            "fact embedding unavailable; injecting preferences only"
+        )
+        return []
+    if not _vector_is_finite(query_vector):
+        _warn_fact_embed_once(
+            "fact embedding unavailable; injecting preferences only"
+        )
+        return []
+    scored: list[tuple[float, UserFact]] = []
+    for fact in facts:
+        vector = _fact_vector_for_model(fact, source_model)
+        if vector is None:
+            vector = await _backfill_fact_embedding(db, fact, user_id=user_id)
+        if vector is None:
+            continue
+        cosine = _cosine(query_vector, vector)
+        if cosine >= threshold:
+            scored.append((cosine, fact))
+    scored.sort(key=lambda item: (-item[0], -int(item[1].id or 0)))
+    return [fact for _cosine_value, fact in scored[:top_k]]
+
+
 def _format_block(
     facts: list[UserFact],
     chunks: list[RetrievedChunk],
@@ -507,8 +716,8 @@ def _format_block(
     傳進來。給它一個預設值就等於把那顆設定又釘回模組層一次 —— 呼叫端漏傳會變成
     靜默用舊值，而不是當場 ``TypeError``。
     """
-    prefs = [f for f in facts if f.key.startswith("preference.")]
-    others = [f for f in facts if not f.key.startswith("preference.")]
+    prefs = [f for f in facts if _is_preference(f)]
+    others = [f for f in facts if not _is_preference(f)]
 
     # 呼叫端仍會傳 chunks。固定區塊不再使用它們。
     _ = chunks
@@ -596,15 +805,27 @@ async def build_memory_block(
         db, user_id, only_conversation_id=only_conversation_id
     )
     facts = _facts_allowed_in_prompt(db, facts)
-    # 舊回答片段不再注入。exclude／only 仍只作用在事實（ANILALM 同一對話框）。
-    del latest_user_message, exclude_conversation_id
+    # 舊回答片段不再注入。exclude 仍只留給呼叫端，固定區塊不用它。
+    del exclude_conversation_id
+    preferences = [fact for fact in facts if _is_preference(fact)]
+    plain_facts = [fact for fact in facts if not _is_preference(fact)]
+    try:
+        relevant = await _relevant_facts(
+            db, plain_facts, latest_user_message, user_id=user_id
+        )
+    except Exception:
+        _warn_fact_embed_once(
+            "fact embedding unavailable; injecting preferences only"
+        )
+        relevant = []
+    selected = preferences + relevant
     return MemoryReadResult(
         block=_format_block(
-            facts,
+            selected,
             [],
             max_chunk_chars=1200,
         ),
-        facts_count=len(facts),
+        facts_count=len(selected),
         chunks=[],
     )
 
@@ -785,13 +1006,23 @@ def _merge_fact_batch(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "values": [value],
                 "confidence": confidence,
                 "evidence_message_id": fact.get("evidence_message_id"),
+                "kind": _stored_kind(fact),
+                "embedding": fact.get("embedding"),
+                "embedding_source_model": fact.get("embedding_source_model"),
+                "embedding_native_dim": fact.get("embedding_native_dim"),
             }
             order.append(key)
             continue
         if value not in bucket["values"]:
             bucket["values"].append(value)
+            # 接起來的句子跟原先那一筆的向量不再是同一段文字。
+            bucket["embedding"] = None
+            bucket["embedding_source_model"] = None
+            bucket["embedding_native_dim"] = None
         if confidence > bucket["confidence"]:
             bucket["confidence"] = confidence
+        if _stored_kind(fact) == "preference":
+            bucket["kind"] = "preference"
     merged: list[dict[str, Any]] = []
     for key in order:
         bucket = grouped[key]
@@ -799,6 +1030,14 @@ def _merge_fact_batch(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "key": key,
             "value": _cap_joined_fact_value(bucket["values"]),
             "confidence": bucket["confidence"],
+            "kind": bucket.get("kind") or "fact",
+            "embedding": bucket.get("embedding") if len(bucket["values"]) == 1 else None,
+            "embedding_source_model": (
+                bucket.get("embedding_source_model") if len(bucket["values"]) == 1 else None
+            ),
+            "embedding_native_dim": (
+                bucket.get("embedding_native_dim") if len(bucket["values"]) == 1 else None
+            ),
         }
         if bucket.get("evidence_message_id") is not None:
             item["evidence_message_id"] = bucket["evidence_message_id"]
@@ -848,6 +1087,7 @@ def _upsert_facts(
             "confidence": f["confidence"],
             "source_conversation_id": source_conversation_id,
             "source_message_id": source_message_id,
+            "kind": _stored_kind(f),
         }
         for f in facts
     ]
@@ -859,12 +1099,23 @@ def _upsert_facts(
             "confidence": stmt.excluded.confidence,
             "source_conversation_id": stmt.excluded.source_conversation_id,
             "source_message_id": stmt.excluded.source_message_id,
+            "kind": stmt.excluded.kind,
             "updated_at": text("CURRENT_TIMESTAMP"),
         },
         # 使用者改過的列留著。WHERE 不成立時這次更新略過，不插第二列。
         where=table.c.user_edited.is_(False),
     )
     db.execute(stmt)
+    db.flush()
+    for fact in facts:
+        row = (
+            db.query(UserFact)
+            .filter(UserFact.user_id == user_id, UserFact.key == fact["key"])
+            .one_or_none()
+        )
+        if row is None or bool(getattr(row, "user_edited", False)):
+            continue
+        _save_fact_embedding(db, row, fact)
 
 
 async def persist_turn(
@@ -1324,16 +1575,21 @@ def _upsert_facts_generic(
                 "confidence": fact["confidence"],
                 "source_conversation_id": source_conversation_id,
                 "source_message_id": evidence_id,
+                "kind": _stored_kind(fact),
             }
             if db.get_bind().dialect.name == "sqlite":
                 fields["id"] = _next_user_fact_id(db)
-            db.add(UserFact(**fields))
+            row = UserFact(**fields)
+            db.add(row)
         else:
             row.value = fact["value"]
             row.confidence = fact["confidence"]
             row.source_conversation_id = source_conversation_id
             row.source_message_id = evidence_id
+            row.kind = _stored_kind(fact)
             row.updated_at = datetime.now(timezone.utc)
+        db.flush()
+        _save_fact_embedding(db, row, fact)
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -1686,6 +1942,11 @@ async def refresh_conversation(
                 assistant_texts,
                 user_messages=user_messages,
             )
+        )
+        # 事實向量要在摘要嵌入之前算完。_embed 會 commit，此時兩邊都還沒落庫，
+        # 最後一次嵌入看到的事實筆數與摘要筆數才會仍是 0。
+        facts = await _attach_fact_embeddings(
+            db, _merge_fact_batch(facts), user_id=conv.user_id
         )
         # 嵌入前 session 必須是乾的。_embed 會 commit 把連線還回池子，
         # 若事實還掛在同一個交易裡，這次 commit 會把半套列寫進去，
@@ -2056,10 +2317,13 @@ class PostgresMemoryAdapter:
     ) -> None:
         db = self._db_factory()
         try:
+            prepared = await _attach_fact_embeddings(
+                db, facts, user_id=user_id
+            )
             _upsert_facts(
                 db,
                 user_id,
-                facts,
+                prepared,
                 source_conversation_id=source_conversation_id,
                 source_message_id=source_message_id,
             )

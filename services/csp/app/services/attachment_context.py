@@ -101,6 +101,10 @@ def admit(
     excluded: list[int] = []
     running = 0
     for att in attachments:
+        if getattr(att, "origin", None) == "generated":
+            continue
+        if getattr(att, "extract_status", None) == "expired":
+            continue
         if (att.extract_status or "") != "ok":
             continue
         if att.token_count is None:
@@ -208,6 +212,10 @@ def build_attachment_prompt_block(
     excluded ones are named with the budget reason; pending / failed /
     unsupported / too_large are named so the model does not invent content.
     """
+    attachments = [
+        att for att in attachments
+        if (att.extract_status or "") != "expired"
+    ]
     if not attachments:
         return None
 

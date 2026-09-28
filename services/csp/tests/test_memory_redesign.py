@@ -75,6 +75,11 @@ async def test_build_memory_block_ignores_retrieved_raw_chunks(db, monkeypatch):
         ]
 
     monkeypatch.setattr(memory_service, "retrieve_relevant_chunks", _retrieve)
+
+    async def _same_vector(*_args, **_kwargs):
+        return [1.0, 0.0], "embed-test", 2
+
+    monkeypatch.setattr(memory_service, "_embed", _same_vector)
     result = await memory_service.build_memory_block(db, user.id, "幫我做一份報告")
     assert "雷達組" in (result.block or "")
     assert "RAW_OLD_ANSWER" not in (result.block or "")
@@ -406,7 +411,7 @@ async def test_summary_search_returns_the_prior_summary_not_raw_answers(db, monk
     assert [hit.summary for hit in hits] == ["上次報告結論是用條列"]
 
 
-def test_user_can_edit_and_delete_fact_and_delete_summary(client, db):
+def test_user_can_edit_and_delete_fact_and_delete_summary(client, db, monkeypatch):
     from app.middleware.cookies import CSRF_COOKIE_NAME
 
     owner = make_user(db, username="mem-owner")
@@ -466,6 +471,10 @@ def test_user_can_edit_and_delete_fact_and_delete_summary(client, db):
     db.expire_all()
     import asyncio
 
+    async def _same_vector(*_args, **_kwargs):
+        return [1.0, 0.0], "embed-test", 2
+
+    monkeypatch.setattr(memory_service, "_embed", _same_vector)
     block = asyncio.run(memory_service.build_memory_block(db, owner.id, "你好")).block or ""
     assert "雷達組" not in block
     assert "通訊組" in block

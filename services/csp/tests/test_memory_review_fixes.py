@@ -213,7 +213,7 @@ def test_idle_scan_skips_classified_and_trade_secret_conversations(db):
 
 
 @pytest.mark.asyncio
-async def test_classified_facts_are_not_injected_and_get_purged(db):
+async def test_classified_facts_are_not_injected_and_get_purged(db, monkeypatch):
     user = make_user(db, username="rev-inject-class")
     secret = _conv(db, user, "secret")
     secret.classified = True
@@ -240,6 +240,10 @@ async def test_classified_facts_are_not_injected_and_get_purged(db):
     )
     db.commit()
 
+    async def _same_vector(*_args, **_kwargs):
+        return [1.0, 0.0], "embed-test", 2
+
+    monkeypatch.setattr(memory_service, "_embed", _same_vector)
     result = await memory_service.build_memory_block(db, user.id, "你好")
     assert "機密職稱" not in (result.block or "")
     assert "阿光" in (result.block or "")

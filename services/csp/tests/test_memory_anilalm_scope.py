@@ -38,16 +38,12 @@ _next_id = itertools.count(1)
 
 @pytest.fixture(autouse=True)
 def no_embedding(monkeypatch):
-    """記憶檢索的向量那半在 SQLite 上跑不動,讓 ``_embed`` 失敗。
+    """SQLite 沒有 pgvector。固定向量讓範圍內的事實都算相關，範圍斷言才看得清楚。"""
 
-    ``retrieve_relevant_chunks`` 對 embed 失敗是 fail-soft(回 []),
-    所以 chunk 那半自然空掉,剩下 ``user_facts`` 這條真路徑受測。
-    """
+    async def _constant(*a, **kw):
+        return [1.0, 0.0], "embed-test", 2
 
-    async def _boom(*a, **kw):
-        raise RuntimeError("no embedder in the SQLite suite")
-
-    monkeypatch.setattr(memory_service, "_embed", _boom)
+    monkeypatch.setattr(memory_service, "_embed", _constant)
 
 
 def make_conversation(db, user, origin, title="t"):

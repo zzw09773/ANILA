@@ -368,12 +368,27 @@ async def _inject_memory(
     return result
 
 
+def _explicit_attachment_refs(header: str | None) -> set[str]:
+    """這一輪使用者點名的附件編號。逗號分隔，只留非空的前 100 筆。"""
+    refs: set[str] = set()
+    for part in (header or "").split(","):
+        ref = part.strip()
+        if not ref or len(ref) > 80:
+            continue
+        refs.add(ref)
+        if len(refs) >= 100:
+            break
+    return refs
+
+
 def _inject_attachments(
     db: Session,
     conversation_id: int | None,
     body: dict,
     model_name: str | None,
     side: TurnSidechannel | None = None,
+    *,
+    explicit_reference_ids: set[str] | None = None,
 ) -> "attachment_context.AttachmentInjectResult | None":
     """附件狀態留在系統訊息；抽出的本文改走外來內容包裝，不進 system。
 
@@ -395,12 +410,15 @@ def _inject_attachments(
         meta_rows = (
             db.query(
                 Attachment.id,
+                Attachment.reference_id,
                 Attachment.filename,
                 Attachment.page_count,
                 Attachment.token_count,
                 Attachment.extract_status,
                 Attachment.extract_error,
                 Attachment.created_at,
+                Attachment.origin,
+                Attachment.message_id,
             )
             .filter(Attachment.conversation_id == conversation_id)
             .order_by(Attachment.created_at.asc(), Attachment.id.asc())
@@ -409,17 +427,54 @@ def _inject_attachments(
         if not meta_rows:
             return None
 
+        from app.models.message import Message
+
+        latest_user = (
+            db.query(Message.id)
+            .filter(
+                Message.conversation_id == conversation_id,
+                Message.role == "user",
+            )
+            .order_by(Message.id.desc())
+            .first()
+        )
+        latest_user_message_id = int(latest_user[0]) if latest_user else None
+        named = {
+            ref.strip()
+            for ref in (explicit_reference_ids or set())
+            if isinstance(ref, str) and ref.strip()
+        }
+
+        def _generated_cited(row) -> bool:
+            if getattr(row, "origin", None) != "generated":
+                return False
+            if row.reference_id in named:
+                return True
+            return (
+                latest_user_message_id is not None
+                and row.message_id == latest_user_message_id
+            )
+
+        # 平台產出的長文不自動進上下文。過了保存期限的上傳也不再進。
+        auto_rows = [
+            row for row in meta_rows
+            if getattr(row, "origin", None) != "generated"
+            and getattr(row, "extract_status", None) != "expired"
+        ]
+        cited_rows = [row for row in meta_rows if _generated_cited(row)]
+        prompt_rows = auto_rows + cited_rows
+
         # model_name None → explicit default-window fallback.
         context_window = attachment_context.get_context_window(db, model_name)
         budget = attachment_context.attachment_budget_tokens(db, context_window)
-        admitted_list, excluded_list = attachment_context.admit(db, meta_rows, budget)
-        admitted_set = set(admitted_list)
+        admitted_list, excluded_list = attachment_context.admit(db, auto_rows, budget)
+        admitted_set = set(admitted_list) | {row.id for row in cited_rows}
 
         text_by_id: dict[int, str | None] = {}
-        if admitted_list:
+        if admitted_set:
             text_by_id = dict(
                 db.query(Attachment.id, Attachment.extracted_text)
-                .filter(Attachment.id.in_(admitted_list))
+                .filter(Attachment.id.in_(admitted_set))
                 .all()
             )
 
@@ -443,7 +498,7 @@ def _inject_attachments(
                 r,
                 text_by_id.get(r.id) if r.id in admitted_set else None,
             )
-            for r in meta_rows
+            for r in prompt_rows
         ]
         block = attachment_context.build_attachment_prompt_block(
             views, admitted_ids=admitted_set, include_bodies=False,
@@ -1722,7 +1777,14 @@ async def chat_completions(
     # P1.5: whole-document attachment injection (after memory). Failures are
     # recorded on attach_inject for anila_meta.trace; chat still proceeds.
     attach_inject = _inject_attachments(
-        db, conv_id_int, body, model_name, side,
+        db,
+        conv_id_int,
+        body,
+        model_name,
+        side,
+        explicit_reference_ids=_explicit_attachment_refs(
+            request.headers.get("X-ANILA-Attachment-Refs")
+        ),
     )
     # Capture the user message text NOW (after memory / attachment injection
     # but before any downstream mutation) so the post-turn writer has the

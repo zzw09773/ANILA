@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, defer
 
@@ -26,6 +26,7 @@ from app.services.attachment_service import (
     delete_attachment,
     extract_attachment_text,
     get_attachment,
+    resolve_upload_origin,
     upload_attachment,
 )
 
@@ -117,9 +118,11 @@ async def upload(
     file: UploadFile = File(...),
     conversation_id: Optional[int] = Form(None),
     message_id: Optional[int] = Form(None),
+    origin: Optional[str] = Form(None),
     # Optional: client names the conversation's selected model so the meter
     # matches admission. Absent → configured default window.
     model: Optional[str] = Query(None),
+    service_token: Optional[str] = Header(default=None, alias="X-CSP-Service-Token"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -136,6 +139,7 @@ async def upload(
         db, file, current_user,
         conversation_id=conversation_id,
         message_id=message_id,
+        origin=resolve_upload_origin(db, origin, service_token),
     )
     # Schedule extraction after commit; BackgroundTasks runs post-response.
     # Tests call extract_attachment_text(id, db=...) directly against the
@@ -213,7 +217,7 @@ def get_meta(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    att, _ = get_attachment(db, reference_id, current_user)
+    att, _ = get_attachment(db, reference_id, current_user, require_bytes=False)
     capacity = None
     admitted = set()
     if att.conversation_id is not None:

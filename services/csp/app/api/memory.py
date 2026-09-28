@@ -283,6 +283,9 @@ def update_fact(
     fact.value = value
     fact.confidence = 1.0
     fact.user_edited = True
+    fact.embedding = None
+    fact.embedding_source_model = None
+    fact.embedding_native_dim = None
     fact.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(fact)

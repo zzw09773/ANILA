@@ -30,8 +30,8 @@ class Attachment(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # P1.5 — async text extraction (r1_0011).
-    # extract_status: pending | ok | failed | unsupported | too_large
-    # (admission vs a model budget is derived at use time, not stored).
+    # extract_status: pending | ok | failed | unsupported | too_large | expired
+    # expired：上傳滿 30 天，檔與抽出文字已刪，列留作墓碑。
     extracted_text = Column(Text, nullable=True)
     token_count = Column(Integer, nullable=True)
     extract_status = Column(
@@ -52,6 +52,11 @@ class Attachment(Base):
         Integer,
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # upload：使用者上傳，計入容量並自動注入。
+    # generated：平台把超長回答存成的文件，不計容量，使用者點名才注入。
+    origin = Column(
+        String(20), nullable=False, default="upload", server_default="upload",
     )
 
     message = relationship("Message", back_populates="attachments")

@@ -129,6 +129,7 @@ def _drive_fake(monkeypatch, content: str, *, finish: str = "stop", client: _Cli
 
     monkeypatch.setattr(rs, "_stream_llm_sse", fake_stream)
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    monkeypatch.setattr(rs, "_current_service_token", lambda: "csk-router-test")
 
     async def run() -> str:
         parts: list[str] = []
@@ -167,7 +168,9 @@ def test_answer_over_7000_chars_is_saved_as_a_document(monkeypatch):
     upload = client.uploads[0]
     assert upload["url"].endswith("/api/attachments")
     assert upload["headers"]["Authorization"] == "Bearer sk-user"
+    assert upload["headers"]["X-CSP-Service-Token"] == "csk-router-test"
     assert upload["data"]["conversation_id"] == "42"
+    assert upload["data"].get("origin") == "generated"
     assert upload["filename"].endswith(".md")
     assert "第1章" in upload["filename"]
     assert upload["body"] == text

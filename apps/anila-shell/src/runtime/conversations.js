@@ -359,6 +359,7 @@ export const EXTRACT_TERMINAL_STATUSES = new Set([
   "unsupported",
   "failed",
   "too_large",
+  "expired",
 ]);
 
 /** zh-TW reasons shown on chips / banners (aligned with CSP prompt notices). */
@@ -366,6 +367,7 @@ export const EXTRACT_STATUS_REASONS = {
   unsupported: "不支援的檔案格式",
   failed: "解析失敗",
   too_large: ATTACHMENT_OVERFLOW_NOTICE,
+  expired: "已超過保存期限（30 天），檔案已刪除",
 };
 
 export { ATTACHMENT_OVERFLOW_NOTICE };
@@ -379,6 +381,7 @@ export function extractStatusReason(status, extractError) {
   //   (fixed actionable set). Fall back to the generic label when absent.
   if (status === "failed") return EXTRACT_STATUS_REASONS.failed;
   if (status === "too_large") return EXTRACT_STATUS_REASONS.too_large;
+  if (status === "expired") return EXTRACT_STATUS_REASONS.expired;
   if (
     status === "unsupported"
     && typeof extractError === "string"

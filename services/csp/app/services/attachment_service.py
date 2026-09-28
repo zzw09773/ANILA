@@ -31,6 +31,60 @@ from app.services.storage_paths import ATTACHMENT_STORAGE_ROOT
 
 logger = logging.getLogger(__name__)
 
+_forged_generated_origin_logged = False
+
+
+def reset_forged_generated_origin_warning() -> None:
+    """測試用。正式路徑不要呼叫。"""
+    global _forged_generated_origin_logged
+    _forged_generated_origin_logged = False
+
+
+def _warn_forged_generated_origin_once() -> None:
+    global _forged_generated_origin_logged
+    if _forged_generated_origin_logged:
+        return
+    _forged_generated_origin_logged = True
+    logger.warning(
+        "origin=generated ignored; request is not the router service client"
+    )
+
+
+def is_router_service_credential(db: Session, token: str | None) -> bool:
+    """只有 router-primary 這張服務憑證能把附件標成平台產出。"""
+    presented = (token or "").strip()
+    if not presented:
+        return False
+    from app.models.service_client import ServiceClient
+    from app.services.agent_credential_service import verify_service_token
+
+    identity = verify_service_token(db, token=presented)
+    if (
+        identity is None
+        or identity.kind != "service_client"
+        or identity.service_client_id is None
+    ):
+        return False
+    row = db.get(ServiceClient, identity.service_client_id)
+    if row is None or row.revoked_at is not None:
+        return False
+    return row.client_type == "router" and row.client_name == "router-primary"
+
+
+def resolve_upload_origin(
+    db: Session,
+    requested: str | None,
+    service_token: str | None,
+) -> str:
+    """使用者帶 origin=generated 時當成一般上傳，不回錯誤。"""
+    if (requested or "").strip() != "generated":
+        return "upload"
+    if is_router_service_credential(db, service_token):
+        return "generated"
+    _warn_forged_generated_origin_once()
+    return "upload"
+
+
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 # L5: 改用 allow-list — 只允許平台明確支援的文件 / 圖檔型別。其餘一律
 # 拒絕，比 deny-list 更不易因新副檔名漏網。
@@ -322,6 +376,7 @@ async def upload_attachment(
     user: User,
     conversation_id: Optional[int] = None,
     message_id: Optional[int] = None,
+    origin: str = "upload",
 ) -> Attachment:
     filename = file.filename or "upload"
     ext = Path(filename).suffix.lower()
@@ -384,6 +439,7 @@ async def upload_attachment(
         size_bytes=len(content),
         storage_path=rel_path,
         extract_status="pending",
+        origin="generated" if origin == "generated" else "upload",
     )
     db.add(att)
     db.commit()
@@ -392,7 +448,13 @@ async def upload_attachment(
     return att
 
 
-def get_attachment(db: Session, reference_id: str, user: User) -> tuple[Attachment, Path]:
+def get_attachment(
+    db: Session,
+    reference_id: str,
+    user: User,
+    *,
+    require_bytes: bool = True,
+) -> tuple[Attachment, Path]:
     # 三個消費端(下載 / meta / 刪除)都用不到 extracted_text,而它可能到數 MB。
     att = (
         db.query(Attachment)
@@ -406,7 +468,11 @@ def get_attachment(db: Session, reference_id: str, user: User) -> tuple[Attachme
     if not is_admin_tier(user) and att.uploaded_by != user.id:
         raise HTTPException(status_code=403, detail="無權存取此附件")
     full_path = _storage_root() / att.storage_path
-    if not full_path.is_file():
+    if require_bytes and att.extract_status == "expired":
+        from app.services.attachment_retention import ATTACHMENT_EXPIRED_MESSAGE
+
+        raise HTTPException(status_code=410, detail=ATTACHMENT_EXPIRED_MESSAGE)
+    if require_bytes and not full_path.is_file():
         raise HTTPException(status_code=404, detail="附件檔案不存在")
     return att, full_path
 
@@ -489,7 +555,7 @@ def delete_attachment(db: Session, reference_id: str, user: User) -> Optional[in
 
     No budget recheck: admission is re-derived on the next read / inject.
     """
-    att, full_path = get_attachment(db, reference_id, user)
+    att, full_path = get_attachment(db, reference_id, user, require_bytes=False)
     conversation_id = att.conversation_id
     try:
         full_path.unlink(missing_ok=True)

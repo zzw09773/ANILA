@@ -6,6 +6,17 @@ const IMAGE_NAME = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 export const ATTACHMENT_OVERFLOW_NOTICE =
   "這份太大，沒辦法整份放進這次回答，可能會漏";
 
+/** 上傳滿 30 天，檔案已刪。與 CSP ATTACHMENT_EXPIRED_MESSAGE 同一句。 */
+export const ATTACHMENT_RETENTION_NOTICE =
+  "已超過保存期限（30 天），檔案已刪除";
+
+export function attachmentRetentionNotice(att) {
+  if (!att) return null;
+  const status = att.extractStatus || att.extract_status || "";
+  if (status === "expired") return ATTACHMENT_RETENTION_NOTICE;
+  return null;
+}
+
 /**
  * User-visible notice when this file will not be fully in the model context.
  * Inline images (`dataUrl`) go via image_url and must not be accused.
@@ -38,6 +49,10 @@ export function attachmentRefId(att) {
 
 export function attachmentPreviewSrc(att) {
   if (!att) return null;
+  if (attachmentRetentionNotice(att)) {
+    if (typeof att.dataUrl === "string" && att.dataUrl) return att.dataUrl;
+    return null;
+  }
   if (typeof att.dataUrl === "string" && att.dataUrl) return att.dataUrl;
   if (typeof att.previewUrl === "string" && att.previewUrl) return att.previewUrl;
   if (!isMessageImage(att)) return null;

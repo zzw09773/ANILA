@@ -137,6 +137,8 @@ export async function streamChatCompletion({
   // 檢索發生在 CSP,而 CSP 只看標頭;寫在訊息裡的話模型看得到、CSP 看不到,
   // 使用者會得到一個「按了、沒報錯、規章沒被查」的按鈕。
   forceKbSearch = false,
+  // 這一輪選進 composer 的附件。平台產出的長文只有被點名才進上下文。
+  attachmentRefs,
   onText,
   onTrace,
   onMeta,
@@ -192,6 +194,10 @@ export async function streamChatCompletion({
   // 而不是送一個 `direct` —— 兩者在 Router 端等價,不送比較誠實。
   if (forceKbSearch) {
     headers["X-ANILA-Route"] = "forced";
+  }
+  if (Array.isArray(attachmentRefs) && attachmentRefs.length > 0) {
+    const refs = attachmentRefs.map((id) => String(id).trim()).filter(Boolean);
+    if (refs.length > 0) headers["X-ANILA-Attachment-Refs"] = refs.join(",");
   }
   const response = await fetch(url, {
     method: "POST",

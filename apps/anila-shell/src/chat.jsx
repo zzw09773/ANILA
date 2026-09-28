@@ -18,6 +18,7 @@ import {
   ATTACHMENT_OVERFLOW_NOTICE,
   attachmentOverflowNotice,
   attachmentPreviewSrc,
+  attachmentRetentionNotice,
   isMessageImage,
 } from "./runtime/messageAttachments.js";
 import { canContinueLengthReply } from "./runtime/reservedTurn.js";
@@ -815,12 +816,15 @@ function MessageAttachmentList({ attachments }) {
   const images = [];
   const files = [];
   const overflowItems = [];
+  const retentionItems = [];
   for (const att of attachments) {
     const src = attachmentPreviewSrc(att);
     if (isMessageImage(att) && src) images.push({ att, src });
     else files.push(att);
     const overflow = attachmentOverflowNotice(att);
     if (overflow) overflowItems.push({ att, overflow });
+    const retention = attachmentRetentionNotice(att);
+    if (retention) retentionItems.push({ att, retention });
   }
   return (
     <>
@@ -895,6 +899,24 @@ function MessageAttachmentList({ attachments }) {
           })}
         </div>
       )}
+      {retentionItems.length > 0 && (
+        <div
+          role="status"
+          data-testid="attachment-retention-notice"
+          style={{
+            marginBottom: 8,
+            fontSize: 11,
+            color: "var(--fg-muted)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          {retentionItems.map(({ att, retention }) => (
+            <div key={att.referenceId || att.id || att.name}>
+              {att.name}：{retention}
+            </div>
+          ))}
+        </div>
+      )}
       {overflowItems.length > 0 && (
         <div
           role="status"
@@ -946,6 +968,7 @@ export const MessageBubble = ({
   isLatestAssistant = false,
   /** 對應的提問附了檔案：院規狀態改說「依附件回答」。 */
   questionHadAttachments = false,
+  onCiteDocument,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1557,7 +1580,9 @@ export const MessageBubble = ({
         );
       })()}
 
-      {msg.document ? <LongDocumentCard document={msg.document} /> : null}
+      {msg.document ? (
+        <LongDocumentCard document={msg.document} onCite={onCiteDocument} />
+      ) : null}
 
       {/* 正文已經寫出、但被長度截斷時，讓使用者從斷點接下去。 */}
       {!msg.streaming && canContinueLengthReply(msg) && typeof onContinue === "function" && (
@@ -2249,6 +2274,8 @@ export const Composer = ({
   footer,
   onUpload,
   onFetchAttachmentMeta,
+  queuedAttachment,
+  onQueuedAttachmentConsumed,
   // Test hook: shorten / stub poll backoff (production leaves default).
   pollExtractOptions,
   // Stop generation:對話串流中時送出鈕變停止鈕。
@@ -2317,6 +2344,21 @@ export const Composer = ({
   // React may defer the updater, leaving an outer flag stale (N1).
   const liveRefs = useRef(new Set());
   const liveUploadIds = useRef(new Set());
+  useEffect(() => {
+    const ref = queuedAttachment?.referenceId || queuedAttachment?.reference_id;
+    if (!ref) return;
+    liveRefs.current.add(ref);
+    setAtts((prev) => {
+      if (prev.some((item) => (item.referenceId || item.reference_id) === ref)) return prev;
+      return [...prev, {
+        ...queuedAttachment,
+        referenceId: ref,
+        name: queuedAttachment.name || queuedAttachment.filename || "文件.md",
+        kind: queuedAttachment.kind || "file",
+      }];
+    });
+    onQueuedAttachmentConsumed?.();
+  }, [queuedAttachment, onQueuedAttachmentConsumed]);
   const uploadIdSeq = useRef(0);
   // 父層有給 onChangeRedactionMode 就由父層持有這個模式(才存得回
   // users.ui_settings);沒給就退回本地狀態(multiagent.jsx 與單元測試)。
