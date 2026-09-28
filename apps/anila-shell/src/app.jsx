@@ -217,6 +217,7 @@ import { BannerBar } from "./banners.jsx";
 import { ServicesPanel } from "./services.jsx";
 import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
+import { LongDocumentPanelHost } from "./longDocumentCard.jsx";
 import { ArtifactPreviewProvider } from "./artifactContext.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
@@ -4718,7 +4719,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           </div>
         )}
 
-        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <LongDocumentPanelHost resetKey={`${selectedConvId ?? ""}:${compareMode ? "compare" : "chat"}`}>
           <div id="shell-main" tabIndex={-1} style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, scrollMarginTop: 80 }}>
             {compareMode ? (
               <ParallelCompareView
@@ -4976,7 +4977,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               onRevise={onReviseArtifact}
             />
           )}
-        </div>
+        </LongDocumentPanelHost>
       </div>
 
       <SettingsModal

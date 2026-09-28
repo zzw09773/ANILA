@@ -2257,6 +2257,12 @@ function revokeAttachmentPreview(att) {
   }
 }
 
+function composerSizeLabel(size) {
+  const n = Number(size);
+  if (!Number.isFinite(n) || n < 0) return "";
+  return `${Math.round(n / 1024)} KB`;
+}
+
 // `onUpload(file) → Promise<AttachmentOut>` is optional. When provided, picked
 // files are uploaded to /api/attachments and the returned reference_id is
 // attached to the message. When absent, files are tracked locally only (legacy
@@ -2829,7 +2835,7 @@ export const Composer = ({
             else if (extractUncertain) statusLabel = "狀態未知";
             else if (overflowNotice) statusLabel = overflowNotice;
             else if (extractFailed && a.extractReason) statusLabel = a.extractReason;
-            else statusLabel = `${Math.round(a.size / 1024)} KB`;
+            else statusLabel = composerSizeLabel(a.size);
             const removeAtt = () => {
               if (a.referenceId) liveRefs.current.delete(a.referenceId);
               if (a.uploadId) liveUploadIds.current.delete(a.uploadId);
@@ -2929,15 +2935,17 @@ export const Composer = ({
               >
                 <IconFile size={12} />
                 {a.name}
-                <span style={{
-                  color: extractFailed
-                    ? "var(--danger)"
-                    : extractOverflow
-                      ? "var(--warn)"
-                      : "var(--fg-subtle)",
-                }}>
-                  {statusLabel}
-                </span>
+                {statusLabel ? (
+                  <span style={{
+                    color: extractFailed
+                      ? "var(--danger)"
+                      : extractOverflow
+                        ? "var(--warn)"
+                        : "var(--fg-subtle)",
+                  }}>
+                    {statusLabel}
+                  </span>
+                ) : null}
                 <IconButton
                   style={{ width: 18, height: 18 }}
                   onClick={removeAtt}
