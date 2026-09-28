@@ -12,16 +12,19 @@ Wraps :mod:`app.services.trusted_host_service`. Authorisation policy:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.external_service import SPEECH
 from app.models.user import User
 from app.schemas.trusted_host import TrustedHostCreate, TrustedHostResponse
+from app.services import external_services as external_svc
 from app.services import trusted_host_service
 from app.services.auth_service import require_admin, require_owner
 
 router = APIRouter(prefix="/api/trusted-hosts", tags=["受信任主機"])
+internal_router = APIRouter(tags=["受信任主機"])
 
 
 def _serialize(row) -> dict:
@@ -72,3 +75,22 @@ def delete_trusted_host(
     if not removed:
         raise HTTPException(status_code=404, detail="trusted host 不存在")
     return None
+
+
+@internal_router.get("/api/internal/trusted-hosts")
+def internal_trusted_hosts(
+    db: Session = Depends(get_db),
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+):
+    """asr-gateway 讀治理中心的信任主機。只接受語音服務權杖。"""
+    try:
+        external_svc.authorize_internal_read(
+            db,
+            SPEECH,
+            service_token=x_csp_service_token,
+            authorization=None,
+        )
+    except external_svc.ReaderDenied as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    hosts = sorted({row.host.lower() for row in trusted_host_service.list_hosts(db) if row.host})
+    return {"hosts": hosts}

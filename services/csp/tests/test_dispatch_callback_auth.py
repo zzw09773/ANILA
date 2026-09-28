@@ -53,12 +53,14 @@ from app.services.service_token_envelope import (
 )
 from app.utils.security import ALGORITHM, get_private_key
 from tests.conftest import make_agent, make_user
+from tests.designate_embedding import designate_embedding
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _collection(db, owner, name: str) -> IngestionCollection:
+    designate_embedding(db, "nv-embed")
     coll = IngestionCollection(
         name=name,
         chunking_config={"strategy": "fixed"},

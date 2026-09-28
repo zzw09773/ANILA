@@ -20,8 +20,11 @@
  * Lives outside WSChat.tsx so the classification and the prompt copy can
  * be pinned by tests without mounting the whole chat panel.
  */
+import { explainError } from '../api/client'
 import { searchCollection, type SearchHit } from '../api/search'
 import { COMMON_PREAMBLE } from '../generated/preamble'
+
+export const EMBEDDING_ROLE_UNSET = '平台嵌入模型尚未在治理中心設定'
 
 // Top-K and min-score for the per-turn retrieval. 5 hits with cosine ≥ 0.3
 // keeps the prompt under ~3KB even on chunky documents while filtering out
@@ -43,6 +46,8 @@ export interface RetrievalOutcome {
   status: RetrievalStatus
   /** Empty for every status other than 'hits'. */
   hits: SearchHit[]
+  /** 只有治理中心還沒指定平台嵌入時才有，給畫面與提示用。其他錯誤不放進來。 */
+  detail?: string
 }
 
 /**
@@ -93,7 +98,9 @@ export async function retrieveTurnContext(
     // sanitised copy above.
     // eslint-disable-next-line no-console
     console.warn('[anilalm] retrieval failed — answering ungrounded', searchErr)
-    return { status: 'failed', hits: [] }
+    const explained = explainError(searchErr)
+    const detail = explained === EMBEDDING_ROLE_UNSET ? explained : undefined
+    return { status: 'failed', hits: [], detail }
   }
 }
 
@@ -137,7 +144,7 @@ export function buildSystemPrompt(
  * 系統提示只留平台規則。段落本文交給 CSP，用同一種外來內容包裝放進 user 訊息。
  */
 export function buildTurnContext(
-  outcome: { status: RetrievalStatus; hits: SearchHit[] },
+  outcome: { status: RetrievalStatus; hits: SearchHit[]; detail?: string },
   ctx: PromptContext,
 ): TurnPrompt {
   const collName = ctx.collectionName || '未指定'
@@ -157,12 +164,15 @@ export function buildTurnContext(
   // 檢索「失敗」不等於「沒有命中」——搜尋根本沒跑成功，關於知識庫內容
   // 一無所知。這裡絕不能沿用下面那句「沒有命中相似度 ≥ 0.3 的段落」。
   if (outcome.status === 'failed') {
+    const reason = outcome.detail === EMBEDDING_ROLE_UNSET
+      ? EMBEDDING_ROLE_UNSET
+      : '本次知識庫檢索失敗——搜尋沒有成功執行，並不是知識庫裡沒有相關內容。'
     return plain([
       COMMON_PREAMBLE,
       '',
       '你是 ANILA LM 的研究助理。',
       `當前知識庫：「${collName}」（共 ${ctx.indexedCount} 份已索引文件）。`,
-      '本次知識庫檢索失敗——搜尋沒有成功執行，並不是知識庫裡沒有相關內容。',
+      reason,
       '你手上沒有任何文件段落。請：',
       '1) 開頭第一句就告訴使用者「知識庫檢索失敗，以下內容未經文件佐證」，',
       '2) 不得聲稱已查過知識庫，也不得說文件裡找不到資料，',

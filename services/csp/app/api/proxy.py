@@ -382,7 +382,7 @@ def _explicit_attachment_refs(header: str | None) -> set[str]:
     return refs
 
 
-def _inject_attachments(
+async def _inject_attachments_async(
     db: Session,
     conversation_id: int | None,
     body: dict,
@@ -390,6 +390,8 @@ def _inject_attachments(
     side: TurnSidechannel | None = None,
     *,
     explicit_reference_ids: set[str] | None = None,
+    user=None,
+    passage_embedder=None,
 ) -> "attachment_context.AttachmentInjectResult | None":
     """附件狀態留在系統訊息；抽出的本文改走外來內容包裝，不進 system。
 
@@ -494,6 +496,23 @@ def _inject_attachments(
                 self.extract_error = row.extract_error
                 self.extracted_text = text
 
+        cited_ids = {row.id for row in cited_rows}
+        if cited_ids:
+            from app.services.document_excerpt import maybe_excerpt_generated
+
+            query = _extract_latest_user_message(body) or ""
+            for row in cited_rows:
+                raw = text_by_id.get(row.id)
+                if not raw:
+                    continue
+                text_by_id[row.id] = await maybe_excerpt_generated(
+                    raw,
+                    query,
+                    budget,
+                    user=user,
+                    passage_embedder=passage_embedder,
+                )
+
         views = [
             _PromptRow(
                 r,
@@ -578,6 +597,32 @@ def _inject_attachments(
             detail=f"注入失敗：{type(exc).__name__}",
             skipped=True,
         )
+
+
+def _inject_attachments(
+    db: Session,
+    conversation_id: int | None,
+    body: dict,
+    model_name: str | None,
+    side: TurnSidechannel | None = None,
+    *,
+    explicit_reference_ids: set[str] | None = None,
+    user=None,
+    passage_embedder=None,
+) -> "attachment_context.AttachmentInjectResult | None":
+    """同步包裝。已經在事件迴圈裡時要改呼叫 ``_inject_attachments_async``。"""
+    return asyncio.run(
+        _inject_attachments_async(
+            db,
+            conversation_id,
+            body,
+            model_name,
+            side,
+            explicit_reference_ids=explicit_reference_ids,
+            user=user,
+            passage_embedder=passage_embedder,
+        )
+    )
 
 
 def _merge_attachment_trace(payload: dict, inject_result) -> dict:
@@ -1800,7 +1845,7 @@ async def chat_completions(
         )
     # P1.5: whole-document attachment injection (after memory). Failures are
     # recorded on attach_inject for anila_meta.trace; chat still proceeds.
-    attach_inject = _inject_attachments(
+    attach_inject = await _inject_attachments_async(
         db,
         conv_id_int,
         body,
@@ -1809,6 +1854,7 @@ async def chat_completions(
         explicit_reference_ids=_explicit_attachment_refs(
             request.headers.get("X-ANILA-Attachment-Refs")
         ),
+        user=user,
     )
     # Capture the user message text NOW (after memory / attachment injection
     # but before any downstream mutation) so the post-turn writer has the

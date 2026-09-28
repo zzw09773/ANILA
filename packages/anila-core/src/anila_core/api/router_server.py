@@ -184,6 +184,46 @@ def router_service_token_source() -> str:
     return "legacy_env" if (settings.csp_service_token or "").strip() else "none"
 
 
+# nginx 傳給 Router 的 Host。只轉這一個，不轉客戶端自己帶的 X-Forwarded-Host。
+_CSP_CLIENT_HOST: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "anila_csp_client_host", default=""
+)
+
+
+def _with_csp_host(headers: Mapping[str, str] | None = None) -> dict[str, str]:
+    """CSP 看到的 X-Forwarded-Host 是這次請求的 Host，不是呼叫端夾帶的值。"""
+    merged = {str(key): value for key, value in dict(headers or {}).items()}
+    for key in list(merged):
+        if key.lower() == "x-forwarded-host":
+            del merged[key]
+    host = (_CSP_CLIENT_HOST.get() or "").strip()
+    if host:
+        merged["X-Forwarded-Host"] = host
+    return merged
+
+
+class _CaptureClientHostMiddleware:
+    """最外層：只記住 nginx 傳來的 Host，離開請求就清掉。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        host = ""
+        for key, value in scope.get("headers") or []:
+            if key == b"host":
+                host = value.decode("latin-1").strip()
+                break
+        token = _CSP_CLIENT_HOST.set(host)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _CSP_CLIENT_HOST.reset(token)
+
+
 def _current_service_token() -> str:
     if _service_token_reloader is not None:
         try:
@@ -198,7 +238,7 @@ async def _csp_service_get(url: str, token: str) -> httpx.Response:
     client = get_http_client()
     response = await client.get(
         url,
-        headers={"X-CSP-Service-Token": token},
+        headers=_with_csp_host({"X-CSP-Service-Token": token}),
         timeout=5.0,
     )
     if response.status_code not in (401, 403) or _service_token_reloader is None:
@@ -219,7 +259,7 @@ async def _csp_service_get(url: str, token: str) -> httpx.Response:
     )
     return await client.get(
         url,
-        headers={"X-CSP-Service-Token": new_token},
+        headers=_with_csp_host({"X-CSP-Service-Token": new_token}),
         timeout=5.0,
     )
 
@@ -795,7 +835,7 @@ async def _fetch_recall_hits(
         client = get_http_client()
         response = await client.post(
             url,
-            headers={"Authorization": f"Bearer {caller_api_key}"},
+            headers=_with_csp_host({"Authorization": f"Bearer {caller_api_key}"}),
             json=payload,
             timeout=15.0,
         )
@@ -2301,7 +2341,7 @@ async def _resolve_session_owner_hash(caller_api_key: str) -> str:
         client = get_http_client()
         response = await client.get(
             url,
-            headers={"Authorization": f"Bearer {caller_api_key}"},
+            headers=_with_csp_host({"Authorization": f"Bearer {caller_api_key}"}),
             timeout=10.0,
         )
     except httpx.RequestError as exc:
@@ -2426,7 +2466,7 @@ async def _csp_resolve_router_model(
     response = await client.post(
         f"{settings.csp_base_url.rstrip('/')}/api/router-models/resolve",
         json={"router_model": requested, "conversation_id": conv_id},
-        headers=headers,
+        headers=_with_csp_host(headers),
         timeout=5.0,
     )
     if response.status_code >= 400:
@@ -2703,6 +2743,8 @@ def create_router_app(
     )
     # 這次請求的 Host / X-Forwarded-Host 算平台網址，不寫死實驗機 IP。
     app.add_middleware(RequestPlatformHostsMiddleware)
+    # 後加的在外層：先記住 nginx 的 Host，再讓裡面的中介層讀得到。
+    app.add_middleware(_CaptureClientHostMiddleware)
 
     @app.get("/health")
     async def health() -> dict:
@@ -4019,7 +4061,7 @@ def create_router_app(
                 # OPT-1: shared client
                 client = get_http_client()
                 async with client.stream(
-                    "POST", url, json=body, headers=headers
+                    "POST", url, json=body, headers=_with_csp_host(headers)
                 ) as resp:
                     if resp.status_code >= 400:
                         err_body = await resp.aread()
@@ -4189,7 +4231,7 @@ async def _summarize_for_compact(
         response = await client.post(
             f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions",
             json=payload,
-            headers=headers,
+            headers=_with_csp_host(headers),
         )
         response.raise_for_status()
         choice = response.json()["choices"][0]
@@ -5741,7 +5783,7 @@ async def _call_llm_non_stream(
         response = await client.post(
             f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions",
             json=payload,
-            headers=headers,
+            headers=_with_csp_host(headers),
         )
         response.raise_for_status()
         data = response.json()
@@ -6074,7 +6116,9 @@ async def _stream_llm_sse(
     try:
         # OPT-1: shared client
         client = get_http_client()
-        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+        async with client.stream(
+            "POST", url, json=payload, headers=_with_csp_host(headers)
+        ) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
                 detail = body.decode("utf-8", errors="replace")
@@ -7384,7 +7428,9 @@ async def _stream_agent_sse(
     try:
         # OPT-1: shared client
         client = get_http_client()
-        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+        async with client.stream(
+            "POST", url, json=payload, headers=_with_csp_host(headers)
+        ) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
                 # Status only in the user-facing string. The body is
@@ -7609,7 +7655,7 @@ async def _upload_long_answer(
     try:
         response = await get_http_client().post(
             url,
-            headers=headers,
+            headers=_with_csp_host(headers),
             data={"conversation_id": str(conversation_id), "origin": "generated"},
             files={"file": (filename, text.encode("utf-8"), "text/markdown")},
             timeout=60.0,

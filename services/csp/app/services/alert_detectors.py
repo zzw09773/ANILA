@@ -645,16 +645,24 @@ def resolve_check_interval() -> int:
     return ALERT_INTERVAL_SECONDS
 
 
+async def alert_detector_pass() -> None:
+    """一輪偵測，然後重試到期的失敗寄信。"""
+    evaluate_database()
+    evaluate_disk()
+    evaluate_backup()
+    await evaluate_platform_ingress()
+    from app.services.alert_mail import retry_due_alert_mail
+
+    retry_due_alert_mail()
+
+
 async def _alert_detector_loop() -> None:
     # Same reason as the model health loop: the nginx probe must not run
     # on the event loop before lifespan reports startup complete.
     await asyncio.sleep(0)
     while True:
         try:
-            evaluate_database()
-            evaluate_disk()
-            evaluate_backup()
-            await evaluate_platform_ingress()
+            await alert_detector_pass()
         except asyncio.CancelledError:
             raise
         except Exception:

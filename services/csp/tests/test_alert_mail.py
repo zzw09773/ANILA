@@ -375,6 +375,126 @@ def test_notifier_sends_once_per_fingerprint_until_resolved(db, monkeypatch):
         reset_streaks_for_tests()
 
 
+def test_failed_send_retries_three_times_over_about_thirty_minutes(db, monkeypatch):
+    """失敗不立刻重寄。十分鐘後第二次、再二十分鐘第三次，然後停。畫面仍看得到錯誤。"""
+    from datetime import datetime, timedelta, timezone
+
+    _allow_loopback(monkeypatch)
+    import app.services.alert_mail as mail
+    from app.models.alert_mail import AlertMailDelivery
+
+    clock = {"now": datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr(mail, "_now", lambda: clock["now"])
+    calls: list[datetime] = []
+
+    def boom(*_args, **_kwargs):
+        calls.append(clock["now"])
+        raise RuntimeError("mailbox full")
+
+    monkeypatch.setattr(mail, "_transmit", boom)
+    from app.services.alert_mail import save_mail_settings
+
+    save_mail_settings(
+        db,
+        enabled=True,
+        smtp_host="127.0.0.1",
+        smtp_port=2525,
+        security="none",
+        username="",
+        password=None,
+        password_set=False,
+        clear_password=False,
+        from_address="anila@example.com",
+        recipients="ops@example.com",
+        actor=None,
+    )
+    upsert_alert(
+        db,
+        fingerprint="fp-retry",
+        category="database",
+        severity="critical",
+        title="資料庫連不上",
+        message="連續兩次無法探測。",
+    )
+    db.commit()
+
+    deliver_open_alert(db, _note("fp-retry"))
+    db.commit()
+    deliver_open_alert(db, _note("fp-retry"))
+    db.commit()
+    assert len(calls) == 1
+    row = db.query(AlertMailSettings).one()
+    assert "mailbox full" in (row.last_error or "")
+    pending = db.query(AlertMailDelivery).filter_by(fingerprint="fp-retry").one()
+    assert pending.sent_at is None
+    assert pending.attempt_count == 1
+
+    clock["now"] += timedelta(minutes=9)
+    mail.retry_due_alert_mail(db)
+    db.commit()
+    assert len(calls) == 1
+
+    clock["now"] += timedelta(minutes=1)
+    mail.retry_due_alert_mail(db)
+    db.commit()
+    assert len(calls) == 2
+
+    clock["now"] += timedelta(minutes=19)
+    mail.retry_due_alert_mail(db)
+    db.commit()
+    assert len(calls) == 2
+
+    clock["now"] += timedelta(minutes=1)
+    mail.retry_due_alert_mail(db)
+    db.commit()
+    assert len(calls) == 3
+    assert "mailbox full" in (db.query(AlertMailSettings).one().last_error or "")
+
+    clock["now"] += timedelta(hours=6)
+    mail.retry_due_alert_mail(db)
+    db.commit()
+    assert len(calls) == 3
+
+    def ok(*_args, **_kwargs):
+        calls.append(clock["now"])
+
+    monkeypatch.setattr(mail, "_transmit", ok)
+    resolve_alert_by_fingerprint(db, "fp-retry")
+    db.commit()
+    deliver_open_alert(db, _note("fp-retry"))
+    db.commit()
+    assert len(calls) == 4
+    assert db.query(AlertMailSettings).one().last_error is None
+    assert db.query(AlertMailDelivery).filter_by(fingerprint="fp-retry").one().sent_at is not None
+
+
+def test_alert_loop_retries_due_mail(monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "app.services.alert_detectors.evaluate_database", lambda: seen.append("db")
+    )
+    monkeypatch.setattr(
+        "app.services.alert_detectors.evaluate_disk", lambda: seen.append("disk")
+    )
+    monkeypatch.setattr(
+        "app.services.alert_detectors.evaluate_backup", lambda: seen.append("backup")
+    )
+
+    async def _ingress():
+        seen.append("ingress")
+
+    monkeypatch.setattr(
+        "app.services.alert_detectors.evaluate_platform_ingress", _ingress
+    )
+    monkeypatch.setattr(
+        "app.services.alert_mail.retry_due_alert_mail", lambda: seen.append("mail")
+    )
+    from app.services.alert_detectors import alert_detector_pass
+
+    asyncio.run(alert_detector_pass())
+    assert seen == ["db", "disk", "backup", "ingress", "mail"]
+
+
 def test_disabled_mail_does_not_send(db, monkeypatch):
     _allow_loopback(monkeypatch)
     server = FakeSmtp()

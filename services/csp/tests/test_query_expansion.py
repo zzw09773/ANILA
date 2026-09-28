@@ -15,6 +15,7 @@ from app.services.auth_service import create_tokens
 from app.services.search_expansion import expand_query
 
 from tests.conftest import make_user
+from tests.designate_embedding import designate_embedding
 
 
 def _on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,12 +142,20 @@ class _StubStore:
     async def similarity_search(self, **_kwargs):
         return []
 
+    async def source_model_coverage(self, _source_model):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            has_matching=False, has_other=False, sample_other_model=None,
+        )
+
 
 def test_search_collection_embeds_expanded_query(
     client: TestClient, db, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Hook：expand_query 後的字串才進 _embed_query。"""
     _on(monkeypatch)
+    designate_embedding(db, "nv-embed")
     alice = make_user(db, username="exp_alice", role="user")
     coll = IngestionCollection(
         name="exp-coll",
@@ -199,6 +208,7 @@ def test_search_collection_skips_expansion_when_flag_off(
     client: TestClient, db, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANILA_QUERY_EXPANSION", "0")
+    designate_embedding(db, "nv-embed")
     alice = make_user(db, username="exp_bob", role="user")
     coll = IngestionCollection(
         name="exp-coll-off",

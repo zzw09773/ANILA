@@ -353,6 +353,7 @@ export function WSChat({ flex }: WSChatProps) {
       const indexedDocs = docs.filter((d) => d.doc.status === 'indexed')
       let retrievalStatus: RetrievalStatus = 'skipped'
       let hits: SearchHit[] = []
+      let retrievalDetail: string | undefined
       if (indexedDocs.length > 0) {
         const outcome = await retrieveTurnContext(
           collection.id,
@@ -361,6 +362,8 @@ export function WSChat({ flex }: WSChatProps) {
         )
         retrievalStatus = outcome.status
         hits = outcome.hits
+        retrievalDetail = outcome.detail
+        if (retrievalDetail) setErr(retrievalDetail)
       }
       // 檢索失敗 = 這一則回答沒有任何文件依據，使用者必須看得出來。
       const ungrounded = retrievalStatus === 'failed'
@@ -389,7 +392,7 @@ export function WSChat({ flex }: WSChatProps) {
         const streamCitations = citationsFrom(streamHits)
         citations = streamCitations
         const turn = buildTurnContext(
-          { status: retrievalStatus, hits: streamHits },
+          { status: retrievalStatus, hits: streamHits, detail: retrievalDetail },
           promptCtx,
         )
         const llmMessages: ChatMessage[] = [

@@ -31,6 +31,7 @@ from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.services.auth_service import create_tokens
 
 from tests.conftest import make_user
+from tests.designate_embedding import designate_embedding
 
 
 def _bearer(user) -> dict[str, str]:
@@ -49,6 +50,7 @@ def bob(db):
 
 @pytest.fixture
 def alice_collection(db, alice) -> IngestionCollection:
+    designate_embedding(db, "nv-embed")
     coll = IngestionCollection(
         name="alice-collection",
         chunking_config={"strategy": "semantic"},
@@ -118,6 +120,13 @@ class _StubStore:
 
     async def similarity_search(self, *, query_embedding, top_k, min_score, **_kwargs):
         return self._hits
+
+    async def source_model_coverage(self, _source_model):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            has_matching=False, has_other=False, sample_other_model=None,
+        )
 
 
 @pytest.fixture(autouse=True)

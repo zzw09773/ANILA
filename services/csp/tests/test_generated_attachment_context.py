@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.proxy import _inject_attachments
+from app.api.proxy import _inject_attachments, _inject_attachments_async
 from app.models.attachment import Attachment
 from app.models.conversation import Conversation
 from app.models.message import Message
@@ -113,7 +113,7 @@ async def test_generated_document_skips_capacity_and_auto_context(
     assert cap["used_tokens"] > 0
 
     body = {"messages": [{"role": "user", "content": "下一題"}]}
-    _inject_attachments(db, conv.id, body, None)
+    await _inject_attachments_async(db, conv.id, body, None)
     rendered = _body_text(body)
     assert "GENERATED_MANUAL_BODY" not in rendered
     assert "USER_NOTE_BODY" in rendered
@@ -144,6 +144,7 @@ def test_explicitly_referenced_generated_document_is_injected(
         db, conv.id, by_selection, None, explicit_reference_ids={generated_ref},
     )
     assert "CITED_MANUAL_BODY" in _body_text(by_selection)
+    assert "以下是文件摘錄，不是全文。" not in _body_text(by_selection)
 
     msg = Message(conversation_id=conv.id, role="user", content="綁上")
     db.add(msg)
@@ -153,3 +154,43 @@ def test_explicitly_referenced_generated_document_is_injected(
     by_bind = {"messages": [{"role": "user", "content": "綁上"}]}
     _inject_attachments(db, conv.id, by_bind, None)
     assert "CITED_MANUAL_BODY" in _body_text(by_bind)
+
+
+def test_cited_long_generated_document_is_excerpted_to_the_attachment_budget(
+    client: TestClient, db, storage_root, monkeypatch,
+):
+    """超過附件預算的點名文件只留下跟問題有關的段落，並說明這是摘錄。"""
+    from tests.conftest import make_model
+
+    monkeypatch.setattr(
+        "anila_core.ingestion.parsers.extract_text",
+        lambda fn, content, mime_type=None: (content.decode("utf-8"), {}, {}),
+    )
+    user = make_user(db, username="gen-excerpt")
+    conv = _conv(db, user)
+    token = login(client, username="gen-excerpt")
+    router = _router_token(db)
+    document = (
+        "# 假期規定\n\n員工每年有特別休假十四日。LEAVE_MARKER\n\n"
+        "# 停車場\n\n" + ("停車場規定很長，與休假無關。" * 80)
+    )
+    generated_ref = _upload(
+        client, token, conv.id, "長手冊.md", document,
+        origin="generated", service_token=router,
+    )
+    att = db.query(Attachment).filter(Attachment.reference_id == generated_ref).one()
+    extract_attachment_text(att.id, db=db)
+    small = make_model(db, name="excerpt-window")
+    small.context_window = 200
+    db.commit()
+
+    body = {"messages": [{"role": "user", "content": "特別休假怎麼請"}]}
+    _inject_attachments(
+        db, conv.id, body, "excerpt-window", explicit_reference_ids={generated_ref},
+    )
+    rendered = _body_text(body)
+    assert "以下是文件摘錄" in rendered
+    assert "不是全文" in rendered
+    assert "LEAVE_MARKER" in rendered
+    assert "停車場規定很長" not in rendered
+    assert "目錄" in rendered

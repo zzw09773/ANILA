@@ -731,6 +731,22 @@ async def _assert_index_matches_designation(
     )
 
 
+EMBEDDING_ROLE_UNSET = "平台嵌入模型尚未在治理中心設定"
+
+
+def _require_platform_embedding(db):
+    """搜尋只使用治理中心的平台嵌入角色，不猜第一個啟用的模型。"""
+    from app.services.platform_embedding import designated_platform_embedding
+
+    designated = designated_platform_embedding(db)
+    if designated is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=EMBEDDING_ROLE_UNSET,
+        )
+    return designated
+
+
 # ── Endpoint ────────────────────────────────────────────────────────────────
 
 
@@ -761,18 +777,10 @@ async def search_collection(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    # P4.8: query + filter both use the designated platform embedding when
-    # set, so the query lives in the same semantic space as retrieved rows.
-    from app.services.platform_embedding import resolve_platform_embedding
-
-    designated = resolve_platform_embedding(db)
-    embed_model = designated.name if designated is not None else coll.embedding_model
-    source_filter = designated.name if designated is not None else None
-    if not embed_model:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="平台嵌入模型尚未在治理中心設定",
-        )
+    # 查詢與過濾都只用治理中心指定的平台嵌入。沒指定就不猜模型。
+    designated = _require_platform_embedding(db)
+    embed_model = designated.name
+    source_filter = designated.name
 
     # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
     search_query = expand_query(db, payload.query)
@@ -979,16 +987,9 @@ async def search_collection_images(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    from app.services.platform_embedding import resolve_platform_embedding
-
-    designated = resolve_platform_embedding(db)
-    embed_model = designated.name if designated is not None else coll.embedding_model
-    source_filter = designated.name if designated is not None else None
-    if not embed_model:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="平台嵌入模型尚未在治理中心設定",
-        )
+    designated = _require_platform_embedding(db)
+    embed_model = designated.name
+    source_filter = designated.name
 
     q_vec = await _embed_query(
         db,

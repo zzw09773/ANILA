@@ -26,6 +26,24 @@ os.environ.setdefault("ASR_DECODER_TOKEN", "conftest-token")
 import pytest  # noqa: E402 — 必須在上面的 sys.path / env 就位之後
 
 
+@pytest.fixture(autouse=True)
+def _quiet_console_trusted_hosts(monkeypatch):
+    """既有的語音位址測試只模擬 speech 那一支。信任主機另測，這裡不要多打一通。"""
+    from app.console_trusted_hosts import reset_console_trusted_hosts
+
+    reset_console_trusted_hosts()
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.decode_endpoint.refresh_console_trusted_hosts",
+        _noop,
+    )
+    yield
+    reset_console_trusted_hosts()
+
+
 @pytest.fixture
 def intranet_guard_env(monkeypatch):
     """把「內網部署當下的出向旗標」在測試裡明說出來。

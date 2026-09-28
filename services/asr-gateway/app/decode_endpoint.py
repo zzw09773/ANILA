@@ -25,6 +25,7 @@ from anila_core.security.url_guard import (
 )
 
 from app.config import Settings
+from app.console_trusted_hosts import refresh_console_trusted_hosts
 from app.decode_client import align_decode_client, normalise_protocol
 from app.decode_probe import strip_url_userinfo
 
@@ -149,6 +150,7 @@ async def refresh_decode_endpoint(
 
     沒啟用就清空位址，不退回環境變數。CSP 這次讀失敗時，留著上一筆成功的位址。
     """
+    await refresh_console_trusted_hosts(settings, http_client=http_client)
     token = _service_token(settings)
     if not token:
         with _lock:

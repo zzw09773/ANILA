@@ -30,6 +30,7 @@ from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.services.auth_service import create_tokens
 
 from tests.conftest import make_user
+from tests.designate_embedding import designate_embedding
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ def bob(db):
 @pytest.fixture
 def alice_collection(db, alice) -> IngestionCollection:
     """Active collection owned by alice with one document."""
+    designate_embedding(db, "nv-embed")
     coll = IngestionCollection(
         name="alice-collection",
         chunking_config={"strategy": "semantic"},
@@ -281,7 +283,7 @@ def test_image_search_source_model_mismatch_is_visible(
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.services.platform_embedding.resolve_platform_embedding",
+        "app.api.ingestion.search._require_platform_embedding",
         lambda db: SimpleNamespace(name="nv-embed-v2"),
     )
     pool = _StubPool(

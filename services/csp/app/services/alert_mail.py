@@ -8,16 +8,18 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
 from anila_core.security.credential_crypto import decrypt_credential, encrypt_credential
 from anila_core.security.url_guard import UnsafeEndpointError, validate_outbound_url
 
+from app.models.alert import Alert
 from app.models.alert_mail import AlertMailDelivery, AlertMailSettings
 from app.models.user import User
 from app.services.audit_service import log_audit_event
+from app.time_utils import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,13 @@ _SEVERITY_LABEL = {
     "medium": "中",
     "low": "低",
 }
+# 第一次失敗後 10 分鐘、第二次後再 20 分鐘，第三次停。三次橫跨約 30 分鐘。
+MAIL_MAX_ATTEMPTS = 3
+_RETRY_AFTER_SECONDS = (600, 1200)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class AlertMailConfigError(ValueError):
@@ -179,16 +188,10 @@ def send_test_mail(db: Session) -> str | None:
 
 
 def deliver_open_alert(db: Session, notification) -> None:
-    """新開的警報寄一封。同一指紋在解決前不重寄。失敗不往外丟。"""
+    """新開的警報寄一封。同一指紋在解決前不立刻重寄。失敗不往外丟。"""
     try:
         row = ensure_settings(db)
         if not row.enabled:
-            return
-        try:
-            _validate_row(row, for_send=True)
-        except (AlertMailConfigError, UnsafeEndpointError) as exc:
-            _remember_failure(row, exc)
-            logger.error("警報寄信設定不完整，這次沒有寄出：%s", _public_error(row, exc))
             return
         existing = (
             db.query(AlertMailDelivery)
@@ -197,6 +200,89 @@ def deliver_open_alert(db: Session, notification) -> None:
         )
         if existing is not None:
             return
+        delivery = AlertMailDelivery(
+            fingerprint=notification.fingerprint,
+            sent_at=None,
+            attempt_count=0,
+            category=getattr(notification, "category", None),
+            severity=getattr(notification, "severity", None),
+            title=getattr(notification, "title", None),
+            message=getattr(notification, "message", None),
+            source_type=getattr(notification, "source_type", None),
+            source_id=getattr(notification, "source_id", None),
+        )
+        db.add(delivery)
+        db.flush()
+        _attempt_send(db, row, delivery, notification)
+    except Exception:
+        logger.exception(
+            "警報寄信失敗且無法寫回錯誤 fingerprint=%s",
+            getattr(notification, "fingerprint", "-"),
+        )
+
+
+def retry_due_alert_mail(db: Session | None = None) -> None:
+    """背景迴圈呼叫。到期的失敗信再試一次，成功或用盡次數就停。"""
+    own = db is None
+    if own:
+        from app.database import SessionLocal
+
+        db = SessionLocal()
+    try:
+        now = _now()
+        settings = ensure_settings(db)
+        if not settings.enabled:
+            if own:
+                db.commit()
+            return
+        pending = (
+            db.query(AlertMailDelivery)
+            .filter(AlertMailDelivery.sent_at.is_(None))
+            .all()
+        )
+        from app.services.alert_notifier import AlertNotification
+
+        for delivery in pending:
+            due = as_utc(delivery.next_retry_at)
+            if due is None or due > now:
+                continue
+            if int(delivery.attempt_count or 0) >= MAIL_MAX_ATTEMPTS:
+                continue
+            alert = (
+                db.query(Alert)
+                .filter(Alert.fingerprint == delivery.fingerprint)
+                .one_or_none()
+            )
+            if alert is not None and alert.status == "resolved":
+                continue
+            _attempt_send(
+                db,
+                settings,
+                delivery,
+                AlertNotification(
+                    fingerprint=delivery.fingerprint,
+                    category=delivery.category or "",
+                    severity=delivery.severity or "",
+                    title=delivery.title or "",
+                    message=delivery.message or "",
+                    source_type=delivery.source_type,
+                    source_id=delivery.source_id,
+                ),
+            )
+        if own:
+            db.commit()
+    except Exception:
+        if own:
+            db.rollback()
+        logger.exception("警報寄信重試這輪失敗")
+    finally:
+        if own:
+            db.close()
+
+
+def _attempt_send(db: Session, row: AlertMailSettings, delivery: AlertMailDelivery, notification) -> None:
+    try:
+        _validate_row(row, for_send=True)
         label = _SEVERITY_LABEL.get(notification.severity, notification.severity)
         _transmit(
             row,
@@ -210,26 +296,23 @@ def deliver_open_alert(db: Session, notification) -> None:
             ),
         )
     except Exception as exc:
-        try:
-            row = ensure_settings(db)
-            _remember_failure(row, exc)
-            logger.error(
-                "警報寄信失敗 fingerprint=%s error=%s",
-                getattr(notification, "fingerprint", "-"),
-                _public_error(row, exc),
-            )
-        except Exception:
-            logger.exception(
-                "警報寄信失敗且無法寫回錯誤 fingerprint=%s",
-                getattr(notification, "fingerprint", "-"),
-            )
-        return
-    db.add(
-        AlertMailDelivery(
-            fingerprint=notification.fingerprint,
-            sent_at=datetime.now(timezone.utc),
+        _remember_failure(row, exc)
+        delivery.attempt_count = int(delivery.attempt_count or 0) + 1
+        if delivery.attempt_count >= MAIL_MAX_ATTEMPTS:
+            delivery.next_retry_at = None
+        else:
+            wait = _RETRY_AFTER_SECONDS[delivery.attempt_count - 1]
+            delivery.next_retry_at = _now() + timedelta(seconds=wait)
+        logger.error(
+            "警報寄信失敗 fingerprint=%s attempt=%s error=%s",
+            delivery.fingerprint,
+            delivery.attempt_count,
+            _public_error(row, exc),
         )
-    )
+        db.flush()
+        return
+    delivery.sent_at = _now()
+    delivery.next_retry_at = None
     row.last_error = None
     row.last_error_at = None
     db.flush()

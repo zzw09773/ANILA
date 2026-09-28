@@ -446,14 +446,10 @@ def test_partially_reindexed_corpus_answers_normally_and_warns_operator(
 # ── the guard must not fire on paths that are not a mismatch ─────────────────
 
 
-def test_no_designation_means_no_probe_and_no_change(
+def test_no_designation_refuses_instead_of_guessing_a_model(
     client: TestClient, db, alice, collection, monkeypatch,
 ):
-    """No embedding model registered → no source filter → nothing to check.
-
-    Deployments that never designated a platform embedding must not pay a
-    round-trip, nor be able to 409.
-    """
+    """角色沒設時不查向量，也不用知識庫上殘留的模型名。"""
     store = _StubStore(
         [],
         SourceModelCoverage(
@@ -467,8 +463,8 @@ def test_no_designation_means_no_probe_and_no_change(
         json={"query": "任何問題"},
         headers=_bearer(alice),
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["results"] == []
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "平台嵌入模型尚未在治理中心設定"
     assert store.source_model_calls == []
 
 

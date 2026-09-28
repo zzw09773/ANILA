@@ -13,12 +13,14 @@
  * not carry the zero-hit claim). The 'empty' cases sit alongside so a
  * change that declared failure unconditionally would not pass either.
  */
+import axios from 'axios'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import { searchCollection } from '../api/search'
 import {
   buildSystemPrompt,
   buildTurnContext,
+  EMBEDDING_ROLE_UNSET,
   retrieveTurnContext,
   UNGROUNDED_NOTICE,
 } from './retrieval'
@@ -121,6 +123,26 @@ describe('buildSystemPrompt after a failed retrieval', () => {
     expect(prompt).not.toContain('ECONNREFUSED')
     expect(prompt).not.toContain('10.53.100.15')
     expect(UNGROUNDED_NOTICE).not.toContain('10.53.100.15')
+    expect(outcome.detail).toBeUndefined()
+  })
+
+  it('shows the unset embedding role instead of a guessed-model failure', async () => {
+    const err = new axios.AxiosError('Request failed with status code 409')
+    err.response = {
+      status: 409,
+      statusText: 'Conflict',
+      data: { detail: EMBEDDING_ROLE_UNSET },
+      headers: {},
+      config: {} as never,
+    }
+    mockedSearch.mockRejectedValueOnce(err)
+
+    const outcome = await retrieveTurnContext(1, 'q')
+    const prompt = buildSystemPrompt(outcome, CTX)
+
+    expect(outcome.detail).toBe(EMBEDDING_ROLE_UNSET)
+    expect(prompt).toContain(EMBEDDING_ROLE_UNSET)
+    expect(prompt).not.toContain(ZERO_HIT_CLAIM)
   })
 })
 
