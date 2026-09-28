@@ -20,6 +20,7 @@ from anila_core.security.external_content import (
     TurnSidechannel,
     compose_external_message,
     insert_external_message,
+    sanitize_artifact_output,
     sanitize_model_output,
     wrap_external,
 )
@@ -813,12 +814,17 @@ def _inject_kb_passages(body: dict, result: KbResult, side: TurnSidechannel | No
     body["messages"] = messages
 
 
+# Studio 兩段式合併後約 36 段，資料表 top_k 上限 40，再加幾則圖說。
+_CLIENT_PASSAGE_CAP = 64
+_CLIENT_PASSAGE_CHARS = 8000
+
+
 def _inject_client_passages(body: dict, raw, side: TurnSidechannel | None) -> None:
-    """ANILA LM 把檢索段落交上來，由這裡組進同一種包裝。"""
+    """ANILA LM 與 Studio 把檢索段落交上來，由這裡組進同一種包裝。"""
     if not isinstance(raw, list):
         return
     wraps = []
-    for item in raw[:20]:
+    for item in raw[:_CLIENT_PASSAGE_CAP]:
         if not isinstance(item, dict):
             continue
         source = item.get("source") or "kb"
@@ -828,7 +834,7 @@ def _inject_client_passages(body: dict, raw, side: TurnSidechannel | None) -> No
         if not isinstance(text, str) or not text.strip():
             continue
         document_id = str(item.get("id") or "passage")[:100]
-        wraps.append(wrap_external(source, document_id, text[:8000]))
+        wraps.append(wrap_external(source, document_id, text[:_CLIENT_PASSAGE_CHARS]))
     if not wraps:
         return
     if side is not None:
@@ -963,33 +969,43 @@ def _take_external_sidechannel(body: dict) -> tuple[TurnSidechannel, object]:
     return side, raw_passages
 
 
-def _apply_output_guard(payload, side: TurnSidechannel):
-    """非串流回答：回聲不當指令、外連改純文字、尾段固定句遮掉。
+def _rewrite_guarded_text(content: str, side: TurnSidechannel, *, artifact: bool) -> str:
+    sanitizer = sanitize_artifact_output if artifact else sanitize_model_output
+    result = sanitizer(
+        content,
+        originals=side.originals,
+        protocol_lines=side.protocol_lines,
+    )
+    if result.echoed and not any(item.rule_id == "protocol_echo" for item in side.findings):
+        side.findings.append(Finding("output", "output", "protocol_echo"))
+    return result.text
 
-    只在這一輪真的放進外來內容時才改寫；Studio 等內部呼叫要的是原樣輸出
-    （例如 SVG）；不是對話回合又沒有外來內容，就沒有要防的東西。
+
+def _apply_output_guard(payload, side: TurnSidechannel):
+    """非串流回答：回聲不當指令、外連改純文字。
+
+    對話回合用完整檢查（含尾段遮罩與原始 HTML）。Studio 有外來段落時只做
+    簡報用得上的那部分：投影片文字裡的外連拿掉、SVG 以外的原始 HTML 不解析，
+    SVG 本體不改。沒有外來內容的內部呼叫維持原樣。
     """
-    if not isinstance(payload, dict) or not side.guard_output:
+    if not isinstance(payload, dict):
         return payload
-    choices = payload.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            message = choice.get("message")
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if not isinstance(content, str) or not content:
-                continue
-            result = sanitize_model_output(
-                content,
-                originals=side.originals,
-                protocol_lines=side.protocol_lines,
-            )
-            message["content"] = result.text
-            if result.echoed and not any(item.rule_id == "protocol_echo" for item in side.findings):
-                side.findings.append(Finding("output", "output", "protocol_echo"))
+    artifact = side.guard_artifact
+    if artifact or side.guard_output:
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message")
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if not isinstance(content, str) or not content:
+                    continue
+                message["content"] = _rewrite_guarded_text(
+                    content, side, artifact=artifact,
+                )
     if side.suspicious and isinstance(payload.get("anila_meta"), dict):
         payload["anila_meta"]["prompt_injection_suspected"] = True
     elif side.suspicious:
@@ -1071,12 +1087,16 @@ async def _guard_sse_stream(
     """串流出口套上輸出檢查。可疑標記由後面的 meta 框補上。
 
     不是對話介面的回合、也沒有外來內容時原樣轉送（見 ``_apply_output_guard``）。
+    Studio 有外來段落時改走簡報清理，不把 SVG 的 ``<`` 改掉。
     """
-    if not side.guard_output:
+    if side.guard_artifact:
+        guard = StreamTextGuard(side.originals, side.protocol_lines, artifact=True)
+    elif side.guard_output:
+        guard = StreamTextGuard(side.originals, side.protocol_lines)
+    else:
         async for chunk in upstream:
             yield chunk
         return
-    guard = StreamTextGuard(side.originals, side.protocol_lines)
     buf = ""
     try:
         async for chunk in upstream:
@@ -1761,10 +1781,14 @@ async def chat_completions(
     conv_id_int = _coerce_conversation_id(conversation_id)
     if conv_id_int is not None:
         _require_conversation_access(db, caller, conv_id_int)
-    # 對話回合＝對話介面帶了對話 id，或是 router 的答案通道。Studio 與 CSP
-    # 自己的內部呼叫兩者都沒有：不注入個人記憶，輸出也不改寫。
+    # 對話回合＝對話介面帶了對話 id，或是 router 的答案通道。
+    # Studio（X-ANILA-Request-Source: studio）不是：不注入個人記憶。
+    # 它若附了 anila_external_passages，仍包裝、偵測、稽核，輸出只做簡報清理。
     marked = _route_marked(request.headers)
-    side.chat_turn = marked or conv_id_int is not None
+    side.artifact_turn = (
+        (request.headers.get("X-ANILA-Request-Source") or "").strip().lower() == "studio"
+    )
+    side.chat_turn = (not side.artifact_turn) and (marked or conv_id_int is not None)
     memory_read = None
     if side.chat_turn and _target_allows_memory(agent):
         memory_read = await _inject_memory(
@@ -1961,7 +1985,7 @@ async def chat_completions(
                 guarded,
                 on_complete=lambda assistant_text: _schedule_memory_write(
                     user_id=user.id,
-                    conversation_id=conv_id_int,
+                    conversation_id=None if side.artifact_turn else conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
@@ -2040,7 +2064,7 @@ async def chat_completions(
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
                     user_id=user.id,
-                    conversation_id=conv_id_int,
+                    conversation_id=None if side.artifact_turn else conv_id_int,
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
@@ -2203,7 +2227,7 @@ async def chat_completions(
             guarded,
             on_complete=lambda assistant_text: _schedule_memory_write(
                 user_id=user.id,
-                conversation_id=conv_id_int,
+                conversation_id=None if side.artifact_turn else conv_id_int,
                 user_message=captured_user_text,
                 assistant_message=assistant_text,
                 is_encrypted=inherited_encryption,
@@ -2253,7 +2277,7 @@ async def chat_completions(
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
         user_id=user.id,
-        conversation_id=conv_id_int,
+        conversation_id=None if side.artifact_turn else conv_id_int,
         user_message=captured_user_text,
         assistant_message=assistant_text,
         is_encrypted=inherited_encryption,

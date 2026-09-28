@@ -199,6 +199,7 @@ class ReportJobStatus(BaseModel):
     references_count: int | None = None
     sections_count: int | None = None
     error: str | None = None
+    warning: str | None = None
     download_urls: dict[str, str] | None = Field(
         default=None,
         description=(

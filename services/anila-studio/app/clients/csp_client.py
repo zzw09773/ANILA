@@ -480,6 +480,7 @@ async def proxy_chat_completions(
     max_tokens: int | None = None,
     response_format: dict | None = None,
     bearer: str,
+    external_passages: list[dict] | None = None,
 ) -> dict:
     """``POST /v1/chat/completions``.
 
@@ -505,6 +506,9 @@ async def proxy_chat_completions(
         body["max_tokens"] = max_tokens
     if response_format is not None:
         body["response_format"] = response_format
+    if external_passages:
+        # CSP 取出這個欄位再包裝，不會原樣送給模型。
+        body["anila_external_passages"] = external_passages
 
     response = await _request(
         "POST",
@@ -519,7 +523,11 @@ async def proxy_chat_completions(
         # 在 _generate_validated_spec 已有 fallback deck 保底)。
         max_attempts_override=1,
     )
-    return response.json()
+    payload = response.json()
+    from app.services.studio_external import note_llm_response
+
+    note_llm_response(payload)
+    return payload
 
 
 # 上游 JSON 與解碼後的圖片都設上限，避免把整包回應灌進 CSP、Studio 與渲染器。

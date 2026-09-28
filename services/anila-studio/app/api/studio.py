@@ -95,6 +95,12 @@ from app.services.llm_json import (
     loads_lenient as _loads_lenient,
 )
 from app.services.retrieval_status import RETRIEVAL_FAILED_WARNING
+from app.services.studio_external import (
+    clear_injection_notice,
+    external_passages_from_images,
+    external_passages_from_items,
+    injection_job_warning,
+)
 from app.services.studio_grounding import (
     GROUNDING_TITLE_WARNING,
     apply_grounding,
@@ -231,6 +237,7 @@ async def _generate_validated_spec(
         retrieval_failed=retrieval_failed,
         illustrations_enabled=illustrations_enabled,
     )
+    passages = external_passages_from_items(chunks) + external_passages_from_images(images)
     if two_pass and chunks:
         planned = await _plan_two_pass(
             bearer, collection_name, preset, extra_instructions, chunks,
@@ -245,6 +252,7 @@ async def _generate_validated_spec(
             user_msg = _outline.build_content_user_prompt(
                 collection_name, preset, extra_instructions, outline, chunks, per_slide,
             )
+            passages = external_passages_from_items(chunks)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -259,6 +267,7 @@ async def _generate_validated_spec(
     # we're describing in the prompt.
     raw = await _call_llm_chat(
         bearer, SLIDES_LLM_MODEL, messages, temperature=0.3,
+        external_passages=passages or None,
     )
 
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
@@ -315,6 +324,7 @@ async def _generate_validated_spec(
             )
             raw = await _call_llm_chat(
                 bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
+                external_passages=passages or None,
             )
 
     if validated is None:
@@ -366,10 +376,12 @@ async def _plan_two_pass(
         count_hint=count_hint, min_slides=min_slides,
     )
     try:
+        seed_passages = external_passages_from_items(seed_chunks[:12]) or None
         raw = await _call_llm_chat(
             bearer, SLIDES_LLM_MODEL,
             [{"role": "system", "content": o_system}, {"role": "user", "content": o_user}],
             temperature=0.3, max_tokens=OUTLINE_MAX_TOKENS,
+            external_passages=seed_passages,
         )
         outline = _outline.parse_outline(raw)
 
@@ -383,6 +395,7 @@ async def _plan_two_pass(
                     {"role": "user", "content": grounding_retry_instruction(tokens)},
                 ],
                 temperature=0.2, max_tokens=OUTLINE_MAX_TOKENS,
+                external_passages=seed_passages,
             )
             try:
                 return _outline.parse_outline(reply).model_dump()
@@ -444,6 +457,7 @@ async def _ground_deck(
         })
         reply = await _call_llm_chat(
             bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
+            external_passages=external_passages_from_items(chunks) or None,
         )
         try:
             parsed = _loads_lenient(_extract_json_object(reply))
@@ -739,6 +753,7 @@ async def _run_pipeline(
     state lives upstream (csp owns the row data; csp's proxy owns the LLM
     token usage rows).
     """
+    clear_injection_notice()
     coll = await get_collection(payload.collection_id, bearer=bearer)
 
     # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
@@ -1019,6 +1034,7 @@ async def _run_pipeline(
             (FIX_FAILED_WARNING, fix_failed),
             (VISION_SKIPPED_WARNING, vision_skipped),
             (GROUNDING_TITLE_WARNING, grounding_warning is not None),
+            (injection_job_warning(), injection_job_warning() is not None),
         )
         if fired
     ]

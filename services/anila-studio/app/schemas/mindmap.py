@@ -170,6 +170,7 @@ class MindmapJobStatus(BaseModel):
     preset: MindmapPreset | None = None
     node_count: int | None = None
     error: str | None = None
+    warning: str | None = None
     download_urls: dict[str, str] | None = None
     # Slice 8b: CSP artifact passthrough — set once the artifact registers.
     artifact_id: str | None = None

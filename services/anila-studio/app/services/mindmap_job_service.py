@@ -90,6 +90,7 @@ class MindmapJobRecord:
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
     artifact_id: str | None = None
     classification_level: str | None = None
+    warning: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
     def to_status(self) -> MindmapJobStatus:
@@ -118,6 +119,7 @@ class MindmapJobRecord:
             preset=self.preset,
             node_count=self.node_count,
             error=self.error,
+            warning=self.warning,
             download_urls=download_urls,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
@@ -310,6 +312,7 @@ class MindmapJobUpdater:
         spec_json: str | None = None,
         artifact_id: str | None = None,
         classification_level: str | None = None,
+        warning: str | None = None,
     ) -> None:
         """Patch fields on the current record. Only specified fields
         update; passing None (the default) leaves a field as-is.
@@ -345,6 +348,8 @@ class MindmapJobUpdater:
                 patch["artifact_id"] = artifact_id
             if classification_level is not None:
                 patch["classification_level"] = classification_level
+            if warning is not None:
+                patch["warning"] = warning
             new_record = replace(current, **patch)
             _jobs[self._job_id] = new_record
         await job_lifecycle.on_transition(new_record, self._ctx, self)
@@ -357,6 +362,7 @@ class MindmapJobUpdater:
         svg_bytes: bytes,
         dot_source: str,
         spec_json: str | None = None,
+        warning: str | None = None,
     ) -> None:
         """Convenience: write the terminal "done" state in one call."""
         await self.set(
@@ -367,4 +373,5 @@ class MindmapJobUpdater:
             svg_bytes=svg_bytes,
             dot_source=dot_source,
             spec_json=spec_json,
+            warning=warning,
         )

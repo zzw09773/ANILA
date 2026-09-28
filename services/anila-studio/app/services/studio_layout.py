@@ -32,6 +32,7 @@ from app.services.llm_json import (
     loads_lenient as _loads_lenient,
 )
 from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_external import PASSAGE_POINTER, make_passage
 from app.services.studio_llm import call_llm_chat as _call_llm_chat
 
 logger = logging.getLogger(__name__)
@@ -639,15 +640,14 @@ def _build_rebalance_prompt(
         "或在 new_payload 給 `bullets`（3-5 條具體內容）留在 standard。其他頁仍然不准動文字。\n\n"
         "輸出第一字 {、最後字 }、不可前言、不可代碼塊。"
     )
-    # Trim chunks_text — we only need the LLM to see roughly what data is
-    # available, not the full retrieval payload.
-    chunks_preview = (chunks_text or "")[:1500]
+    # 素材正文走側通道。這裡只留指標，避免注入句直接進提示。
+    source_note = f"\n\n原始素材摘要在前一則參考資料。{PASSAGE_POINTER}" if (chunks_text or "").strip() else ""
     user_msg = (
         f"違規清單：\n" + "\n".join(violation_lines) + "\n\n"
         f"建議優先重新選版的候選 slide_index：{candidates}\n\n"
         f"目前各投影片版型概況：\n"
-        f"{json.dumps(compact_slides, ensure_ascii=False, indent=2)}\n\n"
-        f"原始素材摘要（前 1500 字）：\n{chunks_preview}"
+        f"{json.dumps(compact_slides, ensure_ascii=False, indent=2)}"
+        f"{source_note}"
     )
     return system, user_msg
 
@@ -656,6 +656,7 @@ async def _call_llm_for_rebalance(
     prompt: tuple[str, str],
     *,
     bearer: str,
+    external_passages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Thin wrapper around ``_call_llm_chat`` for the rebalance pass.
 
@@ -670,6 +671,7 @@ async def _call_llm_for_rebalance(
     ]
     raw = await _call_llm_chat(
         bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        external_passages=external_passages,
     )
     logger.info(
         "[H-DIAG] rebalance LLM raw response (first 2KB): %s",
@@ -817,6 +819,8 @@ async def _rebalance_layouts(
         return spec_dict
 
     candidates = _select_rebalance_candidates(actionable)
+    preview = (chunks_text or "")[:1500]
+    source = make_passage("rebalance", preview)
     prompt = _build_rebalance_prompt(
         spec_dict, actionable, chunks_text, candidates,
     )
@@ -825,7 +829,9 @@ async def _rebalance_layouts(
         len(prompt[0]) + len(prompt[1]), len(actionable),
     )
     try:
-        result = await _call_llm_for_rebalance(prompt, bearer=bearer)
+        result = await _call_llm_for_rebalance(
+            prompt, bearer=bearer, external_passages=[source] if source else None,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("rebalance LLM call failed: %s", exc)
         return spec_dict

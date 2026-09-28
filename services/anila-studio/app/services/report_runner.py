@@ -87,6 +87,12 @@ from app.services.studio_text_normalizer import (
     strip_latex,
 )
 from app.services.llm_json import extract_json_object, loads_lenient
+from app.services.studio_external import (
+    PASSAGE_POINTER,
+    clear_injection_notice,
+    injection_job_warning,
+    make_passage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,13 +288,18 @@ async def _llm_outline(
     seed = _derive_seed_query(request.preset, request.extra_instructions)
 
     chunk_block_lines: list[str] = []
+    passages: list[dict[str, str]] = []
     for i, c in enumerate(chunks, start=1):
         excerpt = _safe_truncate(
             c.content.strip().replace("\n", " "), OUTLINE_CHUNK_EXCERPT_CHARS
         )
-        chunk_block_lines.append(
-            f"[{i}] ({c.filename}) {excerpt}"
+        chunk_block_lines.append(f"[{i}] ({c.filename})")
+        made = make_passage(
+            getattr(c, "document_id", None) or c.chunk_key or i,
+            f"[{i}] ({c.filename}) {excerpt}",
         )
+        if made is not None:
+            passages.append(made)
     chunk_block = "\n".join(chunk_block_lines)
 
     user_prompt = f"""你正在為一份「{seed}」格式的深度報告做大綱規劃。
@@ -296,6 +307,8 @@ async def _llm_outline(
 以下是檢索到的素材（每段已標號為 [N]，後續正文撰寫會用同樣編號做引用）：
 
 {chunk_block}
+
+{PASSAGE_POINTER}
 
 請依素材內容規劃一份適合該 preset 的報告大綱。{_OUTLINE_SCHEMA_HINT}
 """
@@ -312,6 +325,7 @@ async def _llm_outline(
         max_tokens=4000,
         response_format={"type": "json_object"},
         bearer=bearer,
+        external_passages=passages or None,
     )
     try:
         return _extract_json(_extract_choice_content(response))
@@ -324,6 +338,7 @@ async def _llm_outline(
             temperature=0.2,
             max_tokens=4000,
             bearer=bearer,
+            external_passages=passages or None,
         )
         return _extract_json(_extract_choice_content(response))
 
@@ -378,6 +393,7 @@ async def _llm_draft_section(
     voice = _compose_system_prompt(_PRESET_VOICE[preset])
 
     chunk_lines: list[str] = []
+    passages: list[dict[str, str]] = []
     ref_lookup: dict[int, ReportReference] = {r.chunk_id: r for r in references if r.chunk_id is not None}
     available_ns: list[int] = []
     for c in chunks_for_section:
@@ -388,7 +404,13 @@ async def _llm_draft_section(
         excerpt = _safe_truncate(
             c.content.strip().replace("\n", " "), DRAFT_CHUNK_EXCERPT_CHARS
         )
-        chunk_lines.append(f"[{n}] ({c.filename}) {excerpt}")
+        chunk_lines.append(f"[{n}] ({c.filename})")
+        made = make_passage(
+            getattr(c, "document_id", None) or c.chunk_key or n,
+            f"[{n}] ({c.filename}) {excerpt}",
+        )
+        if made is not None:
+            passages.append(made)
     chunk_block = "\n".join(chunk_lines)
     citations_hint = (
         ", ".join(f"[{n}]" for n in available_ns) if available_ns else "（無）"
@@ -405,6 +427,8 @@ Section 標題：{heading}
 
 可用的素材片段（請使用對應 [N] 編號做引用，僅限 {citations_hint} 這些編號）：
 {chunk_block}
+
+{PASSAGE_POINTER}
 
 撰寫規範：
 - 輸出純 markdown，不要 wrap 在 code block 內。
@@ -426,6 +450,7 @@ Section 標題：{heading}
         temperature=0.5,
         max_tokens=1500,
         bearer=bearer,
+        external_passages=passages or None,
     )
     return _extract_choice_content(response).strip()
 
@@ -495,6 +520,7 @@ async def run_report_pipeline(
     success. Any exception propagates to ``report_job_service`` which
     flips the job to "failed".
     """
+    clear_injection_notice()
     target_dir = artifacts_dir or Path(settings.ARTIFACTS_DIR)
     job_id = updater.job_id
 
@@ -616,4 +642,6 @@ async def run_report_pipeline(
         if not path.exists() or path.stat().st_size == 0:
             raise RuntimeError(f"渲染失敗：{fmt} 檔案未生成 ({path})")
 
-    await updater.mark_done(spec=spec, download_urls=download_urls)
+    await updater.mark_done(
+        spec=spec, download_urls=download_urls, warning=injection_job_warning(),
+    )

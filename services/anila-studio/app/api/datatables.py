@@ -72,6 +72,13 @@ from app.services.llm_json import (
     extract_json_object as _extract_json_object,
     loads_lenient as _loads_lenient,
 )
+from app.services.studio_external import (
+    PASSAGE_POINTER,
+    clear_injection_notice,
+    external_passages_from_items,
+    injection_job_warning,
+    merge_warnings,
+)
 from app.services.retrieval_status import (
     RETRIEVAL_FAILED_PROMPT_NOTE,
     RETRIEVAL_FAILED_WARNING,
@@ -219,10 +226,14 @@ def _build_prompt(
         if retrieval_failed
         else "（無檢索結果 — 你可以基於 collection 名稱 + preset 給出合理的空白範本,並在 notes 註明資料來源不足。）"
     )
-    chunks_block = "\n\n".join(
-        f"[{i + 1}] {c.get('filename', '<unknown>')}\n{c.get('content', '')}"
+    chunks_block = "\n".join(
+        f"[{i + 1}] {c.get('filename', '<unknown>')}"
         for i, c in enumerate(chunks)
-    ) or empty_chunks_block
+    )
+    if chunks_block:
+        chunks_block = f"{chunks_block}\n{PASSAGE_POINTER}"
+    else:
+        chunks_block = empty_chunks_block
 
     target_cols_block = (
         f"使用者希望的欄位(僅供參考,你可以增刪): {', '.join(target_columns)}"
@@ -260,7 +271,11 @@ def _build_prompt(
 
 
 async def _call_llm(
-    *, bearer: str, messages: list[dict[str, Any]], temperature: float = 0.3,
+    *,
+    bearer: str,
+    messages: list[dict[str, Any]],
+    temperature: float = 0.3,
+    external_passages: list[dict[str, Any]] | None = None,
 ) -> str:
     """Wrap csp's chat-completions proxy with the datatable-side error map.
 
@@ -277,6 +292,7 @@ async def _call_llm(
             messages=messages,
             temperature=temperature,
             bearer=bearer,
+            external_passages=external_passages,
         )
     except CspNotFoundError as exc:
         raise RuntimeError(
@@ -324,8 +340,11 @@ async def _generate_validated_spec(
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
     ]
+    passages = external_passages_from_items(chunks) or None
 
-    raw = await _call_llm(bearer=bearer, messages=messages)
+    raw = await _call_llm(
+        bearer=bearer, messages=messages, external_passages=passages,
+    )
     last_err: Exception | None = None
 
     for attempt in range(SCHEMA_CORRECTION_PASSES + 1):
@@ -357,7 +376,10 @@ async def _generate_validated_spec(
                     ),
                 }
             )
-            raw = await _call_llm(bearer=bearer, messages=messages, temperature=0.2)
+            raw = await _call_llm(
+                bearer=bearer, messages=messages, temperature=0.2,
+                external_passages=passages,
+            )
 
     raise RuntimeError(
         f"Datatable spec 驗證連續失敗,放棄 ({str(last_err)[:200]})"
@@ -445,6 +467,7 @@ async def _run_pipeline(
     Exceptions propagate to the wrapper in datatable_job_service which
     marks the job failed with the message.
     """
+    clear_injection_notice()
     coll = await get_collection(payload.collection_id, bearer=bearer)
 
     # ── retrieve ──
@@ -479,6 +502,7 @@ async def _run_pipeline(
             {
                 "filename": h.filename or "<unknown>",
                 "chunk_key": h.chunk_key,
+                "document_id": h.document_id,
                 "content": (h.content or "")[:CONTENT_LIMIT_CHARS],
                 "score": float(h.score),
             }
@@ -562,7 +586,10 @@ async def _run_pipeline(
         },
         # Soft warning coexisting with done: the table exists, it just
         # isn't grounded in the user's documents.
-        warning=(RETRIEVAL_FAILED_WARNING if retrieval_failed else None),
+        warning=merge_warnings(
+            RETRIEVAL_FAILED_WARNING if retrieval_failed else None,
+            injection_job_warning(),
+        ),
     )
 
 

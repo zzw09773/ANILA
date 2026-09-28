@@ -80,6 +80,7 @@ def _build_chunk_dicts(hits: list["ChunkHit"]) -> list[dict[str, Any]]:
         {
             "filename": h.filename or "<unknown>",
             "chunk_key": h.chunk_key,
+            "document_id": h.document_id,
             "content": h.content[:STUDIO_CONTENT_LIMIT_CHARS],
             "score": float(h.score),
         }

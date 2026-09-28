@@ -88,6 +88,13 @@ from app.services.llm_json import (
     loads_lenient as _loads_lenient,
 )
 from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_external import (
+    PASSAGE_POINTER,
+    chunk_index_line,
+    clear_injection_notice,
+    external_passages_from_items,
+    injection_job_warning,
+)
 from app.services.studio_llm import call_llm_chat as _call_llm_chat
 from app.services.studio_text_normalizer import (
     strip_inline_citations,
@@ -232,13 +239,10 @@ def _build_prompt(
     if chunks:
         parts.append("")
         parts.append("以下是從知識庫檢索到的相關段落（已依相似度排序）：")
+        parts.append(PASSAGE_POINTER)
         parts.append("")
         for i, c in enumerate(chunks, start=1):
-            parts.append(
-                f"[{i}] 來源：{c['filename']}（chunk {c['chunk_key']}，"
-                f"相似度 {c['score']:.3f}）"
-            )
-            parts.append(c["content"])
+            parts.append(chunk_index_line(c, i))
             parts.append("")
     else:
         parts.append(
@@ -287,6 +291,7 @@ async def _retrieve_chunks_for_mindmap(
         {
             "filename": h.filename or "<unknown>",
             "chunk_key": h.chunk_key,
+            "document_id": h.document_id,
             "content": h.content[:MINDMAP_CONTENT_LIMIT_CHARS],
             "score": float(h.score),
         }
@@ -418,6 +423,7 @@ async def _generate_validated_spec(
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
     ]
+    passages = external_passages_from_items(chunks) or None
 
     last_err: Exception | None = None
     last_raw = ""
@@ -427,6 +433,7 @@ async def _generate_validated_spec(
         # picking the safest two-deep tree.
         raw = await _call_llm_chat(
             bearer, SLIDES_LLM_MODEL, messages, temperature=0.3,
+            external_passages=passages,
         )
         last_raw = raw
         try:
@@ -489,6 +496,7 @@ async def _run_pipeline(
     exception, the wrapper inside ``mindmap_job_service.create_job``
     sets state="failed" with the truncated error message.
     """
+    clear_injection_notice()
     # Step 1+2 — retrieval ----------------------------------------------------
     await updater.set(step=jobs.JOB_STEP_RETRIEVING)
     seed_query = (
@@ -546,6 +554,7 @@ async def _run_pipeline(
         svg_bytes=svg_bytes,
         dot_source=dot_source,
         spec_json=spec_json,
+        warning=injection_job_warning(),
     )
 
 

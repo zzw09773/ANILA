@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.services.llm_json import extract_json_object, loads_lenient
+from app.services.studio_external import PASSAGE_POINTER, chunk_index_line
 from app.services.studio_grounding import GROUNDING_PROMPT_RULE
 
 EVIDENCE_KINDS: tuple[str, ...] = (
@@ -110,10 +111,9 @@ def build_outline_prompt(
     ])
     parts = [f"知識庫名稱：{collection_name}", f"風格 preset：{preset}"]
     if seed_chunks:
-        parts += ["", "以下是知識庫裡與主題最相關的段落（只用來規劃，不用逐字寫進大綱）：", ""]
+        parts += ["", "以下是知識庫裡與主題最相關的段落（只用來規劃，不用逐字寫進大綱）：", PASSAGE_POINTER, ""]
         for i, c in enumerate(seed_chunks[:12], start=1):
-            parts.append(f"[{i}] 來源：{c.get('filename', '?')}")
-            parts.append(str(c.get("content", ""))[:600])
+            parts.append(chunk_index_line(c, i))
             parts.append("")
     if extra_instructions:
         parts += ["", f"使用者補充指示：\n{extra_instructions}"]
@@ -206,10 +206,14 @@ def build_content_user_prompt(
                 f"  可用段落：{ref_str}"
             )
             i += 1
-    parts += ["", "── 檢索到的段落（每張投影片優先用自己的「可用段落」，引用寫 (參 [N]) 放在 speaker_notes）──", ""]
+    parts += [
+        "",
+        "── 檢索到的段落（每張投影片優先用自己的「可用段落」，引用寫 (參 [N]) 放在 speaker_notes）──",
+        PASSAGE_POINTER,
+        "",
+    ]
     for n, c in enumerate(chunks, start=1):
-        parts.append(f"[{n}] 來源：{c.get('filename', '?')}（chunk {c.get('chunk_key', '?')}，相似度 {float(c.get('score', 0) or 0):.3f}）")
-        parts.append(str(c.get("content", "")))
+        parts.append(chunk_index_line(c, n))
         parts.append("")
     if extra_instructions:
         parts += ["", f"使用者補充指示：\n{extra_instructions}"]

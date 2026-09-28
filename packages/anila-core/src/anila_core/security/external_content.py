@@ -140,6 +140,9 @@ _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _BARE_URL = re.compile(r"(?<![\w/：])(https?://[^\s<>)\]]+)")
+# 簡報 JSON 的字串用雙引號收尾。裸網址若吃進引號，整份 deck 會解析失敗。
+_JSON_SAFE_BARE_URL = re.compile(r"(?<![\w/：])(https?://[^\s<>)\]\"\\]+)")
+_SVG_BLOCK = re.compile(r"<svg\b.*?</svg>", re.IGNORECASE | re.DOTALL)
 _OPEN_LINK = re.compile(
     r"!\[[^\]]*(?:\](?:\([^)]*)?)?$|\[[^\]]*(?:\](?:\([^)]*)?)?$|https?://\S*$"
 )
@@ -676,7 +679,7 @@ def _break_bare_url(url: str) -> str:
     return url
 
 
-def _neutralize_links(text: str) -> str:
+def _neutralize_links(text: str, *, bare: re.Pattern[str] | None = None) -> str:
     def image(match: re.Match[str]) -> str:
         alt, url = match.group(1), match.group(2)
         if is_platform_url(url):
@@ -701,16 +704,17 @@ def _neutralize_links(text: str) -> str:
             return match.group(0)
         return _break_bare_url(url)
 
-    def bare(match: re.Match[str]) -> str:
+    def bare_url(match: re.Match[str]) -> str:
         url = match.group(1)
         if is_platform_url(url):
             return match.group(0)
         return _break_bare_url(url)
 
+    pattern = bare or _BARE_URL
     text = _MD_IMAGE.sub(image, text)
     text = _MD_LINK.sub(link, text)
     text = _AUTOLINK.sub(autolink, text)
-    return _BARE_URL.sub(bare, text)
+    return pattern.sub(bare_url, text)
 
 
 _MASK_SKIP = frozenset(" \t\r\n*_`")
@@ -868,6 +872,57 @@ def _defang_echoes(
     return "\n".join(lines), echoed
 
 
+def _defang_embedded_protocol(
+    text: str,
+    originals: Sequence[str],
+    protocol_lines: Sequence[str],
+) -> tuple[str, bool]:
+    """協定行即使嵌在 JSON 字串裡，也不留可執行的冒號。"""
+    echoed = False
+    for sig in _corpus_signatures(originals, protocol_lines):
+        if not sig or sig not in text:
+            continue
+        broken = _break_protocol_colons(sig)
+        if broken == sig and ":" in sig:
+            token, _, rest = sig.partition(":")
+            broken = token + _PROTO_COLON + rest
+        if broken != sig:
+            text = text.replace(sig, broken)
+            echoed = True
+    lined, line_echo = _defang_echoes(text, originals, protocol_lines)
+    return lined, echoed or line_echo
+
+
+def sanitize_artifact_output(
+    text: str,
+    *,
+    originals: Sequence[str] = (),
+    protocol_lines: Sequence[str] = (),
+) -> SanitizeResult:
+    """簡報 JSON：外連改成不可載入的文字，SVG 以外的原始 HTML 不解析。
+
+    SVG 區塊原樣留下（含 ``xmlns``）。Studio 自己會拿掉 script、事件與
+    外部圖片。不要做對話那套全文正規化或尾段遮罩，否則簡報結構會壞。
+    """
+    defanged, echoed = _defang_embedded_protocol(text or "", originals, protocol_lines)
+    pieces: list[str] = []
+    last = 0
+    for match in _SVG_BLOCK.finditer(defanged):
+        pieces.append(_guard_artifact_text(defanged[last:match.start()]))
+        pieces.append(match.group(0))
+        last = match.end()
+    pieces.append(_guard_artifact_text(defanged[last:]))
+    return SanitizeResult(text="".join(pieces), echoed=echoed)
+
+
+def _guard_artifact_text(text: str) -> str:
+    if not text:
+        return ""
+    return _escape_html_open(
+        _neutralize_links(text, bare=_JSON_SAFE_BARE_URL)
+    )
+
+
 def sanitize_model_output(
     text: str,
     *,
@@ -946,9 +1001,12 @@ class StreamTextGuard:
         self,
         originals: Sequence[str] = (),
         protocol_lines: Sequence[str] = (),
+        *,
+        artifact: bool = False,
     ) -> None:
         self.originals = list(originals)
         self.protocol_lines = list(protocol_lines)
+        self.artifact = artifact
         self.pending = ""
         self.echoed = False
 
@@ -973,7 +1031,8 @@ class StreamTextGuard:
             return ""
         chunk = self.pending[:cut]
         self.pending = self.pending[cut:]
-        result = sanitize_model_output(
+        sanitizer = sanitize_artifact_output if self.artifact else sanitize_model_output
+        result = sanitizer(
             chunk,
             originals=self.originals,
             protocol_lines=self.protocol_lines,
@@ -992,6 +1051,8 @@ class TurnSidechannel:
     findings: list[Finding] = field(default_factory=list)
     # 對話介面送來的一輪（Shell 帶院規標頭）。內部服務（Studio 等）不是。
     chat_turn: bool = False
+    # Studio 等簡報 JSON。有外來段落時改寫輸出，但不套對話那套 HTML／尾段遮罩。
+    artifact_turn: bool = False
 
     @property
     def has_external(self) -> bool:
@@ -1000,8 +1061,15 @@ class TurnSidechannel:
 
     @property
     def guard_output(self) -> bool:
-        """對話介面的回合，或放進了外來內容，才改寫模型輸出。"""
+        """對話介面的回合，或非簡報成品但放進了外來內容，才用對話那套改寫。"""
+        if self.artifact_turn:
+            return False
         return self.chat_turn or self.has_external
+
+    @property
+    def guard_artifact(self) -> bool:
+        """Studio 放進了外來段落：擋外連與 SVG 以外的原始 HTML，SVG 留給 Studio。"""
+        return self.artifact_turn and self.has_external
 
     @property
     def suspicious(self) -> bool:

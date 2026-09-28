@@ -103,7 +103,7 @@ class _RecordingUpdater(ReportJobUpdater):
         if "references_count" in kwargs and kwargs["references_count"] is not None:
             self.final_references_count = kwargs["references_count"]
 
-    async def mark_done(self, *, spec, download_urls):
+    async def mark_done(self, *, spec, download_urls, warning=None):
         await self.set(
             state="done",
             step="done",

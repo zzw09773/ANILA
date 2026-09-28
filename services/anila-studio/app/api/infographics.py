@@ -77,6 +77,14 @@ from app.services.llm_json import (
     extract_json_object as _extract_json_object,
     loads_lenient as _loads_lenient,
 )
+from app.services.studio_external import (
+    PASSAGE_POINTER,
+    chunk_index_line,
+    clear_injection_notice,
+    external_passages_from_items,
+    injection_job_warning,
+    merge_warnings,
+)
 from app.services.retrieval_status import (
     RETRIEVAL_FAILED_PROMPT_NOTE,
     RETRIEVAL_FAILED_WARNING,
@@ -241,13 +249,10 @@ def _build_generation_prompt(
     if chunks:
         parts.append("")
         parts.append("以下是檢索到的相關段落（已依相似度排序）：")
+        parts.append(PASSAGE_POINTER)
         parts.append("")
         for i, c in enumerate(chunks, start=1):
-            parts.append(
-                f"[{i}] 來源：{c['filename']}（chunk {c['chunk_key']}，"
-                f"相似度 {c['score']:.3f}）"
-            )
-            parts.append(c["content"])
+            parts.append(chunk_index_line(c, i))
             parts.append("")
     elif retrieval_failed:
         parts.append(RETRIEVAL_FAILED_PROMPT_NOTE.format(where="takeaway"))
@@ -272,6 +277,7 @@ async def _call_llm_chat(
     messages: list[dict[str, Any]],
     *,
     temperature: float = 0.3,
+    external_passages: list[dict[str, Any]] | None = None,
 ) -> str:
     """Invoke csp's chat-completions proxy. Same exception-mapping pattern
     as the slide pipeline's helper, so callers see consistent HTTP codes
@@ -283,6 +289,7 @@ async def _call_llm_chat(
             messages=messages,
             temperature=temperature,
             bearer=bearer,
+            external_passages=external_passages,
         )
     except CspNotFoundError as exc:
         raise HTTPException(
@@ -332,8 +339,11 @@ async def _generate_validated_spec(
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
     ]
+    passages = external_passages_from_items(chunks) or None
 
-    raw = await _call_llm_chat(bearer, messages, temperature=0.3)
+    raw = await _call_llm_chat(
+        bearer, messages, temperature=0.3, external_passages=passages,
+    )
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
 
     for attempt in range(SCHEMA_CORRECTION_PASSES + 1):
@@ -368,7 +378,9 @@ async def _generate_validated_spec(
                     ),
                 }
             )
-            raw = await _call_llm_chat(bearer, messages, temperature=0.2)
+            raw = await _call_llm_chat(
+                bearer, messages, temperature=0.2, external_passages=passages,
+            )
 
     raise HTTPException(
         status_code=502,
@@ -486,6 +498,7 @@ async def _retrieve_chunks(
         {
             "filename": h.filename or "<unknown>",
             "chunk_key": h.chunk_key,
+            "document_id": h.document_id,
             "content": h.content[:INFOGRAPHIC_CONTENT_LIMIT_CHARS],
             "score": float(h.score),
         }
@@ -509,6 +522,7 @@ async def _run_pipeline(
     Steps mirror the docstring at the top of this module; each step
     pushes a step label so the polling UI can show "鑄造中：..."
     """
+    clear_injection_notice()
     coll = await get_collection(payload.collection_id, bearer=bearer)
 
     # Step 1: retrieve
@@ -610,7 +624,10 @@ async def _run_pipeline(
         pdf_path=str(pdf_path),
         # Soft warning coexisting with done: the infographic exists, it
         # just isn't grounded in the user's documents.
-        warning=(RETRIEVAL_FAILED_WARNING if retrieval_failed else None),
+        warning=merge_warnings(
+            RETRIEVAL_FAILED_WARNING if retrieval_failed else None,
+            injection_job_warning(),
+        ),
     )
 
 

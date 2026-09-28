@@ -83,6 +83,7 @@ class ReportJobRecord:
     sections_count: int | None
     references_count: int | None
     error: str | None
+    warning: str | None
     download_urls: dict[str, str] | None
     created_at: datetime
     updated_at: datetime
@@ -105,6 +106,7 @@ class ReportJobRecord:
             sections_count=self.sections_count,
             references_count=self.references_count,
             error=self.error,
+            warning=self.warning,
             download_urls=self.download_urls,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
@@ -180,6 +182,7 @@ async def create_job(
             sections_count=None,
             references_count=None,
             error=None,
+            warning=None,
             download_urls=None,
             created_at=now,
             updated_at=now,
@@ -292,6 +295,7 @@ class ReportJobUpdater:
         sections_count: int | None = None,
         references_count: int | None = None,
         error: str | None = None,
+        warning: str | None = None,
         download_urls: dict[str, str] | None = None,
         artifact_id: str | None = None,
         classification_level: str | None = None,
@@ -322,6 +326,8 @@ class ReportJobUpdater:
                 patch["references_count"] = references_count
             if error is not None:
                 patch["error"] = error
+            if warning is not None:
+                patch["warning"] = warning
             if download_urls is not None:
                 patch["download_urls"] = download_urls
             if artifact_id is not None:
@@ -337,6 +343,7 @@ class ReportJobUpdater:
         *,
         spec: ReportSpec,
         download_urls: dict[str, str],
+        warning: str | None = None,
     ) -> None:
         """Convenience: write the terminal "done" state in one call."""
         await self.set(
@@ -347,4 +354,5 @@ class ReportJobUpdater:
             sections_count=len(spec.sections),
             references_count=len(spec.references),
             download_urls=download_urls,
+            warning=warning,
         )
