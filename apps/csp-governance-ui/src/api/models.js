@@ -75,6 +75,9 @@ export const getEmbeddingRebuild = () =>
 export const rollbackEmbeddingRebuild = () =>
   client.post('/api/models/embedding-rebuild/rollback')
 
+export const retryUnembeddable = () =>
+  client.post('/api/models/embedding-rebuild/retry')
+
 export const listModelRoles = () =>
   client.get('/api/models/roles')
 

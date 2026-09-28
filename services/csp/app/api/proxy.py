@@ -382,6 +382,9 @@ def _explicit_attachment_refs(header: str | None) -> set[str]:
     return refs
 
 
+_ATTACHMENT_META_CAP = 200
+
+
 async def _inject_attachments_async(
     db: Session,
     conversation_id: int | None,
@@ -424,9 +427,11 @@ async def _inject_attachments_async(
                 Attachment.message_id,
             )
             .filter(Attachment.conversation_id == conversation_id)
-            .order_by(Attachment.created_at.asc(), Attachment.id.asc())
+            .order_by(Attachment.created_at.desc(), Attachment.id.desc())
+            .limit(_ATTACHMENT_META_CAP)
             .all()
         )
+        meta_rows = list(reversed(meta_rows))
         if not meta_rows:
             return None
 
@@ -755,6 +760,31 @@ def _route_marked(headers) -> bool:
     """
     raw = headers.get(_ROUTE_HEADER)
     return bool(raw and raw.strip())
+
+
+def _studio_artifact_turn(request, db) -> bool:
+    """簡報產物路徑只接受 Studio 工作權杖，或 anila-studio 的服務憑證。"""
+    from app.services.attachment_service import is_studio_service_credential
+    from app.services.studio_job_token import verify_studio_job_token
+
+    headers = getattr(request, "headers", None)
+    token = None
+    if headers is not None and hasattr(headers, "get"):
+        raw = headers.get("authorization") or headers.get("Authorization")
+        if isinstance(raw, str) and raw.lower().startswith("bearer "):
+            token = raw[7:].strip() or None
+    if not token:
+        from app.services.studio_job_token import bearer_from_request
+
+        try:
+            token = bearer_from_request(request)
+        except AttributeError:
+            token = None
+    if not token:
+        return False
+    if token.startswith("csk-"):
+        return is_studio_service_credential(db, token)
+    return verify_studio_job_token(token, db) is not None
 
 
 async def _retrieve_institutional_kb(
@@ -1829,12 +1859,10 @@ async def chat_completions(
     if conv_id_int is not None:
         _require_conversation_access(db, caller, conv_id_int)
     # 對話回合＝對話介面帶了對話 id，或是 router 的答案通道。
-    # Studio（X-ANILA-Request-Source: studio）不是：不注入個人記憶。
-    # 它若附了 anila_external_passages，仍包裝、偵測、稽核，輸出只做簡報清理。
+    # 簡報產物只認 Studio 工作權杖或 anila-studio 服務憑證，不看
+    # X-ANILA-Request-Source（那個標頭呼叫端可以自己填）。
     marked = _route_marked(request.headers)
-    side.artifact_turn = (
-        (request.headers.get("X-ANILA-Request-Source") or "").strip().lower() == "studio"
-    )
+    side.artifact_turn = _studio_artifact_turn(request, db)
     side.chat_turn = (not side.artifact_turn) and (marked or conv_id_int is not None)
     memory_read = None
     if side.chat_turn and _target_allows_memory(agent):
@@ -2269,6 +2297,7 @@ async def chat_completions(
             ),
             tuning=tuning,
             model=model,
+            request_type="studio" if side.artifact_turn else "chat",
         )
         guarded = _guard_sse_stream(upstream, side, user)
         teed = _tee_stream_capture_assistant(
@@ -2313,7 +2342,7 @@ async def chat_completions(
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
         tuning=tuning,
-        usage_source=request.headers.get("X-ANILA-Request-Source"),
+        usage_source="studio" if side.artifact_turn else None,
         caller_authorization=caller_authorization,
         extra_headers=router_extra_headers,
         usage_kind=usage_kind,
@@ -2653,7 +2682,7 @@ async def images_generations(
             is_internal=bool(getattr(model, "is_internal", False)),
         ),
         tuning=resolve_proxy_tuning(db),
-        usage_source=request.headers.get("X-ANILA-Request-Source"),
+        usage_source="studio" if _studio_artifact_turn(request, db) else None,
         model_name_snapshot=model.name,
         task_id=task_ctx.task_id if task_ctx else None,
         task_trace_id=task_ctx.trace_id if task_ctx else None,

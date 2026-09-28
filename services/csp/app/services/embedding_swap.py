@@ -271,9 +271,10 @@ def snapshot(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
     elif state.previous_model_id and _vectors_remain(db, state.previous_model_id):
         rollback_available = state.previous_model_id != state.active_model_id
     rebuild = None
-    if state.rebuild_status in _OPEN or (
-        state.rebuild_status in {"failed", "cancelled"} and state.rebuild_errors
-    ):
+    show_rebuild = state.rebuild_status in _OPEN or state.rebuild_errors > 0 or (
+        state.rebuild_status in {"failed", "cancelled"}
+    )
+    if show_rebuild:
         rebuild = {
             "status": state.rebuild_status,
             "target_model_id": state.rebuild_target_model_id,
@@ -297,6 +298,35 @@ def snapshot(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
         "rollback_available": rollback_available,
         "rebuild": rebuild,
     }
+
+
+def retry_unembeddable(db: Session) -> dict[str, Any]:
+    """清掉三次失敗的記號，讓那些列回到可嵌入集合，並重新排隊。"""
+    now = _now()
+    row = _ensure(db)
+    model_id = row.rebuild_target_model_id or row.active_model_id
+    if model_id is None:
+        raise ValueError("沒有可重試的嵌入模型")
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text(
+                """
+                DELETE FROM embedding_rebuild_failures
+                 WHERE model_id = :model_id
+                   AND attempts >= 3
+                """
+            ),
+            {"model_id": model_id},
+        )
+    if row.rebuild_status not in _OPEN:
+        row.rebuild_status = "pending"
+        row.rebuild_target_model_id = model_id
+        row.rebuild_started_at = now
+        row.rebuild_last_error = None
+    row.rebuild_errors = 0
+    row.touch(now)
+    db.flush()
+    return snapshot(db, now=now)
 
 
 def rollback(db: Session) -> dict[str, Any]:

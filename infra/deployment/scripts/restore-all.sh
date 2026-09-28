@@ -40,6 +40,27 @@ for f in "${need[@]}"; do
   [[ -f "$SNAPSHOT/$f" ]] || fail "快照缺少 $f"
 done
 
+# 任何寫入之前先確認每一份封存讀得回去。壞掉的附件 tar 不能發生在
+# 資料庫已經被換掉之後。
+dump_magic=$(dd if="$SNAPSHOT/db.dump" bs=5 count=1 2>/dev/null || true)
+[[ "$dump_magic" == "PGDMP" ]] || fail "db.dump 不是 pg_dump 自訂格式，尚未寫入"
+# --list 讀完整份目錄，不是只看前五個位元組。主機沒有 pg_restore 時用映像裡的。
+if command -v pg_restore >/dev/null 2>&1; then
+  pg_restore --list "$SNAPSHOT/db.dump" >/dev/null \
+    || fail "db.dump 目錄無法讀取，尚未寫入"
+else
+  image="${ANILA_BACKUP_IMAGE:-anila-pgvector:local}"
+  docker run --rm --entrypoint pg_restore \
+    -v "${SNAPSHOT}:/src:ro" \
+    "$image" \
+    --list /src/db.dump >/dev/null \
+    || fail "db.dump 目錄無法讀取，尚未寫入"
+fi
+for f in "${need[@]}"; do
+  [[ "$f" == "db.dump" ]] && continue
+  tar -tf "$SNAPSHOT/$f" >/dev/null || fail "$f 無法讀取，尚未寫入"
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SHARE_ROOT="${ANILA_SHARE_ROOT:-$REPO_ROOT/share}"

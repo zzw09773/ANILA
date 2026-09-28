@@ -646,14 +646,18 @@ def resolve_check_interval() -> int:
 
 
 async def alert_detector_pass() -> None:
-    """一輪偵測，然後重試到期的失敗寄信。"""
-    evaluate_database()
-    evaluate_disk()
-    evaluate_backup()
+    """一輪偵測，然後重試到期的失敗寄信。
+
+    資料庫、磁碟、備份與寄信都是同步阻塞呼叫，放到執行緒，避免 SMTP
+    逾時把事件迴圈停住。
+    """
+    await asyncio.to_thread(evaluate_database)
+    await asyncio.to_thread(evaluate_disk)
+    await asyncio.to_thread(evaluate_backup)
     await evaluate_platform_ingress()
     from app.services.alert_mail import retry_due_alert_mail
 
-    retry_due_alert_mail()
+    await asyncio.to_thread(retry_due_alert_mail)
 
 
 async def _alert_detector_loop() -> None:

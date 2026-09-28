@@ -123,6 +123,24 @@ def _active_stream_writer(metadata: Optional[dict]) -> Optional[str]:
     return writer if isinstance(writer, str) and writer else None
 
 
+def _attachment_admitted_metadata(raw: Optional[dict]) -> Optional[dict]:
+    """只留下送出當下每份附件有沒有進上下文。其他欄位不從這條路寫進來。"""
+    if not isinstance(raw, dict):
+        return None
+    admitted = raw.get("attachment_admitted")
+    if not isinstance(admitted, dict):
+        return None
+    cleaned: dict[str, bool] = {}
+    for key, value in list(admitted.items())[:50]:
+        if not isinstance(key, str) or not key or len(key) > 80:
+            continue
+        if isinstance(value, bool):
+            cleaned[key] = value
+    if not cleaned:
+        return None
+    return {"attachment_admitted": cleaned}
+
+
 def _check_metadata_size(metadata: Optional[dict]) -> Optional[dict]:
     """Fit legal long reasoning, then enforce the 64KB envelope.
 
@@ -914,6 +932,7 @@ def start_turn(
     writer: str,
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
+    user_metadata: Optional[dict] = None,
 ) -> tuple[Message, Message, Optional[Message]]:
     """使用者訊息落庫 ＋ 助理列預留，在同一個交易裡完成。
 
@@ -984,6 +1003,7 @@ def start_turn(
             parent_id=parent_for_user,
             role="user",
             content=user_content,
+            metadata_=_check_metadata_size(_attachment_admitted_metadata(user_metadata)),
         )
         db.add(user_msg)
         db.flush()
@@ -1041,6 +1061,7 @@ def branch_turn(
     writer: str,
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
+    user_metadata: Optional[dict] = None,
 ) -> tuple[Message, Message]:
     """編輯重問：分支一則使用者訊息 ＋ 預留它的助理列，同一個交易。
 
@@ -1091,6 +1112,7 @@ def branch_turn(
         parent_id=parent_id,
         role="user",
         content=user_content,
+        metadata_=_check_metadata_size(_attachment_admitted_metadata(user_metadata)),
     )
     db.add(user_msg)
     db.flush()

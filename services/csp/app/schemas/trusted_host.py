@@ -1,6 +1,7 @@
 """Pydantic schemas for /api/trusted-hosts."""
 from __future__ import annotations
 
+import ipaddress
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
@@ -20,11 +21,23 @@ class TrustedHostCreate(BaseModel):
         value = value.strip().lower()
         if not value:
             raise ValueError("host must not be empty")
-        # 不允許 scheme / port / path 出現 — 純 hostname。catch typo 早一點。
-        if any(ch in value for ch in ("://", ":", "/", "?", "#")):
+        if any(ch in value for ch in ("://", "/", "?", "#")):
             raise ValueError(
-                "host must be a bare hostname (no scheme / port / path); "
-                "e.g. 'gemma4' or 'inference.internal'"
+                "host must be a bare hostname or IPv6 literal "
+                "(no scheme / port / path); "
+                "e.g. 'gemma4', 'inference.internal', or '2001:db8::1'"
+            )
+        try:
+            parsed = ipaddress.ip_address(value)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, ipaddress.IPv6Address):
+            return str(parsed)
+        if ":" in value:
+            raise ValueError(
+                "host must be a bare hostname or IPv6 literal "
+                "(no scheme / port / path); "
+                "e.g. 'gemma4', 'inference.internal', or '2001:db8::1'"
             )
         # 簡單合法字元集 (RFC 1123 hostname subset + IP literal letters)
         for ch in value:

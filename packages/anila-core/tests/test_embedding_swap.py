@@ -149,6 +149,34 @@ def test_rebuild_resumes_after_interruption_then_switches_once():
     assert calls["n"] == 3
 
 
+def test_permanent_failures_are_outside_the_embeddable_total():
+    """三次失敗的列不算進 total，批次做完仍可切換。空白列也不算。"""
+    items = [
+        WorkItem("chunk", 1, "甲"),
+        WorkItem("chunk", 2, "乙"),
+        WorkItem("chunk", 3, "丙"),
+        WorkItem("chunk", 4, "   "),
+    ]
+    corpus = InMemoryCorpus(
+        items=items,
+        failures={("chunk", 3, 8): 3},
+        state=ActivationState(
+            active_model_id=7,
+            rebuild_target_model_id=8,
+            rebuild_status="pending",
+        ),
+    )
+    assert corpus.next_batch(8, 10) == [items[0], items[1]]
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        return [[1.0] for _ in texts]
+
+    done = run_rebuild_pass(corpus, embed, max_batches=5, batch_size=10, now=NOW)
+    assert done.rebuild_status == "complete"
+    assert done.active_model_id == 8
+    assert corpus.counts(8) == (2, 2, 1)
+
+
 def test_rollback_cancels_a_running_rebuild():
     state = rollback_state(
         ActivationState(

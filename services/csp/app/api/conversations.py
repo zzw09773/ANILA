@@ -149,6 +149,7 @@ class TurnHeadCreate(BaseModel):
     stream_writer: str = Field(..., min_length=8, max_length=200)
     model_name: Optional[str] = None
     agent_name: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class ConversationOut(ApiResponseModel):
@@ -969,6 +970,7 @@ def start_turn(
         writer=body.stream_writer,
         model_name=body.model_name,
         agent_name=body.agent_name,
+        user_metadata=body.metadata,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
@@ -1042,6 +1044,7 @@ def branch_turn(
         writer=body.stream_writer,
         model_name=body.model_name,
         agent_name=body.agent_name,
+        user_metadata=body.metadata,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)

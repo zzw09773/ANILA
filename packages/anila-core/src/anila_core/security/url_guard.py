@@ -216,6 +216,24 @@ def clear_trusted_host_providers() -> None:
     _trusted_host_providers.clear()
 
 
+def _host_is_trusted(host: str) -> bool:
+    """名稱比對不分已存的壓縮寫法。IPv6 字面值用位址相等，不靠字串。"""
+    trusted = _trusted_hosts()
+    if host in trusted:
+        return True
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    for item in trusted:
+        try:
+            if ipaddress.ip_address(item) == literal:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _trusted_hosts() -> set[str]:
     result = _env_trusted_hosts()
     for provider in _trusted_host_providers:
@@ -406,10 +424,12 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
 
     # Admin-blessed hosts (docker service names and intranet FQDNs in
     # cross-stack networks, etc.) may bypass only narrow, operator-owned
-    # host checks: fixable name-shape checks below and RFC1918 DNS answers.
-    # Structural rejects such as loopback, metadata, link-local and IP
-    # literals still fail closed. Scheme is already validated above.
-    trusted = host in _trusted_hosts()
+    # name-shape checks below (single-label, internal zone). Private
+    # targets — IP literals and names that resolve to RFC1918 — need both
+    # ANILA_ALLOW_PRIVATE_ENDPOINT and a trusted-host entry. Structural
+    # rejects such as loopback, metadata and link-local still fail closed.
+    # Scheme is already validated above.
+    trusted = _host_is_trusted(host)
 
     # Exact deny-list names (localhost / metadata / host.docker.internal)
     # are structural. Operator trusted-hosts must not override them — that
@@ -450,10 +470,11 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
             host=host,
             reason=REASON_UNSAFE_IP,
         )
-    if _is_private_ip(host) and not allow_private:
+    if _is_private_ip(host) and not (allow_private and trusted):
         raise UnsafeEndpointError(
-            f"endpoint_url host {host!r} is a private (RFC 1918) IP "
-            f"(set ANILA_ALLOW_PRIVATE_ENDPOINT=1 in on-prem dev to relax)",
+            f"endpoint_url host {host!r} is a private (RFC 1918) IP. "
+            f"ANILA_ALLOW_PRIVATE_ENDPOINT must be on, and the host must be "
+            f"listed in the console trusted hosts.",
             host=host,
             reason=REASON_PRIVATE_IP,
         )
@@ -473,9 +494,9 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
             reason=REASON_SINGLE_LABEL,
         )
 
-    # Hostname: resolve and reject if any answer is unsafe. Same opt-in
-    # rules as IP literals — link-local etc always blocked, RFC 1918
-    # gated by ANILA_ALLOW_PRIVATE_ENDPOINT.
+    # Hostname: resolve and reject if any answer is unsafe. Link-local
+    # stays blocked. A private answer needs the coarse private-endpoint
+    # switch and this hostname on the trusted-host list.
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
@@ -495,11 +516,12 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
                 host=host,
                 reason=REASON_UNSAFE_IP,
             )
-        if _is_private_ip(addr) and not allow_private and not trusted:
+        if _is_private_ip(addr) and not (allow_private and trusted):
             raise UnsafeEndpointError(
                 f"endpoint_url host {host!r} resolves to private "
-                f"(RFC 1918) address {addr!r} "
-                f"(set ANILA_ALLOW_PRIVATE_ENDPOINT=1 in on-prem dev)",
+                f"(RFC 1918) address {addr!r}. "
+                f"ANILA_ALLOW_PRIVATE_ENDPOINT must be on, and the host must be "
+                f"listed in the console trusted hosts.",
                 host=host,
                 reason=REASON_PRIVATE_IP,
             )

@@ -197,6 +197,7 @@ export async function persistTurnHead({
   modelName = null,
   agentName = null,
   writer = makeStreamWriter(),
+  userMetadata = null,
 }) {
   let head = null;
   try {
@@ -205,6 +206,7 @@ export async function persistTurnHead({
       streamWriter: writer,
       modelName,
       agentName,
+      userMetadata,
     });
   } catch (error) {
     return { ok: false, error, notice: TURN_FAILURE_NOTICE };

@@ -1,6 +1,7 @@
 """治理中心的信任主機。asr-gateway 的環境清單是空的，改問 CSP。
 
-快取約 30 秒。這次讀不到就沿用上一筆，從來沒讀到就是空的，不猜主機。
+快取約 30 秒。這次讀不到就沿用上一筆，但超過五分鐘仍讀不到就清空，
+不讓已刪除的主機一直留在 SSRF 放行清單。從來沒讀到就是空的，不猜主機。
 """
 from __future__ import annotations
 
@@ -17,9 +18,11 @@ logger = logging.getLogger(__name__)
 
 _PATH = "/api/internal/trusted-hosts"
 _TTL_SECONDS = 30.0
+_MAX_STALE_SECONDS = 300.0
 _lock = threading.Lock()
 _hosts: set[str] = set()
 _expires_at = 0.0
+_fetched_at = 0.0
 _registered = False
 
 
@@ -30,10 +33,11 @@ def cached_console_hosts() -> set[str]:
 
 def reset_console_trusted_hosts() -> None:
     """測試用。清掉快取，不拿掉已經掛上的 provider。"""
-    global _expires_at
+    global _expires_at, _fetched_at
     with _lock:
         _hosts.clear()
         _expires_at = 0.0
+        _fetched_at = 0.0
 
 
 def ensure_registered() -> None:
@@ -47,14 +51,22 @@ def ensure_registered() -> None:
 ensure_registered()
 
 
+def _drop_stale_hosts(now: float) -> None:
+    """讀取失敗時，上一筆只再留五分鐘。"""
+    global _fetched_at
+    if _fetched_at and now - _fetched_at > _MAX_STALE_SECONDS:
+        _hosts.clear()
+        _fetched_at = 0.0
+
+
 async def refresh_console_trusted_hosts(
     settings: Any,
     *,
     http_client: httpx.AsyncClient | None = None,
     force: bool = False,
 ) -> None:
-    """用語音服務權杖讀信任主機。失敗留著上一筆。"""
-    global _expires_at
+    """用語音服務權杖讀信任主機。短暫失敗留著上一筆，太久就清空。"""
+    global _expires_at, _fetched_at
     ensure_registered()
     now = time.monotonic()
     with _lock:
@@ -65,6 +77,8 @@ async def refresh_console_trusted_hosts(
     token = _service_token(settings)
     base = str(getattr(settings, "CSP_BASE_URL", "") or "").rstrip("/")
     if not token or not base:
+        with _lock:
+            _drop_stale_hosts(time.monotonic())
         return
     owns_client = http_client is None
     client = http_client or httpx.AsyncClient()
@@ -76,6 +90,8 @@ async def refresh_console_trusted_hosts(
         )
         if response.status_code != 200:
             logger.warning("trusted hosts refresh HTTP %s", response.status_code)
+            with _lock:
+                _drop_stale_hosts(time.monotonic())
             return
         payload = response.json() or {}
         fresh = {
@@ -85,6 +101,8 @@ async def refresh_console_trusted_hosts(
         }
     except Exception:
         logger.warning("trusted hosts refresh failed", exc_info=True)
+        with _lock:
+            _drop_stale_hosts(time.monotonic())
         return
     finally:
         if owns_client:
@@ -92,4 +110,6 @@ async def refresh_console_trusted_hosts(
     with _lock:
         _hosts.clear()
         _hosts.update(fresh)
-        _expires_at = time.monotonic() + _TTL_SECONDS
+        moment = time.monotonic()
+        _fetched_at = moment
+        _expires_at = moment + _TTL_SECONDS

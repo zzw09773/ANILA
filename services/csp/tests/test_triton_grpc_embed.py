@@ -42,6 +42,7 @@ def _model(**overrides):
 def _env(monkeypatch):
     monkeypatch.setenv("ANILA_ALLOW_GRPC_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "172.16.120.35")
 
     async def _noop_usage(*_a, **_k):
         return None

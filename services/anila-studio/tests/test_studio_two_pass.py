@@ -70,7 +70,7 @@ async def test_generate_two_pass_uses_outline_then_content(monkeypatch):
     calls = []
     spec_json = json.dumps({"title": "t", "slides": [
         {"title": "封面", "layout_kind": "section_break", "bullets": ["x"]},
-        {"title": "懲罰種類對照", "layout_kind": "table", "bullets": ["x"], "table": {"columns": ["a", "b"], "rows": [["1", "2"]]}},
+        {"title": "懲罰種類對照", "layout_kind": "table", "bullets": ["x"], "table": {"columns": ["a", "b"], "rows": [["hit", "seed"]]}},
     ]}, ensure_ascii=False)
 
     async def fake_llm(bearer, model, messages, **kw):

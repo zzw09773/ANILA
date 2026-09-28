@@ -2,7 +2,12 @@
 
 import { describe, it, expect } from "vitest";
 
-import { bindAttachments, uploadAttachment } from "../runtime/conversations.js";
+import {
+  admissionForTurn,
+  bindAttachments,
+  getAttachmentMeta,
+  uploadAttachment,
+} from "../runtime/conversations.js";
 
 describe("uploadAttachment", () => {
   it("數字 conversationId 會寫進 FormData", async () => {
@@ -64,5 +69,23 @@ describe("bindAttachments", () => {
       reference_ids: ["abc"],
       message_id: 88,
     });
+  });
+});
+
+describe("getAttachmentMeta", () => {
+  it("帶這一輪實際使用的模型，讓 budget_admitted 跟注入同一扇窗", async () => {
+    const calls = [];
+    const authRequest = async (path, options) => {
+      calls.push({ path, options });
+      return { extract_status: "ok", budget_admitted: false };
+    };
+    await getAttachmentMeta(authRequest, "ref/1", "tiny-ctx");
+    expect(calls[0].path).toBe("/api/attachments/ref%2F1/meta?model=tiny-ctx");
+    const refreshed = await admissionForTurn(
+      authRequest,
+      [{ referenceId: "ref/1", budgetAdmitted: true, extractStatus: "ok" }],
+      "tiny-ctx",
+    );
+    expect(refreshed[0].budgetAdmitted).toBe(false);
   });
 });

@@ -2284,3 +2284,13 @@ def test_csp_refusal_notice_advice_matches_cause(
     assert _advice(notices["utf8_run"]) == _advice(notices["utf8_marks"]), (
         "one limit, one sentence"
     )
+
+
+def test_auto_attachment_metadata_query_is_capped():
+    import inspect
+
+    from app.api import proxy as proxy_api
+
+    source = inspect.getsource(proxy_api._inject_attachments_async)
+    assert ".limit(_ATTACHMENT_META_CAP)" in source
+    assert proxy_api._ATTACHMENT_META_CAP == 200

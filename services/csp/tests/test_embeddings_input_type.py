@@ -104,6 +104,7 @@ def _register_triton_embedder(db, name="nv-embed-v2"):
 def _grpc_endpoint_allowed(monkeypatch):
     monkeypatch.setenv("ANILA_ALLOW_GRPC_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "172.16.120.35")
 
 
 def _post_embeddings(client, db, path, body, username="input_type_caller"):

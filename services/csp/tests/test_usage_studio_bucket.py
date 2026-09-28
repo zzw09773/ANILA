@@ -2,7 +2,8 @@
 """用量頁要分得出「簡報製作」（2026-09-02 擁有者問「製作簡報的用量有沒有被統計」）。
 
 有統計，但 Studio 走使用者身分、沒有 API 金鑰，全被算進「對話介面」。現在：
-* Studio 每通呼叫帶 ``X-ANILA-Request-Source: studio`` → ``token_usage.request_type='studio'``；
+* Studio 工作權杖（或 anila-studio 服務憑證）→ ``token_usage.request_type='studio'``。
+  只帶 ``X-ANILA-Request-Source: studio`` 仍算對話。
 * 用量摘要多一格 ``studio_requests``，``web_ui_requests`` 不再把它算進去。
 """
 from __future__ import annotations
@@ -60,4 +61,76 @@ async def test_studio_source_header_tags_the_usage_row(db: Session, db_engine, m
     await usage_writer._flush_batch([queue.get_nowait()])
     db.expire_all()
     row = db.query(TokenUsage).filter(TokenUsage.user_id == caller.id).one()
-    assert row.request_type == "studio"
+    assert row.request_type == "chat"
+
+    from app.services.studio_job_token import issue_studio_job_token
+
+    token = issue_studio_job_token(
+        user_id=caller.id,
+        job_id="deck-usage",
+        classification="無機密",
+        token_version=int(caller.token_version or 0),
+        db=db,
+    )
+    job = _Request({"model": model.name, "stream": False, "messages": [{"role": "user", "content": "簡報"}]})
+    job.headers = {"Authorization": f"Bearer {token}"}
+    await proxy_api.chat_completions(job, caller=Caller(user=caller, api_key_id=None), db=db)
+    await usage_writer._flush_batch([queue.get_nowait()])
+    db.expire_all()
+    kinds = {
+        item.request_type
+        for item in db.query(TokenUsage).filter(TokenUsage.user_id == caller.id).all()
+    }
+    assert "studio" in kinds
+
+
+@pytest.mark.asyncio
+async def test_stream_usage_bucket_follows_the_job_token_not_the_header(
+    db: Session, monkeypatch
+):
+    captured: list[dict] = []
+
+    def fake_stream(**kwargs):
+        captured.append(kwargs)
+
+        async def _empty():
+            if False:
+                yield ""
+
+        return _empty()
+
+    monkeypatch.setattr(proxy_api, "proxy_stream", fake_stream)
+    monkeypatch.setattr(proxy_api, "_schedule_memory_write", lambda **kwargs: None)
+    caller = make_user(db, username="studio-stream-caller", role="admin")
+    model = make_model(db, name="studio-stream-model")
+
+    header_only = _Request({
+        "model": model.name,
+        "stream": True,
+        "messages": [{"role": "user", "content": "簡報"}],
+    })
+    header_only.headers = {"X-ANILA-Request-Source": "studio"}
+    await proxy_api.chat_completions(
+        header_only, caller=Caller(user=caller, api_key_id=None), db=db
+    )
+    assert captured[-1]["request_type"] == "chat"
+
+    from app.services.studio_job_token import issue_studio_job_token
+
+    token = issue_studio_job_token(
+        user_id=caller.id,
+        job_id="deck-stream",
+        classification="無機密",
+        token_version=int(caller.token_version or 0),
+        db=db,
+    )
+    job = _Request({
+        "model": model.name,
+        "stream": True,
+        "messages": [{"role": "user", "content": "簡報"}],
+    })
+    job.headers = {"Authorization": f"Bearer {token}"}
+    await proxy_api.chat_completions(
+        job, caller=Caller(user=caller, api_key_id=None), db=db
+    )
+    assert captured[-1]["request_type"] == "studio"

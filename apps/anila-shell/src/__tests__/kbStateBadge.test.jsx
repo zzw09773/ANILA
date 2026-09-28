@@ -15,7 +15,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import React from "react";
 
-import { KbStateBadge, MessageBubble, questionHadAttachments } from "../chat.jsx";
+import {
+  KbStateBadge,
+  MessageBubble,
+  attachmentEnteredAnswer,
+  questionAttachmentBasis,
+  questionHadAttachments,
+} from "../chat.jsx";
 // ⚠ 元件層的 fixture 刻意呼叫**真的**映射函式,而不是在測試裡手抄一份
 // camelCase。手抄版會跟著 production 漂開,然後這一整組測試就變成在測
 // 測試自己(`dupReplyReconcile.test.js:44` 就是那個形狀)。
@@ -631,15 +637,37 @@ describe("提問附了檔案時的院規狀態", () => {
     expect(container.textContent).toContain("院內規章檢索失敗");
   });
 
-  it("只看往前最近的一則使用者訊息", () => {
+  it("只有送出時記下已納入的附件才算進了回答", () => {
     const msgs = [
-      { role: "user", attachments: [{ reference_id: "a" }] },
+      { role: "user", attachmentAdmitted: { a: true }, attachments: [{ extractStatus: "ok" }] },
       { role: "assistant" },
-      { role: "user", attachments: [] },
+      { role: "user", attachments: [{ extractStatus: "ok" }] },
       { role: "assistant" },
     ];
     expect(questionHadAttachments(msgs, 1)).toBe(true);
+    expect(questionAttachmentBasis(msgs, 1)).toBe("included");
     expect(questionHadAttachments(msgs, 3)).toBe(false);
+    expect(questionAttachmentBasis(msgs, 3)).toBe("none");
+  });
+
+  it("太大或未進預算的附件標成未納入，不說依附件回答", () => {
+    const msgs = [
+      {
+        role: "user",
+        attachmentAdmitted: { a: false, b: false },
+        attachments: [{ extractStatus: "too_large" }, { budgetAdmitted: false }],
+      },
+      { role: "assistant" },
+    ];
+    expect(attachmentEnteredAnswer({ extractStatus: "too_large" })).toBe(false);
+    expect(attachmentEnteredAnswer({ dataUrl: "data:image/png;base64,abc" })).toBe(true);
+    expect(questionHadAttachments(msgs, 1)).toBe(false);
+    expect(questionAttachmentBasis(msgs, 1)).toBe("omitted");
+    const { container } = render(
+      <KbStateBadge state="not_searched" attachmentsOmitted />,
+    );
+    expect(container.textContent).toContain("附件未納入這次回答");
+    expect(container.textContent).not.toContain("依附件回答");
   });
 });
 

@@ -30,7 +30,17 @@ def _install_embed(monkeypatch, mapping):
                 return vector, "embed-test", len(vector)
         return [0.0, 1.0], "embed-test", 2
 
+    async def fake_many(_db, texts, **kwargs):
+        vectors = []
+        name = "embed-test"
+        dim = 2
+        for text in texts:
+            vector, name, dim = await fake_embed(_db, text, **kwargs)
+            vectors.append(vector)
+        return vectors, name, dim
+
     monkeypatch.setattr(memory_service, "_embed", fake_embed)
+    monkeypatch.setattr(memory_service, "_embed_many", fake_many)
 
 
 @pytest.mark.asyncio
@@ -125,7 +135,17 @@ async def test_fact_count_respects_retrieve_top_k(db, monkeypatch):
     async def same(_db, _text, **_kwargs):
         return [1.0, 0.0], "embed-test", 2
 
+    async def same_many(_db, texts, **kwargs):
+        vectors = []
+        name = "embed-test"
+        dim = 2
+        for text in texts:
+            vector, name, dim = await same(_db, text, **kwargs)
+            vectors.append(vector)
+        return vectors, name, dim
+
     monkeypatch.setattr(memory_service, "_embed", same)
+    monkeypatch.setattr(memory_service, "_embed_many", same_many)
     result = await memory_service.build_memory_block(db, user.id, "任何問題")
     block = result.block or ""
     assert "請用條列" in block
@@ -146,7 +166,17 @@ async def test_missing_fact_embedding_is_filled_on_retrieval(db, monkeypatch):
             return [1.0, 0.0], "embed-test", 2
         return [1.0, 0.0], "embed-test", 2
 
+    async def fake_many(_db, texts, **kwargs):
+        vectors = []
+        name = "embed-test"
+        dim = 2
+        for text in texts:
+            vector, name, dim = await fake_embed(_db, text, **kwargs)
+            vectors.append(vector)
+        return vectors, name, dim
+
     monkeypatch.setattr(memory_service, "_embed", fake_embed)
+    monkeypatch.setattr(memory_service, "_embed_many", fake_many)
     result = await memory_service.build_memory_block(db, user.id, "雷達組在哪")
     assert "雷達組" in (result.block or "")
     stored = getattr(
@@ -155,3 +185,48 @@ async def test_missing_fact_embedding_is_filled_on_retrieval(db, monkeypatch):
         None,
     )
     assert stored
+
+
+@pytest.mark.asyncio
+async def test_missing_fact_vectors_share_one_embedding_call(db, monkeypatch):
+    user = make_user(db, username="mem-batch")
+    db.add(_fact(12, user.id, "a", "FACT_A"))
+    db.add(_fact(13, user.id, "b", "FACT_B"))
+    db.add(_fact(14, user.id, "c", "FACT_C"))
+    set_setting(db, "memory.retrieve_min_cosine", 0.0)
+    set_setting(db, "memory.retrieve_top_k", 3)
+    db.commit()
+    calls: list[list[str]] = []
+
+    async def fake_embed(_db, text_input, **kwargs):
+        return [1.0, 0.0], "embed-test", 2
+
+    async def fake_many(_db, texts, **kwargs):
+        calls.append(list(texts))
+        return [[1.0, 0.0] for _text in texts], "embed-test", 2
+
+    monkeypatch.setattr(memory_service, "_embed", fake_embed)
+    monkeypatch.setattr(memory_service, "_embed_many", fake_many)
+    await memory_service.build_memory_block(db, user.id, "任何問題")
+    assert len(calls) == 1
+    assert len(calls[0]) == 3
+
+
+@pytest.mark.asyncio
+async def test_embed_many_keeps_earlier_chunks_when_a_later_chunk_fails(monkeypatch):
+    calls: list[list[str]] = []
+
+    async def fake_proxy(_db, texts, **kwargs):
+        calls.append(list(texts))
+        if len(calls) > 1:
+            raise RuntimeError("upstream batch rejected")
+        return [[1.0, 0.0] for _text in texts], "embed-test", 2
+
+    monkeypatch.setattr(memory_service, "_embed_via_proxy", fake_proxy)
+    texts = [f"t{i}" for i in range(70)]
+    vectors, _name, _native = await memory_service._embed_many(None, texts)
+    assert [len(batch) for batch in calls] == [64, 6]
+    assert len(vectors) == 70
+    assert vectors[0] == [1.0, 0.0]
+    assert vectors[63] == [1.0, 0.0]
+    assert vectors[64] is None

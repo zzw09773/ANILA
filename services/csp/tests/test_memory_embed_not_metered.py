@@ -125,6 +125,7 @@ def test_proxy_honours_record_usage_false_on_the_triton_path(monkeypatch):
 
     monkeypatch.setenv("ANILA_ALLOW_GRPC_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "172.16.120.35")
     monkeypatch.setattr(proxy_impl, "enqueue_usage", _count)
     monkeypatch.setattr(proxy_impl, "enqueue_usage_task_linked", _count)
     monkeypatch.setattr(proxy_impl, "_note_proxy_outcome", lambda **_k: None)

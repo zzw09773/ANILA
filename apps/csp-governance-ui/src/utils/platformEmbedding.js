@@ -64,7 +64,7 @@ export function formatRebuildStatus(snapshot) {
   if (rebuild.status === 'failed') text += '（失敗）'
   if (rebuild.status === 'cancelled') text += '（已取消）'
   const errors = Number(rebuild.errors || 0)
-  if (errors > 0) text += `，錯誤 ${errors}`
+  if (errors > 0) text += `，錯誤 ${errors}，無法嵌入的 ${errors} 筆`
   const eta = rebuild.eta_seconds
   if (typeof eta === 'number' && eta > 0) {
     const minutes = Math.max(1, Math.round(eta / 60))

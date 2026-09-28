@@ -203,6 +203,12 @@ def test_grpc_private_ip_still_needs_the_private_flag(monkeypatch, scheme):
     assert exc.value.reason == "private_ip"
 
     monkeypatch.setenv(_PRIVATE, "1")
+    with pytest.raises(UnsafeEndpointError) as still:
+        validate_outbound_url(
+            f"{scheme}://172.16.0.9:9001", endpoint_kind=ENDPOINT_KIND_MODEL
+        )
+    assert still.value.reason == "private_ip"
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "172.16.0.9")
     validate_outbound_url(
         f"{scheme}://172.16.0.9:9001", endpoint_kind=ENDPOINT_KIND_MODEL
     )

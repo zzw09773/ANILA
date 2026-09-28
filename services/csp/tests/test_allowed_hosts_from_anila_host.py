@@ -55,7 +55,8 @@ def test_nginx_map_uses_anila_host_and_has_no_lab_entries():
     assert '"::1"' in body
     assert "ip-literal" not in body
     assert "~^(?:(?:25[0-5]" in body
-    assert "[0-9a-f:.]" in body
+    assert "([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}" in body
+    assert "::ffff:" in body
     for name in ("csp", "router", "anila-studio", "asr-gateway", "ingestion-worker"):
         assert f'"{name}"' in body
     for banned in ("10.53.", "172.16.", "ncsist"):

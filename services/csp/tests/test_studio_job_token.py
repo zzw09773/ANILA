@@ -251,3 +251,58 @@ def test_job_token_honors_model_grant_and_bills_the_user(
     assert row.api_key_id is None
     assert row.request_type == "studio"
     assert row.model_id == model.id
+
+
+def test_junk_header_kid_does_not_verify(client: TestClient, db: Session):
+    """標頭 kid 換成不相干的字串時，簽章對不上，不能當成工作權杖。"""
+    import base64
+    import json
+
+    from app.services.studio_job_token import (
+        presented_studio_job_token,
+        verify_studio_job_token,
+    )
+
+    owner = make_user(db, username="studio-kid-owner")
+    coll = _collection(db, owner, name="kid", level="無機密")
+    access = create_tokens(owner, db)["access_token"]
+    minted = _mint(client, access, job_id="kid-check", collection_id=coll.id)
+    assert minted.status_code == 200, minted.text
+    token = minted.json()["token"]
+    header, payload, signature = token.split(".")
+    raw = jwt.get_unverified_header(token)
+    raw["kid"] = "not-a-published-kid"
+    padded = base64.urlsafe_b64encode(
+        json.dumps(raw, separators=(",", ":")).encode("utf-8")
+    ).rstrip(b"=").decode("ascii")
+    forged = ".".join((padded, payload, signature))
+    assert header
+    assert presented_studio_job_token(forged) is True
+    assert verify_studio_job_token(forged, db) is None
+
+
+def test_access_token_is_not_forced_onto_the_studio_job_path(db: Session):
+    from app.services.auth_service import resolve_presented_user
+    from app.services.studio_job_token import presented_studio_job_token
+
+    owner = make_user(db, username="studio-access-owner")
+    access = create_tokens(owner, db)["access_token"]
+    assert presented_studio_job_token(access) is False
+    assert resolve_presented_user(access, db).id == owner.id
+    now = datetime.now(timezone.utc)
+    mixed = jwt.encode(
+        {
+            "sub": str(owner.id),
+            "username": owner.username,
+            "role": owner.role,
+            "tv": int(owner.token_version or 0),
+            "type": "access",
+            "aud": "studio",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+        },
+        get_private_key(db),
+        algorithm=ALGORITHM,
+        headers={"kid": get_kid(db), "typ": "JWT"},
+    )
+    assert presented_studio_job_token(mixed) is False

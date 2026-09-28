@@ -91,7 +91,8 @@ def _public_dns(host, *args, **kwargs):
 def _permissive_flags_and_public_dns(monkeypatch):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
-    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    # 這台 Python 把 203.0.113.0/24 算成 private，私網目標還要在信任清單。
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "idp.example")
     with patch("anila_core.security.url_guard.socket.getaddrinfo", _public_dns):
         yield
 

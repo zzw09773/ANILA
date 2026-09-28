@@ -325,5 +325,8 @@ def test_feedback_read_migration_follows_r1_0059():
 
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
-    heads = list(ScriptDirectory.from_config(cfg).get_heads())
-    assert heads == ["r1_0060"], heads
+    script = ScriptDirectory.from_config(cfg)
+    # 只確認這一號在鏈上且整條鏈只有一個 head；目前 head 是哪一號由
+    # test_conversation_compact 負責，這裡不寫死，免得每加一號就要改。
+    assert len(script.get_heads()) == 1, script.get_heads()
+    assert script.get_revision("r1_0060") is not None

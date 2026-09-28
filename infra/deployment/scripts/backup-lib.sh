@@ -164,19 +164,107 @@ run_pg_dump() {
   return $rc
 }
 
-# 退出碼 0 或 1 都收（檔案在打包途中被改寫時 tar 會回 1，包本身仍可用）。
+_file_is_sqlite() {
+  hdr=$(dd if="$1" bs=15 count=1 2>/dev/null || true)
+  [ "$hdr" = "SQLite format 3" ]
+}
+
+_sqlite_backup() {
+  _sql_src=$1
+  _sql_dest=$2
+  rm -f "$_sql_dest"
+  mkdir -p "$(dirname "$_sql_dest")"
+  if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "$_sql_src" ".backup '$_sql_dest'"
+    return $?
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$_sql_src" "$_sql_dest" <<'PY'
+import sqlite3, sys
+src, dest = sys.argv[1], sys.argv[2]
+source = sqlite3.connect("file:%s?mode=ro" % src, uri=True)
+target = sqlite3.connect(dest)
+with target:
+    source.backup(target)
+source.close()
+PY
+    return $?
+  fi
+  printf '%s\n' "sqlite backup needs sqlite3 or python3" >&2
+  return 1
+}
+
+# 先把 SQLite 做成一致性複本，其餘檔案用 tar 讀。tar 回 1（檔案在讀取途中
+# 被改寫）或更大的錯誤都不發布，交給外層重試。
+_stage_tree() {
+  srcdir=$1
+  staging=$2
+  exclude_state=$3
+  list=$(mktemp) || return 1
+  find "$srcdir" -type f > "$list" || { rm -f "$list"; return 1; }
+  sqlite_list=$(mktemp) || { rm -f "$list"; return 1; }
+  : > "$sqlite_list"
+  while IFS= read -r srcfile; do
+    [ -n "$srcfile" ] || continue
+    rel=${srcfile#"$srcdir"/}
+    case "$rel" in
+      state|state/*)
+        if [ "$exclude_state" = "1" ]; then
+          continue
+        fi
+        ;;
+    esac
+    if _file_is_sqlite "$srcfile"; then
+      printf '%s\n' "$rel" >> "$sqlite_list"
+      if ! _sqlite_backup "$srcfile" "$staging/$rel"; then
+        rm -f "$list" "$sqlite_list"
+        return 1
+      fi
+    fi
+  done < "$list"
+  rm -f "$list"
+  excludes=$(mktemp) || { rm -f "$sqlite_list"; return 1; }
+  : > "$excludes"
+  if [ "$exclude_state" = "1" ]; then
+    printf '%s\n' "state" "./state" >> "$excludes"
+  fi
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    printf '%s\n' "$rel" "./$rel" >> "$excludes"
+  done < "$sqlite_list"
+  rm -f "$sqlite_list"
+  bundle=$(mktemp) || { rm -f "$excludes"; return 1; }
+  tar_rc=0
+  if [ -s "$excludes" ]; then
+    tar --exclude-from="$excludes" -C "$srcdir" -cf "$bundle" . || tar_rc=$?
+  else
+    tar -C "$srcdir" -cf "$bundle" . || tar_rc=$?
+  fi
+  rm -f "$excludes"
+  if [ "$tar_rc" -ne 0 ]; then
+    rm -f "$bundle"
+    return 1
+  fi
+  tar -C "$staging" -xf "$bundle" || { rm -f "$bundle"; return 1; }
+  rm -f "$bundle"
+  return 0
+}
+
 tar_tree() {
   srcdir=$1
   outfile=$2
   exclude_state=$3
   partial="$outfile.partial"
-  if [ "$exclude_state" = "1" ]; then
-    tar --exclude=state -C "$srcdir" -czf "$partial" .
-  else
-    tar -C "$srcdir" -czf "$partial" .
+  staging=$(mktemp -d "${TMPDIR:-/tmp}/anila-tar.XXXXXX") || return 1
+  if ! _stage_tree "$srcdir" "$staging" "$exclude_state"; then
+    rm -rf "$staging"
+    rm -f "$partial"
+    return 1
   fi
+  tar -C "$staging" -czf "$partial" .
   rc=$?
-  if [ "$rc" -gt 1 ]; then
+  rm -rf "$staging"
+  if [ "$rc" -ne 0 ]; then
     rm -f "$partial"
     return 1
   fi
@@ -188,22 +276,76 @@ tar_tree() {
   return 0
 }
 
+_file_sha256() {
+  _hash_file=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$_hash_file" | awk '{print $1}'
+    return
+  fi
+  python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$_hash_file"
+}
+
+_same_file_set() {
+  _cmp_src=$1
+  _cmp_dest=$2
+  for f in "$_cmp_src"/*; do
+    [ -f "$f" ] || continue
+    _cmp_base=$(basename "$f")
+    [ -f "$_cmp_dest/$_cmp_base" ] || return 1
+    _cmp_a=$(_file_sha256 "$f")
+    _cmp_b=$(_file_sha256 "$_cmp_dest/$_cmp_base")
+    [ "$_cmp_a" = "$_cmp_b" ] || return 1
+  done
+  for f in "$_cmp_dest"/*; do
+    [ -f "$f" ] || continue
+    _cmp_base=$(basename "$f")
+    [ -f "$_cmp_src/$_cmp_base" ] || return 1
+  done
+  return 0
+}
+
 publish_monthly() {
   month=$1
   src=$2
   dest="$BACKUP_DIR/monthly/$month"
-  if [ -d "$dest" ]; then
+  if [ -d "$dest" ] && _same_file_set "$src" "$dest"; then
     return 0
   fi
-  mkdir -p "$BACKUP_DIR/monthly"
-  mkdir -p "$dest"
+  parent="$BACKUP_DIR/monthly"
+  mkdir -p "$parent" || return 1
+  staging="$parent/.staging-$month"
+  rm -rf "$staging"
+  mkdir -p "$staging" || return 1
   for f in "$src"/*; do
     [ -f "$f" ] || continue
     base=$(basename "$f")
-    if ! ln "$f" "$dest/$base" 2>/dev/null; then
-      cp -a "$f" "$dest/$base" || return 1
+    if ! ln "$f" "$staging/$base" 2>/dev/null; then
+      cp -a "$f" "$staging/$base" || { rm -rf "$staging"; return 1; }
     fi
   done
+  if ! _same_file_set "$src" "$staging"; then
+    rm -rf "$staging"
+    return 1
+  fi
+  if [ -d "$dest" ]; then
+    trash="$parent/.trash-$month-$$"
+    if ! mv "$dest" "$trash"; then
+      rm -rf "$staging"
+      return 1
+    fi
+    if ! mv "$staging" "$dest"; then
+      mv "$trash" "$dest" 2>/dev/null || true
+      rm -rf "$staging"
+      return 1
+    fi
+    rm -rf "$trash"
+    return 0
+  fi
+  if [ -e "$dest" ]; then
+    rm -rf "$staging"
+    return 1
+  fi
+  mv "$staging" "$dest" || { rm -rf "$staging"; return 1; }
   return 0
 }
 
@@ -340,12 +482,23 @@ _backup_once_impl() {
   rmdir "$BACKUP_DIR/.incoming" 2>/dev/null || true
   INCOMING=""
 
+  if ! publish_monthly "$MONTH" "$BACKUP_DIR/daily/$STAMP"; then
+    fail_run monthly_failed
+    return 1
+  fi
+  if ! prune_backups "$BACKUP_DIR" "${ANILA_BACKUP_KEEP_DAILY:-14}" "${ANILA_BACKUP_KEEP_MONTHLY:-6}"; then
+    fail_run publish_failed
+    return 1
+  fi
   total=$(snapshot_bytes "$BACKUP_DIR/daily/$STAMP") || total=0
-  write_latest "daily/$STAMP" || return 1
-  write_status success "$total" "daily/$STAMP" "" "$RUN_AT" "$total" || return 1
-  mkdir -p "$BACKUP_DIR/monthly" || return 1
-  publish_monthly "$MONTH" "$BACKUP_DIR/daily/$STAMP" || return 1
-  prune_backups "$BACKUP_DIR" "${ANILA_BACKUP_KEEP_DAILY:-14}" "${ANILA_BACKUP_KEEP_MONTHLY:-6}" || return 1
+  if ! write_latest "daily/$STAMP"; then
+    fail_run publish_failed
+    return 1
+  fi
+  if ! write_status success "$total" "daily/$STAMP" "" "$RUN_AT" "$total"; then
+    fail_run publish_failed
+    return 1
+  fi
   finish_perms || return 1
   return 0
 }

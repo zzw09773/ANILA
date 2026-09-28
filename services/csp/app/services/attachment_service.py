@@ -71,6 +71,27 @@ def is_router_service_credential(db: Session, token: str | None) -> bool:
     return row.client_type == "router" and row.client_name == "router-primary"
 
 
+def is_studio_service_credential(db: Session, token: str | None) -> bool:
+    """只有 anila-studio 這張服務憑證能把回合標成簡報產物。"""
+    presented = (token or "").strip()
+    if not presented.startswith("csk-"):
+        return False
+    from app.models.service_client import ServiceClient
+    from app.services.agent_credential_service import verify_service_token
+
+    identity = verify_service_token(db, token=presented)
+    if (
+        identity is None
+        or identity.kind != "service_client"
+        or identity.service_client_id is None
+    ):
+        return False
+    row = db.get(ServiceClient, identity.service_client_id)
+    if row is None or row.revoked_at is not None:
+        return False
+    return row.client_type == "studio" and row.client_name == "anila-studio"
+
+
 def resolve_upload_origin(
     db: Session,
     requested: str | None,

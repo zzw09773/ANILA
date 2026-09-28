@@ -38,6 +38,8 @@ from typing import Any, AsyncIterator
 import asyncpg
 from pgvector import HalfVector
 
+from anila_core.storage.embeddable import leaf_predicate
+
 from anila_core.ingestion.chunking_plugins.base import ChunkResult
 from anila_core.ingestion.errors import StoreError
 from anila_core.models.ingestion import IngestionChunk, SearchHit
@@ -878,6 +880,64 @@ class CollectionScopedPgVectorStore:
             await self._attach_parent_content(conn, hits)
         return hits
 
+    async def keyword_search_unembedded(
+        self,
+        query: str,
+        model_id: int,
+        top_k: int = 30,
+    ) -> list[SearchHit]:
+        """關鍵字搜尋連續失敗、因此沒有目標向量的 leaf。
+
+        向量檢索看不到這些列。它們仍在 ``document_chunks``，用同一套
+        ILIKE 關鍵字路徑找回來，避免少數壞列從搜尋裡無聲消失。
+        """
+        from anila_core.embeddings.keyword import cjk_search_units, ilike_pattern
+
+        if top_k <= 0:
+            return []
+        units = cjk_search_units(query)
+        if not units:
+            return []
+        patterns = [ilike_pattern(unit) for unit in units]
+        clauses = [
+            f"content ILIKE ${i} ESCAPE '\\'" for i in range(1, len(patterns) + 1)
+        ]
+        score = " + ".join(
+            f"(CASE WHEN content ILIKE ${i} ESCAPE '\\' THEN 1 ELSE 0 END)"
+            for i in range(1, len(patterns) + 1)
+        )
+        model_param = len(patterns) + 1
+        limit_param = len(patterns) + 2
+        sql = f"""
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   parent_chunk_id, chunk_type, chunk_level,
+                   ({score})::float / {len(patterns)} AS score
+              FROM document_chunks
+             WHERE chunk_type = 'leaf'
+               AND ({' OR '.join(clauses)})
+               AND EXISTS (
+                    SELECT 1 FROM embedding_rebuild_failures fail
+                     WHERE fail.subject = 'chunk'
+                       AND fail.subject_id = document_chunks.id
+                       AND fail.model_id = ${model_param}
+                       AND fail.attempts >= 3
+               )
+               AND NOT EXISTS (
+                    SELECT 1 FROM embedding_vectors v
+                     WHERE v.subject = 'chunk'
+                       AND v.subject_id = document_chunks.id
+                       AND v.model_id = ${model_param}
+               )
+             ORDER BY score DESC, id
+             LIMIT ${limit_param}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *patterns, int(model_id), top_k)
+            hits = [self._row_to_search_hit(r) for r in rows]
+            await self._attach_parent_content(conn, hits)
+        return hits
+
     async def leaves_missing_embedding(
         self, model_id: int, limit: int,
     ) -> list[tuple[int, str]]:
@@ -887,24 +947,16 @@ class CollectionScopedPgVectorStore:
         """
         if limit <= 0:
             return []
-        sql = """
+        pred = leaf_predicate("c", "$1")
+        sql = f"""
             SELECT c.id, c.content
               FROM document_chunks c
-             WHERE c.chunk_type = 'leaf'
-               AND c.content IS NOT NULL
-               AND length(btrim(c.content)) > 0
+             WHERE {pred}
                AND NOT EXISTS (
                     SELECT 1 FROM embedding_vectors v
                      WHERE v.subject = 'chunk'
                        AND v.subject_id = c.id
                        AND v.model_id = $1
-               )
-               AND NOT EXISTS (
-                    SELECT 1 FROM embedding_rebuild_failures f
-                     WHERE f.subject = 'chunk'
-                       AND f.subject_id = c.id
-                       AND f.model_id = $1
-                       AND f.attempts >= 3
                )
              ORDER BY c.id
              LIMIT $2
@@ -921,28 +973,34 @@ class CollectionScopedPgVectorStore:
         return [(int(row["id"]), row["content"]) for row in rows]
 
     async def leaf_embedding_counts(self, model_id: int) -> tuple[int, int]:
-        """``(leaf rows, leaf rows that already have this model's vector)``."""
+        """``(embeddable leaves, embeddable leaves that have this model's vector)``.
+
+        空白 leaf 與連續失敗三次的列兩邊都不算，所以 done 不會被空白向量墊高，
+        少數壞列也不會把切換永遠卡住。
+        """
+        pred = leaf_predicate("c", "$1")
         try:
             async with self._acquire() as conn:
                 total = int(
                     await conn.fetchval(
-                        """
-                        SELECT count(*) FROM document_chunks
-                         WHERE chunk_type = 'leaf'
-                        """
+                        f"""
+                        SELECT count(*) FROM document_chunks c
+                         WHERE {pred}
+                        """,
+                        int(model_id),
                     )
                     or 0
                 )
                 done = int(
                     await conn.fetchval(
-                        """
+                        f"""
                         SELECT count(*)
                           FROM document_chunks c
                           JOIN embedding_vectors v
                             ON v.subject = 'chunk'
                            AND v.subject_id = c.id
                            AND v.model_id = $1
-                         WHERE c.chunk_type = 'leaf'
+                         WHERE {pred}
                         """,
                         int(model_id),
                     )

@@ -694,7 +694,7 @@ const KB_STATE_COPY = {
   partial_error: { tone: "warn", label: null }, // 見下面:要帶失敗庫數量
 };
 
-// 提問附了檔案時，答案依據的是附件，不是模型的一般知識。
+// 提問附了檔案、而且內容有進這次回答時，依據改說附件，不是模型的一般知識。
 const KB_STATE_COPY_WITH_ATTACHMENTS = {
   not_searched: { tone: "muted", label: "依附件回答" },
   searched_miss: {
@@ -703,16 +703,54 @@ const KB_STATE_COPY_WITH_ATTACHMENTS = {
   },
 };
 
-/** 這則助手回覆對應的提問（往前最近一則使用者訊息）有沒有附件。 */
-export const questionHadAttachments = (msgs, index) => {
+const KB_STATE_COPY_ATTACHMENTS_OMITTED = {
+  not_searched: { tone: "muted", label: "附件未納入這次回答" },
+  searched_miss: {
+    tone: "muted",
+    label: "院內規章裡沒找到相關條文，附件也未納入這次回答",
+  },
+};
+
+/** 送出當下這份附件有沒有進上下文。只在組快照時用，徽章不讀它。 */
+export function attachmentEnteredAnswer(att) {
+  if (!att || typeof att !== "object") return false;
+  if (typeof att.dataUrl === "string" && att.dataUrl) return true;
+  const status = String(att.extractStatus || att.extract_status || "");
+  if (status === "too_large" || status === "expired" || status === "error") return false;
+  const admitted = att.budgetAdmitted ?? att.budget_admitted;
+  if (admitted === false) return false;
+  return status === "ok" || admitted === true;
+}
+
+/** 送出當下每份附件有沒有進上下文。鍵是 referenceId，沒有就用 local:序號。 */
+export function attachmentAdmissionMap(attachments) {
+  const map = {};
+  (Array.isArray(attachments) ? attachments : []).forEach((att, index) => {
+    if (!att || typeof att !== "object") return;
+    const key = att.referenceId || att.reference_id || `local:${index}`;
+    map[key] = attachmentEnteredAnswer(att);
+  });
+  return map;
+}
+
+/** 往前最近一則使用者訊息：included／omitted／none。只看送出時存下的快照。 */
+export function questionAttachmentBasis(msgs, index) {
   for (let i = index - 1; i >= 0; i -= 1) {
     const m = msgs[i];
-    if (m?.role === "user") {
-      return Array.isArray(m.attachments) && m.attachments.length > 0;
-    }
+    if (m?.role !== "user") continue;
+    const admitted = m.attachmentAdmitted;
+    if (!admitted || typeof admitted !== "object") return "none";
+    const values = Object.values(admitted).filter((value) => typeof value === "boolean");
+    if (values.length === 0) return "none";
+    if (values.some((value) => value)) return "included";
+    return "omitted";
   }
-  return false;
-};
+  return "none";
+}
+
+/** 至少有一份附件進了這次回答。 */
+export const questionHadAttachments = (msgs, index) =>
+  questionAttachmentBasis(msgs, index) === "included";
 
 const KB_TONE_COLOR = {
   ok: { fg: "var(--accent)", bg: "var(--accent-soft)", border: "var(--accent)" },
@@ -768,9 +806,12 @@ export const KbStateBadge = ({
   hits = [],
   failedCollections = [],
   fromAttachments = false,
+  attachmentsOmitted = false,
 }) => {
   const copy =
-    (fromAttachments && KB_STATE_COPY_WITH_ATTACHMENTS[state]) || KB_STATE_COPY[state];
+    (attachmentsOmitted && KB_STATE_COPY_ATTACHMENTS_OMITTED[state]) ||
+    (fromAttachments && KB_STATE_COPY_WITH_ATTACHMENTS[state]) ||
+    KB_STATE_COPY[state];
   if (!copy) return null;
 
   // partial:失敗庫只有 id(前端沒有庫名的查詢管道),所以說數量不說名字——
@@ -966,8 +1007,8 @@ export const MessageBubble = ({
   /** True when any message in this conversation is streaming — locks all pagers/deletes. */
   conversationStreaming = false,
   isLatestAssistant = false,
-  /** 對應的提問附了檔案：院規狀態改說「依附件回答」。 */
-  questionHadAttachments = false,
+  /** included／omitted／none。只有 included 才說「依附件回答」。 */
+  questionAttachmentBasis = "none",
   onCiteDocument,
 }) => {
   const [copied, setCopied] = useState(false);
@@ -1331,7 +1372,8 @@ export const MessageBubble = ({
           state={msg.kbState}
           hits={citationDrawerVisible ? [] : msg.kbHits}
           failedCollections={msg.kbFailedCollections}
-          fromAttachments={questionHadAttachments}
+          fromAttachments={questionAttachmentBasis === "included"}
+          attachmentsOmitted={questionAttachmentBasis === "omitted"}
         />
       )}
       {msg.keywordFallback && (

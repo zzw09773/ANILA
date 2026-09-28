@@ -27,7 +27,11 @@ class Attachment(Base):
     size_bytes = Column(BigInteger, nullable=False, default=0)
     # Relative path under the built-in attachment storage root; never exposed directly to clients
     storage_path = Column(String(500), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
 
     # P1.5 — async text extraction (r1_0011).
     # extract_status: pending | ok | failed | unsupported | too_large | expired

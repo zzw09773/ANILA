@@ -72,6 +72,7 @@ import {
   revokeShare as apiRevokeShare,
   uploadAttachment as apiUploadAttachment,
   bindAttachments as apiBindAttachments,
+  admissionForTurn,
   getAttachmentMeta as apiGetAttachmentMeta,
   createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
@@ -156,7 +157,8 @@ import {
   AgentSelector,
   Composer,
   MessageBubble,
-  questionHadAttachments,
+  attachmentAdmissionMap,
+  questionAttachmentBasis,
   Sidebar,
 } from "./chat.jsx";
 import {
@@ -1486,6 +1488,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ),
       streaming: false,
       attachments: mapServerAttachments(msg.attachments),
+      attachmentAdmitted:
+        meta.attachment_admitted && typeof meta.attachment_admitted === "object"
+          ? meta.attachment_admitted
+          : null,
       conversationId: null, // patched by caller
       createdAt: msg.created_at,
     };
@@ -2100,6 +2106,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         content: trimmed,
         agentName: effectiveTarget,
         writer,
+        userMetadata:
+          userMsg.attachmentAdmitted && typeof userMsg.attachmentAdmitted === "object"
+            ? { attachment_admitted: userMsg.attachmentAdmitted }
+            : null,
       }),
     );
     // 閘門擋下來的不是故障,toast 已經說明了 —— 不要再蓋一條錯誤橫幅上去。
@@ -3077,11 +3087,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
 
     const oneShotDeep = consumeOneShotDeep();
+    const turnModel = effectiveTarget === ROUTER_AGENT.id
+      ? (selectedRouterModelName || selectedConv?.routerModelName || null)
+      : null;
+    const admittedAttachments = await admissionForTurn(authRequest, attachments, turnModel);
+    const attachmentAdmitted = attachmentAdmissionMap(admittedAttachments);
     const userMsg = {
       id: makeId("u"),
       role: "user",
       text,
-      attachments,
+      attachments: admittedAttachments,
+      attachmentAdmitted,
       explicitAgents,
       conversationId: convId,
       createdAt: nowIso(),
@@ -3214,6 +3230,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           content: text,
           agentName: effectiveTarget,
           writer,
+          userMetadata: { attachment_admitted: attachmentAdmitted },
         }),
       ).then(async (resolved) => {
         head = resolved;
@@ -4787,7 +4804,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                             onInterruptSubmit={handleInterruptAnswer}
                             conversationStreaming={currentMsgs.some((x) => x.streaming)}
                             isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
-                            questionHadAttachments={m.role === "assistant" && questionHadAttachments(currentMsgs, idx)}
+                            questionAttachmentBasis={m.role === "assistant" ? questionAttachmentBasis(currentMsgs, idx) : "none"}
                             onCiteDocument={(attachment) => setComposerCite(attachment)}
                           />
                         </React.Fragment>
@@ -4935,7 +4952,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         });
                       }}
                       onFetchAttachmentMeta={(referenceId) =>
-                        apiGetAttachmentMeta(authRequest, referenceId)
+                        apiGetAttachmentMeta(
+                          authRequest,
+                          referenceId,
+                          selectedAgentId === ROUTER_AGENT.id
+                            ? (selectedRouterModelName || selectedConv?.routerModelName || null)
+                            : null,
+                        )
                       }
                     />
                     <div style={{

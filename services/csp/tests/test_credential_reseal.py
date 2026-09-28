@@ -90,10 +90,28 @@ def test_reseal_command_rewrites_secret_key_sealed_rows(db, pem_pair, monkeypatc
     signing = db.query(JwtSigningKey).filter_by(state="active").one()
     credential = db.query(UserLlmCredential).one()
 
+    from app.models.alert_mail import AlertMailSettings
+    from app.services.alert_mail import open_password, seal_password
+
+    mail = AlertMailSettings(
+        enabled=False,
+        smtp_host="127.0.0.1",
+        smtp_port=25,
+        security="none",
+        username="mailer",
+        password_envelope=seal_password("mail-secret"),
+        from_address="anila@example.com",
+        recipients="ops@example.com",
+        updated_at=moment,
+    )
+    db.add(mail)
+    db.flush()
+
     report = reseal_credentials(db, old_secret=OLD_SECRET, new_secret=NEW_SECRET)
     db.flush()
     assert report.jwt_signing_keys == 1
     assert report.user_llm_credentials == 1
+    assert report.alert_mail_settings == 1
 
     monkeypatch.setenv("SECRET_KEY", NEW_SECRET)
     _opened.clear()
@@ -114,6 +132,7 @@ def test_reseal_command_rewrites_secret_key_sealed_rows(db, pem_pair, monkeypatc
         )
         == "sk-user-llm"
     )
+    assert open_password(mail.password_envelope) == "mail-secret"
     monkeypatch.setenv("SECRET_KEY", OLD_SECRET)
     with pytest.raises(InvalidTag):
         decrypt_credential(

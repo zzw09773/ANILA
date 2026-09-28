@@ -177,6 +177,7 @@ test('重建進度要有完成數、錯誤與預估時間', () => {
   })
   assert.match(text, /10\/100/)
   assert.match(text, /錯誤 2/)
+  assert.match(text, /無法嵌入的 2 筆/)
   assert.match(text, /分鐘/)
   assert.match(text, /上游逾時/)
 })
@@ -187,6 +188,7 @@ test('畫面上有切回上一個模型', () => {
     'utf8',
   )
   assert.match(source, /切回上一個模型/)
+  assert.match(source, /重試無法嵌入的資料/)
 })
 
 test('ModelsView 指定主 embedding 前必須先 confirm', () => {

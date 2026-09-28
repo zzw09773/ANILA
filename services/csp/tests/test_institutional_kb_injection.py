@@ -247,8 +247,9 @@ def _chat(
     extra_messages: list[dict] | None = None,
     extra_headers: dict | None = None,
     body_extra: dict | None = None,
+    bearer: str | None = None,
 ):
-    headers = _bearer(_jwt(actor))
+    headers = _bearer(bearer or _jwt(actor))
     if route is not None:
         headers["X-ANILA-Route"] = route
     if extra_headers:
@@ -1119,11 +1120,21 @@ def test_studio_passages_are_wrapped_audited_and_deck_json_stays_usable(
 
     monkeypatch.setattr(proxy_api.memory_service, "build_memory_block", _memory)
     monkeypatch.setattr(proxy_api, "_require_conversation_access", lambda *a, **k: None)
+    from app.services.studio_job_token import issue_studio_job_token
+
+    job = issue_studio_job_token(
+        user_id=actor.id,
+        job_id="deck-guard",
+        classification="無機密",
+        token_version=int(actor.token_version or 0),
+        db=db,
+    )
     resp = _chat(
         client,
         actor,
         target=model_target.name,
         route=None,
+        bearer=job,
         extra_headers={
             "X-ANILA-Request-Source": "studio",
             "X-ANILA-Conversation-Id": "1",
@@ -1172,11 +1183,21 @@ def test_studio_benign_passage_is_not_flagged_and_svg_is_unchanged(
     benign = "承辦人應依上級指示辦理，不得忽略時限。本系統每日備份一次。"
     svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>規章</text></svg>'
     _FakeClient.reply_content = svg
+    from app.services.studio_job_token import issue_studio_job_token
+
+    job = issue_studio_job_token(
+        user_id=actor.id,
+        job_id="deck-benign",
+        classification="無機密",
+        token_version=int(actor.token_version or 0),
+        db=db,
+    )
     resp = _chat(
         client,
         actor,
         target=model_target.name,
         route=None,
+        bearer=job,
         extra_headers={"X-ANILA-Request-Source": "studio"},
         body_extra={
             "anila_external_passages": [{"source": "kb", "id": "5", "text": benign}],
@@ -1203,16 +1224,55 @@ def test_studio_without_passages_keeps_svg(
 ):
     svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>N+1</text></svg>'
     _FakeClient.reply_content = svg
+    from app.services.studio_job_token import issue_studio_job_token
+
+    job = issue_studio_job_token(
+        user_id=actor.id,
+        job_id="deck-svg",
+        classification="無機密",
+        token_version=int(actor.token_version or 0),
+        db=db,
+    )
     resp = _chat(
         client,
         actor,
         target=model_target.name,
         route=None,
+        bearer=job,
         extra_headers={"X-ANILA-Request-Source": "studio"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["choices"][0]["message"]["content"] == svg
     assert kb.calls == []
+
+
+def test_request_source_header_alone_still_reads_memory(
+    client, db, actor, model_target, kb, monkeypatch
+):
+    from types import SimpleNamespace
+
+    memory_calls: list[object] = []
+
+    async def _memory(*args, **kwargs):
+        memory_calls.append(kwargs)
+        return SimpleNamespace(
+            block=None, facts_count=0, chunks=[], encryption_inherited=False,
+        )
+
+    monkeypatch.setattr(proxy_api.memory_service, "build_memory_block", _memory)
+    monkeypatch.setattr(proxy_api, "_require_conversation_access", lambda *a, **k: None)
+    resp = _chat(
+        client,
+        actor,
+        target=model_target.name,
+        route=None,
+        extra_headers={
+            "X-ANILA-Request-Source": "studio",
+            "X-ANILA-Conversation-Id": "1",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert memory_calls
 
 
 def test_less_than_that_is_not_a_tag_survives_the_guard(

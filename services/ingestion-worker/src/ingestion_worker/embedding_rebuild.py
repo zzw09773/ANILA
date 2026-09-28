@@ -17,6 +17,7 @@ import asyncpg
 from anila_core.embeddings.dims import ann_index_sql, fit_stored_vector
 from anila_core.embeddings.swap import plan_write_targets
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
+from anila_core.storage.embeddable import fact_predicate, summary_predicate
 from pgvector import HalfVector
 
 from ingestion_worker.embedder import Embedder
@@ -281,23 +282,15 @@ async def _next_batch(pool, conn, model_id: int, limit: int) -> list[dict]:
             )
     if len(items) < limit:
         facts = await conn.fetch(
-            """
+            f"""
             SELECT id, key, value
               FROM user_facts
-             WHERE COALESCE(kind, 'fact') <> 'preference'
-               AND COALESCE(key, '') NOT LIKE 'preference.%'
+             WHERE {fact_predicate("user_facts", "$1")}
                AND NOT EXISTS (
                     SELECT 1 FROM embedding_vectors v
                      WHERE v.subject = 'fact'
                        AND v.subject_id = user_facts.id
                        AND v.model_id = $1
-               )
-               AND NOT EXISTS (
-                    SELECT 1 FROM embedding_rebuild_failures f
-                     WHERE f.subject = 'fact'
-                       AND f.subject_id = user_facts.id
-                       AND f.model_id = $1
-                       AND f.attempts >= 3
                )
              ORDER BY id
              LIMIT $2
@@ -316,23 +309,15 @@ async def _next_batch(pool, conn, model_id: int, limit: int) -> list[dict]:
             )
     if len(items) < limit:
         summaries = await conn.fetch(
-            """
+            f"""
             SELECT id, summary
-              FROM conversation_summaries
-             WHERE summary IS NOT NULL
-               AND length(btrim(summary)) > 0
+              FROM conversation_summaries s
+             WHERE {summary_predicate("s", "$1")}
                AND NOT EXISTS (
                     SELECT 1 FROM embedding_vectors v
                      WHERE v.subject = 'summary'
-                       AND v.subject_id = conversation_summaries.id
+                       AND v.subject_id = s.id
                        AND v.model_id = $1
-               )
-               AND NOT EXISTS (
-                    SELECT 1 FROM embedding_rebuild_failures f
-                     WHERE f.subject = 'summary'
-                       AND f.subject_id = conversation_summaries.id
-                       AND f.model_id = $1
-                       AND f.attempts >= 3
                )
              ORDER BY id
              LIMIT $2
@@ -442,25 +427,27 @@ async def _counts(pool, conn, model_id: int) -> tuple[int, int, int]:
         coll_total, coll_done = await store.leaf_embedding_counts(model_id)
         total += coll_total
         done += coll_done
+    fact_sql = fact_predicate("user_facts", "$1")
+    fact_done_sql = fact_predicate("f", "$1")
+    sum_sql = summary_predicate("s", "$1")
     fact_total = int(
         await conn.fetchval(
-            """
+            f"""
             SELECT count(*) FROM user_facts
-             WHERE COALESCE(kind, 'fact') <> 'preference'
-               AND COALESCE(key, '') NOT LIKE 'preference.%'
-            """
+             WHERE {fact_sql}
+            """,
+            model_id,
         )
         or 0
     )
     fact_done = int(
         await conn.fetchval(
-            """
+            f"""
             SELECT count(*)
               FROM user_facts f
               JOIN embedding_vectors v
                 ON v.subject = 'fact' AND v.subject_id = f.id AND v.model_id = $1
-             WHERE COALESCE(f.kind, 'fact') <> 'preference'
-               AND COALESCE(f.key, '') NOT LIKE 'preference.%'
+             WHERE {fact_done_sql}
             """,
             model_id,
         )
@@ -468,21 +455,22 @@ async def _counts(pool, conn, model_id: int) -> tuple[int, int, int]:
     )
     sum_total = int(
         await conn.fetchval(
-            """
-            SELECT count(*) FROM conversation_summaries
-             WHERE summary IS NOT NULL AND length(btrim(summary)) > 0
-            """
+            f"""
+            SELECT count(*) FROM conversation_summaries s
+             WHERE {sum_sql}
+            """,
+            model_id,
         )
         or 0
     )
     sum_done = int(
         await conn.fetchval(
-            """
+            f"""
             SELECT count(*)
               FROM conversation_summaries s
               JOIN embedding_vectors v
                 ON v.subject = 'summary' AND v.subject_id = s.id AND v.model_id = $1
-             WHERE s.summary IS NOT NULL
+             WHERE {sum_sql}
             """,
             model_id,
         )
@@ -521,10 +509,15 @@ async def _publish_counts(pool, conn, model_id: int) -> None:
     )
 
 
+def rebuild_ready_to_switch(*, done: int, total: int) -> bool:
+    """只有每一筆可嵌入的資料都有目標模型向量時才把搜尋切過去。"""
+    return done >= total
+
+
 async def _finish(pool, conn, target_id: int) -> dict:
     total, done, errors = await _counts(pool, conn, target_id)
-    if done == 0 and errors > 0 and total > 0:
-        await _mark_failed(conn, target_id, "重建沒有寫入任何向量")
+    if not rebuild_ready_to_switch(done=done, total=total):
+        await _mark_failed(conn, target_id, "還有資料沒有目標模型的向量，搜尋仍用舊模型")
         await conn.execute(
             """
             UPDATE embedding_activation

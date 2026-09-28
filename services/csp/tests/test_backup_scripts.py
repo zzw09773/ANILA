@@ -251,10 +251,34 @@ def _tar_with_marker(path: Path, marker: str) -> None:
         archive.addfile(info, io.BytesIO(data))
 
 
+def _pg_restore_path() -> Path:
+    bindir = Path.home() / ".cache" / "anila-review-fix-pgrestore"
+    bindir.mkdir(parents=True, exist_ok=True)
+    fake = bindir / "pg_restore"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "file=\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    --list) ;;\n"
+        "    *) file=$arg ;;\n"
+        "  esac\n"
+        "done\n"
+        "head -c 5 \"$file\" | grep -q PGDMP || exit 1\n"
+        "size=$(wc -c < \"$file\" | tr -d '[:space:]')\n"
+        "[ \"$size\" -ge 100 ] || exit 1\n"
+        "grep -q BADTOC \"$file\" && exit 1\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bindir
+
+
 def test_restore_files_and_refuses_without_confirm(tmp_path: Path):
     snap = tmp_path / "snap"
     snap.mkdir()
-    (snap / "db.dump").write_bytes(b"d" * 1000)
+    (snap / "db.dump").write_bytes(b"PGDMP" + b"d" * 1000)
     markers = {
         "files-uploads.tar": "uploads",
         "files-attachments.tar": "attachments",
@@ -282,6 +306,7 @@ def test_restore_files_and_refuses_without_confirm(tmp_path: Path):
         ["bash", str(RESTORE), str(snap)],
         env={
             **os.environ,
+            "PATH": f"{_pg_restore_path()}:{os.environ.get('PATH', '')}",
             "ANILA_RESTORE_CONFIRM": "yes",
             "ANILA_RESTORE_SKIP_DB": "1",
             "ANILA_RESTORE_SKIP_VOLUMES": "1",
@@ -301,6 +326,183 @@ def test_restore_files_and_refuses_without_confirm(tmp_path: Path):
         ("quickstart", "quickstart"),
     ):
         assert (share / folder / "marker.txt").read_text(encoding="utf-8") == marker
+
+
+def test_corrupt_archive_is_rejected_before_any_write(tmp_path: Path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "db.dump").write_bytes(b"PGDMP" + b"d" * 1000)
+    markers = (
+        "files-uploads.tar",
+        "files-attachments.tar",
+        "files-static.tar",
+        "files-pki.tar",
+        "files-quickstart.tar",
+        "files-studio-artifacts.tar",
+        "files-router-sessions.tar",
+        "files-n8n.tar",
+    )
+    for name in markers:
+        _tar_with_marker(snap / name, name)
+    (snap / "files-attachments.tar").write_bytes(b"not-a-tar")
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "uploads" / "keep.txt").parent.mkdir(parents=True)
+    (share / "uploads" / "keep.txt").write_text("stay", encoding="utf-8")
+
+    restored = subprocess.run(
+        ["bash", str(RESTORE), str(snap)],
+        env={
+            **os.environ,
+            "PATH": f"{_pg_restore_path()}:{os.environ.get('PATH', '')}",
+            "ANILA_RESTORE_CONFIRM": "yes",
+            "ANILA_RESTORE_SKIP_DB": "1",
+            "ANILA_RESTORE_SKIP_VOLUMES": "1",
+            "ANILA_SHARE_ROOT": str(share),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert restored.returncode != 0
+    assert "尚未寫入" in restored.stderr + restored.stdout
+    assert (share / "uploads" / "keep.txt").read_text(encoding="utf-8") == "stay"
+    assert not (share / "attachments").exists()
+
+
+def test_bad_dump_toc_is_rejected_before_any_write(tmp_path: Path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "db.dump").write_bytes(b"PGDMP" + b"BADTOC" + b"d" * 1000)
+    for name in (
+        "files-uploads.tar",
+        "files-attachments.tar",
+        "files-static.tar",
+        "files-pki.tar",
+        "files-quickstart.tar",
+        "files-studio-artifacts.tar",
+        "files-router-sessions.tar",
+        "files-n8n.tar",
+    ):
+        _tar_with_marker(snap / name, name)
+    share = tmp_path / "share"
+    share.mkdir()
+    restored = subprocess.run(
+        ["bash", str(RESTORE), str(snap)],
+        env={
+            **os.environ,
+            "PATH": f"{_pg_restore_path()}:{os.environ.get('PATH', '')}",
+            "ANILA_RESTORE_CONFIRM": "yes",
+            "ANILA_RESTORE_SKIP_DB": "1",
+            "ANILA_RESTORE_SKIP_VOLUMES": "1",
+            "ANILA_SHARE_ROOT": str(share),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert restored.returncode != 0
+    assert "尚未寫入" in restored.stderr + restored.stdout
+    assert not (share / "uploads").exists()
+
+
+def test_tar_file_changed_is_not_published(tmp_path: Path):
+    src = tmp_path / "src"
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    _sources(src)
+    fake = tmp_path / "fake-dump.sh"
+    _fake_dump(fake)
+    # /tmp 是 noexec，放在那裡的 tar 不會被執行，shell 會改找下一個。
+    bindir = Path.home() / ".cache" / "anila-review-fix-tar"
+    bindir.mkdir(parents=True, exist_ok=True)
+    fake_tar = bindir / "tar"
+    fake_tar.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_tar.chmod(0o755)
+    env = _backup_env(tmp_path, src, dest, fake)
+    env["PATH"] = f"{bindir}:{os.environ.get('PATH', '')}"
+    proc = _run(LOOP, env)
+    assert proc.returncode == 1, proc.stderr + proc.stdout
+    assert not (dest / "LATEST").exists()
+    parsed = parse_backup_status_text((dest / "status.json").read_text(encoding="utf-8"))
+    assert parsed.last_result == "failure"
+
+
+def test_sqlite_session_db_round_trips_and_incomplete_month_is_repaired(tmp_path: Path):
+    import sqlite3
+
+    src = tmp_path / "src"
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    _sources(src)
+    db_path = src / "router-sessions" / "sessions.db"
+    db_path.unlink()
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE turns (id INTEGER PRIMARY KEY, note TEXT)")
+    conn.execute("INSERT INTO turns (note) VALUES ('kept')")
+    conn.commit()
+    conn.close()
+    fake = tmp_path / "fake-dump.sh"
+    _fake_dump(fake)
+    proc = _run(LOOP, _backup_env(tmp_path, src, dest, fake))
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    snap = dest / "daily" / "20260927-021500"
+    with tarfile.open(snap / "files-router-sessions.tar", "r:gz") as archive:
+        member = next(name for name in archive.getnames() if name.endswith("sessions.db"))
+        extracted = archive.extractfile(member)
+        assert extracted is not None
+        raw = extracted.read()
+    copy = tmp_path / "sessions-copy.db"
+    copy.write_bytes(raw)
+    opened = sqlite3.connect(copy)
+    try:
+        assert opened.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert opened.execute("SELECT note FROM turns").fetchone()[0] == "kept"
+    finally:
+        opened.close()
+
+    month = dest / "monthly" / "202609"
+    (month / "db.dump").unlink()
+    proc = _run(
+        LOOP,
+        _backup_env(
+            tmp_path,
+            src,
+            dest,
+            fake,
+            ANILA_BACKUP_STAMP="20260927-031500",
+            ANILA_BACKUP_NOW="2026-09-27T03:15:00Z",
+        ),
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert (month / "db.dump").is_file()
+    assert (month / "db.dump").read_bytes() == (
+        dest / "daily" / "20260927-031500" / "db.dump"
+    ).read_bytes()
+    assert not list(dest.glob("monthly/.staging-*"))
+    assert not list(dest.glob("monthly/.trash-*"))
+
+
+def test_monthly_compare_rejects_same_size_different_bytes_and_extras(tmp_path: Path):
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    src.mkdir()
+    dest.mkdir()
+    (src / "db.dump").write_bytes(b"alpha-bytes")
+    (dest / "db.dump").write_bytes(b"alpha-DIFFER")
+    script = (
+        f'. "{SCRIPTS / "backup-lib.sh"}"\n'
+        f'_same_file_set "{src}" "{dest}"\n'
+    )
+    proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+    assert proc.returncode != 0
+    (dest / "db.dump").write_bytes(b"alpha-bytes")
+    (dest / "extra.tar").write_bytes(b"alpha-bytes")
+    proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+    assert proc.returncode != 0
+    (dest / "extra.tar").unlink()
+    proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_manual_backup_script_is_retired():

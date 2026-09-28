@@ -437,7 +437,7 @@ D 全綠 = port/key/模型 ID/TLS 四件事一次確認完。F(FQDN 解析)要�
 ```bash
 ANILA_ALLOW_DEV_SECRET=0          # prod 模式,dev 預設值一律拒啟;正式部署看到 1 直接拒絕
 ANILA_ALLOW_HTTP_ENDPOINT=0       # 模型走 https,不用開
-ANILA_ALLOW_PRIVATE_ENDPOINT=0
+ANILA_ALLOW_PRIVATE_ENDPOINT=1   # 私網 IP，或名稱會解析到 RFC1918，必須同時開這顆，並在治理中心「信任主機」登記該主機。只信任 FQDN、這顆維持 0，私網目標仍會被擋。端點都解析到公網位址時才維持 0。
 ANILA_ALLOW_GRPC_ENDPOINT=0       # 只有要接 Triton gRPC embedder 才設 1,見 §3.1c
 # 信任主機在治理中心「信任主機」頁，不要寫 ANILA_TRUSTED_HOSTS。
 
@@ -510,30 +510,24 @@ done
 > (`query` vs `documents`),走 OpenAI `/v1/embeddings` 沒有辦法表達這個差別 —— 全部
 > 被當文件編碼,檢索排序會**無聲**變差(不會報錯、不會有 log)。
 
-**端點填 IP 字面值(Triton 的常態)→ 下面四件都要做;端點填 FQDN → 第 2 件
-不用做,共三件。`grpc://` 端點要過的是 url_guard 的兩關 —— scheme 一關、
+**私網目標（IP 字面值，或名稱會解析到 RFC1918）要同時過總開關與信任清單。**
+端點填 IP 或內網 FQDN，下面四件都要做。`grpc://` 端點要過的是 url_guard 的兩關 —— scheme 一關、
 主機/IP 一關 —— 少哪一件,400 的 `reason` 就不一樣(下面排錯表有對照):**
 
 1. `.env` 設 `ANILA_ALLOW_GRPC_ENDPOINT=1`(過 **scheme** 關)
    —— 只有 cleartext `grpc://` 需要;`grpcs://`(TLS)不需要,維持 0 即可。
    這是 http 旗標的**姊妹分支**,開它不會放寬任何 `http://` 端點;
    loopback / link-local / multicast / cloud metadata 對 `grpc://` 一樣永遠擋。
-2. `.env` 設 `ANILA_ALLOW_PRIVATE_ENDPOINT=1`(過 **主機/IP** 關)
-   —— **只有端點填 IP 字面值時才要做這一件**(用 FQDN 就跳過),而 Triton 通常就是填 IP(例
-   `grpc://172.16.120.35:9001`,10/8、172.16/12、192.168/16 都算私網)。
-   ⚠ **把那個 IP 加進 trusted-hosts 沒有用。** trusted-hosts 只繞得過
-   「主機名的 DNS 解析結果落在私網」;IP 字面值是先判私網、根本不看 trusted。
-   實測(2026-08-03,本樹 `anila_core.security.url_guard`):
-   ```
-   grpc 旗標=1,grpc://172.16.120.35:9001                    → 400 reason=private_ip
-   grpc 旗標=1 + ANILA_TRUSTED_HOSTS 加 172.16.120.35        → 400 reason=private_ip(沒變)
-   grpc 旗標=1 + ANILA_ALLOW_PRIVATE_ENDPOINT=1              → 通過
-   grpc 旗標=1 + 端點改 FQDN + 該 FQDN 進 trusted-hosts       → 通過
-   ```
-   (最後一列在開發機是把 resolver 固定成該 IP 量的 —— 開發機解不到內網 FQDN,
-   guard 的判斷邏輯沒有動。)
-   兩條路二選一:開私網旗標(簡單,但整段 RFC1918 都放行),
-   或端點改用 FQDN 並把該 FQDN 加進 trusted-hosts(較窄,但要有內網 DNS)。
+2. 私網目標要**兩件事一起做**(過 **主機/IP** 關)
+   —— Triton 通常填 IP(例 `grpc://172.16.120.35:9001`,10/8、172.16/12、192.168/16 都算私網)。
+   名稱解析到私網也一樣,不能只信任 FQDN。
+   - `.env` 設 `ANILA_ALLOW_PRIVATE_ENDPOINT=1`
+   - 治理中心「信任主機」登記那個 IP 或 FQDN（IPv6 字面值可以登）
+   只開旗標、或只信任主機，私網目標仍是 400 `reason=private_ip`。
+   單一名稱（例如容器名 `gemma4`）若已在信任清單，不必為了它再開這顆旗標。
+   信任清單裡的單一名稱與 `.internal` 名稱（compose 服務，例如 `docling`、`router`）不必開 `ANILA_ALLOW_PRIVATE_ENDPOINT`，因為它們已經明確列在信任清單裡。
+   旗標維持 0 只適用於端點解析到公網位址。
+   這不是「整段 RFC1918 都放行」：旗標打開之後，還是只有信任清單上的主機過得去。
 3. **`up -d csp`,不是 `docker restart csp`;而且 `up -d csp` 之後要 reload nginx**
    —— `restart` 不重載 `.env`。旗標沒進容器的症狀與旗標沒設**完全一樣**,
    確認方式:`docker exec <csp 容器> printenv ANILA_ALLOW_GRPC_ENDPOINT`,
@@ -600,7 +594,7 @@ print('dim', len(q), 'cosine(query,document)', round(cos,4))
 | 症狀 | 原因 |
 |---|---|
 | 註冊 400,detail 提到 `scheme` | grpc 旗標沒設,或設了但沒 `up -d`(見第 3 步) |
-| 註冊 400,detail 提到私網 / `reason=private_ip` | 端點是私網 IP 字面值而 `ANILA_ALLOW_PRIVATE_ENDPOINT` 沒開(見第 2 步)。**加 trusted-host 治不了這個** |
+| 註冊 400,detail 提到私網 / `reason=private_ip` | 端點是私網 IP，或名稱解析到私網。要同時開 `ANILA_ALLOW_PRIVATE_ENDPOINT`，並在治理中心信任主機登記該主機（見第 2 步）。只信任 FQDN 不夠。 |
 | 註冊 422「必須為 grpc:// 或 grpcs://」 | protocol 選了 triton_grpc 卻填 http URL |
 | 健檢 unhealthy、但 TCP 通 | Triton 上沒載入這個 model name(`ModelReady` 說了算,不會用 ServerLive 漂綠) |
 | 502「模型服務暫時不可用」,csp log 是「triton 未在 30s 內回應 ModelInfer」 | **單筆**逾時 —— 上游過慢或該 model 沒載入。單次請求的執行緒佔用上限 35 秒(`_wait_ready` 5s + ModelInfer 30s),重試 3 次 |
@@ -913,7 +907,7 @@ NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p 
 | `401/403` | gateway key 沒帶到 / 失效 | 確認 `MODEL_GATEWAY_API_KEY` 已設並重建 csp;在 aiagent2 平台確認 key 有效 |
 | `404` model not found | model 名大小寫錯 | 必須 `openai/gpt-oss-20b` / `nvidia/nv-embed-v2` (gateway RESPONSE_ID) |
 | DNS 解不到 aiagent2 | 容器 DNS 沒繼承到 | compose csp `extra_hosts` 釘 `10.53.100.12` |
-| url_guard 擋 (`private IP`) | trusted 沒設 | `ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw` |
+| url_guard 擋 (`private IP`) | 私網目標缺總開關或信任清單 | `.env` 設 `ANILA_ALLOW_PRIVATE_ENDPOINT=1`，並在治理中心「信任主機」登記該 FQDN 或 IP。只登記信任主機、旗標維持 0，解析到私網的名稱仍會被擋。 |
 
 ### 6.3 卡片登入失敗
 

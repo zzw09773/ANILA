@@ -593,14 +593,16 @@ def test_starttls_and_ssl_select_the_matching_client(db, monkeypatch):
     calls = {"smtp": 0, "ssl": 0, "starttls": 0}
 
     class _Client:
-        def __init__(self, host, port, timeout=None):
+        def __init__(self, host, port, timeout=None, context=None):
             self.actions = []
+            self.context = context
 
         def ehlo(self):
             self.actions.append("ehlo")
 
-        def starttls(self):
+        def starttls(self, context=None):
             calls["starttls"] += 1
+            calls["context"] = context
 
         def login(self, user, password):
             self.actions.append(("login", user))
@@ -612,14 +614,15 @@ def test_starttls_and_ssl_select_the_matching_client(db, monkeypatch):
             self.actions.append("quit")
 
     class _Smtp(_Client):
-        def __init__(self, host, port, timeout=None):
+        def __init__(self, host, port, timeout=None, context=None):
             calls["smtp"] += 1
-            super().__init__(host, port, timeout)
+            super().__init__(host, port, timeout, context)
 
     class _Ssl(_Client):
-        def __init__(self, host, port, timeout=None):
+        def __init__(self, host, port, timeout=None, context=None):
             calls["ssl"] += 1
-            super().__init__(host, port, timeout)
+            calls["ssl_context"] = context
+            super().__init__(host, port, timeout, context)
 
     monkeypatch.setattr("smtplib.SMTP", _Smtp)
     monkeypatch.setattr("smtplib.SMTP_SSL", _Ssl)
@@ -645,6 +648,11 @@ def test_starttls_and_ssl_select_the_matching_client(db, monkeypatch):
     assert calls["smtp"] >= 1
     assert calls["starttls"] >= 1
     assert calls["ssl"] == 0
+    import ssl
+
+    assert calls["context"] is not None
+    assert calls["context"].check_hostname is True
+    assert calls["context"].verify_mode == ssl.CERT_REQUIRED
 
     save_mail_settings(
         db,
@@ -663,6 +671,37 @@ def test_starttls_and_ssl_select_the_matching_client(db, monkeypatch):
     db.commit()
     assert send_test_mail(db) is None
     assert calls["ssl"] == 1
+    assert calls["ssl_context"] is not None
+    assert calls["ssl_context"].verify_mode == ssl.CERT_REQUIRED
+
+
+def test_redact_removes_the_longer_secret_before_a_substring(db):
+    from types import SimpleNamespace
+
+    from app.services.alert_mail import _redact, seal_password
+
+    same = SimpleNamespace(
+        username="same-secret",
+        password_envelope=seal_password("same-secret"),
+    )
+    hidden = _redact("login failed for same-secret", same)
+    assert "same-secret" not in hidden
+
+    password_inside_user = SimpleNamespace(
+        username="svc-alerts",
+        password_envelope=seal_password("alerts"),
+    )
+    hidden = _redact("account svc-alerts used alerts", password_inside_user)
+    assert "svc-alerts" not in hidden
+    assert "alerts" not in hidden.replace("[已隱藏]", "")
+
+    user_inside_password = SimpleNamespace(
+        username="alerts",
+        password_envelope=seal_password("alerts-secret"),
+    )
+    hidden = _redact("account alerts password alerts-secret", user_inside_password)
+    assert "alerts-secret" not in hidden
+    assert "alerts" not in hidden.replace("[已隱藏]", "")
 
 
 def test_summary_names_the_highest_open_severity_and_clears_when_resolved(db):

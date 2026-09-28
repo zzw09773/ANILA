@@ -34,6 +34,17 @@ def _seconds_until_next_utc_midnight(now: datetime) -> float:
     return max(1.0, (nxt - aware).total_seconds())
 
 
+def retention_action(
+    created: datetime | None, *, now: datetime, cutoff: datetime,
+) -> str:
+    """未知年齡先蓋上現在的時間，這一輪不刪。滿期才清。"""
+    if created is None:
+        return "stamp"
+    if _aware(created) > cutoff:
+        return "keep"
+    return "purge"
+
+
 def purge_expired_uploads(db: Session, *, now: datetime | None = None) -> int:
     """刪掉滿 30 天的使用者上傳。列留著，檔名還在，內容沒了。
 
@@ -53,23 +64,30 @@ def purge_expired_uploads(db: Session, *, now: datetime | None = None) -> int:
     )
     root = _storage_root()
     purged = 0
+    paths: list[str] = []
     for row in rows:
         created = getattr(row, "created_at", None)
-        if created is None or _aware(created) > cutoff:
+        action = retention_action(created, now=moment, cutoff=cutoff)
+        if action == "stamp":
+            row.created_at = moment
+            continue
+        if action == "keep":
             continue
         rel = row.storage_path or ""
-        if rel:
-            try:
-                (root / rel).unlink(missing_ok=True)
-            except OSError:
-                logger.warning("attachment retention unlink failed id=%s", row.id)
         row.extracted_text = None
         row.token_count = None
         row.page_count = None
         row.extract_status = "expired"
         row.extract_error = ATTACHMENT_EXPIRED_MESSAGE
+        if rel:
+            paths.append(rel)
         purged += 1
     db.commit()
+    for rel in paths:
+        try:
+            (root / rel).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("attachment retention unlink failed path=%s", rel)
     log_audit_event(
         db,
         action="attachment_retention_purge",

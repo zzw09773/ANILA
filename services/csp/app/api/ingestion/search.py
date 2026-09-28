@@ -818,6 +818,9 @@ async def collect_chunk_hits(
             top_k=top_k,
             min_score=min_score,
         )
+        hits = await _merge_unembedded_keyword_hits(
+            store, query, model_id, hits,
+        )
         return ChunkHitBatch(hits=hits, used_model_slots=True)
     if query_vec is None:
         if embed_error is not None:
@@ -829,7 +832,30 @@ async def collect_chunk_hits(
         min_score=min_score,
         source_model=source_model,
     )
+    hits = await _merge_unembedded_keyword_hits(store, query, model_id, hits)
     return ChunkHitBatch(hits=hits)
+
+
+async def _merge_unembedded_keyword_hits(store, query: str, model_id, hits: list) -> list:
+    """向量結果之外，把三次失敗、沒有目標向量的列用關鍵字補回來。"""
+    search = getattr(store, "keyword_search_unembedded", None)
+    if search is None or not isinstance(model_id, int):
+        return hits
+    try:
+        extra = await search(query, model_id, top_k=30)
+    except Exception:
+        return hits
+    seen: set[int] = set()
+    merged: list = []
+    for hit in [*hits, *(extra or [])]:
+        chunk = getattr(hit, "chunk", None)
+        ident = getattr(chunk, "id", None)
+        if isinstance(ident, int):
+            if ident in seen:
+                continue
+            seen.add(ident)
+        merged.append(hit)
+    return merged
 
 
 @router.post(

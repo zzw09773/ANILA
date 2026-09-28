@@ -790,6 +790,7 @@ def test_http_input_type_reaches_the_gRPC_input_tensor(
 
     monkeypatch.setenv("ANILA_ALLOW_GRPC_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", _LAN_IPV4 or "")
 
     triton_client.reset_channel_pool_for_tests()
     servicer = _RecordingTriton()

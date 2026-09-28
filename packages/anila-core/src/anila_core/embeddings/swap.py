@@ -266,9 +266,9 @@ def _finish(store: RebuildStore, state: ActivationState, now: datetime) -> Activ
     target = state.rebuild_target_model_id
     assert target is not None
     total, done, errors = store.counts(target)
-    # Nothing left that a retry would pick up. Refuse to switch onto a
-    # model that embedded nothing while every row failed.
-    if done == 0 and errors > 0 and total > 0:
+    # total 只算還能嵌入的列。三次失敗的列在 total 之外，不能擋切換。
+    # 一筆都沒嵌入、而且有永久失敗時，仍然不要切過去。
+    if done < total or (done == 0 and errors > 0):
         finished = replace(
             state,
             rebuild_status="failed",
@@ -309,13 +309,25 @@ class InMemoryCorpus:
     def save(self, state: ActivationState) -> None:
         self.state = state
 
+    def _key(self, item: WorkItem, model_id: int) -> tuple[str, int, int]:
+        return (item.subject, item.subject_id, model_id)
+
+    def _permanently_failed(self, item: WorkItem, model_id: int) -> bool:
+        return self.failures.get(self._key(item, model_id), 0) >= _FAIL_LIMIT
+
+    def _embeddable(self, item: WorkItem, model_id: int) -> bool:
+        """與正式 SQL 同一套：有文字，而且這次目標還沒被判成無法嵌入。"""
+        if not (item.text or "").strip():
+            return False
+        return not self._permanently_failed(item, model_id)
+
     def next_batch(self, model_id: int, limit: int) -> list[WorkItem]:
         out: list[WorkItem] = []
         for item in self.items:
-            key = (item.subject, item.subject_id, model_id)
+            key = self._key(item, model_id)
             if key in self.vectors:
                 continue
-            if self.failures.get(key, 0) >= _FAIL_LIMIT:
+            if not self._embeddable(item, model_id):
                 continue
             out.append(item)
             if len(out) >= limit:
@@ -337,14 +349,18 @@ class InMemoryCorpus:
             self.failures[key] = self.failures.get(key, 0) + 1
 
     def counts(self, model_id: int) -> tuple[int, int, int]:
-        total = len(self.items)
-        done = sum(1 for item in self.items if (item.subject, item.subject_id, model_id) in self.vectors)
-        errors = sum(
-            1
-            for item in self.items
-            if self.failures.get((item.subject, item.subject_id, model_id), 0) >= _FAIL_LIMIT
-            and (item.subject, item.subject_id, model_id) not in self.vectors
-        )
+        total = 0
+        done = 0
+        errors = 0
+        for item in self.items:
+            key = self._key(item, model_id)
+            if self._permanently_failed(item, model_id) and key not in self.vectors:
+                errors += 1
+            if not self._embeddable(item, model_id):
+                continue
+            total += 1
+            if key in self.vectors:
+                done += 1
         return total, done, errors
 
     def search(self, model_id: int) -> list[int]:

@@ -14,6 +14,11 @@ knob. ``issue_studio_job_token`` does not accept time overrides.
 The token is not a renewable session: password changes, API-key mutations
 and reminting reject it. Revocation follows ``users.token_version`` and the
 ``token_revocations`` list (reject ``tv < revoked_at_version``).
+
+``classification`` and ``job_id`` are a snapshot of the collection at mint
+time. Verification checks their shape. Authorization still uses the user's
+live grants and the collection on the request; these two claims are not a
+ceiling and are not read back as the job's identity.
 """
 
 from __future__ import annotations
@@ -136,10 +141,7 @@ def presented_studio_job_token(token: str | None) -> bool:
         return False
     if not isinstance(claims, dict):
         return False
-    return (
-        claims.get("aud") == STUDIO_JOB_TOKEN_AUDIENCE
-        or claims.get("type") == STUDIO_JOB_TOKEN_TYPE
-    )
+    return claims.get("type") == STUDIO_JOB_TOKEN_TYPE
 
 
 def verify_studio_job_token(token: str, db=None) -> dict[str, Any] | None:
@@ -214,7 +216,8 @@ def bearer_from_request(request: Request) -> str | None:
             return token
     from app.middleware.cookies import ACCESS_COOKIE_NAME
 
-    cookie = request.cookies.get(ACCESS_COOKIE_NAME)
+    cookie_jar = getattr(request, "cookies", None) or {}
+    cookie = cookie_jar.get(ACCESS_COOKIE_NAME) if hasattr(cookie_jar, "get") else None
     return cookie or None
 
 

@@ -1999,6 +1999,36 @@ def get_embedding_rebuild(
     return snapshot(db)
 
 
+@router.post("/embedding-rebuild/retry")
+async def retry_embedding_rebuild(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """把連續失敗三次的列放回重建，治理中心的重試按鈕走這裡。"""
+    from app.services.embedding_swap import enqueue_rebuild, retry_unembeddable
+
+    try:
+        body = retry_unembeddable(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    log_audit_event(
+        db,
+        actor=admin,
+        action="retry_unembeddable",
+        resource_type="model",
+        resource_id=body.get("active_model_id"),
+        detail="重試無法嵌入的資料",
+        metadata=body,
+        commit=True,
+    )
+    try:
+        await enqueue_rebuild()
+    except Exception:
+        logger.warning("embedding rebuild retry enqueue failed", exc_info=True)
+    return body
+
+
 @router.post("/embedding-rebuild/rollback")
 def rollback_embedding_rebuild(
     admin: User = Depends(require_admin),

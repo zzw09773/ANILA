@@ -1,7 +1,8 @@
 """Sprint 7 X follow-up: url_guard 兩個 dev opt-in 行為合約。
 
 - ``ANILA_ALLOW_HTTP_ENDPOINT=1`` 鬆綁 http scheme，與 host 檢查獨立。
-- ``ANILA_ALLOW_PRIVATE_ENDPOINT=1`` 鬆綁 RFC 1918 私網 IP，與 scheme 獨立。
+- ``ANILA_ALLOW_PRIVATE_ENDPOINT=1`` 是私網總開關，與 scheme 獨立；
+  私網 IP 與解析到私網的名稱還必須在信任主機清單。
 - loopback / link-local / cloud metadata / docker service name 永遠擋，
   不受任何 flag 影響。
 
@@ -65,9 +66,15 @@ def test_rfc1918_blocked_by_default(monkeypatch, addr):
     "http://192.168.1.1/v1",
     "https://172.16.120.35/v1",
 ])
-def test_rfc1918_allowed_when_flag_set(monkeypatch, addr):
+def test_rfc1918_needs_the_flag_and_the_trusted_list(monkeypatch, addr):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(UnsafeEndpointError) as exc:
+        validate_outbound_url(addr)
+    assert "trusted" in str(exc.value)
+    host = addr.split("//", 1)[1].split("/", 1)[0].split(":", 1)[0]
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", host)
     validate_outbound_url(addr)
 
 

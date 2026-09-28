@@ -52,8 +52,12 @@ case "$map" in
   *) echo "IPv4 literal rule missing" >&2; exit 1 ;;
 esac
 case "$map" in
-  *'[0-9a-f:.]'*) ;;
+  *'([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}'*) ;;
   *) echo "IPv6 literal rule missing" >&2; exit 1 ;;
+esac
+case "$map" in
+  *'::ffff:'*) ;;
+  *) echo "IPv4-mapped IPv6 rule missing" >&2; exit 1 ;;
 esac
 case "$map" in
   *'10.53.'*|*'172.16.'*|*'ncsist'*) echo "lab host leaked into the map" >&2; exit 1 ;;

@@ -196,6 +196,9 @@ export function startTurn(authRequest, convId, payload) {
     model_name: payload.modelName || null,
     agent_name: payload.agentName || null,
   };
+  if (payload.userMetadata && typeof payload.userMetadata === "object") {
+    body.metadata = payload.userMetadata;
+  }
   return authRequest(`/api/conversations/${convId}/turn`, {
     method: "POST",
     body: JSON.stringify(body),
@@ -217,6 +220,9 @@ export function branchTurn(authRequest, convId, messageId, payload) {
     model_name: payload.modelName || null,
     agent_name: payload.agentName || null,
   };
+  if (payload.userMetadata && typeof payload.userMetadata === "object") {
+    body.metadata = payload.userMetadata;
+  }
   return authRequest(
     `/api/conversations/${convId}/messages/${messageId}/branch-turn`,
     { method: "POST", body: JSON.stringify(body) },
@@ -345,12 +351,34 @@ export function bindAttachments(authRequest, { conversationId, referenceIds, mes
   });
 }
 
-/** GET /api/attachments/{reference_id}/meta — includes extract_status. */
-export function getAttachmentMeta(authRequest, referenceId) {
+/** GET /api/attachments/{reference_id}/meta — includes extract_status.
+
+`model` 是這一輪實際送給模型的名稱。不帶的話 CSP 用預設上下文窗算
+budget_admitted，和真正注入時用的那扇窗會不一樣。
+*/
+export function getAttachmentMeta(authRequest, referenceId, model) {
+  const params = new URLSearchParams();
+  if (typeof model === "string" && model.trim()) {
+    params.set("model", model.trim());
+  }
+  const query = params.toString();
   return authRequest(
-    `/api/attachments/${encodeURIComponent(referenceId)}/meta`,
+    `/api/attachments/${encodeURIComponent(referenceId)}/meta${query ? `?${query}` : ""}`,
     { method: "GET" },
   );
+}
+
+/** 送出前用這一輪的模型重算每份附件有沒有進預算。 */
+export async function admissionForTurn(authRequest, attachments, model) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  if (typeof model !== "string" || !model.trim()) return list;
+  return Promise.all(list.map(async (att) => {
+    const ref = att && (att.referenceId || att.reference_id);
+    if (!ref) return att;
+    const meta = await getAttachmentMeta(authRequest, ref, model);
+    if (typeof meta?.budget_admitted !== "boolean") return att;
+    return { ...att, budgetAdmitted: meta.budget_admitted };
+  }));
 }
 
 /** Terminal extract_status values from CSP (pending is non-terminal). */

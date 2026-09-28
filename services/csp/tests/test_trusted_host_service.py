@@ -7,6 +7,7 @@ handles it cleanly, unlike platform_links which is what blocks
 """
 from __future__ import annotations
 
+import ipaddress
 import time
 from unittest.mock import patch
 
@@ -207,3 +208,18 @@ def test_register_with_url_guard_wires_provider(db, monkeypatch):
     validate_outbound_url("http://hooked-host:8000/v1")
 
     clear_trusted_host_providers()
+
+
+def test_trusted_host_schema_accepts_ipv6_literals():
+    from pydantic import ValidationError
+
+    from app.schemas.trusted_host import TrustedHostCreate
+
+    created = TrustedHostCreate(host="2001:DB8::1")
+    assert created.host == "2001:db8::1"
+    mapped = TrustedHostCreate(host="::ffff:192.0.2.1")
+    assert mapped.host == str(ipaddress.ip_address("::ffff:192.0.2.1"))
+    with pytest.raises(ValidationError):
+        TrustedHostCreate(host="gemma4:8000")
+    with pytest.raises(ValidationError):
+        TrustedHostCreate(host="http://gemma4/v1")

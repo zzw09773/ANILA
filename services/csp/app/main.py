@@ -768,8 +768,50 @@ def log_host_allowlist_state(hosts: list[str]) -> None:
         )
 
 
+def _scope_header(scope, name: str) -> str:
+    wanted = name.lower().encode("latin-1")
+    for key, value in scope.get("headers") or []:
+        if not isinstance(key, (bytes, bytearray)):
+            key = str(key).encode("latin-1")
+        if key.lower() != wanted:
+            continue
+        if isinstance(value, (bytes, bytearray)):
+            return value.decode("latin-1").strip()
+        return str(value).strip()
+    return ""
+
+
+def _trust_router_forwarded_host(scope) -> bool:
+    """只有 router-primary 轉來的 X-Forwarded-Host 才算平台網址。"""
+    from app.database import SessionLocal
+    from app.services.attachment_service import is_router_service_credential
+
+    candidates: list[str] = []
+    service = _scope_header(scope, "x-csp-service-token")
+    if service.startswith("csk-"):
+        candidates.append(service)
+    authorization = _scope_header(scope, "authorization")
+    if authorization.lower().startswith("bearer "):
+        bearer = authorization[7:].strip()
+        if bearer.startswith("csk-"):
+            candidates.append(bearer)
+    if not candidates:
+        return False
+    db = SessionLocal()
+    try:
+        return any(is_router_service_credential(db, token) for token in candidates)
+    except Exception:
+        return False
+    finally:
+        db.close()
+
+
 # 比 Host 白名單早註冊，白名單仍是最外層。進來的 Host 才算平台網址。
-app.add_middleware(RequestPlatformHostsMiddleware)
+# X-Forwarded-Host 只在 router-primary 的服務憑證出現時才納入。
+app.add_middleware(
+    RequestPlatformHostsMiddleware,
+    trust_forwarded_host=_trust_router_forwarded_host,
+)
 _allowed_hosts = install_host_allowlist(app, settings.ALLOWED_HOSTS)
 
 app.include_router(api_router)

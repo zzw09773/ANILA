@@ -40,8 +40,9 @@ def create_studio_job_token(
 ) -> StudioJobTokenResponse:
     """以呼叫者的身分簽一張綁定 job_id 的權杖。
 
-    知識庫必須是這個人（或管理員）看得到的那一筆。工作權杖再拿來換新的
-    一張會被拒，避免把長壽命權杖變成可續期的工作階段。
+    知識庫必須是這個人（或管理員）看得到的那一筆。分類從這一列讀進權杖，
+    只是鑄造當下的紀錄，之後授權仍看使用者當時的權限。工作權杖再拿來換
+    新的一張會被拒，避免把長壽命權杖變成可續期的工作階段。
     """
     from app.api.ingestion.collections import _require_collection_access
 

@@ -78,10 +78,13 @@ def test_register_blocks_rfc1918_without_allow_private(monkeypatch):
     assert "ANILA_ALLOW_PRIVATE_ENDPOINT" in str(exc.value.detail)
 
 
-def test_register_allows_rfc1918_with_allow_private(monkeypatch):
+def test_register_allows_rfc1918_when_flag_and_trusted_host(monkeypatch):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
     monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(HTTPException):
+        _enforce_endpoint_url("http://172.16.120.35:7000/v1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "172.16.120.35")
     _enforce_endpoint_url("http://172.16.120.35:7000/v1")
 
 

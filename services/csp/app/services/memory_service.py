@@ -288,15 +288,15 @@ def _resolved_for_embed(db: Session, *, model_id: int | None = None):
     return resolve_platform_embedding(db)
 
 
-async def _embed(
+async def _embed_via_proxy(
     db: Session,
-    text_input: str,
+    texts: list[str],
     *,
     user_id: int = 0,
     department_id: int | None = None,
     embedding_input_role: str = "query",
     model_id: int | None = None,
-) -> tuple[list[float], str, int]:
+) -> tuple[list[list[float]], str, int]:
     """Return ``(vector, source_model_name, native_dim)`` for ``text_input``.
 
     Resolves the embedder through the platform's ``is_platform_embedding``
@@ -356,22 +356,124 @@ async def _embed(
     tuning = resolve_proxy_tuning(db)
     # Release the pooled connection before the outbound embed call.
     db.commit()
+    if not texts:
+        raise RuntimeError("memory_service: nothing to embed")
     data = await proxy_request(
         model=model_snapshot,
         api_key_id=None,
         user_id=user_id,
         department_id=department_id,
-        request_body={"model": model_name, "input": [text_input]},
+        request_body={"model": model_name, "input": list(texts)},
         endpoint_path=f"/{api_version}/embeddings",
         embedding_input_role=embedding_input_role,
         record_usage=False,
         tuning=tuning,
     )
-    vec = data["data"][0]["embedding"]
+    rows = list(data.get("data") or [])
+    rows.sort(key=lambda item: int(item.get("index", 0)) if isinstance(item, dict) else 0)
     measured = getattr(model, "embedding_native_dim", None)
     declared = measured if isinstance(measured, int) and measured > 0 else None
-    stored = fit_stored_vector(vec, declared_native=declared)
-    return stored.values, model_name, stored.native_dims
+    vectors: list[list[float]] = []
+    native = 0
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        stored = fit_stored_vector(item.get("embedding"), declared_native=declared)
+        vectors.append(stored.values)
+        native = stored.native_dims
+    if len(vectors) != len(texts):
+        raise RuntimeError("memory_service: embedding response count mismatch")
+    return vectors, model_name, native
+
+
+async def _embed(
+    db: Session,
+    text_input: str,
+    *,
+    user_id: int = 0,
+    department_id: int | None = None,
+    embedding_input_role: str = "query",
+    model_id: int | None = None,
+) -> tuple[list[float], str, int]:
+    """Return ``(vector, source_model_name, native_dim)`` for one text."""
+    vectors, model_name, native = await _embed_via_proxy(
+        db,
+        [text_input],
+        user_id=user_id,
+        department_id=department_id,
+        embedding_input_role=embedding_input_role,
+        model_id=model_id,
+    )
+    return vectors[0], model_name, native
+
+
+_embed_one = _embed
+_EMBED_BATCH = 64
+
+
+async def _embed_many(
+    db: Session,
+    texts: list[str],
+    *,
+    user_id: int = 0,
+    department_id: int | None = None,
+    embedding_input_role: str = "query",
+    model_id: int | None = None,
+) -> tuple[list[list[float]], str, int]:
+    """一次嵌入多段文字，每批最多 64 段。某一批失敗時保留其他批。
+
+    測試若換掉 ``_embed``，就沿用那個假實作，單段失敗同樣留空位。
+    回傳的向量列表與 ``texts`` 等長；失敗的位置是 None。
+    """
+    if _embed is not _embed_one:
+        vectors: list[list[float] | None] = []
+        name = ""
+        native = 0
+        any_ok = False
+        for text in texts:
+            try:
+                vector, name, native = await _embed(
+                    db,
+                    text,
+                    user_id=user_id,
+                    department_id=department_id,
+                    embedding_input_role=embedding_input_role,
+                    model_id=model_id,
+                )
+            except Exception:
+                vectors.append(None)
+                continue
+            any_ok = True
+            vectors.append(vector)
+        if texts and not any_ok:
+            raise RuntimeError("memory_service: embedding chunks failed")
+        return vectors, name, native
+    vectors = []
+    name = ""
+    native = 0
+    any_ok = False
+    for start in range(0, len(texts), _EMBED_BATCH):
+        chunk = texts[start:start + _EMBED_BATCH]
+        try:
+            part, name, native = await _embed_via_proxy(
+                db,
+                chunk,
+                user_id=user_id,
+                department_id=department_id,
+                embedding_input_role=embedding_input_role,
+                model_id=model_id,
+            )
+        except Exception:
+            vectors.extend([None] * len(chunk))
+            continue
+        if len(part) != len(chunk):
+            vectors.extend([None] * len(chunk))
+            continue
+        any_ok = True
+        vectors.extend(part)
+    if texts and not any_ok:
+        raise RuntimeError("memory_service: embedding chunks failed")
+    return vectors, name, native
 
 
 def _vector_is_finite(vec: Iterable[float]) -> bool:
@@ -836,10 +938,44 @@ async def _relevant_facts(
         )
         return []
     scored: list[tuple[float, UserFact]] = []
+    ready: dict[int, list[float]] = {}
+    missing: list[UserFact] = []
     for fact in facts:
         vector = _fact_vector_for_model(fact, source_model)
         if vector is None:
-            vector = await _backfill_fact_embedding(db, fact, user_id=user_id)
+            missing.append(fact)
+        else:
+            ready[int(fact.id)] = vector
+    if missing:
+        try:
+            embedded, embedded_model, native_dim = await _embed_many(
+                db,
+                [_fact_embed_text(fact) for fact in missing],
+                user_id=user_id,
+                embedding_input_role="document",
+            )
+        except Exception:
+            _warn_fact_embed_once(
+                "fact embedding unavailable; injecting preferences only"
+            )
+            embedded = []
+        else:
+            for fact, vector in zip(missing, embedded):
+                if not isinstance(vector, list) or not _vector_is_finite(vector):
+                    continue
+                _save_fact_embedding(
+                    db,
+                    fact,
+                    {
+                        "embedding": vector,
+                        "embedding_source_model": embedded_model,
+                        "embedding_native_dim": native_dim,
+                    },
+                )
+                ready[int(fact.id)] = vector
+            db.commit()
+    for fact in facts:
+        vector = ready.get(int(fact.id))
         if vector is None:
             continue
         cosine = _cosine(query_vector, vector)

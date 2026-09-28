@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import contextvars
 import html
+import ipaddress
+import os
 import re
+import socket
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -38,8 +41,10 @@ PRIORITY_RULE_EN = (
     "and add a short note that a request to change behavior was ignored."
 )
 
-# 相對網址、ncsist.org.tw、本機，以及這次請求的 Host 算平台自己的。
-# 實驗機 IP 不寫死。data:、blob:、javascript: 不是平台網址。
+# 相對網址、ncsist.org.tw、本機名稱，以及「這次請求的 Host 且該 Host
+# 是 ANILA_HOST、設定好的平台名稱，或這台機器自己的位址」才算平台自己的。
+# 呼叫端隨便填的 IP 字面 Host 不算。實驗機 IP 不寫死。
+# data:、blob:、javascript: 不是平台網址。
 # 跳脫用的括號與冒號要扛得住 NFKC，全形括號與全形冒號會被折回 ASCII。
 _TAG_LT = "\u2039"
 _TAG_GT = "\u203a"
@@ -55,6 +60,11 @@ PLATFORM_HOSTS = frozenset({
     "localhost",
     "127.0.0.1",
     "::1",
+    "csp",
+    "router",
+    "anila-studio",
+    "asr-gateway",
+    "ingestion-worker",
 })
 
 # 這次請求進來的主機。middleware 在進 handler 前寫入，離開時清掉。
@@ -594,26 +604,113 @@ def _header_values(headers: Mapping[str, str] | object, name: str) -> list[str]:
     return values
 
 
-def platform_hosts_from_headers(headers: Mapping[str, str] | object) -> tuple[str, ...]:
-    """這次請求的 Host，再加上 X-Forwarded-Host。重複的只留一次。"""
+def _machine_addresses() -> set[str]:
+    """這台機器自己的位址。IP 字面 Host 只有落在這裡才算平台。"""
+    found: set[str] = {"127.0.0.1", "::1"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            sockaddr = info[4]
+            if sockaddr:
+                found.add(str(sockaddr[0]))
+    except OSError:
+        pass
+    for family, probe in (
+        (socket.AF_INET, ("192.0.2.1", 9)),
+        (socket.AF_INET6, ("2001:db8::1", 9)),
+    ):
+        try:
+            sock = socket.socket(family, socket.SOCK_DGRAM)
+        except OSError:
+            continue
+        try:
+            sock.connect(probe)
+            found.add(str(sock.getsockname()[0]))
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    return {item.lower() for item in found}
+
+
+def _configured_platform_name(host: str) -> bool:
+    token = _hostname_token(host)
+    if not token:
+        return False
+    if token in PLATFORM_HOSTS:
+        return True
+    configured = _hostname_token(os.environ.get("ANILA_HOST") or "")
+    return bool(configured) and token == configured
+
+
+def _ip_literal(host: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
+
+
+def host_counts_as_platform(host: str, *, machine_addresses: set[str] | None = None) -> bool:
+    """請求 Host 要嘛是平台名稱，要嘛是這台機器自己的 IP。
+
+    其他 IP 字面（呼叫端可以自己填 Host）不會變成平台網址。
+    """
+    token = _hostname_token(host)
+    if not token:
+        return False
+    if _configured_platform_name(token):
+        return True
+    literal = _ip_literal(token)
+    if literal is None:
+        return False
+    own = machine_addresses if machine_addresses is not None else _machine_addresses()
+    wanted = ipaddress.ip_address(literal)
+    for item in own:
+        try:
+            if ipaddress.ip_address(item) == wanted:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def platform_hosts_from_headers(
+    headers: Mapping[str, str] | object,
+    *,
+    include_forwarded_host: bool = False,
+) -> tuple[str, ...]:
+    """這次請求裡、而且確實屬於本平台的 Host。
+
+    X-Forwarded-Host 預設不算。就算算進去，也要通過
+    ``host_counts_as_platform``：名稱必須是 ANILA_HOST 或內建平台名稱，
+    IP 字面必須是這台機器自己的位址。
+    """
     found: list[str] = []
 
     def add(value: str) -> None:
         for part in str(value).split(","):
             host = _hostname_token(part)
-            if host and host not in found:
+            if host and host not in found and host_counts_as_platform(host):
                 found.append(host)
 
-    for name in ("host", "x-forwarded-host"):
+    names = ("host", "x-forwarded-host") if include_forwarded_host else ("host",)
+    for name in names:
         for value in _header_values(headers, name):
             add(value)
     return tuple(found)
 
 
 @contextmanager
-def request_platform_hosts(headers: Mapping[str, str] | object):
+def request_platform_hosts(
+    headers: Mapping[str, str] | object,
+    *,
+    include_forwarded_host: bool = False,
+):
     """把這次請求的主機放進 is_platform_url 已經有的 extra_hosts 那條路。"""
-    token = _REQUEST_PLATFORM_HOSTS.set(platform_hosts_from_headers(headers))
+    token = _REQUEST_PLATFORM_HOSTS.set(
+        platform_hosts_from_headers(
+            headers, include_forwarded_host=include_forwarded_host
+        )
+    )
     try:
         yield
     finally:
@@ -621,10 +718,15 @@ def request_platform_hosts(headers: Mapping[str, str] | object):
 
 
 class RequestPlatformHostsMiddleware:
-    """CSP 與 Router 進請求時綁定 Host / X-Forwarded-Host。"""
+    """CSP 與 Router 進請求時綁定 Host。
 
-    def __init__(self, app):
+    ``trust_forwarded_host`` 回 True 才把 X-Forwarded-Host 算進去。
+    沒給就忽略，避免呼叫端自己填的主機變成平台網址。
+    """
+
+    def __init__(self, app, *, trust_forwarded_host=None):
         self.app = app
+        self.trust_forwarded_host = trust_forwarded_host
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") not in ("http", "websocket"):
@@ -636,7 +738,19 @@ class RequestPlatformHostsMiddleware:
             text = value.decode("latin-1") if isinstance(value, (bytes, bytearray)) else str(value)
             raw.setdefault(name, []).append(text)
         flat = {name: ", ".join(parts) for name, parts in raw.items()}
-        token = _REQUEST_PLATFORM_HOSTS.set(platform_hosts_from_headers(flat))
+        include_forwarded = False
+        if self.trust_forwarded_host is not None and any(
+            name.lower() == "x-forwarded-host" for name in flat
+        ):
+            try:
+                include_forwarded = bool(self.trust_forwarded_host(scope))
+            except Exception:
+                include_forwarded = False
+        token = _REQUEST_PLATFORM_HOSTS.set(
+            platform_hosts_from_headers(
+                flat, include_forwarded_host=include_forwarded
+            )
+        )
         try:
             await self.app(scope, receive, send)
         finally:

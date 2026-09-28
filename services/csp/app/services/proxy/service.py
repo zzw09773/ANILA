@@ -789,8 +789,8 @@ async def _proxy_request_impl(
         model,
         thinking_tier=conv_tier,
     )
-    # ``usage_source`` comes from the X-ANILA-Request-Source header: anila-studio
-    # sends "studio" so the usage dashboard can split 簡報製作 from chat.
+    # ``usage_source`` 是呼叫端已經判定的用量桶（簡報工作權杖或 Studio 服務憑證
+    # 才是 studio）。X-ANILA-Request-Source 不能決定這個欄位。
     # ``request_type_override`` 給平台內部呼叫（記憶、思考進度）標成 internal，
     # 公開 /v1 不傳，分類規則維持原樣。
     derived_request_type = (
@@ -1276,6 +1276,7 @@ async def _proxy_stream_impl(
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
     record_usage: bool = True,
+    request_type: str = "chat",
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -1659,6 +1660,7 @@ async def _proxy_stream_impl(
                 model_name_snapshot=model_name_snapshot,
                 token_source=usage_source,
                 reasoning_tokens=reasoning_tokens,
+                request_type=request_type,
             )
         else:
             await enqueue_usage(
@@ -1679,6 +1681,7 @@ async def _proxy_stream_impl(
                 model_name_snapshot=model_name_snapshot,
                 token_source=usage_source,
                 reasoning_tokens=reasoning_tokens,
+                request_type=request_type,
             )
 
 
@@ -1713,6 +1716,7 @@ async def proxy_stream(
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
     record_usage: bool = True,
+    request_type: str = "chat",
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1755,6 +1759,7 @@ async def proxy_stream(
             invocation_id=invocation_id,
             model_name_snapshot=model_name_snapshot,
             record_usage=record_usage,
+            request_type=request_type,
         ):
             yield chunk
         _note_proxy_outcome(

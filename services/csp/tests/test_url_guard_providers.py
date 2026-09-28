@@ -170,14 +170,13 @@ def test_trusted_hosts_do_not_bypass_structural_denies(
 
 
 def test_trusted_fqdn_may_resolve_to_private_address(monkeypatch):
-    """Trusted FQDNs are narrow operator allow-lists.
+    """私網名稱要同時在信任清單，且私網總開關是開的。
 
-    In production intranet deployments the model gateway is an FQDN in
-    ANILA_TRUSTED_HOSTS, resolved by compose ``extra_hosts`` to an RFC1918 IP.
-    That must remain allowed without opening the global private-endpoint flag.
+    院內模型閘道是 FQDN，由 extra_hosts 解析到 RFC1918。只列信任主機、
+    或只開總開關，都還不夠。
     """
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
-    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "aiagent2.ai.ncsist.org.tw")
 
     def fake_getaddrinfo(host, port, *args, **kwargs):
@@ -193,8 +192,21 @@ def test_trusted_fqdn_may_resolve_to_private_address(monkeypatch):
         ]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    url = "http://aiagent2.ai.ncsist.org.tw:8000/v1"
 
-    validate_outbound_url("http://aiagent2.ai.ncsist.org.tw:8000/v1")
+    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    with pytest.raises(UnsafeEndpointError) as missing_flag:
+        validate_outbound_url(url)
+    assert missing_flag.value.reason == REASON_PRIVATE_IP
+
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(UnsafeEndpointError) as missing_host:
+        validate_outbound_url(url)
+    assert missing_host.value.reason == REASON_PRIVATE_IP
+
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "aiagent2.ai.ncsist.org.tw")
+    validate_outbound_url(url)
 
 
 def test_scheme_failure_not_fixable(monkeypatch):

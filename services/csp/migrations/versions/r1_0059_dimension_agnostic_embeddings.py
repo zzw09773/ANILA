@@ -100,24 +100,13 @@ def upgrade() -> None:
         """
     )
 
-    # 既有向量原樣搬過去，標上目前的平台嵌入模型。沒有指定時，依
-    # embedding_source_model 的名字對到登錄表（含已停用）。
-    op.execute(
-        """
-        INSERT INTO embedding_vectors
-            (subject, subject_id, model_id, collection_id, dims, native_dims, embedding)
-        SELECT 'chunk', c.id, m.id, c.collection_id,
-               vector_dims(c.embedding),
-               COALESCE(c.embedding_native_dim, vector_dims(c.embedding)),
-               c.embedding
-          FROM document_chunks c
-          JOIN model_registry m
-            ON m.is_platform_embedding = true
-           AND m.model_type = 'embedding'
-         WHERE c.embedding IS NOT NULL
-        ON CONFLICT (subject, subject_id, model_id) DO NOTHING
-        """
-    )
+    # 逐筆依 embedding_source_model 的名字對到登錄表（含已停用）。
+    # 對不上的不標成目前平台角色，留給重建補目標模型的向量。
+    #
+    # 線上庫已經跑過這一版的舊 SQL，而且那些向量確實都是 nv-embed-v2。
+    # Alembic 不會重跑已套用的 revision，所以改這裡只影響還沒跑過的
+    # 新資料庫，不會改寫線上列。也不另加一支把 model_id 覆寫回去的
+    # 遷移：線上的來源欄若和實際向量不一致，覆寫會把對的向量標錯。
     op.execute(
         """
         INSERT INTO embedding_vectors
@@ -131,11 +120,6 @@ def upgrade() -> None:
             ON m.model_type = 'embedding'
            AND lower(m.name) = lower(c.embedding_source_model)
          WHERE c.embedding IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM model_registry p
-                WHERE p.is_platform_embedding = true
-                  AND p.model_type = 'embedding'
-           )
         ON CONFLICT (subject, subject_id, model_id) DO NOTHING
         """
     )
@@ -150,17 +134,7 @@ def upgrade() -> None:
           FROM user_facts f
           JOIN model_registry m
             ON m.model_type = 'embedding'
-           AND (
-                m.is_platform_embedding = true
-                OR (
-                    lower(m.name) = lower(f.embedding_source_model)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM model_registry p
-                         WHERE p.is_platform_embedding = true
-                           AND p.model_type = 'embedding'
-                    )
-                )
-           )
+           AND lower(m.name) = lower(f.embedding_source_model)
          WHERE f.embedding IS NOT NULL
         ON CONFLICT (subject, subject_id, model_id) DO NOTHING
         """
@@ -176,22 +150,25 @@ def upgrade() -> None:
           FROM conversation_summaries s
           JOIN model_registry m
             ON m.model_type = 'embedding'
-           AND (
-                m.is_platform_embedding = true
-                OR (
-                    lower(m.name) = lower(s.embedding_source_model)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM model_registry p
-                         WHERE p.is_platform_embedding = true
-                           AND p.model_type = 'embedding'
-                    )
-                )
-           )
+           AND lower(m.name) = lower(s.embedding_source_model)
          WHERE s.embedding IS NOT NULL
         ON CONFLICT (subject, subject_id, model_id) DO NOTHING
         """
     )
 
+    # 搜尋先用搬進去最多的那個模型。平台角色不同，或有向量沒搬進去時，
+    # 只排隊重建，不把 active 改成新模型。
+    op.execute(
+        """
+        INSERT INTO embedding_activation (id, active_model_id)
+        SELECT 1, model_id
+          FROM embedding_vectors
+         GROUP BY model_id
+         ORDER BY count(*) DESC, model_id
+         LIMIT 1
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
     op.execute(
         """
         INSERT INTO embedding_activation (id, active_model_id)
@@ -203,16 +180,52 @@ def upgrade() -> None:
         ON CONFLICT (id) DO NOTHING
         """
     )
-    # 沒有平台角色時，用搬進去的向量最多的那個模型當搜尋目前使用的模型。
     op.execute(
         """
-        INSERT INTO embedding_activation (id, active_model_id)
-        SELECT 1, model_id
-          FROM embedding_vectors
-         GROUP BY model_id
-         ORDER BY count(*) DESC, model_id
-         LIMIT 1
-        ON CONFLICT (id) DO NOTHING
+        UPDATE embedding_activation AS a
+           SET rebuild_target_model_id = p.id,
+               rebuild_status = 'pending',
+               rebuild_started_at = CURRENT_TIMESTAMP,
+               rebuild_updated_at = CURRENT_TIMESTAMP
+          FROM model_registry AS p
+         WHERE a.id = 1
+           AND p.is_platform_embedding = true
+           AND p.model_type = 'embedding'
+           AND (
+                a.active_model_id IS DISTINCT FROM p.id
+                OR EXISTS (
+                    SELECT 1 FROM document_chunks c
+                     WHERE c.embedding IS NOT NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM embedding_vectors v
+                            WHERE v.subject = 'chunk'
+                              AND v.subject_id = c.id
+                              AND v.model_id = p.id
+                       )
+                )
+                OR EXISTS (
+                    SELECT 1 FROM user_facts f
+                     WHERE f.embedding IS NOT NULL
+                       AND COALESCE(f.kind, 'fact') <> 'preference'
+                       AND COALESCE(f.key, '') NOT LIKE 'preference.%'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM embedding_vectors v
+                            WHERE v.subject = 'fact'
+                              AND v.subject_id = f.id
+                              AND v.model_id = p.id
+                       )
+                )
+                OR EXISTS (
+                    SELECT 1 FROM conversation_summaries s
+                     WHERE s.embedding IS NOT NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM embedding_vectors v
+                            WHERE v.subject = 'summary'
+                              AND v.subject_id = s.id
+                              AND v.model_id = p.id
+                       )
+                )
+           )
         """
     )
 

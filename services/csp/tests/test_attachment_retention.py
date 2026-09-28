@@ -19,6 +19,7 @@ from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.services.attachment_retention import (
     ATTACHMENT_EXPIRED_MESSAGE,
     purge_expired_uploads,
+    retention_action,
 )
 from tests.conftest import login, make_user
 
@@ -217,6 +218,45 @@ def test_purge_after_30_days_leaves_a_tombstone_and_spares_the_rest(
         assert "過期筆記.txt" not in blob
         assert "過期機密.txt" not in blob
         assert "EXPIRED_UPLOAD_BODY" not in blob
+
+
+def test_tombstone_is_committed_before_the_file_is_removed(db, storage_root, monkeypatch):
+    from pathlib import Path
+
+    from sqlalchemy.orm import Session
+
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    user = make_user(db, username="retain-order")
+    conv = _conv(db, user)
+    att = _attachment(
+        db, storage_root, user, conv,
+        filename="先記墓碑.txt", body="ORDER_BODY",
+        age=timedelta(days=31), now=now,
+    )
+    seen: dict[str, str | None] = {}
+    real_unlink = Path.unlink
+
+    def spy(self, *args, **kwargs):
+        other = Session(bind=db.get_bind())
+        try:
+            row = other.get(Attachment, att.id)
+            seen["status"] = None if row is None else row.extract_status
+        finally:
+            other.close()
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", spy)
+    assert purge_expired_uploads(db, now=now) == 1
+    assert seen["status"] == "expired"
+    assert not (storage_root / att.storage_path).is_file()
+
+
+def test_unknown_age_is_stamped_and_not_purged():
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    cutoff = now - timedelta(days=30)
+    assert retention_action(None, now=now, cutoff=cutoff) == "stamp"
+    assert retention_action(now, now=now, cutoff=cutoff) == "keep"
+    assert retention_action(now - timedelta(days=31), now=now, cutoff=cutoff) == "purge"
 
 
 def test_retention_job_starts_and_stops_with_the_app():

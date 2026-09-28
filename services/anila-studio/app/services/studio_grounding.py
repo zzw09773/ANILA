@@ -18,6 +18,8 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 GROUNDING_TITLE_WARNING = "部分標題用詞在來源中找不到，已移除"
+# Stat.supporting 最短 20 字。清掉未接地內容後用這句補回結構，本身不含數字或型號。
+_STAT_SUPPORTING_PLACEHOLDER = "來源沒有對應敘述，此處略去，不另顯示數字。"
 
 # 簡報結構用詞，不是事實宣稱。比對時不分大小寫。名單保持這一份。
 GENERIC_PRESENTATION_TOKENS = frozenset({
@@ -196,33 +198,71 @@ def _ungrounded_in_texts(texts: list[str], source: str) -> list[str]:
     return found
 
 
+def _append_text(texts: list[str], value: object) -> None:
+    if isinstance(value, str) and value.strip():
+        texts.append(value)
+
+
+def _append_bullets(texts: list[str], obj: dict[str, Any]) -> None:
+    bullets = obj.get("bullets")
+    if not isinstance(bullets, list):
+        return
+    for item in bullets:
+        _append_text(texts, item)
+
+
 def _checked_texts(data: dict[str, Any], kind: str) -> list[str]:
     texts: list[str] = []
-    title = data.get("title")
-    if isinstance(title, str):
-        texts.append(title)
+    _append_text(texts, data.get("title"))
+    _append_text(texts, data.get("subtitle"))
+    _append_bullets(texts, data)
     if kind == "outline":
         for section in data.get("sections") or []:
             if not isinstance(section, dict):
                 continue
-            heading = section.get("heading")
-            if isinstance(heading, str):
-                texts.append(heading)
+            _append_text(texts, section.get("heading"))
+            _append_bullets(texts, section)
             for slide in section.get("slides") or []:
-                if isinstance(slide, dict) and isinstance(slide.get("title"), str):
-                    texts.append(slide["title"])
+                if not isinstance(slide, dict):
+                    continue
+                _append_text(texts, slide.get("title"))
+                _append_text(texts, slide.get("subtitle"))
+                _append_bullets(texts, slide)
         return texts
     for slide in data.get("slides") or []:
         if not isinstance(slide, dict):
             continue
-        if isinstance(slide.get("title"), str):
-            texts.append(slide["title"])
+        _append_text(texts, slide.get("title"))
+        _append_text(texts, slide.get("subtitle"))
+        _append_bullets(texts, slide)
+        _append_text(texts, slide.get("key_message"))
         stat = slide.get("stat")
         if isinstance(stat, dict):
-            for key in ("value", "baseline"):
-                value = stat.get(key)
-                if isinstance(value, str) and value.strip():
-                    texts.append(value)
+            for key in ("value", "baseline", "label", "supporting"):
+                _append_text(texts, stat.get(key))
+        quote = slide.get("quote")
+        if isinstance(quote, dict):
+            _append_text(texts, quote.get("text"))
+            _append_text(texts, quote.get("attribution"))
+        for step in slide.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            _append_text(texts, step.get("heading"))
+            _append_text(texts, step.get("description"))
+        table = slide.get("table")
+        if isinstance(table, dict):
+            for heading in table.get("columns") or []:
+                _append_text(texts, heading)
+            for row in table.get("rows") or []:
+                if not isinstance(row, list):
+                    continue
+                for cell in row:
+                    _append_text(texts, cell)
+        for column in slide.get("columns") or []:
+            if not isinstance(column, dict):
+                continue
+            _append_text(texts, column.get("heading"))
+            _append_bullets(texts, column)
     return texts
 
 
@@ -302,25 +342,256 @@ def _write_title(
     obj[key] = updated
 
 
-def _strip_document(data: dict[str, Any], tokens: list[str], kind: str) -> list[str]:
-    """拿掉標題裡不接地的詞。簡報總標題可以和某一頁相同；同一層標題不重複。"""
+def _note_hits(hit: list[str], removed: list[str]) -> None:
+    for token in hit:
+        if token not in removed:
+            removed.append(token)
+
+
+def _strip_bullets(
+    obj: dict[str, Any],
+    tokens: list[str],
+    removed: list[str],
+    fields: list[str],
+    *,
+    minimum: int = 1,
+) -> None:
+    bullets = obj.get("bullets")
+    if not isinstance(bullets, list):
+        return
+    changed = False
+    updated_items: list[object] = []
+    for item in bullets:
+        if not isinstance(item, str):
+            updated_items.append(item)
+            continue
+        updated, hit = _strip_text(item, tokens)
+        if not hit:
+            updated_items.append(item)
+            continue
+        changed = True
+        _note_hits(hit, removed)
+        if updated:
+            updated_items.append(updated)
+    if not changed:
+        return
+    if "條列" not in fields:
+        fields.append("條列")
+    while sum(
+        1 for item in updated_items if isinstance(item, str) and item.strip()
+    ) < minimum:
+        updated_items.append("（略）")
+    obj["bullets"] = updated_items
+
+
+def _strip_stat(
+    stat: object,
+    tokens: list[str],
+    removed: list[str],
+    fields: list[str],
+) -> None:
+    if not isinstance(stat, dict):
+        return
+    changed = False
+    for key in ("value", "baseline", "label", "supporting"):
+        value = stat.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        updated, hit = _strip_text(value, tokens)
+        if not hit:
+            continue
+        changed = True
+        _note_hits(hit, removed)
+        if key == "baseline":
+            stat[key] = updated or None
+        elif key == "supporting":
+            stat[key] = updated if len(updated) >= 20 else _STAT_SUPPORTING_PLACEHOLDER
+        elif key == "label":
+            stat[key] = updated or "（略）"
+        else:
+            stat[key] = updated or "—"
+    if changed and "統計數字" not in fields:
+        fields.append("統計數字")
+
+
+def _strip_quote(
+    quote: object,
+    tokens: list[str],
+    removed: list[str],
+    fields: list[str],
+) -> None:
+    if not isinstance(quote, dict):
+        return
+    changed = False
+    for key in ("text", "attribution"):
+        value = quote.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        updated, hit = _strip_text(value, tokens)
+        if not hit:
+            continue
+        changed = True
+        _note_hits(hit, removed)
+        if key == "attribution":
+            quote[key] = updated or None
+        else:
+            quote[key] = updated or "（略）"
+    if changed and "引言" not in fields:
+        fields.append("引言")
+
+
+def _strip_steps(
+    steps: object,
+    tokens: list[str],
+    removed: list[str],
+    fields: list[str],
+) -> None:
+    if not isinstance(steps, list):
+        return
+    changed = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for key in ("heading", "description"):
+            value = step.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            updated, hit = _strip_text(value, tokens)
+            if not hit:
+                continue
+            changed = True
+            _note_hits(hit, removed)
+            step[key] = updated or ("（略）" if key == "heading" else "")
+    if changed and "步驟" not in fields:
+        fields.append("步驟")
+
+
+def _strip_table(
+    table: object,
+    tokens: list[str],
+    removed: list[str],
+    fields: list[str],
+) -> None:
+    if not isinstance(table, dict):
+        return
+    changed = False
+
+    def _cell(value: object) -> object:
+        nonlocal changed
+        if not isinstance(value, str) or not value.strip():
+            return value
+        updated, hit = _strip_text(value, tokens)
+        if not hit:
+            return value
+        changed = True
+        _note_hits(hit, removed)
+        return updated or "（略）"
+
+    columns = table.get("columns")
+    if isinstance(columns, list):
+        table["columns"] = [_cell(item) for item in columns]
+    rows = table.get("rows")
+    if isinstance(rows, list):
+        table["rows"] = [
+            [_cell(cell) for cell in row] if isinstance(row, list) else row
+            for row in rows
+        ]
+    if changed and "表格" not in fields:
+        fields.append("表格")
+
+
+def _strip_fields(
+    obj: dict[str, Any],
+    tokens: list[str],
+    removed: list[str],
+    fields: list[str],
+    *,
+    title_key: str | None,
+    title_kind: str,
+    used: set[str],
+) -> None:
+    before = len(removed)
+    if title_key:
+        _write_title(obj, title_key, tokens, title_kind, used, removed)
+        if len(removed) > before and "標題" not in fields:
+            fields.append("標題")
+    subtitle = obj.get("subtitle")
+    if isinstance(subtitle, str):
+        updated, hit = _strip_text(subtitle, tokens)
+        if hit:
+            _note_hits(hit, removed)
+            obj["subtitle"] = updated or None
+            if "副標" not in fields:
+                fields.append("副標")
+    key_message = obj.get("key_message")
+    if isinstance(key_message, str):
+        updated, hit = _strip_text(key_message, tokens)
+        if hit:
+            _note_hits(hit, removed)
+            obj["key_message"] = updated or None
+            if "重點" not in fields:
+                fields.append("重點")
+    _strip_bullets(obj, tokens, removed, fields)
+    _strip_stat(obj.get("stat"), tokens, removed, fields)
+    _strip_quote(obj.get("quote"), tokens, removed, fields)
+    _strip_steps(obj.get("steps"), tokens, removed, fields)
+    _strip_table(obj.get("table"), tokens, removed, fields)
+    for column in obj.get("columns") or []:
+        if not isinstance(column, dict):
+            continue
+        heading = column.get("heading")
+        if isinstance(heading, str):
+            updated, hit = _strip_text(heading, tokens)
+            if hit:
+                _note_hits(hit, removed)
+                column["heading"] = updated or "（略）"
+                if "標題" not in fields:
+                    fields.append("標題")
+        _strip_bullets(column, tokens, removed, fields, minimum=2)
+
+
+def _warning_for(fields: list[str]) -> str:
+    order = ("標題", "副標", "條列", "統計數字", "引言", "重點", "步驟", "表格")
+    labels = [name for name in order if name in fields]
+    if not labels or labels == ["標題"]:
+        return GROUNDING_TITLE_WARNING
+    return f"部分{'、'.join(labels)}在來源中找不到，已移除"
+
+
+def _strip_document(
+    data: dict[str, Any], tokens: list[str], kind: str
+) -> tuple[list[str], list[str]]:
+    """拿掉不接地的詞。簡報總標題可以和某一頁相同；同一層標題不重複。"""
     removed: list[str] = []
-    _write_title(data, "title", tokens, "deck", set(), removed)
+    fields: list[str] = []
+    _strip_fields(
+        data, tokens, removed, fields,
+        title_key="title", title_kind="deck", used=set(),
+    )
     headings: set[str] = set()
     slides: set[str] = set()
     if kind == "outline":
         for section in data.get("sections") or []:
             if not isinstance(section, dict):
                 continue
-            _write_title(section, "heading", tokens, "heading", headings, removed)
+            _strip_fields(
+                section, tokens, removed, fields,
+                title_key="heading", title_kind="heading", used=headings,
+            )
             for slide in section.get("slides") or []:
                 if isinstance(slide, dict):
-                    _write_title(slide, "title", tokens, "slide", slides, removed)
-        return removed
+                    _strip_fields(
+                        slide, tokens, removed, fields,
+                        title_key="title", title_kind="slide", used=slides,
+                    )
+        return removed, fields
     for slide in data.get("slides") or []:
         if isinstance(slide, dict):
-            _write_title(slide, "title", tokens, "slide", slides, removed)
-    return removed
+            _strip_fields(
+                slide, tokens, removed, fields,
+                title_key="title", title_kind="slide", used=slides,
+            )
+    return removed, fields
 
 
 async def apply_grounding(
@@ -358,7 +629,7 @@ async def apply_grounding(
         if not tokens:
             return GroundingResult(current, None, [])
 
-    removed = _strip_document(current, tokens, kind)
+    removed, fields = _strip_document(current, tokens, kind)
     if removed:
-        logger.info("grounding removed title tokens: %s", "、".join(removed))
-    return GroundingResult(current, GROUNDING_TITLE_WARNING, removed)
+        logger.info("grounding removed ungrounded tokens: %s", "、".join(removed))
+    return GroundingResult(current, _warning_for(fields), removed)

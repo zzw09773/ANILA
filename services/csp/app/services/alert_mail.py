@@ -349,6 +349,18 @@ def _validate_row(row: AlertMailSettings, *, for_send: bool) -> None:
         raise AlertMailConfigError("有帳號時要一併填密碼")
 
 
+def _smtp_tls_context():
+    """跟模型呼叫同一套信任庫：有內部 CA 檔就只用那一份。"""
+    import os
+    import ssl
+
+    for key in ("SSL_CERT_FILE", "ANILA_MODEL_CA_FILE"):
+        path = (os.environ.get(key) or "").strip()
+        if path and os.path.isfile(path):
+            return ssl.create_default_context(cafile=path)
+    return ssl.create_default_context()
+
+
 def _transmit(row: AlertMailSettings, *, subject: str, body: str) -> None:
     import smtplib
     from email.message import EmailMessage
@@ -361,14 +373,15 @@ def _transmit(row: AlertMailSettings, *, subject: str, body: str) -> None:
     message.set_content(body, charset="utf-8", cte="8bit")
     host = row.smtp_host.strip()
     port = int(row.smtp_port)
+    tls = _smtp_tls_context() if row.security in ("ssl", "starttls") else None
     if row.security == "ssl":
-        client = smtplib.SMTP_SSL(host, port, timeout=20)
+        client = smtplib.SMTP_SSL(host, port, timeout=20, context=tls)
     else:
         client = smtplib.SMTP(host, port, timeout=20)
     try:
         client.ehlo()
         if row.security == "starttls":
-            client.starttls()
+            client.starttls(context=tls)
             client.ehlo()
         username = (row.username or "").strip()
         if username:
@@ -404,12 +417,19 @@ def _public_error(row: AlertMailSettings, exc: BaseException) -> str:
 
 
 def _redact(text: str, row: AlertMailSettings) -> str:
-    redacted = text
-    secrets = [open_password(row.password_envelope) if row.password_envelope else ""]
+    secrets: list[str] = []
     username = (row.username or "").strip()
+    password = open_password(row.password_envelope) if row.password_envelope else ""
     if username:
         secrets.append(username)
-    for secret in secrets:
-        if secret:
-            redacted = redacted.replace(secret, "[已隱藏]")
+    if password:
+        secrets.append(password)
+    # 較長者先換，避免帳號是密碼的子字串時先被換掉、剩下的密碼片段漏出。
+    redacted = text
+    seen: set[str] = set()
+    for secret in sorted(secrets, key=len, reverse=True):
+        if not secret or secret in seen:
+            continue
+        seen.add(secret)
+        redacted = redacted.replace(secret, "[已隱藏]")
     return redacted

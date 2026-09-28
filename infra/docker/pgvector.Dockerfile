@@ -17,6 +17,10 @@ RUN apk upgrade --no-cache libuuid libcrypto3 libssl3 \
 
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 COPY --from=build / /
+# 備份服務跟資料庫共用這張映像。router-sessions 是 SQLite，
+# 一致性複本用 sqlite3 .backup，不把正在寫入的檔直接打進 tar。
+RUN apk add --no-cache sqlite \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 ENV LANG=en_US.utf8 \
     PG_MAJOR=16 \
     PG_VERSION=16.15 \

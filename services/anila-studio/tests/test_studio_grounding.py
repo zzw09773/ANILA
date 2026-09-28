@@ -447,3 +447,59 @@ async def test_outline_and_deck_keep_title_taken_from_user_instructions(monkeypa
     assert spec.title == _USER_TITLE
     assert two_pass["outline"].title == _USER_TITLE
     assert two_pass["outline"].all_slides()[0].title == _USER_TITLE
+
+
+async def test_ungrounded_stat_bullet_and_subtitle_are_cleared_after_retry():
+    """重試仍寫 1200 時，統計、副標與條列都要拿掉，不能只改標題。"""
+    deck = _deck("相位陣列")
+    deck["subtitle"] = "型號 NX-9"
+    deck["slides"][1]["stat"]["value"] = "1200"
+    deck["slides"][1]["stat"]["baseline"] = "900"
+    deck["slides"][1]["bullets"] = ["沿用 1200", "單元數量沿用來源"]
+
+    async def reask(tokens: list[str]) -> dict:
+        assert "1200" in tokens
+        assert "NX-9" in tokens
+        return copy.deepcopy(deck)
+
+    result = await apply_grounding(deck, SOURCE, kind="deck", reask=reask)
+
+    assert result.data["slides"][1]["stat"]["value"] == "—"
+    assert result.data["slides"][1]["stat"]["baseline"] is None
+    assert all("1200" not in str(item) for item in result.data["slides"][1]["bullets"])
+    assert "NX-9" not in (result.data.get("subtitle") or "")
+    assert result.warning is not None
+    assert "統計數字" in result.warning
+    assert "條列" in result.warning
+    assert "副標" in result.warning
+
+
+async def test_ungrounded_supporting_quote_steps_and_table_are_cleared():
+    deck = _deck("相位陣列")
+    slide = deck["slides"][1]
+    slide["key_message"] = "型號 ZX-1 已量產"
+    slide["stat"]["label"] = "ZX-1"
+    slide["stat"]["supporting"] = "補充說明提到 8800 組備援，來源沒有這組數字。"
+    slide["quote"] = {"text": "負責人說 8800 已驗收", "attribution": "ZX-1 計畫"}
+    slide["steps"] = [
+        {"heading": "步驟 8800", "description": "沿用來源"},
+        {"heading": "複核", "description": "對照文件"},
+    ]
+    slide["table"] = {
+        "columns": ["項目", "ZX-1"],
+        "rows": [["備援", "8800"]],
+    }
+
+    async def reask(tokens: list[str]) -> dict:
+        assert "8800" in tokens
+        assert "ZX-1" in tokens
+        return copy.deepcopy(deck)
+
+    result = await apply_grounding(deck, SOURCE, kind="deck", reask=reask)
+    cleaned = result.data["slides"][1]
+    assert "8800" not in json.dumps(cleaned, ensure_ascii=False)
+    assert "ZX-1" not in json.dumps(cleaned, ensure_ascii=False)
+    assert len(cleaned["stat"]["supporting"]) >= 20
+    assert result.warning is not None
+    for label in ("統計數字", "引言", "重點", "步驟", "表格"):
+        assert label in result.warning

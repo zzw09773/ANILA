@@ -368,21 +368,28 @@ def test_lab_addresses_are_external_unless_they_are_the_request_host():
     assert not is_platform_url("javascript:alert(1)")
 
 
-def test_request_host_headers_keep_that_host_and_still_flag_others():
+def test_request_host_headers_keep_that_host_and_still_flag_others(monkeypatch):
     from anila_core.security.external_content import (
         platform_hosts_from_headers,
         request_platform_hosts,
     )
 
+    monkeypatch.setenv("ANILA_HOST", "anila.intranet")
     headers = {
         "Host": "Anila.Intranet:8443",
         "X-Forwarded-Host": "edge.example, anila.intranet:8443",
     }
     hosts = platform_hosts_from_headers(headers)
-    assert hosts == ("anila.intranet", "edge.example")
+    assert hosts == ("anila.intranet",)
+    assert platform_hosts_from_headers(headers, include_forwarded_host=True) == (
+        "anila.intranet",
+    )
     kept = "請看 https://anila.intranet/guide 。"
     with request_platform_hosts(headers):
-        assert is_platform_url("https://edge.example/a")
+        assert is_platform_url("https://edge.example/a") is False
+        assert is_platform_url("https://anila.intranet/guide")
+    with request_platform_hosts(headers, include_forwarded_host=True):
+        assert is_platform_url("https://edge.example/a") is False
         assert is_platform_url("https://anila.intranet/guide")
         assert is_platform_url("http://10.53.100.12/a") is False
         wrapped = wrap_external("attachment", "a", kept)
@@ -391,18 +398,30 @@ def test_request_host_headers_keep_that_host_and_still_flag_others():
         )
     assert wrapped.suspicious is False
     assert "https://anila.intranet/guide" in wrapped.message
-    assert "![圖](https://edge.example/a.png)" in output.text
+    assert "![圖](https://edge.example/a.png)" not in output.text
     assert "![x](http://10.53.100.12" not in output.text
     outside = wrap_external("attachment", "a", kept)
     assert outside.suspicious is True
     assert any(item.rule_id == "external_url" for item in outside.findings)
 
 
-def test_incoming_request_middleware_binds_host_and_forwarded_host():
+def test_ip_literal_host_counts_only_when_it_is_this_machine(monkeypatch):
+    from anila_core.security import external_content as ec
+
+    monkeypatch.setenv("ANILA_HOST", "anila.intranet")
+    monkeypatch.setattr(ec, "_machine_addresses", lambda: {"10.9.8.7"})
+    assert ec.platform_hosts_from_headers({"Host": "10.9.8.7"}) == ("10.9.8.7",)
+    assert ec.platform_hosts_from_headers({"Host": "8.8.8.8"}) == ()
+    assert ec.platform_hosts_from_headers({"Host": "csp"}) == ("csp",)
+    assert ec.platform_hosts_from_headers({"Host": "evil.example"}) == ()
+
+
+def test_incoming_request_middleware_binds_host_and_forwarded_host(monkeypatch):
     import asyncio
 
     from anila_core.security.external_content import RequestPlatformHostsMiddleware
 
+    monkeypatch.setenv("ANILA_HOST", "anila.intranet")
     seen = {}
 
     async def app(scope, receive, send):
@@ -429,7 +448,14 @@ def test_incoming_request_middleware_binds_host_and_forwarded_host():
         return None
 
     asyncio.run(RequestPlatformHostsMiddleware(app)(scope, receive, send))
-    assert seen == {"own": True, "forwarded": True, "lab": False}
+    assert seen == {"own": True, "forwarded": False, "lab": False}
+    seen.clear()
+    asyncio.run(
+        RequestPlatformHostsMiddleware(app, trust_forwarded_host=lambda _scope: True)(
+            scope, receive, send
+        )
+    )
+    assert seen == {"own": True, "forwarded": False, "lab": False}
     assert is_platform_url("https://anila.intranet/app") is False
 
 
