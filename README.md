@@ -245,7 +245,7 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 
 **你正在看 `main`** — 2026-07-28 重啟後的**單一開發線**（工作 worktree 分支除外；歷史名 `restart/from-redesign`）。它自 redesign 收斂點分出，保留成熟骨架（card SSO / RS256 JWT / JWKS / revocation / CSRF / RLS / SSRF guard / proxy），採用新佈局與 Task／Trace／四級分類／Registry 新契約。
 
-🔴 **`main` 作為 SSOT 的 7 分支部署模型已不存在。** 該模型（`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）已於 2026-07-28 重啟時進 attic；描述它的 [`AGENTS.md`](./AGENTS.md) §2–3 （現行單一 `main`；舊七分支模型已失效，見根目錄 README） **同樣已失效**，兩份皆已標示。在 PLAN 排到之前**不要**重建部署分支。
+🔴 **`main` 作為 SSOT 的 7 分支部署模型已不存在。** 該模型（`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）已於 2026-07-28 重啟時進 attic；描述它的 舊 `AGENTS.md`（已刪除，工作守則移到 [`docs/CURRENT-STATUS.md`](docs/CURRENT-STATUS.md)） §2–3 （現行單一 `main`；舊七分支模型已失效，見根目錄 README） **同樣已失效**，兩份皆已標示。在 PLAN 排到之前**不要**重建部署分支。
 
 現行狀態與執行順序見 [`PLAN.md`](./PLAN.md)（專案權威），重啟脈絡與 attic 取回方式見 [`RESTART-FROM-REDESIGN.md`](./RESTART-FROM-REDESIGN.md)。歷史上依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本線與舊 `main` 的 cherry-pick 互通已**刻意中斷**——這是一條全新基線，不是又一條 delta 分支。
 

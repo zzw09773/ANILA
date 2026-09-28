@@ -3,9 +3,20 @@
 > 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
 > 更新：2026-09-27。HEAD 以 `git log -1` 為準。
 
+## 工作守則（給人也給 AI 助手；取代已刪除的 `AGENTS.md`）
+
+- 回覆與文件用繁體中文、台灣用語。這是中科院（NCSIST）院內平台。
+- 平台由一個人維護：少一個金鑰、少一個 `.env` 鍵、少一個手動步驟都算進步。模型、外部服務、信任主機一律在治理中心設定。
+- 不要擅自 commit／push；由擁有者或他授權的代理決定。
+- 絕不提交 `.env`、`secrets/`、`*.pem`、`*.key`、API 金鑰、JWT 私鑰。
+- `anila-studio` 不可 import `anila_core`（有守門測試）。產品程式不可呼叫任何院外服務。
+- schema 改動一定要有 Alembic migration；多人並行時編號接在目前 head 後面。
+- 改完跑對應測試，合併前跑全部（指令見下方「啟動與測試」）。驗證走正式 HTTP API 與登入，不要直連資料庫假裝完成。
+- compose／`.env`／nginx 變更用 `docker compose up -d` 重建，不要只 `docker restart`；nginx 設定是單檔掛載，改了要 `--force-recreate nginx`。
+
 ## 開發線
 
-- 分支：`main`（單一開發線；舊七分支模型已進 attic，不要再照 `AGENTS.md` §3 切 `prod-intranet-card` 那種線）
+- 分支：`main`（單一開發線；舊七分支模型已進 `docs/archive/agents-seven-branch-model.md`，不要再切 `prod-intranet-card` 那種線）
 - 專案權威：`PLAN.md`（現況與順序）、`SYSTEM-MAP.md`（規格）
 - `CLAUDE.md` **不存在**。環境事實看本頁與 `PLAN.md`，不要去找那份檔。
 
