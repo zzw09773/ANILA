@@ -10,7 +10,11 @@ from app.schemas.api_key import (
     ApiKeyCreatedResponse,
 )
 from app.services.audit_service import log_audit_event, log_audit_event_or_raise
-from app.services.auth_service import get_current_user, is_admin_tier
+from app.services.auth_service import (
+    get_current_user,
+    is_admin_tier,
+    require_interactive_user,
+)
 from app.services.api_key_service import create_api_key
 
 router = APIRouter(prefix="/api/keys", tags=["API Key 管理"])
@@ -52,7 +56,7 @@ def list_api_keys(
 @router.post("", response_model=ApiKeyCreatedResponse)
 def create_key(
     request: ApiKeyCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
     if is_admin_tier(current_user):
@@ -107,7 +111,7 @@ def get_key(
 def update_key(
     key_id: int,
     request: ApiKeyUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
@@ -148,7 +152,7 @@ def update_key(
 @router.post("/{key_id}/regenerate", response_model=ApiKeyCreatedResponse)
 def regenerate_key(
     key_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
     old_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
@@ -196,7 +200,7 @@ def regenerate_key(
 @router.delete("/{key_id}")
 def revoke_key(
     key_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()

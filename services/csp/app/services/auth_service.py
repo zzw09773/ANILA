@@ -130,8 +130,38 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="未登入或權杖已過期",
         )
+    return resolve_presented_user(token, db)
+
+
+def resolve_presented_user(token: str, db: Session) -> User:
+    """Access token，或 Studio 工作委託權杖。後者失敗時不退回存取權杖解碼。"""
+    from app.services.studio_job_token import (
+        load_studio_job_user,
+        presented_studio_job_token,
+        verify_studio_job_token,
+    )
+
+    if presented_studio_job_token(token):
+        claims = verify_studio_job_token(token, db)
+        if claims is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="工作委託權杖無效或已過期",
+            )
+        return load_studio_job_user(claims, db)
     payload = decode_token(token, db=db)
     return _load_user_from_payload(payload, db, "access")
+
+
+def require_interactive_user(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """密碼、API Key、重發工作權杖只接受使用者自己的工作階段。"""
+    from app.services.studio_job_token import reject_studio_job_credential
+
+    reject_studio_job_credential(request)
+    return current_user
 
 
 _ADMIN_TIER_ROLES = ("admin", "owner")

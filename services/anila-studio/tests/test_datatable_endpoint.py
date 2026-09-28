@@ -187,6 +187,16 @@ def test_post_creates_job_and_runs_full_pipeline(isolated_artifacts):
         mock.post("/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_llm_response_with_spec()),
         )
+        mock.post("/api/studio/job-tokens").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "token": "delegated-job-token",
+                    "token_type": "bearer",
+                    "expires_in": 3600,
+                },
+            )
+        )
 
         # POST /jobs.
         r = client.post(

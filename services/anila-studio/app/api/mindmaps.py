@@ -593,8 +593,13 @@ async def create_mindmap_job(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def _runner(updater: jobs.MindmapJobUpdater) -> None:
+        from app.services import job_delegation
+
+        delegated = await job_delegation.adopt_job_bearer(
+            bearer, updater.job_id, payload.collection_id, report_ctx,
+        )
         await _run_pipeline(
-            identity=identity, bearer=bearer, payload=payload, updater=updater,
+            identity=identity, bearer=delegated, payload=payload, updater=updater,
         )
 
     report_ctx = job_lifecycle.make_context(

@@ -223,6 +223,16 @@ def test_post_creates_job_and_returns_202(test_app, tmp_path):
         mock.post("/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_mindmap_llm_response()),
         )
+        mock.post("/api/studio/job-tokens").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "token": "delegated-job-token",
+                    "token_type": "bearer",
+                    "expires_in": 3600,
+                },
+            )
+        )
 
         with _patch_dot_subprocess():
             with TestClient(test_app) as client:
@@ -273,6 +283,16 @@ def test_full_pipeline_round_trip(test_app, tmp_path):
         )
         mock.post("/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_mindmap_llm_response()),
+        )
+        mock.post("/api/studio/job-tokens").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "token": "delegated-job-token",
+                    "token_type": "bearer",
+                    "expires_in": 3600,
+                },
+            )
         )
 
         with _patch_dot_subprocess():
@@ -402,6 +422,16 @@ def test_cross_user_access_returns_404(test_app, other_user_app):
         mock.post("/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_mindmap_llm_response()),
         )
+        mock.post("/api/studio/job-tokens").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "token": "delegated-job-token",
+                    "token_type": "bearer",
+                    "expires_in": 3600,
+                },
+            )
+        )
 
         with _patch_dot_subprocess():
             with TestClient(test_app) as client_a:
@@ -431,6 +461,16 @@ def test_delete_cancels_pending_job(test_app):
         )
         mock.post("/api/ingestion/collections/7/search").mock(
             return_value=httpx.Response(200, json=_chunk_payload()),
+        )
+        mock.post("/api/studio/job-tokens").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "token": "delegated-job-token",
+                    "token_type": "bearer",
+                    "expires_in": 3600,
+                },
+            )
         )
 
         with (

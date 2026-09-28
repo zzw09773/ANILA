@@ -278,6 +278,15 @@ def _patch_datatable(monkeypatch, *, search_result, captured):
     monkeypatch.setattr(dt_mod, "search_chunks", fake_search_chunks)
     monkeypatch.setattr(dt_mod, "proxy_chat_completions", fake_proxy)
 
+    async def keep_user_bearer(user_bearer, job_id, collection_id, report_ctx):
+        if report_ctx is not None:
+            report_ctx.bearer = user_bearer
+        return user_bearer
+
+    monkeypatch.setattr(
+        "app.services.job_delegation.adopt_job_bearer", keep_user_bearer,
+    )
+
 
 async def _run_datatable_job(monkeypatch, *, search_result):
     from app.api import datatables as dt_mod
@@ -390,6 +399,15 @@ def _patch_infographic(monkeypatch, *, search_result, captured):
     monkeypatch.setattr(ig_mod, "search_chunks", fake_search_chunks)
     monkeypatch.setattr(ig_mod, "proxy_chat_completions", fake_proxy)
     monkeypatch.setattr(ig_mod, "render_pdf", fake_render_pdf)
+
+    async def keep_user_bearer(user_bearer, job_id, collection_id, report_ctx):
+        if report_ctx is not None:
+            report_ctx.bearer = user_bearer
+        return user_bearer
+
+    monkeypatch.setattr(
+        "app.services.job_delegation.adopt_job_bearer", keep_user_bearer,
+    )
 
 
 async def _run_infographic_job(monkeypatch, *, search_result):

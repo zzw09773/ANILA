@@ -28,6 +28,7 @@ from app.services.auth_service import (
     authenticate_user,
     create_tokens,
     get_current_user,
+    require_interactive_user,
     _load_user_from_payload,
     PENDING_APPROVAL_SENTINEL,
     LOCAL_PASSWORD_DISABLED_SENTINEL,
@@ -242,6 +243,16 @@ def logout(
         current_user = None
 
     if current_user is not None:
+        from app.services.studio_job_token import (
+            bearer_from_request,
+            presented_studio_job_token,
+        )
+
+        presented = bearer_from_request(http_request)
+        # 工作委託權杖不是瀏覽器工作階段，不能拿來登出並撤銷使用者的其他權杖。
+        if presented and presented_studio_job_token(presented):
+            current_user = None
+    if current_user is not None:
         current_user.token_version = (current_user.token_version or 0) + 1
         _commit_token_revocation(db, current_user)
         log_audit_event(
@@ -274,7 +285,7 @@ def get_me(
 @router.put("/password")
 def change_password(
     request: PasswordChangeRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
     # Card-only deployments：本機帳密僅 owner 保留(break-glass,與 /login 的

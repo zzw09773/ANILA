@@ -30,8 +30,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.services.api_key_service import validate_api_key
-from app.services.auth_service import _load_user_from_payload
-from app.utils.security import decode_token
+from app.services.auth_service import resolve_presented_user
 
 
 @dataclass(frozen=True)
@@ -86,6 +85,5 @@ def get_caller(
             raise _unauthorized("API Key 對應的使用者已停用")
         return Caller(user=user, api_key_id=api_key.id)
 
-    payload = decode_token(token, db=db)
-    user = _load_user_from_payload(payload, db, "access")
+    user = resolve_presented_user(token, db)
     return Caller(user=user, api_key_id=None)

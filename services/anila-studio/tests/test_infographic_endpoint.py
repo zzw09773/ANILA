@@ -156,6 +156,15 @@ def _patch_csp(monkeypatch, *, chunks=None, collection_status="active"):
     monkeypatch.setattr(ig_mod, "get_collection", fake_get_collection)
     monkeypatch.setattr(ig_mod, "search_chunks", fake_search_chunks)
 
+    async def keep_user_bearer(user_bearer, job_id, collection_id, report_ctx):
+        if report_ctx is not None:
+            report_ctx.bearer = user_bearer
+        return user_bearer
+
+    monkeypatch.setattr(
+        "app.services.job_delegation.adopt_job_bearer", keep_user_bearer,
+    )
+
 
 def _patch_llm(monkeypatch, *, response_text=_GOOD_SPEC_JSON):
     from app.api import infographics as ig_mod

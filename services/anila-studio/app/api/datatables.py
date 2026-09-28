@@ -637,7 +637,12 @@ async def create_datatable_job(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def _runner(updater: jobs.DatatableJobUpdater) -> None:
-        await _run_pipeline(bearer=bearer, payload=payload, updater=updater)
+        from app.services import job_delegation
+
+        delegated = await job_delegation.adopt_job_bearer(
+            bearer, updater.job_id, payload.collection_id, report_ctx,
+        )
+        await _run_pipeline(bearer=delegated, payload=payload, updater=updater)
 
     report_ctx = job_lifecycle.make_context(
         artifact_type="datatable",

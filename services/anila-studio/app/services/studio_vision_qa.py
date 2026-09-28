@@ -38,10 +38,46 @@ from app.services.studio_config import (
     RENDERER_BASE_URL,
     SLIDES_LLM_MODEL,
     VISION_LLM_MODEL,
+    VISION_QA_TIMEOUT_SECONDS,
 )
 from app.services.studio_llm import call_llm_chat as _call_llm_chat
 
 logger = logging.getLogger(__name__)
+
+# 使用者看得到的原因。只有模型真的用 4xx 拒絕圖片時才用「不接受圖片」。
+VISION_TIMEOUT_WARNING = "視覺檢查逾時，只做了版面幾何檢查。"
+VISION_AUTH_WARNING = "視覺檢查授權失效，只做了版面幾何檢查。"
+VISION_IMAGE_WARNING = "視覺檢查未執行（模型不接受圖片輸入），只做了版面幾何檢查。"
+VISION_INCOMPLETE_WARNING = "視覺檢查沒有完成，只做了版面幾何檢查。"
+
+_IMAGE_ERROR_RE = re.compile(
+    r"image|image_url|multimodal|圖片|多模態|不支援圖|不接受圖",
+    re.IGNORECASE,
+)
+_UPSTREAM_IMAGE_4XX_RE = re.compile(r"\b(400|415|422)\b")
+_TIMEOUT_RE = re.compile(r"timeout|timed out|readtimeout|504", re.IGNORECASE)
+
+
+def vision_failure_warning(exc: HTTPException) -> str:
+    """把視覺檢查的失敗對上使用者看得到的那一句。"""
+    status = int(exc.status_code or 0)
+    detail = exc.detail
+    text = detail if isinstance(detail, str) else str(detail)
+    if status in (401, 403):
+        return VISION_AUTH_WARNING
+    if status == 504 or (status >= 500 and (_TIMEOUT_RE.search(text) or "逾時" in text)):
+        return VISION_TIMEOUT_WARNING
+    if _is_image_rejection(status, text):
+        return VISION_IMAGE_WARNING
+    return VISION_INCOMPLETE_WARNING
+
+
+def _is_image_rejection(status: int, text: str) -> bool:
+    if _IMAGE_ERROR_RE.search(text) is None:
+        return False
+    if status in (400, 415, 422):
+        return True
+    return _UPSTREAM_IMAGE_4XX_RE.search(text) is not None
 
 
 VISION_SYSTEM_PROMPT = (
@@ -125,7 +161,11 @@ async def _inspect_slide_visually(
         },
     ]
     raw = await _call_llm_chat(
-        bearer, VISION_LLM_MODEL, messages, temperature=0.1,
+        bearer,
+        VISION_LLM_MODEL,
+        messages,
+        temperature=0.1,
+        timeout_seconds=VISION_QA_TIMEOUT_SECONDS,
     )
 
     try:
@@ -306,14 +346,13 @@ async def visual_qa(
             try:
                 return await _inspect_slide_visually(bearer, idx, b)
             except HTTPException as exc:
-                # The vision model rejected the call (no image support,
-                # gateway error…). Vision QA is best-effort: keep the
-                # geometric findings, tell the caller, do not fail the job.
+                # 逾時、授權、模型拒圖要分開講。幾何檢查仍留下，工作不因此失敗。
                 if not skipped_reason:
-                    skipped_reason.append(str(exc.detail)[:160])
+                    warning = vision_failure_warning(exc)
+                    skipped_reason.append(warning)
                     logger.warning(
                         "Vision QA unavailable (slide %d): %s — skipping the "
-                        "vision pass for this deck.", idx, exc.detail,
+                        "vision pass for this deck.", idx, warning,
                     )
                 return []
 

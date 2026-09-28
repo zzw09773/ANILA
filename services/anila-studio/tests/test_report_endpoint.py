@@ -137,6 +137,15 @@ def patched_runtime(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(reports_mod, "get_collection", fake_get_collection)
 
+    async def keep_user_bearer(user_bearer, job_id, collection_id, report_ctx):
+        if report_ctx is not None:
+            report_ctx.bearer = user_bearer
+        return user_bearer
+
+    monkeypatch.setattr(
+        "app.services.job_delegation.adopt_job_bearer", keep_user_bearer,
+    )
+
     # 2. search_chunks (retrieval stage of the runner)
     async def fake_search_chunks(collection_id: int, query: str, **kwargs):
         return _fake_chunks(5)

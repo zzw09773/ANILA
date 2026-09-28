@@ -32,13 +32,18 @@ from app.clients.csp_client import (
     CspForbiddenError,
     CspNotFoundError,
     CspServerError,
+    CspTimeoutError,
     CspUnauthorizedError,
     proxy_chat_completions,
 )
 from app.generated_preamble import ERA_RULES, NATIONAL_TERMINOLOGY
 from app.services.llm_json import extract_json_object
 from app.services.retrieval_status import RETRIEVAL_FAILED_PROMPT_NOTE
-from app.services.studio_config import SLIDES_LLM_MODEL, VISION_LLM_MODEL
+from app.services.studio_config import (
+    SLIDES_LLM_MODEL,
+    VISION_LLM_MODEL,
+    VISION_QA_TIMEOUT_SECONDS,
+)
 from app.services.studio_external import PASSAGE_POINTER, chunk_index_line
 from app.services.studio_grounding import GROUNDING_PROMPT_RULE
 from app.services.studio_model_primary import resolve_model_name
@@ -498,6 +503,7 @@ async def call_llm_chat(
     temperature: float = 0.4,
     max_tokens: int | None = None,
     external_passages: list[dict[str, Any]] | None = None,
+    timeout_seconds: float | None = None,
 ) -> str:
     """Invoke csp's ``/v1/chat/completions`` and return content.
 
@@ -524,7 +530,10 @@ async def call_llm_chat(
             max_tokens=max_tokens,
             bearer=bearer,
             external_passages=external_passages,
+            timeout_seconds=timeout_seconds,
         )
+    except CspTimeoutError as exc:
+        raise HTTPException(status_code=504, detail="模型呼叫逾時") from exc
     except CspNotFoundError as exc:
         # csp's proxy returns 404 when the requested model_name is not
         # in model_registry — preserve the 503 surfaced by the legacy
@@ -631,7 +640,11 @@ class Gemma4VlmGate:
             },
         ]
         raw = await call_llm_chat(
-            self._bearer, self._model_name, messages, temperature=0.1,
+            self._bearer,
+            self._model_name,
+            messages,
+            temperature=0.1,
+            timeout_seconds=VISION_QA_TIMEOUT_SECONDS,
         )
         try:
             parsed = json.loads(extract_json_object(raw))

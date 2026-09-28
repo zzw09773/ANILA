@@ -93,9 +93,14 @@ async def create_report_job(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def _runner(updater: jobs.ReportJobUpdater) -> None:
+        from app.services import job_delegation
+
+        delegated = await job_delegation.adopt_job_bearer(
+            bearer, updater.job_id, payload.collection_id, report_ctx,
+        )
         await run_report_pipeline(
             request=payload,
-            bearer=bearer,
+            bearer=delegated,
             updater=updater,
         )
 

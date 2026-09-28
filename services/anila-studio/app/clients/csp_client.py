@@ -125,6 +125,15 @@ class CspServerError(CspClientError):
     """5xx after retry budget exhausted, or transport failure."""
 
 
+class CspTimeoutError(CspServerError):
+    """The call exceeded its timeout after the retry budget was spent.
+
+    Subclass of ``CspServerError`` so existing ``except CspServerError``
+    handlers still catch it. Vision QA checks this first and says the
+    inspection timed out instead of claiming the model rejected images.
+    """
+
+
 # ── Retry / timeout constants ───────────────────────────────────────────────
 
 
@@ -300,6 +309,10 @@ async def _request(
                     url,
                     exc,
                 )
+                if isinstance(exc, httpx.TimeoutException):
+                    raise CspTimeoutError(
+                        f"csp transport timeout after {attempt + 1} attempts: {exc}"
+                    ) from exc
                 raise CspServerError(
                     f"csp transport error after {attempt + 1} attempts: {exc}"
                 ) from exc
@@ -324,6 +337,24 @@ async def _request(
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
+
+
+async def mint_studio_job_token(
+    bearer: str, *, job_id: str, collection_id: int
+) -> str:
+    """``POST /api/studio/job-tokens``。用仍有效的使用者權杖換工作委託權杖。"""
+    url = f"{settings.CSP_BASE_URL}/api/studio/job-tokens"
+    response = await _request(
+        "POST",
+        url,
+        bearer=bearer,
+        json_body={"job_id": job_id, "collection_id": collection_id},
+    )
+    data = response.json()
+    token = data.get("token") if isinstance(data, dict) else None
+    if not isinstance(token, str) or not token.strip():
+        raise CspServerError("工作委託權杖回應缺少 token")
+    return token
 
 
 async def get_collection(
@@ -481,6 +512,7 @@ async def proxy_chat_completions(
     response_format: dict | None = None,
     bearer: str,
     external_passages: list[dict] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict:
     """``POST /v1/chat/completions``.
 
@@ -510,6 +542,13 @@ async def proxy_chat_completions(
         # CSP 取出這個欄位再包裝，不會原樣送給模型。
         body["anila_external_passages"] = external_passages
 
+    if timeout_seconds is None:
+        timeout = _llm_timeout()
+    else:
+        timeout = httpx.Timeout(
+            timeout=float(timeout_seconds),
+            connect=settings.INTERNAL_TIMEOUT_CONNECT,
+        )
     response = await _request(
         "POST",
         url,
@@ -517,7 +556,7 @@ async def proxy_chat_completions(
         json_body=body,
         # 用量頁要分得出「簡報製作」：csp 把這個來源記到 token_usage.request_type。
         extra_headers={"X-ANILA-Request-Source": "studio"},
-        timeout_override=_llm_timeout(),
+        timeout_override=timeout,
         # ReadTimeout 不會自己好,retry 4 次只是把總等待時間從 300s 變
         # 1200s 然後一樣失敗。LLM 路徑單次嘗試,失敗就 fail-fast(caller
         # 在 _generate_validated_spec 已有 fallback deck 保底)。

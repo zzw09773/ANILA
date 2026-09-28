@@ -57,6 +57,10 @@ SCHEMA_CORRECTION_PASSES = 1
 # tend to produce diminishing returns and eat seconds of wall-clock.
 VISUAL_QA_PASSES = 1
 
+# 一張投影片的視覺檢查不能吃掉整段 300 秒的聊天逾時。
+# call_llm_chat(..., timeout_seconds=) 仍可再縮短；沒有逐模型逾時欄位。
+VISION_QA_TIMEOUT_SECONDS = 60.0
+
 # Output budget for the defect-fix call (it re-emits the whole SlidesSpec).
 # A 15-slide spec is ~6k tokens; without a cap a thinking-mode model ran
 # 336 s on 2026-09-02 and the job died at the 300 s transport timeout.

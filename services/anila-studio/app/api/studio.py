@@ -169,10 +169,6 @@ FALLBACK_DECK_WARNING = (
 # The fix-and-rerender pass failed (LLM timeout / bad JSON): the deck the
 # user gets is the one rendered BEFORE the fix, with the defects listed.
 FIX_FAILED_WARNING = "視覺修正這一步沒有完成，交付的是修正前的版本；缺陷清單仍附上。"
-# The vision model would not inspect the slides; only geometric QA ran.
-VISION_SKIPPED_WARNING = "視覺檢查未執行（模型不接受圖片輸入），只做了版面幾何檢查。"
-
-
 # ── Tunables → moved to app/services/studio_config.py (god-module split) ─────
 # Only the constants still referenced by the orchestration/QA code that
 # remains here are imported above (RENDERER_BASE_URL, SCHEMA_CORRECTION_PASSES,
@@ -746,12 +742,12 @@ async def _run_pipeline(
 ) -> None:
     """Executes steps 3-9 and pushes state transitions to the updater.
 
-    Runs INSIDE the asyncio task spawned by the job manager. The caller's
-    bearer token is captured once at POST time and threaded through every
-    csp_client call so authorisation / quota / billing land on the right
-    user. anila-studio holds no DB session of its own — every piece of
-    state lives upstream (csp owns the row data; csp's proxy owns the LLM
-    token usage rows).
+    Runs INSIDE the asyncio task spawned by the job manager. ``bearer`` is
+    the job-scoped delegation token minted when the job was accepted, not
+    the user's short-lived access token. Authorisation, quota and billing
+    still land on that user. anila-studio holds no DB session of its own —
+    every piece of state lives upstream (csp owns the row data; csp's
+    proxy owns the LLM token usage rows).
     """
     clear_injection_notice()
     coll = await get_collection(payload.collection_id, bearer=bearer)
@@ -963,7 +959,7 @@ async def _run_pipeline(
     final_defects: list[VisualDefect] = []
     qa_passes = 0
     fix_failed = False
-    vision_skipped = False
+    vision_warning: str | None = None
     last_screenshots: list[bytes] | None = None
     recheck: set[int] | None = None  # rendered indices to re-inspect after a fix
     if pptx_path and not used_fallback:
@@ -983,8 +979,9 @@ async def _run_pipeline(
                 **({"kinds": render_kinds} if render_kinds else {}),
                 **({"only_slides": recheck} if recheck is not None else {}),
             )
-            if getattr(raw_defects, "vision_skipped", None):
-                vision_skipped = True
+            note = getattr(raw_defects, "vision_skipped", None)
+            if vision_warning is None and isinstance(note, str) and note.strip():
+                vision_warning = note.strip()
             if getattr(raw_defects, "screenshots", None):
                 last_screenshots = list(raw_defects.screenshots)
             defects = _to_spec_indices(list(raw_defects), cover_prepended=cover_prepended)
@@ -1032,7 +1029,7 @@ async def _run_pipeline(
             (RETRIEVAL_FAILED_WARNING, retrieval_failed),
             (FALLBACK_DECK_WARNING, used_fallback),
             (FIX_FAILED_WARNING, fix_failed),
-            (VISION_SKIPPED_WARNING, vision_skipped),
+            (vision_warning or "", bool(vision_warning)),
             (GROUNDING_TITLE_WARNING, grounding_warning is not None),
             (injection_job_warning(), injection_job_warning() is not None),
         )
@@ -1088,8 +1085,13 @@ async def create_slides_job(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def _runner(updater: jobs.JobUpdater) -> None:
+        from app.services import job_delegation
+
+        delegated = await job_delegation.adopt_job_bearer(
+            bearer, updater.job_id, payload.collection_id, report_ctx,
+        )
         await _run_pipeline(
-            identity=identity, bearer=bearer, payload=payload, updater=updater,
+            identity=identity, bearer=delegated, payload=payload, updater=updater,
         )
 
     report_ctx = job_lifecycle.make_context(
