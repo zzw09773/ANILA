@@ -27,6 +27,7 @@ from app.api.router_prompts import router as router_prompts_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
 import app.models.jwt_signing_key  # noqa: F401  註冊 jwt_signing_keys
+import app.models.alert_mail  # noqa: F401  註冊警報寄信表
 from app.services.auth_service import require_admin
 
 APP_NAME = "ANILA"

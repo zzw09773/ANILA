@@ -393,7 +393,7 @@ def evaluate_database(
                 "message": (
                     f"連續 {streak} 次無法對資料庫執行探測查詢（非連線池逾時）。"
                     "請查 postgres 行程、主機與磁碟；此情況 ledger 也可能寫失敗，"
-                    "請同時看控制平面 console 的 ALERT_SMTP_UNWIRED 紀錄。"
+                    "請到治理中心的警報頁查看。"
                 ),
                 "source_type": "database",
                 "source_id": "server",

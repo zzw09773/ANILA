@@ -6,7 +6,6 @@ green again (acceptance: stuck open alert is its own failure).
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 
@@ -31,11 +30,7 @@ from app.services.alert_detectors import (
     record_proxy_outcome,
     reset_streaks_for_tests,
 )
-from app.services.alert_notifier import (
-    AlertNotification,
-    UnwiredSmtpNotifier,
-    set_notifier,
-)
+from app.services.alert_notifier import set_notifier
 
 
 class CapturingNotifier:
@@ -67,26 +62,6 @@ def _open_alerts(db) -> list[Alert]:
 
 def _by_fp(db, fingerprint: str) -> Alert | None:
     return db.query(Alert).filter(Alert.fingerprint == fingerprint).first()
-
-
-# ── Notifier stub visibility ─────────────────────────────────────────────────
-
-
-def test_unwired_notifier_logs_warning_not_silent(caplog):
-    """Absence of SMTP must be visible in console, not quiet."""
-    set_notifier(UnwiredSmtpNotifier())
-    with caplog.at_level(logging.WARNING, logger="app.services.alert_notifier"):
-        UnwiredSmtpNotifier().send(
-            AlertNotification(
-                fingerprint="test:fp",
-                category="test",
-                severity="high",
-                title="標題",
-                message="內容不可含 http://secret:9",
-            )
-        )
-    assert any("ALERT_SMTP_UNWIRED" in r.message for r in caplog.records)
-    assert any("test:fp" in r.message for r in caplog.records)
 
 
 # ── 1. Platform ingress ──────────────────────────────────────────────────────

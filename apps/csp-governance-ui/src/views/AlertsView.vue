@@ -14,6 +14,51 @@
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
+    <TermBox title="警報寄信" hint="內網郵件伺服器。密碼存進去之後不會再顯示。收件者請用群組信箱。">
+      <div v-if="mailNotice" class="feedback">{{ mailNotice }}</div>
+      <div v-if="mailError || mail.last_error" class="feedback is-err">
+        ! {{ mailError || mail.last_error }}
+      </div>
+      <form class="mail-form" @submit.prevent="saveMail">
+        <label class="mail-check">
+          <input v-model="mail.enabled" type="checkbox" />
+          啟用寄信
+        </label>
+        <TermField label="SMTP 主機">
+          <input v-model="mail.smtp_host" class="term-input" autocomplete="off" placeholder="mail.example.com" />
+        </TermField>
+        <TermField label="連接埠">
+          <input v-model.number="mail.smtp_port" class="term-input" type="number" min="1" max="65535" />
+        </TermField>
+        <TermField label="連線安全">
+          <select v-model="mail.security" class="term-select">
+            <option value="none">不加密</option>
+            <option value="starttls">STARTTLS</option>
+            <option value="ssl">SSL</option>
+          </select>
+        </TermField>
+        <TermField label="帳號" hint="可留空。伺服器若只認連線來源，不必填。">
+          <input v-model="mail.username" class="term-input" autocomplete="off" />
+        </TermField>
+        <TermField
+          label="密碼"
+          :hint="mail.has_password ? '已儲存。留白表示不改。' : '可留空。存進去之後不會再顯示。'"
+        >
+          <input v-model="mail.password" class="term-input" type="password" autocomplete="new-password" />
+        </TermField>
+        <TermField label="寄件者">
+          <input v-model="mail.from_address" class="term-input" autocomplete="off" placeholder="anila@example.com" />
+        </TermField>
+        <TermField label="收件者" hint="群組信箱。多個位址用逗號或換行分隔。">
+          <textarea v-model="mail.recipients" class="term-input mail-recipients" rows="3" />
+        </TermField>
+        <div class="mail-actions">
+          <TermButton type="submit" variant="primary" :disabled="mailBusy" label="儲存" />
+          <TermButton type="button" :disabled="mailBusy" label="寄測試信" @click="sendTest" />
+        </div>
+      </form>
+    </TermBox>
+
     <TermBox title="篩選" pad="sm">
       <div class="filters">
         <TermField label="狀態">
@@ -89,8 +134,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
+import { getAlertMail, sendAlertTestMail, updateAlertMail } from '../api/alertMail'
 import { extractError } from '../api/errors'
 import { ALERT_POLL_INTERVAL_MS, createPoller } from '../utils/polling'
+import { mailSettingsForForm, mailSettingsSaveBody } from '../utils/alertMailForm'
+import { refreshOpenAlertBanner } from '../utils/openAlertBanner'
 import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -100,6 +148,10 @@ const alerts = ref([])
 const summary = ref({ open_count: 0, acknowledged_count: 0, resolved_count: 0, high_count: 0 })
 const filters = ref({ status: '', severity: '', category: '' })
 const pageError = ref('')
+const mail = ref(mailSettingsForForm(null))
+const mailError = ref('')
+const mailNotice = ref('')
+const mailBusy = ref(false)
 
 async function fetchData() {
   pageError.value = ''
@@ -119,9 +171,49 @@ async function fetchData() {
   }
 }
 
+async function loadMail() {
+  const { data } = await getAlertMail()
+  mail.value = mailSettingsForForm(data)
+}
+
+async function saveMail() {
+  mailBusy.value = true
+  mailError.value = ''
+  mailNotice.value = ''
+  try {
+    const { data } = await updateAlertMail(mailSettingsSaveBody(mail.value))
+    mail.value = mailSettingsForForm(data)
+    mailNotice.value = '已儲存。密碼不會顯示回來。'
+  } catch (e) {
+    mailError.value = extractError(e, '儲存寄信設定失敗')
+  } finally {
+    mailBusy.value = false
+  }
+}
+
+async function sendTest() {
+  mailBusy.value = true
+  mailError.value = ''
+  mailNotice.value = ''
+  try {
+    await updateAlertMail(mailSettingsSaveBody(mail.value))
+    const { data } = await sendAlertTestMail()
+    if (data.ok) mailNotice.value = '測試信已送出。'
+    else mailError.value = data.error || '寄測試信失敗'
+    await loadMail()
+  } catch (e) {
+    mailError.value = extractError(e, '寄測試信失敗')
+  } finally {
+    mailBusy.value = false
+  }
+}
+
 const poller = createPoller(fetchData, { intervalMs: ALERT_POLL_INTERVAL_MS })
 onMounted(() => {
   fetchData()
+  loadMail().catch((e) => {
+    mailError.value = extractError(e, '載入寄信設定失敗')
+  })
   poller.start()
 })
 onUnmounted(() => {
@@ -129,12 +221,18 @@ onUnmounted(() => {
 })
 
 async function handleAck(alert) {
-  try { await acknowledgeAlert(alert.id); await fetchData() }
-  catch (e) { toast(extractError(e, '確認失敗'), { tone: 'error' }) }
+  try {
+    await acknowledgeAlert(alert.id)
+    await fetchData()
+    refreshOpenAlertBanner()
+  } catch (e) { toast(extractError(e, '確認失敗'), { tone: 'error' }) }
 }
 async function handleResolve(alert) {
-  try { await resolveAlert(alert.id); await fetchData() }
-  catch (e) { toast(extractError(e, '解決失敗'), { tone: 'error' }) }
+  try {
+    await resolveAlert(alert.id)
+    await fetchData()
+    refreshOpenAlertBanner()
+  } catch (e) { toast(extractError(e, '解決失敗'), { tone: 'error' }) }
 }
 
 function severityStatus(s) {
@@ -154,6 +252,12 @@ function statusVariant(s) {
 
 .feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
 .feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+
+.mail-form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); align-items: end; }
+.mail-check { display: flex; align-items: center; gap: 8px; font-size: var(--t-sm); grid-column: 1 / -1; }
+.mail-recipients { resize: vertical; min-height: 4.5rem; }
+.mail-actions { display: flex; gap: 8px; grid-column: 1 / -1; }
+@media (max-width: 800px) { .mail-form { grid-template-columns: 1fr; } }
 
 .filters { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: var(--gap-3); align-items: end; }
 .filters__cta { padding-bottom: 1px; }

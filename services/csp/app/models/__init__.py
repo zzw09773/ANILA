@@ -18,6 +18,7 @@ from app.models.agent_credential import AgentCredential
 from app.models.agent_prompt import AgentFunction, AgentPrompt
 from app.models.agent_session_owner import AgentSessionOwner
 from app.models.alert import Alert
+from app.models.alert_mail import AlertMailDelivery, AlertMailSettings
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.artifact import (
     Artifact,
@@ -87,6 +88,8 @@ __all__ = [
     "AgentPrompt",
     "AgentSessionOwner",
     "Alert",
+    "AlertMailDelivery",
+    "AlertMailSettings",
     "ApiKey",
     "ApiKeyAgentPermission",
     "ApiKeyModelPermission",

@@ -19,6 +19,7 @@ class ResealReport:
     agent_credentials: int = 0
     service_clients: int = 0
     auth_providers: int = 0
+    alert_mail_settings: int = 0
 
 
 def _reseal_triple(
@@ -61,6 +62,7 @@ def reseal_credentials(db: Session, *, old_secret: str, new_secret: str) -> Rese
         raise ValueError("old_secret 與 new_secret 相同，沒有東西要轉封")
 
     from app.models.agent_credential import AgentCredential
+    from app.models.alert_mail import AlertMailSettings
     from app.models.auth_provider import AuthProvider
     from app.models.ingestion import UserLlmCredential
     from app.models.jwt_signing_key import JwtSigningKey
@@ -115,6 +117,15 @@ def reseal_credentials(db: Session, *, old_secret: str, new_secret: str) -> Rese
             new_secret=new_secret,
         )
         report.service_clients += 1
+
+    for row in db.query(AlertMailSettings).order_by(AlertMailSettings.id).all():
+        stored = row.password_envelope
+        if not isinstance(stored, str) or not stored.startswith(_ENVELOPE_PREFIX):
+            continue
+        row.password_envelope = _reseal_envelope(
+            stored, old_secret=old_secret, new_secret=new_secret
+        )
+        report.alert_mail_settings += 1
 
     for row in db.query(AuthProvider).order_by(AuthProvider.id).all():
         stored = row.oidc_client_secret

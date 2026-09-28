@@ -1,10 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
+from anila_core.security.url_guard import UnsafeEndpointError
 
 from app.database import get_db
 from app.models.alert import Alert
 from app.models.user import User
 from app.schemas.alert import AlertResponse, AlertStatusUpdate, AlertSummary
+from app.services.alert_mail import (
+    AlertMailConfigError,
+    ensure_settings,
+    public_view,
+    save_mail_settings,
+    send_test_mail,
+)
 from app.services.alert_service import (
     acknowledge_alert,
     parse_alert_metadata,
@@ -16,6 +26,18 @@ from app.services.auth_service import require_admin
 from app.services.endpoint_author_service import can_see_endpoint_address
 
 router = APIRouter(prefix="/api/alerts", tags=["告警中心"])
+
+
+class AlertMailUpdate(BaseModel):
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    security: str = "starttls"
+    username: str = ""
+    password: str | None = None
+    clear_password: bool = False
+    from_address: str = ""
+    recipients: str = ""
 
 
 def _serialize(alert: Alert, *, caller: User, db: Session | None = None) -> dict:
@@ -64,6 +86,64 @@ def list_alerts(
     if category:
         query = query.filter(Alert.category == category)
     return [_serialize(alert, caller=admin, db=db) for alert in query.all()]
+
+
+@router.get("/mail")
+def get_alert_mail(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    row = ensure_settings(db)
+    db.commit()
+    return public_view(row)
+
+
+@router.put("/mail")
+def put_alert_mail(
+    body: AlertMailUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        row = save_mail_settings(
+            db,
+            enabled=body.enabled,
+            smtp_host=body.smtp_host,
+            smtp_port=body.smtp_port,
+            security=body.security,
+            username=body.username,
+            password=body.password,
+            password_set=bool(body.password),
+            clear_password=body.clear_password,
+            from_address=body.from_address,
+            recipients=body.recipients,
+            actor=admin,
+        )
+    except AlertMailConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.public_message) from exc
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(row)
+    return public_view(row)
+
+
+@router.post("/mail/test")
+def post_alert_test_mail(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    del admin
+    try:
+        error = send_test_mail(db)
+    except AlertMailConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.public_message) from exc
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    if error:
+        return {"ok": False, "error": error}
+    return {"ok": True, "error": None}
 
 
 @router.get("/summary", response_model=AlertSummary)

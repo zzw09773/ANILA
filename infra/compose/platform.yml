@@ -157,6 +157,7 @@ services:
       ANILA_ENV: "${ANILA_ENV:-}"
 
       # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────
+      # 警報寄信不在這裡：治理中心「警報」頁的「警報寄信」。
       # 這十行在的理由是「沒有 env_file，.env 寫了而這裡沒有對應的一行，值到不了容器」:
       # **沒有 env_file**,所以 `.env` 裡寫了而這裡沒有對應的一行,值根本到不了
       # 容器,而畫面與日誌看起來像是設好了。
@@ -167,14 +168,6 @@ services:
       #    **空字串**,反而蓋掉程式預設(ALLOWED_ORIGINS 會變成沒有任何來源)。
       SITE_URL: "${SITE_URL:-http://localhost}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443}"
-      ANILA_ALERT_SMTP_ENABLED: "${ANILA_ALERT_SMTP_ENABLED:-false}"
-      ANILA_ALERT_SMTP_HOST: "${ANILA_ALERT_SMTP_HOST:-}"
-      ANILA_ALERT_SMTP_PORT: "${ANILA_ALERT_SMTP_PORT:-587}"
-      ANILA_ALERT_SMTP_USER: "${ANILA_ALERT_SMTP_USER:-}"
-      ANILA_ALERT_SMTP_PASSWORD: "${ANILA_ALERT_SMTP_PASSWORD:-}"
-      ANILA_ALERT_SMTP_FROM: "${ANILA_ALERT_SMTP_FROM:-}"
-      ANILA_ALERT_SMTP_TO: "${ANILA_ALERT_SMTP_TO:-}"
-      ANILA_ALERT_SMTP_USE_TLS: "${ANILA_ALERT_SMTP_USE_TLS:-true}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # protocol=triton_grpc 的 cleartext grpc:// 放行旗標(model kind 專用,
       # 與 http 旗標是姊妹分支不共用 allow-list)。grpcs:// 永遠不需要它。

@@ -71,8 +71,8 @@ AUDIT_EVENT_TABLES: tuple[str, ...] = (
 #: 全部受保護的表 = 事件表 + 檢查點表本身。
 AUDIT_LEDGER_TABLES: tuple[str, ...] = AUDIT_EVENT_TABLES + ("audit_checkpoints",)
 
-#: 保留期(SYSTEM-MAP §8「留半年」)。DELETE 觸發器只放行比這更舊的列。
-AUDIT_RETENTION_DAYS = 180
+#: 保留期 365 天（2026-09-27）。DELETE 觸發器只放行比這更舊的列。
+AUDIT_RETENTION_DAYS = 365
 
 #: 摘要演算法版本。改欄位集合或正規化規則就要 +1,舊檢查點照它自己記的
 #: 版本重算,不會被追溯性地弄壞。
@@ -444,7 +444,7 @@ def verify_chain(db: Session, *, expected_head: str | None = None) -> Verificati
             expired = (today - row.day).days > AUDIT_RETENTION_DAYS
             if expired and sealed_total and not sum(counts.values()):
                 # 整天被清空、而且早就過了保留期 —— 這是合法清除的形狀
-                # (SYSTEM-MAP §8「留半年」),不是竄改。誠實分開報,
+                # （365 天）,不是竄改。誠實分開報,
                 # 否則第一次清理之後驗證器就永遠紅燈,等於沒有控制。
                 result.purged_days.append(row.day)
             else:

@@ -9,6 +9,7 @@
       />
       <AppSidebar />
       <main id="gov-main" class="shell__main" tabindex="-1">
+        <OpenAlertBanner v-if="isAdmin" />
         <router-view v-slot="{ Component }">
           <transition name="shell-page" mode="out-in">
             <!-- 面板層錯誤網子：view 在 render/setup 期炸了，這裡出現可讀錯誤區塊，不是空白。 -->
@@ -24,14 +25,18 @@
 </template>
 
 <script setup>
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
 import AppStatusBar from './AppStatusBar.vue'
+import OpenAlertBanner from './OpenAlertBanner.vue'
 import { ErrorPanel } from '../errorPanel.js'
 import { provideShellNav } from '../../composables/useShellNav.js'
+import { useAuthStore } from '../../stores/auth'
 
+const auth = useAuthStore()
+const isAdmin = computed(() => auth.isAdmin)
 const { open, narrow, close } = provideShellNav()
 const route = useRoute()
 watch(() => route.fullPath, () => close())

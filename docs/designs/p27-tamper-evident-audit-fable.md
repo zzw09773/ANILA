@@ -48,7 +48,7 @@ alembic 走 `csp` superuser(`migrations/env.py:52`、`infra/compose/platform.yml
    `REVOKE ALL FROM csp_app`;`GRANT SELECT, INSERT` 回來;序列 `GRANT USAGE, SELECT`(nextval 要用)。
    從此 `csp_app` 沒有 UPDATE/DELETE、不是 owner、DROP TRIGGER/ALTER 一律 "must be owner" 失敗。
 3. **觸發器(皮帶加吊帶)**:BEFORE UPDATE 一律 RAISE;BEFORE DELETE 僅允許
-   `OLD.created_at < now() - interval '180 days'`(SYSTEM-MAP §8 留半年,保留期購毀是唯一合法刪除,
+   `OLD.created_at < now() - interval '365 days'`（2026-09-27 起保留期為 365 天；當初設計是 180 天。保留期購毀是唯一合法刪除,
    任何角色跑都行,不用開後門 GUC)。owner 非 `csp_app`,所以 runtime 憑證拆不掉它。
    **誠實標注**:superuser 永遠繞得過——這句話上一代寫對了,錯在接著宣稱觸發器對任何 role 成立;
    本設計不重複那個謊,superuser 交給第二層。

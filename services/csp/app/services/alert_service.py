@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.alert import Alert
+from app.models.alert_mail import AlertMailDelivery
 from app.models.user import User
+
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def upsert_alert(
@@ -63,6 +66,10 @@ def resolve_alert(db: Session, alert: Alert) -> Alert:
     alert.status = "resolved"
     alert.resolved_at = datetime.now(timezone.utc)
     alert.last_seen_at = alert.resolved_at
+    # 這一段開著的期間已寄過的信，解決後清掉，下次再開才再寄。
+    db.query(AlertMailDelivery).filter(
+        AlertMailDelivery.fingerprint == alert.fingerprint
+    ).delete(synchronize_session="fetch")
     return alert
 
 
@@ -92,11 +99,22 @@ def summarize_alerts(db: Session) -> dict:
         .filter(Alert.status == "open", Alert.severity.in_(["high", "critical"]))
         .scalar()
     )
+    open_severities = (
+        db.query(Alert.severity).filter(Alert.status == "open").all()
+    )
+    highest = None
+    highest_rank = 0
+    for (severity,) in open_severities:
+        rank = _SEVERITY_RANK.get(severity, 0)
+        if rank > highest_rank:
+            highest = severity
+            highest_rank = rank
     return {
         "open_count": counts.get("open", 0),
         "acknowledged_count": counts.get("acknowledged", 0),
         "resolved_count": counts.get("resolved", 0),
         "high_count": high_count or 0,
+        "highest_open_severity": highest,
     }
 
 

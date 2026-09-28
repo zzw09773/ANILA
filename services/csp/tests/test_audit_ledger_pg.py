@@ -230,12 +230,15 @@ def test_trigger_blocks_even_the_table_owner(conn):
 
 
 def test_delete_inside_retention_is_refused_expired_is_allowed(conn):
-    """保留期(半年)內不准刪;過期的購毀是唯一合法刪除。"""
+    """保留期（365 天）內不准刪；超過才可以。"""
     cur = conn.cursor()
     fresh = _insert_audit(cur, detail="fresh", days_ago=1)
+    still_kept = _insert_audit(cur, detail="within-365", days_ago=200)
     old = _insert_audit(cur, detail="expired", days_ago=400)
     with pytest.raises(psycopg2.errors.InsufficientPrivilege):
         cur.execute("DELETE FROM audit_logs WHERE id = %s", (fresh,))
+    with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+        cur.execute("DELETE FROM audit_logs WHERE id = %s", (still_kept,))
     cur.execute("DELETE FROM audit_logs WHERE id = %s", (old,))
     cur.execute("SELECT COUNT(*) FROM audit_logs WHERE id = %s", (old,))
     assert cur.fetchone()[0] == 0

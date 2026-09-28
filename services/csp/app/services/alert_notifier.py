@@ -1,12 +1,8 @@
-"""Alert delivery interface — SMTP left deliberately unwired (P3.2 / OWNER Q3).
+"""Alert delivery. Mail settings live in the console, not in the environment.
 
-Detection and the ``alerts`` ledger are real; sending waits on an SMTP relay
-from another unit. Until then every open/reopen still calls this interface so
-the missing wire is **visible in the console**, not silent.
-
-When SMTP arrives: set ``ANILA_ALERT_SMTP_*`` (see ``app.config.Settings``)
-and swap in a real notifier — no detector rewrite. Prefer a **group mailbox**
-for ``ANILA_ALERT_SMTP_TO`` (same reason as PLAN 5.4 support address).
+Detection still calls :func:`notify_alert_opened` on each new open. The
+notifier sends at most one message per fingerprint until that alert is
+resolved, and a delivery failure never breaks detection.
 """
 from __future__ import annotations
 
@@ -33,29 +29,31 @@ class AlertNotification:
 
 class AlertNotifier(Protocol):
     def send(self, notification: AlertNotification) -> None:
-        """Deliver (or visibly refuse to deliver) one alert notification."""
+        """Deliver one alert notification. Must not raise into detectors."""
 
 
-class UnwiredSmtpNotifier:
-    """Default notifier: SMTP not configured. Logs at WARNING so operators
-    see the gap without mistaking it for a quiet healthy system."""
+class SmtpAlertNotifier:
+    """Reads console SMTP settings and sends one mail per open fingerprint."""
 
     def send(self, notification: AlertNotification) -> None:
-        logger.warning(
-            "ALERT_SMTP_UNWIRED fingerprint=%s severity=%s category=%s "
-            "title=%s message=%s source=%s/%s "
-            "(set ANILA_ALERT_SMTP_* + group mailbox TO when relay exists)",
-            notification.fingerprint,
-            notification.severity,
-            notification.category,
-            notification.title,
-            notification.message,
-            notification.source_type or "-",
-            notification.source_id or "-",
-        )
+        from app.database import SessionLocal
+        from app.services.alert_mail import deliver_open_alert
+
+        db = SessionLocal()
+        try:
+            deliver_open_alert(db, notification)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "alert mail notifier failed fingerprint=%s",
+                notification.fingerprint,
+            )
+        finally:
+            db.close()
 
 
-_notifier: AlertNotifier = UnwiredSmtpNotifier()
+_notifier: AlertNotifier = SmtpAlertNotifier()
 
 
 def get_notifier() -> AlertNotifier:
@@ -63,7 +61,7 @@ def get_notifier() -> AlertNotifier:
 
 
 def set_notifier(notifier: AlertNotifier) -> AlertNotifier:
-    """Test / future SMTP swap. Returns the previous notifier."""
+    """Test swap. Returns the previous notifier."""
     global _notifier
     previous = _notifier
     _notifier = notifier
@@ -93,7 +91,7 @@ def notify_alert_opened(
                 source_id=str(source_id) if source_id is not None else None,
             )
         )
-    except Exception:  # pragma: no cover - notifier must not break detect path
+    except Exception:
         logger.exception(
             "alert notifier failed fingerprint=%s", fingerprint
         )

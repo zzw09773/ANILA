@@ -26,6 +26,7 @@ class AlertSummary(BaseModel):
     acknowledged_count: int
     resolved_count: int
     high_count: int
+    highest_open_severity: str | None = None
 
 
 class AlertStatusUpdate(BaseModel):

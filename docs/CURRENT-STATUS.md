@@ -104,6 +104,10 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 
 憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
 
+## 警報（2026-09-27）
+
+未處理的警報會在治理中心每一頁上方出現紅橫幅（擁有者與管理員），連到「警報」。確認或解決後橫幅消失。寄信在同一頁的「警報寄信」：SMTP 主機、連接埠、不加密／STARTTLS／SSL、選填帳密（密碼只寫入）、寄件者、群組信箱、啟用，以及「寄測試信」。沒有 `ANILA_ALERT_SMTP_*` 環境變數。寄失敗只記在該區與日誌，偵測不會停。稽核帳保留期是 365 天。
+
 ## 備份（2026-09-27）
 
 compose 的 `backup` 服務跟資料庫共用 `anila-pgvector:local`。起來先備份一輪，成功後每 24 小時再跑；失敗約 15 分鐘後重試。產出在 repo 的 `share/backups/`（宿主機路徑可用 `ANILA_BACKUP_DIR` 改）。內容是 `pg_dump -Fc`，加上上傳、附件、靜態檔、公開 CA、快速起步 profile、Studio 成品、路由會話、n8n。保留 14 份每日、6 份每月。

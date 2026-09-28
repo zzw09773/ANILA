@@ -34,20 +34,7 @@ class Settings(BaseSettings):
     # 避免 key 外流給第三方 agent。
     MODEL_GATEWAY_API_KEY: str = ""
 
-    # P3.2 — SMTP delivery (OWNER Q3: relay not available yet).
-    # Leave ENABLED=false until IT provides the Outlook/relay details.
-    # ANILA_ALERT_SMTP_TO should be a **group mailbox**, not a personal one
-    # (same reason as PLAN 5.4 support address).
-    # 目前只寫 log，未寄信：這組欄位無人讀取；開告警走
-    # UnwiredSmtpNotifier 打 WARNING，不會真的連 SMTP。
-    ANILA_ALERT_SMTP_ENABLED: bool = False
-    ANILA_ALERT_SMTP_HOST: str = ""
-    ANILA_ALERT_SMTP_PORT: int = 587
-    ANILA_ALERT_SMTP_USER: str = ""
-    ANILA_ALERT_SMTP_PASSWORD: str = ""
-    ANILA_ALERT_SMTP_FROM: str = ""
-    ANILA_ALERT_SMTP_TO: str = ""
-    ANILA_ALERT_SMTP_USE_TLS: bool = True
+    # 警報寄信在治理中心「警報」頁設定，不讀環境變數。
 
     # 舊的艦隊共用祕密。自動核發開啟時，這把值不再是任何服務身分。
     # CSP 不再把它加進打給 agent 的 header。留著是為了認得資料庫裡

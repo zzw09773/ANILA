@@ -325,12 +325,12 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0055():
+def test_alembic_heads_single_r1_0056():
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0055"], f"alembic head 應為 r1_0055，實得 {heads}"
+    assert heads == ["r1_0056"], f"alembic head 應為 r1_0056，實得 {heads}"
 
     cli = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
@@ -341,13 +341,20 @@ def test_alembic_heads_single_r1_0055():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0055" in cli.stdout
+    assert "r1_0056" in cli.stdout
     nullable = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0055_collection_embedding_model_nullable.py"
     ).read_text(encoding="utf-8")
     assert 'revision: str = "r1_0055"' in nullable
     assert 'down_revision: Union[str, None] = "r1_0054"' in nullable
+
+    alert_mail = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0056_alert_mail_settings.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0056"' in alert_mail
+    assert 'down_revision: Union[str, None] = "r1_0055"' in alert_mail
+    assert "alert_mail_settings" in alert_mail
 
     drop_vlm = (
         CSP_ROOT / "migrations" / "versions" / "r1_0053_drop_vlm_model_type.py"

@@ -29,6 +29,7 @@ from app.database import Base
 
 # ── Import every model so metadata is fully populated ────────────────────────
 import app.models.alert           # noqa: F401
+import app.models.alert_mail      # noqa: F401
 import app.models.api_key         # noqa: F401
 import app.models.agent           # noqa: F401
 import app.models.audit_checkpoint  # noqa: F401
