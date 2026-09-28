@@ -72,10 +72,23 @@ async def on_shutdown(ctx: dict) -> None:
         await embedder.close()
 
 
+def _worker_functions():
+    from ingestion_worker.embedding_rebuild import rebuild_embeddings
+
+    functions = [ingest_document, evaluate_strategies, reresolve_collection_relations]
+    try:
+        from arq.worker import func
+
+        functions.append(func(rebuild_embeddings, name="rebuild_embeddings", timeout=900))
+    except Exception:
+        functions.append(rebuild_embeddings)
+    return functions
+
+
 class WorkerSettings:
     """Arq config — discovered by ``arq <module>:WorkerSettings``."""
 
-    functions = [ingest_document, evaluate_strategies, reresolve_collection_relations]
+    functions = _worker_functions()
     on_startup = on_startup
     on_shutdown = on_shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

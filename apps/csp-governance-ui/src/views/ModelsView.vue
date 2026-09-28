@@ -74,6 +74,7 @@
       :models="modelsStore.models"
       @changed="modelsStore.fetchModels()"
     />
+    <EmbeddingRebuildPanel :is-admin="authStore.isAdmin" />
 
     <div class="kpi-row">
       <TermStat label="模型 · 總數" :value="modelsStore.models.length" />
@@ -699,6 +700,7 @@ import { grantsLoadResult, canReplaceRouterGrants } from '../utils/routerGrantsL
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, PageHead, RowActions, UserSearchField } from '../components/cli'
 import ThinkingLevelsDisplay from '../components/ThinkingLevelsDisplay.vue'
 import ModelRolesPanel from '../components/ModelRolesPanel.vue'
+import EmbeddingRebuildPanel from '../components/EmbeddingRebuildPanel.vue'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
@@ -1347,7 +1349,7 @@ function platformEmbedTitle(model) {
     return `平台主 embedding · 原生 ${dim} 維（寫入時截斷至 4000；pgvector halfvec HNSW 上限）`
   }
   if (dim < 4000) {
-    return `平台主 embedding · 原生 ${dim} 維（寫入時補零至 4000）`
+    return `平台主 embedding · 原生 ${dim} 維`
   }
   return `平台主 embedding · 原生 ${dim} 維`
 }

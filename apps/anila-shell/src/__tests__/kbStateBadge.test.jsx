@@ -642,3 +642,16 @@ describe("提問附了檔案時的院規狀態", () => {
     expect(questionHadAttachments(msgs, 3)).toBe(false);
   });
 });
+
+describe("關鍵字備援", () => {
+  afterEach(cleanup);
+
+  it("嵌入模型不可用時顯示固定提示", () => {
+    renderBubble(
+      assistantMsg({ keyword_fallback: true, kb_state: "searched_hit", kb_hits: [] }),
+    );
+    expect(document.body.textContent).toContain(
+      "嵌入模型暫時無法使用，本次用關鍵字搜尋，結果可能較不準",
+    );
+  });
+});

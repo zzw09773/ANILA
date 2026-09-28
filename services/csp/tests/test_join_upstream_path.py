@@ -453,7 +453,7 @@ def test_memory_embed_url_both_conventions(monkeypatch, endpoint_url: str):
     vec, source, native = asyncio.run(
         memory_service._embed(MagicMock(), "hello", embedding_input_role="query")
     )
-    assert vec == [0.1, 0.2]
+    assert vec == [0.1, 0.2, 0.3]
     assert source == "nv-embed"
     assert native == 3
     assert captured["endpoint_path"] == "/v1/embeddings"
@@ -570,7 +570,7 @@ def test_memory_embed_final_url_and_guard(monkeypatch, endpoint_url: str):
     vec, source, _native = asyncio.run(
         memory_service._embed(MagicMock(), "hello", embedding_input_role="query")
     )
-    assert vec == [0.1, 0.2]
+    assert vec == [0.1, 0.2, 0.3]
     assert source == "nv-embed"
     # 1. exact final URL — one /v1, no matter which convention was stored
     assert captured["url"] == "http://nv-embed:8000/v1/embeddings"

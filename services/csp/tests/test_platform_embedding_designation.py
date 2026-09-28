@@ -173,9 +173,9 @@ def test_stranded_collection_is_reported_by_name(
     # The remedy that actually works, named where the operator sees it.
     assert "old/embedder" in warning, "the operator is not told what to set back to"
     assert "改回" in warning
-    # And the honest cost of the alternative — there is no reindex button.
-    assert "沒有重新索引的功能" in warning
-    assert "重新上傳" in warning
+    # Search stays on the previous model until the background rebuild finishes.
+    assert "背景重新索引" in warning
+    assert "一次切換" in warning
 
 
 def test_warning_survives_deactivating_the_old_model_first(

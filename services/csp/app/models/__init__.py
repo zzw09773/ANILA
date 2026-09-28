@@ -37,6 +37,7 @@ from app.models.classification import (
 )
 from app.models.conversation import Conversation, ConversationUserMeta
 from app.models.department import Department
+from app.models.embedding_activation import EmbeddingActivation
 from app.models.handoff import Handoff
 from app.models.jwt_signing_key import JwtSigningKey
 from app.models.ingestion import (
@@ -108,6 +109,7 @@ __all__ = [
     "ConversationUserMeta",
     "DeclassificationRequest",
     "Department",
+    "EmbeddingActivation",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
     "ConversationSummary",

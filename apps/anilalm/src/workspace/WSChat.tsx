@@ -37,6 +37,8 @@ import {
 import { type SearchHit } from '../api/search'
 import {
   buildTurnContext,
+  KEYWORD_FALLBACK_META_KEY,
+  KEYWORD_FALLBACK_NOTICE,
   retrieveTurnContext,
   RETRIEVAL_FAILED_META_KEY,
   UNGROUNDED_NOTICE,
@@ -86,6 +88,8 @@ interface ChatRow {
   citations?: Citation[]
   /** Retrieval failed for this turn — the answer has no document backing. */
   ungrounded?: boolean
+  /** Embedding model was down; this turn used keyword search. */
+  keywordFallback?: boolean
   /** 參考資料裡有疑似指令，伺服器已忽略。 */
   promptInjectionSuspected?: boolean
 }
@@ -198,6 +202,7 @@ export function WSChat({ flex }: WSChatProps) {
               createdAt: m.created_at,
               citations: Array.isArray(meta?.citations) ? meta.citations : undefined,
               ungrounded: meta?.[RETRIEVAL_FAILED_META_KEY] === true,
+              keywordFallback: meta?.[KEYWORD_FALLBACK_META_KEY] === true,
               promptInjectionSuspected: meta?.prompt_injection_suspected === true,
             }
           })
@@ -353,6 +358,7 @@ export function WSChat({ flex }: WSChatProps) {
       const indexedDocs = docs.filter((d) => d.doc.status === 'indexed')
       let retrievalStatus: RetrievalStatus = 'skipped'
       let hits: SearchHit[] = []
+      let keywordFallback = false
       let retrievalDetail: string | undefined
       if (indexedDocs.length > 0) {
         const outcome = await retrieveTurnContext(
@@ -362,6 +368,7 @@ export function WSChat({ flex }: WSChatProps) {
         )
         retrievalStatus = outcome.status
         hits = outcome.hits
+        keywordFallback = outcome.keywordFallback === true
         retrievalDetail = outcome.detail
         if (retrievalDetail) setErr(retrievalDetail)
       }
@@ -420,6 +427,7 @@ export function WSChat({ flex }: WSChatProps) {
                 streaming: true,
                 citations: streamCitations,
                 ungrounded,
+                keywordFallback,
                 promptInjectionSuspected,
               }),
             )
@@ -512,6 +520,7 @@ export function WSChat({ flex }: WSChatProps) {
       const persistedMeta: Record<string, unknown> = {}
       if (citations.length > 0) persistedMeta.citations = citations
       if (ungrounded) persistedMeta[RETRIEVAL_FAILED_META_KEY] = true
+      if (keywordFallback) persistedMeta[KEYWORD_FALLBACK_META_KEY] = true
       if (promptInjectionSuspected) persistedMeta.prompt_injection_suspected = true
       const { data: asstMsg } = await appendMessage(convId, {
         role: 'assistant',
@@ -533,6 +542,7 @@ export function WSChat({ flex }: WSChatProps) {
           thinking: false,
           citations: citations.length > 0 ? citations : undefined,
           ungrounded,
+          keywordFallback,
           promptInjectionSuspected,
         }),
       )
@@ -1010,6 +1020,24 @@ export function ChatBubble({ row }: { row: ChatRow }) {
             <summary style={{ cursor: 'pointer', fontSize: 12, color: t.textMuted }}>回覆詳情</summary>
             <div style={{ fontSize: 12.5, color: t.text, marginTop: 4 }}>{INJECTION_NOTICE}</div>
           </details>
+        )}
+        {row.keywordFallback && (
+          <div
+            role="status"
+            data-keyword-fallback="true"
+            style={{
+              marginBottom: 8,
+              padding: '7px 11px',
+              borderRadius: 8,
+              background: t.surface2,
+              border: `1px solid ${t.warning}`,
+              color: t.text,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            {KEYWORD_FALLBACK_NOTICE}
+          </div>
         )}
         {row.ungrounded && (
           <div

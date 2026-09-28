@@ -1225,6 +1225,8 @@ def _kb_meta_fragment(result: KbResult) -> dict:
     }
     if result.failed_collections:
         fragment["kb_failed_collections"] = list(result.failed_collections)
+    if getattr(result, "keyword_fallback", False):
+        fragment["keyword_fallback"] = True
     if result.hits:
         fragment["citations"] = [
             {

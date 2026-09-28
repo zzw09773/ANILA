@@ -766,6 +766,276 @@ class CollectionScopedPgVectorStore:
             score=float(row["score"]),
         )
 
+    async def embedding_coverage(self, model_id: int) -> str:
+        """``ready`` / ``missing`` / ``empty`` / ``legacy``.
+
+        ``legacy`` means the side table is not there yet, so callers
+        keep using the column. ``empty`` is a collection with no leaf
+        text — that is not an embedding outage.
+        """
+        try:
+            async with self._acquire() as conn:
+                leaves = await conn.fetchval(
+                    "SELECT count(*) FROM document_chunks WHERE chunk_type = 'leaf'"
+                )
+                if not leaves:
+                    return "empty"
+                slots = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM embedding_vectors
+                     WHERE subject = 'chunk' AND model_id = $1
+                    """,
+                    int(model_id),
+                )
+        except asyncpg.UndefinedTableError:
+            return "legacy"
+        except asyncpg.PostgresError as exc:
+            if getattr(exc, "sqlstate", None) == "42P01":
+                return "legacy"
+            raise
+        return "ready" if slots else "missing"
+
+    async def similarity_search_for_model(
+        self,
+        query_embedding: list[float],
+        model_id: int,
+        top_k: int = 10,
+        min_score: float = 0.0,
+    ) -> list[SearchHit]:
+        """Cosine search over one model's side-table vectors.
+
+        The cast width is the query width. A partial HNSW index on that
+        width can serve it. Rows stored at a different width are not
+        in this predicate.
+        """
+        if top_k <= 0 or not query_embedding:
+            return []
+        dims = len(query_embedding)
+        if dims < 1 or dims > 4000:
+            return []
+        q = HalfVector(query_embedding)
+        sql = f"""
+            SELECT c.id, c.collection_id, c.document_id, c.chunk_key,
+                   c.content, c.metadata, c.token_count, c.created_at,
+                   c.parent_chunk_id, c.chunk_type, c.chunk_level,
+                   1 - (v.embedding::halfvec({dims}) <=> $1::halfvec({dims})) AS score
+              FROM embedding_vectors v
+              JOIN document_chunks c ON c.id = v.subject_id
+             WHERE v.subject = 'chunk'
+               AND v.model_id = $2
+               AND v.dims = $3
+               AND c.chunk_type = 'leaf'
+               AND 1 - (v.embedding::halfvec({dims}) <=> $1::halfvec({dims})) >= $4
+             ORDER BY v.embedding::halfvec({dims}) <=> $1::halfvec({dims})
+             LIMIT $5
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, q, int(model_id), dims, min_score, top_k)
+            hits = [self._row_to_search_hit(r) for r in rows]
+            await self._attach_parent_content(conn, hits)
+        return hits
+
+    async def keyword_fallback_search(
+        self,
+        query: str,
+        top_k: int = 30,
+    ) -> list[SearchHit]:
+        """CJK bigram/trigram match via ``ILIKE`` and the pg_trgm GIN index.
+
+        The score is the fraction of search units that matched, in
+        ``[0, 1]``. It is not a cosine, so callers must not apply the
+        cosine floor to these rows.
+        """
+        from anila_core.embeddings.keyword import cjk_search_units, ilike_pattern
+
+        if top_k <= 0:
+            return []
+        units = cjk_search_units(query)
+        if not units:
+            return []
+        patterns = [ilike_pattern(unit) for unit in units]
+        clauses = [
+            f"content ILIKE ${i} ESCAPE '\\'" for i in range(1, len(patterns) + 1)
+        ]
+        score = " + ".join(
+            f"(CASE WHEN content ILIKE ${i} ESCAPE '\\' THEN 1 ELSE 0 END)"
+            for i in range(1, len(patterns) + 1)
+        )
+        sql = f"""
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   parent_chunk_id, chunk_type, chunk_level,
+                   ({score})::float / {len(patterns)} AS score
+              FROM document_chunks
+             WHERE chunk_type = 'leaf'
+               AND ({' OR '.join(clauses)})
+             ORDER BY score DESC, id
+             LIMIT ${len(patterns) + 1}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *patterns, top_k)
+            hits = [self._row_to_search_hit(r) for r in rows]
+            await self._attach_parent_content(conn, hits)
+        return hits
+
+    async def leaves_missing_embedding(
+        self, model_id: int, limit: int,
+    ) -> list[tuple[int, str]]:
+        """Leaf rows in this collection that still need a vector for ``model_id``.
+
+        Rows that have already failed three times are left for the operator.
+        """
+        if limit <= 0:
+            return []
+        sql = """
+            SELECT c.id, c.content
+              FROM document_chunks c
+             WHERE c.chunk_type = 'leaf'
+               AND c.content IS NOT NULL
+               AND length(btrim(c.content)) > 0
+               AND NOT EXISTS (
+                    SELECT 1 FROM embedding_vectors v
+                     WHERE v.subject = 'chunk'
+                       AND v.subject_id = c.id
+                       AND v.model_id = $1
+               )
+               AND NOT EXISTS (
+                    SELECT 1 FROM embedding_rebuild_failures f
+                     WHERE f.subject = 'chunk'
+                       AND f.subject_id = c.id
+                       AND f.model_id = $1
+                       AND f.attempts >= 3
+               )
+             ORDER BY c.id
+             LIMIT $2
+        """
+        try:
+            async with self._acquire() as conn:
+                rows = await conn.fetch(sql, int(model_id), limit)
+        except asyncpg.UndefinedTableError:
+            return []
+        except asyncpg.PostgresError as exc:
+            if getattr(exc, "sqlstate", None) == "42P01":
+                return []
+            raise
+        return [(int(row["id"]), row["content"]) for row in rows]
+
+    async def leaf_embedding_counts(self, model_id: int) -> tuple[int, int]:
+        """``(leaf rows, leaf rows that already have this model's vector)``."""
+        try:
+            async with self._acquire() as conn:
+                total = int(
+                    await conn.fetchval(
+                        """
+                        SELECT count(*) FROM document_chunks
+                         WHERE chunk_type = 'leaf'
+                        """
+                    )
+                    or 0
+                )
+                done = int(
+                    await conn.fetchval(
+                        """
+                        SELECT count(*)
+                          FROM document_chunks c
+                          JOIN embedding_vectors v
+                            ON v.subject = 'chunk'
+                           AND v.subject_id = c.id
+                           AND v.model_id = $1
+                         WHERE c.chunk_type = 'leaf'
+                        """,
+                        int(model_id),
+                    )
+                    or 0
+                )
+        except asyncpg.UndefinedTableError:
+            return 0, 0
+        except asyncpg.PostgresError as exc:
+            if getattr(exc, "sqlstate", None) == "42P01":
+                return 0, 0
+            raise
+        return total, done
+
+    async def leaf_ids_by_key(self, document_id: int) -> dict[str, int]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, chunk_key
+                  FROM document_chunks
+                 WHERE document_id = $1
+                   AND chunk_type = 'leaf'
+                """,
+                document_id,
+            )
+        return {row["chunk_key"]: int(row["id"]) for row in rows}
+
+    async def upsert_embedding_slot(
+        self,
+        *,
+        subject: str,
+        subject_id: int,
+        model_id: int,
+        vector: list[float],
+        native_dims: int,
+        collection_id: int | None = None,
+    ) -> None:
+        """Write one side-table vector. A missing table is ignored."""
+        from anila_core.embeddings.dims import ann_index_sql, fit_stored_vector
+
+        if subject not in {"chunk", "fact", "summary"} or not vector:
+            return
+        try:
+            stored = fit_stored_vector(vector)
+        except ValueError:
+            return
+        literal_vec = HalfVector(stored.values)
+        cid = collection_id if collection_id is not None else (
+            self._collection_id if subject == "chunk" else None
+        )
+        try:
+            async with self._acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO embedding_vectors
+                        (subject, subject_id, model_id, collection_id,
+                         dims, native_dims, embedding)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (subject, subject_id, model_id) DO UPDATE SET
+                        dims = EXCLUDED.dims,
+                        native_dims = EXCLUDED.native_dims,
+                        embedding = EXCLUDED.embedding,
+                        collection_id = EXCLUDED.collection_id
+                    """,
+                    subject,
+                    int(subject_id),
+                    int(model_id),
+                    cid,
+                    stored.dims,
+                    int(native_dims or stored.native_dims),
+                    literal_vec,
+                )
+                if 1 <= stored.dims <= 4000:
+                    # Savepoint: a failed CREATE INDEX aborts only itself.
+                    nested = conn.transaction()
+                    await nested.start()
+                    try:
+                        await conn.execute(
+                            ann_index_sql(
+                                model_id=int(model_id),
+                                dims=stored.dims,
+                                subject=subject,
+                            )
+                        )
+                        await nested.commit()
+                    except Exception:
+                        await nested.rollback()
+        except asyncpg.UndefinedTableError:
+            return
+        except asyncpg.PostgresError as exc:
+            if getattr(exc, "sqlstate", None) == "42P01":
+                return
+            raise
+
 
 # ── Back-compat alias ───────────────────────────────────────────────────────
 # Sprint 4 renamed the class from AgentScopedPgVectorStore. Existing

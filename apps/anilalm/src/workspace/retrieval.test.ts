@@ -20,6 +20,7 @@ import { searchCollection } from '../api/search'
 import {
   buildSystemPrompt,
   buildTurnContext,
+  KEYWORD_FALLBACK_NOTICE,
   EMBEDDING_ROLE_UNSET,
   retrieveTurnContext,
   UNGROUNDED_NOTICE,
@@ -182,5 +183,22 @@ describe('buildSystemPrompt for the other outcomes', () => {
     expect(prompt).toContain('使用者尚未上傳已完成索引的文件')
     expect(prompt).not.toContain('本次知識庫檢索失敗')
     expect(prompt).not.toContain(ZERO_HIT_CLAIM)
+  })
+
+  it('marks a keyword fallback without treating it as a failed search', async () => {
+    mockedSearch.mockResolvedValueOnce({
+      data: {
+        ...searchResponse([hit(1)]).data,
+        keyword_fallback: true,
+      },
+    } as never)
+
+    const outcome = await retrieveTurnContext(1, '差勤管理')
+
+    expect(outcome.status).toBe('hits')
+    expect(outcome.keywordFallback).toBe(true)
+    expect(KEYWORD_FALLBACK_NOTICE).toBe(
+      '嵌入模型暫時無法使用，本次用關鍵字搜尋，結果可能較不準',
+    )
   })
 })

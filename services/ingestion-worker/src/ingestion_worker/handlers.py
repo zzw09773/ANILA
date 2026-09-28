@@ -1438,9 +1438,18 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             pool, arq_job_id, progress_pct=60,
             progress_message=f"embedding {len(leaves)} leaf chunks",
         )
-        embeddings = await embedder.embed(
-            [c.content for c in leaves], user_id=billing_user_id,
-        ) if leaves else []
+        from ingestion_worker.embedding_rebuild import embed_ingest_targets
+
+        (
+            embeddings,
+            embedding_source_model,
+            embedding_native_dim,
+            slot_vectors,
+        ) = await embed_ingest_targets(
+            pool,
+            embedder,
+            [c.content for c in leaves],
+        ) if leaves else ([], embedder.model_name, embedder.native_dim, [])
 
         # 4. Index — parents first to populate the chunk_key→id map;
         #    leaves second with their parent_chunk_id resolved.
@@ -1458,9 +1467,36 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 chunks=leaves,
                 embeddings=embeddings,
                 parent_id_map=parent_id_map,
-                embedding_source_model=embedder.model_name,
-                embedding_native_dim=embedder.native_dim,
+                embedding_source_model=embedding_source_model,
+                embedding_native_dim=embedding_native_dim,
             )
+            if slot_vectors and hasattr(store, "upsert_embedding_slot"):
+                try:
+                    id_by_key = await store.leaf_ids_by_key(document_id)
+                except Exception:
+                    logger.exception("doc %s: leaf ids unavailable for embedding slots", document_id)
+                    id_by_key = {}
+                for model_id, vectors, native in slot_vectors:
+                    for chunk, vector in zip(leaves, vectors):
+                        chunk_id = id_by_key.get(chunk.chunk_key)
+                        if chunk_id is None:
+                            continue
+                        try:
+                            await store.upsert_embedding_slot(
+                                subject="chunk",
+                                subject_id=chunk_id,
+                                model_id=model_id,
+                                vector=vector,
+                                native_dims=native,
+                                collection_id=collection_id,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "doc %s: embedding slot skipped model=%s chunk=%s",
+                                document_id,
+                                model_id,
+                                chunk_id,
+                            )
 
         total_chunks = len(chunks)
         # 5. Status + counters.

@@ -76,6 +76,17 @@ async def enqueue_evaluator_run(eval_run_id: int) -> str:
     return job.job_id
 
 
+async def enqueue_embedding_rebuild() -> str | None:
+    """Start or continue a blue-green embedding rebuild.
+
+    A missing job id means one is already queued. That is not an error:
+    the running pass re-enqueues itself until the corpus is done.
+    """
+    pool = await _get_pool()
+    job = await pool.enqueue_job("rebuild_embeddings")
+    return job.job_id if job is not None else None
+
+
 async def enqueue_reresolve_relations(collection_id: int) -> str:
     """Enqueue a ``reresolve_collection_relations`` job (document-relations §8).
 

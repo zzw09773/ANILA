@@ -60,7 +60,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "platform_embedding": RoleSpec(
         role="platform_embedding",
         label="平台嵌入模型",
-        description="記憶與知識庫共用的嵌入模型。更換後，以其他模型建立索引的知識庫會檢索不到。",
+        description="記憶與知識庫共用的嵌入模型。更換後會在背景重建所有向量，完成前搜尋仍用原本的模型。",
         accepted_types=frozenset({"embedding"}),
         storage="flag",
         column="is_platform_embedding",

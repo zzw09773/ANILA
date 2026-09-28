@@ -46,6 +46,8 @@ export interface RetrievalOutcome {
   status: RetrievalStatus
   /** Empty for every status other than 'hits'. */
   hits: SearchHit[]
+  /** Vector search was down; these hits came from keyword search. */
+  keywordFallback?: boolean
   /** 只有治理中心還沒指定平台嵌入時才有，給畫面與提示用。其他錯誤不放進來。 */
   detail?: string
 }
@@ -58,6 +60,11 @@ export interface RetrievalOutcome {
  */
 export const UNGROUNDED_NOTICE =
   '⚠ 知識庫檢索失敗，這則回答沒有引用您的文件，請自行查證後再採用。'
+
+export const KEYWORD_FALLBACK_NOTICE =
+  '嵌入模型暫時無法使用，本次用關鍵字搜尋，結果可能較不準'
+
+export const KEYWORD_FALLBACK_META_KEY = 'keyword_fallback'
 
 /**
  * Key under which the ungrounded flag is persisted in a message's
@@ -92,7 +99,11 @@ export async function retrieveTurnContext(
       signal,
     })
     const hits = data.results ?? []
-    return { status: hits.length > 0 ? 'hits' : 'empty', hits }
+    return {
+      status: hits.length > 0 ? 'hits' : 'empty',
+      hits,
+      keywordFallback: data.keyword_fallback === true,
+    }
   } catch (searchErr) {
     // Operator-facing detail stays here; the model and the user get the
     // sanitised copy above.

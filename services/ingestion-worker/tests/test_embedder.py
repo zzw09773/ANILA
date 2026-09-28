@@ -222,30 +222,24 @@ async def test_count_mismatch_raises_model_down():
         await embedder.close()
 
 
-async def test_short_vector_raises_dim_mismatch():
-    """A vector shorter than the schema dim -> E_EMBED_DIM_MISMATCH."""
+async def test_short_vector_is_stored_at_native_width():
+    """An undeclared shorter vector is stored as-is, not rejected or padded."""
     settings = _make_settings(embedding_dim=4000)
     embedder = Embedder(settings)
-    short = [0.0] * 1536  # wrong model: 1536-d instead of 4000-d
+    short = [0.0] * 1536
     try:
         with respx.mock:
             respx.post(EMBED_URL).mock(
                 return_value=httpx.Response(200, json=_payload([short]))
             )
-            with pytest.raises(EmbedError) as excinfo:
-                await embedder.embed(["x"])
-        err = excinfo.value
-        assert err.code == "E_EMBED_DIM_MISMATCH"
-        assert err.retryable is False
-        assert err.details["got"] == 1536
-        assert err.details["expected"] == 4000
-        assert err.details["index"] == 0
+            result = await embedder.embed(["x"])
+        assert result == [short]
     finally:
         await embedder.close()
 
 
 async def test_short_vector_pads_when_native_dim_declared():
-    """Declared native_dim == vector length -> zero-pad to schema dim."""
+    """Declared native width is stored as-is when it fits the HNSW ceiling."""
     settings = _make_settings(embedding_dim=4000)
     embedder = Embedder(settings, model_name="small-embed", native_dim=2048)
     vec = [0.25] * 2048
@@ -255,10 +249,7 @@ async def test_short_vector_pads_when_native_dim_declared():
                 return_value=httpx.Response(200, json=_payload([vec]))
             )
             result = await embedder.embed(["x"])
-        assert len(result) == 1
-        assert len(result[0]) == 4000
-        assert result[0][:2048] == vec
-        assert result[0][2048:] == [0.0] * (4000 - 2048)
+        assert result == [vec]
     finally:
         await embedder.close()
 

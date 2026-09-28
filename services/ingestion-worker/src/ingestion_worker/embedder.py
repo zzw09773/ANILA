@@ -78,8 +78,9 @@ import logging
 
 import httpx
 
+from anila_core.embeddings.dims import fit_stored_vector
 from anila_core.ingestion.errors import EmbedError
-from anila_core.memory.long_term import EMBED_DIM, truncate_embedding
+from anila_core.memory.long_term import EMBED_DIM
 
 from ingestion_worker.credential_file import api_key as credential_api_key
 from ingestion_worker.credential_file import reload as reload_credential
@@ -310,40 +311,37 @@ class Embedder:
                 },
             ) from e
 
-        # Normalise to the configured schema width. Production pins
-        # embedding_dim=EMBED_DIM (4000) and goes through the shared
-        # truncate_embedding contract (pad_from = measured native).
-        # Tests occasionally use a smaller embedding_dim; keep the
-        # historical slice/assert path for those so unit fixtures stay
-        # cheap without forking the production contract.
+        # Production width is the halfvec HNSW ceiling. Store the model's
+        # own width when it fits; only vectors longer than that ceiling
+        # are truncated. A measured native width that does not match the
+        # payload is a drifted endpoint and is refused.
+        # Smaller ``embedding_dim`` values are the unit-test fixtures;
+        # they keep the historical slice so those fixtures stay cheap.
         target_dim = self._settings.embedding_dim
-        pad_from = self.pad_from
+        declared = (
+            self._native_dim
+            if isinstance(self._native_dim, int) and self._native_dim > 0
+            else None
+        )
         normalized: list[list[float]] = []
         for i, v in enumerate(vectors):
             if target_dim == EMBED_DIM:
                 try:
-                    normalized.append(truncate_embedding(v, pad_from=pad_from))
+                    normalized.append(
+                        fit_stored_vector(v, declared_native=declared).values
+                    )
                 except ValueError as e:
                     raise EmbedError(
                         code="E_EMBED_DIM_MISMATCH",
                         retryable=False,
                         severity="error",
                         user_message=(
-                            f"Embedding {i} is {len(v)}-d but the schema requires "
-                            f"{target_dim}-d"
-                            + (
-                                f" (declared native pad_from={pad_from})"
-                                if pad_from is not None
-                                else ""
-                            )
-                            + ". The collection was created against a "
-                            "different model — recreate the collection or change "
-                            "the embedding model env."
+                            f"Embedding {i} is {len(v)}-d but this model "
+                            f"is declared {declared}-d."
                         ),
                         details={
                             "got": len(v),
-                            "expected": target_dim,
-                            "pad_from": pad_from,
+                            "expected": declared,
                             "index": i,
                         },
                     ) from e
@@ -366,22 +364,25 @@ class Embedder:
                 details={"input_count": len(texts), "output_count": len(vectors)},
             )
 
-        # Dim contract — fail fast, don't let asyncpg complain mid-INSERT.
-        expected = self._settings.embedding_dim
-        for i, v in enumerate(vectors):
-            if len(v) != expected:
-                raise EmbedError(
-                    code="E_EMBED_DIM_MISMATCH",
-                    retryable=False,
-                    severity="error",
-                    user_message=(
-                        f"Embedding {i} is {len(v)}-d but the schema requires "
-                        f"{expected}-d. The collection was created against a "
-                        f"different model — recreate the collection or change "
-                        f"the embedding model env."
-                    ),
-                    details={"got": len(v), "expected": expected, "index": i},
-                )
+        # Fixture widths still have to match the configured column.
+        # The production path stores native width, which is not always
+        # ``embedding_dim``.
+        if target_dim != EMBED_DIM:
+            expected = self._settings.embedding_dim
+            for i, v in enumerate(vectors):
+                if len(v) != expected:
+                    raise EmbedError(
+                        code="E_EMBED_DIM_MISMATCH",
+                        retryable=False,
+                        severity="error",
+                        user_message=(
+                            f"Embedding {i} is {len(v)}-d but the schema requires "
+                            f"{expected}-d. The collection was created against a "
+                            f"different model — recreate the collection or change "
+                            f"the embedding model env."
+                        ),
+                        details={"got": len(v), "expected": expected, "index": i},
+                    )
 
         return vectors
 

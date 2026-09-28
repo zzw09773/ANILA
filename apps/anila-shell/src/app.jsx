@@ -452,6 +452,7 @@ export function kbMetaFields(meta) {
     kbFailedCollections: Array.isArray(m.kb_failed_collections)
       ? m.kb_failed_collections
       : [],
+    keywordFallback: m.keyword_fallback === true,
   };
 }
 

@@ -60,12 +60,14 @@
         </tr>
       </tbody>
     </table>
+    <EmbeddingRebuildPanel :is-admin="isAdmin" />
   </TermBox>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue'
 import { TermBox, TermBadge, TermButton } from './cli'
+import EmbeddingRebuildPanel from './EmbeddingRebuildPanel.vue'
 import { assignModelRole, clearModelRole, grantModelRoleAllUsers, listModelRoles } from '../api/models'
 import { extractError } from '../api/errors'
 import { useDialog } from '../composables/useDialog'

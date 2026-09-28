@@ -49,9 +49,33 @@ export function designationConfirm(models, targetId) {
     confirmText: '仍要改為主 embedding',
     message:
       `要把平台主 embedding 由「${currentName}」改為「${targetName}」嗎？\n\n` +
-      '檢索只會取用以現行模型建立索引的段落。改完之後，先前以舊模型索引的知識庫' +
-      '在重新索引前都檢索不到內容（搜尋會明確回報索引模型不一致，不會靜靜地回空結果）。',
+      '搜尋會繼續用現在的模型。背景重新索引完成後才一次切換，期間不會檢索不到內容。' +
+      '完成後 7 天內仍可切回上一個模型。',
   }
+}
+
+/** 重建進度列。沒有進行中的重建時回空字串。 */
+export function formatRebuildStatus(snapshot) {
+  const rebuild = snapshot && snapshot.rebuild
+  if (!rebuild || !rebuild.status) return ''
+  const done = Number(rebuild.done || 0)
+  const total = Number(rebuild.total || 0)
+  let text = `重新索引 ${done}/${total}`
+  if (rebuild.status === 'failed') text += '（失敗）'
+  if (rebuild.status === 'cancelled') text += '（已取消）'
+  const errors = Number(rebuild.errors || 0)
+  if (errors > 0) text += `，錯誤 ${errors}`
+  const eta = rebuild.eta_seconds
+  if (typeof eta === 'number' && eta > 0) {
+    const minutes = Math.max(1, Math.round(eta / 60))
+    text += `，大約還要 ${minutes} 分鐘`
+  }
+  if (rebuild.last_error) text += `。${rebuild.last_error}`
+  return text
+}
+
+export function rollbackAvailable(snapshot) {
+  return !!(snapshot && snapshot.rollback_available)
 }
 
 /**

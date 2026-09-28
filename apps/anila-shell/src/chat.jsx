@@ -1334,6 +1334,11 @@ export const MessageBubble = ({
           fromAttachments={questionHadAttachments}
         />
       )}
+      {msg.keywordFallback && (
+        <div data-testid="keyword-fallback-notice" style={{ fontSize: 12, marginBottom: 8 }}>
+          嵌入模型暫時無法使用，本次用關鍵字搜尋，結果可能較不準
+        </div>
+      )}
 
       {(() => {
         // Combine reasoning from two channels so gpt-oss-20b (native field) and

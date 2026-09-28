@@ -69,6 +69,12 @@ export const unsetPlatformEmbedding = (id) =>
 export const getPlatformEmbedding = () =>
   client.get('/api/models/platform-embedding')
 
+export const getEmbeddingRebuild = () =>
+  client.get('/api/models/embedding-rebuild')
+
+export const rollbackEmbeddingRebuild = () =>
+  client.post('/api/models/embedding-rebuild/rollback')
+
 export const listModelRoles = () =>
   client.get('/api/models/roles')
 

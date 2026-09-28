@@ -24,6 +24,8 @@ export interface SearchResponse {
   embedding_model: string
   embedding_dim: number
   results: SearchHit[]
+  keyword_fallback?: boolean
+  keyword_fallback_notice?: string | null
 }
 
 export interface SearchOptions {

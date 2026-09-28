@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from anila_core.embeddings.keyword import search_path
 from anila_core.storage.adapters.pgvector_store import (
     CollectionScopedPgVectorStore,
 )
@@ -283,6 +284,8 @@ class SearchResponse(BaseModel):
         default_factory=list,
         description="1-hop relation expansion (empty unless expand_relations=True).",
     )
+    keyword_fallback: bool = False
+    keyword_fallback_notice: str | None = None
 
 
 class ImageSearchRequest(BaseModel):
@@ -377,13 +380,7 @@ async def _embed_query(
             detail=f"Embedding model '{model_name}' is registered but inactive.",
         )
 
-    from anila_core.memory.long_term import EMBED_DIM
-
     native = getattr(model, "embedding_native_dim", None)
-    if isinstance(native, int) and native > 0 and native != EMBED_DIM:
-        pad_from: int | None = native
-    else:
-        pad_from = None
 
     # Snapshot every attribute proxy_request (and ceiling helpers) may read into
     # a plain namespace. ORM instances are subject to expire_on_commit; a bare
@@ -448,12 +445,14 @@ async def _embed_query(
             detail="Embedding endpoint returned a non-numeric vector.",
         )
 
-    from anila_core.memory.long_term import EMBED_DIM, truncate_embedding
+    from anila_core.embeddings.dims import fit_stored_vector
+    from anila_core.memory.long_term import EMBED_DIM
 
     try:
         floats = [float(x) for x in raw_vector]
         if embedding_dim == EMBED_DIM:
-            return truncate_embedding(floats, pad_from=pad_from)
+            declared = native if isinstance(native, int) and native > 0 else None
+            return fit_stored_vector(floats, declared_native=declared).values
         # Non-production column widths (unit tests use small dims): keep
         # the historical truncate-or-422 contract so fixtures stay cheap.
         if len(floats) < embedding_dim:
@@ -750,6 +749,89 @@ def _require_platform_embedding(db):
 # ── Endpoint ────────────────────────────────────────────────────────────────
 
 
+@dataclass
+class ChunkHitBatch:
+    hits: list
+    keyword_fallback: bool = False
+    used_model_slots: bool = False
+
+
+async def collect_chunk_hits(
+    store,
+    *,
+    query: str,
+    query_vec: list[float] | None,
+    embed_error: Exception | None,
+    model_id: int | None,
+    top_k: int,
+    min_score: float,
+    source_model: str | None,
+    rerank=None,
+) -> ChunkHitBatch:
+    """Vector search on the active model, or keyword search when that cannot run.
+
+    Stubs that only implement ``similarity_search`` stay on that path.
+    Keyword fallback is used only when the embed failed, or the corpus
+    has text but no vectors for the active model, and the store actually
+    implements it. A similarity_search failure is not turned into keywords.
+    """
+    coverage = "legacy"
+    if isinstance(model_id, int) and hasattr(store, "embedding_coverage"):
+        try:
+            coverage = await store.embedding_coverage(model_id)
+        except Exception:
+            coverage = "legacy"
+
+    # An empty collection is not an outage: no notice, no keyword pass.
+    if coverage == "empty":
+        return ChunkHitBatch(hits=[])
+
+    keyword_ok = hasattr(store, "keyword_fallback_search")
+    if coverage == "legacy":
+        want_keyword = bool(embed_error)
+    else:
+        want_keyword = (
+            search_path(
+                embed_ok=embed_error is None and query_vec is not None,
+                active_vectors_exist=coverage == "ready",
+                corpus_exists=True,
+            )
+            == "keyword"
+        )
+    if want_keyword and keyword_ok:
+        limit = 30 if top_k < 30 else top_k
+        hits = await store.keyword_fallback_search(query, top_k=limit)
+        if rerank is not None and len(hits) > 1:
+            hits = await rerank(hits)
+        return ChunkHitBatch(hits=list(hits)[:top_k], keyword_fallback=True)
+    if embed_error is not None:
+        raise embed_error
+    if (
+        coverage == "ready"
+        and query_vec is not None
+        and isinstance(model_id, int)
+        and hasattr(store, "similarity_search_for_model")
+    ):
+        hits = await store.similarity_search_for_model(
+            query_embedding=query_vec,
+            model_id=model_id,
+            top_k=top_k,
+            min_score=min_score,
+        )
+        return ChunkHitBatch(hits=hits, used_model_slots=True)
+    if query_vec is None:
+        if embed_error is not None:
+            raise embed_error
+        return ChunkHitBatch(hits=[])
+    hits = await store.similarity_search(
+        query_embedding=query_vec,
+        top_k=top_k,
+        min_score=min_score,
+        source_model=source_model,
+    )
+    return ChunkHitBatch(hits=hits)
+
+
 @router.post(
     "/api/ingestion/collections/{collection_id}/search",
     response_model=SearchResponse,
@@ -777,10 +859,28 @@ async def search_collection(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    # 查詢與過濾都只用治理中心指定的平台嵌入。沒指定就不猜模型。
-    designated = _require_platform_embedding(db)
-    embed_model = designated.name
-    source_filter = designated.name
+    # Search uses the active embedding pointer. During a rebuild that is
+    # still the previous model; the console role is only the target.
+    embed_model = None
+    source_filter = None
+    model_id = None
+    try:
+        from app.services.embedding_swap import search_model as active_embedding
+
+        active = active_embedding(db)
+    except Exception:
+        active = None
+    if active is not None and isinstance(getattr(active, "id", None), int):
+        embed_model = active.name
+        source_filter = active.name
+        model_id = active.id
+    else:
+        # 沒有作用中指標時只認治理中心指定的角色；沒指定就 409，不猜模型。
+        designated = _require_platform_embedding(db)
+        embed_model = designated.name
+        source_filter = designated.name
+        raw_id = getattr(getattr(designated, "model", None), "id", None)
+        model_id = raw_id if isinstance(raw_id, int) else None
 
     # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
     search_query = expand_query(db, payload.query)
@@ -792,14 +892,6 @@ async def search_collection(
             added_n,
         )
 
-    query_vec = await _embed_query(
-        db,
-        current_user,
-        embed_model,
-        coll.embedding_dim,
-        search_query,
-    )
-
     try:
         pool = get_pool()
     except RuntimeError as exc:
@@ -809,18 +901,46 @@ async def search_collection(
         ) from exc
 
     store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
-    hits = await store.similarity_search(
-        query_embedding=query_vec,
+    embed_error = None
+    query_vec = None
+    try:
+        query_vec = await _embed_query(
+            db,
+            current_user,
+            embed_model,
+            coll.embedding_dim,
+            search_query,
+        )
+    except Exception as exc:
+        embed_error = exc
+
+    from anila_core.embeddings.keyword import KEYWORD_FALLBACK_NOTICE
+    from app.services.embedding_keyword import maybe_rerank
+
+    async def _rerank(hits):
+        return await maybe_rerank(db, current_user, search_query, hits)
+
+    batch = await collect_chunk_hits(
+        store,
+        query=search_query,
+        query_vec=query_vec,
+        embed_error=embed_error,
+        model_id=model_id,
         top_k=payload.top_k,
         min_score=payload.min_score,
         source_model=source_filter,
+        rerank=_rerank,
     )
+    hits = batch.hits
+    keyword_fallback = batch.keyword_fallback
 
-    # Zero hits under a designation filter is ambiguous — resolve it before
-    # the caller can read the emptiness as "this knowledge base has nothing
-    # to say". Runs before the document_ids post-filter below so a caller
-    # narrowing to one document never gets misdiagnosed as a stranded index.
-    await _assert_index_matches_designation(store, hits=hits, designated=source_filter, collection_id=coll.id)
+    # Zero hits under a designation filter is ambiguous on the legacy
+    # column. Side-table search and keyword fallback already know why
+    # they are empty, so they do not raise the stranded-index 409.
+    if not keyword_fallback and not batch.used_model_slots:
+        await _assert_index_matches_designation(
+            store, hits=hits, designated=source_filter, collection_id=coll.id
+        )
 
     # Optional document_ids filter — done in app code rather than SQL
     # because ``similarity_search`` lives in anila_core and we don't want
@@ -834,8 +954,10 @@ async def search_collection(
         return SearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
-            embedding_dim=coll.embedding_dim,
+            embedding_dim=len(query_vec) if query_vec else coll.embedding_dim,
             results=[],
+            keyword_fallback=keyword_fallback,
+            keyword_fallback_notice=KEYWORD_FALLBACK_NOTICE if keyword_fallback else None,
         )
 
     # Bulk-fetch filenames for the hit document set. Single round-trip
@@ -849,7 +971,7 @@ async def search_collection(
     filenames = {r.id: r.filename for r in rows}
 
     related: list[RelatedHit] = []
-    if payload.expand_relations:
+    if payload.expand_relations and query_vec is not None:
         related = await _expand_relations(
             db,
             store,
@@ -862,7 +984,9 @@ async def search_collection(
     return SearchResponse(
         query=payload.query,
         embedding_model=coll.embedding_model,
-        embedding_dim=coll.embedding_dim,
+        embedding_dim=len(query_vec) if query_vec else coll.embedding_dim,
+        keyword_fallback=keyword_fallback,
+        keyword_fallback_notice=KEYWORD_FALLBACK_NOTICE if keyword_fallback else None,
         related=related,
         results=[
             SearchHitOut(

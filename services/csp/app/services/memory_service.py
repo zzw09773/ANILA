@@ -61,6 +61,7 @@ from anila_core.memory.long_term import (
     format_transcript_for_extraction,
     parse_extraction_response,
     parse_memory_refresh_response,
+    EMBED_DIM,
     truncate_embedding,
 )
 
@@ -254,6 +255,39 @@ def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 
+def _resolved_for_embed(db: Session, *, model_id: int | None = None):
+    """The model a memory embed should call.
+
+    Retrieval uses the active pointer (search stays on the previous
+    model during a rebuild). An explicit ``model_id`` is a second write
+    for the model the rebuild is moving to. A database double that is
+    not a real registry row falls through to the console role, which is
+    what the existing unit doubles exercise.
+    """
+    from app.models.model_registry import ModelRegistry
+    from app.services.platform_embedding import PlatformEmbedding, _native_dim_of
+
+    if isinstance(model_id, int):
+        row = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).one_or_none()
+        if row is not None and isinstance(getattr(row, "id", None), int):
+            native = _native_dim_of(row)
+            return PlatformEmbedding(
+                model=row, native_dim=native, truncates=native > EMBED_DIM
+            )
+    try:
+        from app.services.embedding_swap import search_model
+
+        row = search_model(db)
+    except Exception:
+        row = None
+    if row is not None and isinstance(getattr(row, "id", None), int):
+        native = _native_dim_of(row)
+        return PlatformEmbedding(
+            model=row, native_dim=native, truncates=native > EMBED_DIM
+        )
+    return resolve_platform_embedding(db)
+
+
 async def _embed(
     db: Session,
     text_input: str,
@@ -261,6 +295,7 @@ async def _embed(
     user_id: int = 0,
     department_id: int | None = None,
     embedding_input_role: str = "query",
+    model_id: int | None = None,
 ) -> tuple[list[float], str, int]:
     """Return ``(vector, source_model_name, native_dim)`` for ``text_input``.
 
@@ -289,9 +324,10 @@ async def _embed(
     """
     from types import SimpleNamespace
 
+    from anila_core.embeddings.dims import fit_stored_vector
     from app.services.proxy.service import proxy_request, resolve_proxy_tuning
 
-    resolved = resolve_platform_embedding(db)
+    resolved = _resolved_for_embed(db, model_id=model_id)
     if resolved is None:
         raise RuntimeError(
             "memory_service: no platform embedding model available "
@@ -332,11 +368,10 @@ async def _embed(
         tuning=tuning,
     )
     vec = data["data"][0]["embedding"]
-    return (
-        truncate_embedding(vec, pad_from=resolved.pad_from),
-        model_name,
-        native_dim,
-    )
+    measured = getattr(model, "embedding_native_dim", None)
+    declared = measured if isinstance(measured, int) and measured > 0 else None
+    stored = fit_stored_vector(vec, declared_native=declared)
+    return stored.values, model_name, stored.native_dims
 
 
 def _vector_is_finite(vec: Iterable[float]) -> bool:
@@ -528,6 +563,97 @@ def _fact_embed_text(fact: UserFact | dict[str, Any]) -> str:
     return f"{fact.key}: {fact.value}"
 
 
+def _slot_model_id(db: Session, name: str | None) -> int | None:
+    if not isinstance(name, str) or not name.strip():
+        return None
+    row = (
+        db.query(ModelRegistry)
+        .filter(
+            ModelRegistry.model_type == "embedding",
+            func.lower(ModelRegistry.name) == name.strip().lower(),
+        )
+        .order_by(ModelRegistry.id.asc())
+        .first()
+    )
+    if row is None or not isinstance(getattr(row, "id", None), int):
+        return None
+    return row.id
+
+
+def _record_embedding_slots(
+    db: Session,
+    *,
+    subject: str,
+    subject_id: int | None,
+    source_model: str | None,
+    vector: list[float] | None,
+    native_dim: int | None,
+    extra: list[dict[str, Any]] | None = None,
+    collection_id: int | None = None,
+) -> None:
+    """Side-table copy. Missing table or a non-Postgres test database is a no-op."""
+    if subject_id is None:
+        return
+    try:
+        from app.services.embedding_swap import upsert_slot
+    except Exception:
+        return
+    pairs: list[tuple[int, list[float], int]] = []
+    model_id = _slot_model_id(db, source_model)
+    if model_id is not None and vector:
+        pairs.append((model_id, list(vector), int(native_dim or len(vector))))
+    for item in extra or []:
+        mid = item.get("model_id")
+        vec = item.get("embedding")
+        if isinstance(mid, int) and vec:
+            pairs.append((mid, list(vec), int(item.get("native_dim") or len(vec))))
+    for mid, vec, native in pairs:
+        upsert_slot(
+            db,
+            subject=subject,
+            subject_id=int(subject_id),
+            model_id=mid,
+            vector=vec,
+            native_dims=native,
+            collection_id=collection_id,
+        )
+
+
+async def _extra_embeddings(
+    db: Session,
+    text_input: str,
+    *,
+    user_id: int,
+    skip_model_id: int | None,
+) -> list[dict[str, Any]]:
+    """Vectors for the rebuild target, when a rebuild is open."""
+    try:
+        from app.services.embedding_swap import column_model_id, rebuild_open, write_model_ids
+
+        if not rebuild_open(db):
+            return []
+        pending = [mid for mid in write_model_ids(db) if mid != (skip_model_id or column_model_id(db))]
+    except Exception:
+        return []
+    extras: list[dict[str, Any]] = []
+    for mid in pending:
+        try:
+            vector, _source, native = await _embed(
+                db,
+                text_input,
+                user_id=user_id,
+                embedding_input_role="document",
+                model_id=mid,
+            )
+        except Exception:
+            continue
+        if _vector_is_finite(vector):
+            extras.append(
+                {"model_id": mid, "embedding": vector, "native_dim": native}
+            )
+    return extras
+
+
 def _save_fact_embedding(db: Session, row: UserFact, fact: dict[str, Any]) -> None:
     """把已算好的向量寫進列。沒有向量就清掉，避免舊句子的向量對上新內容。"""
     if "embedding" not in fact:
@@ -568,10 +694,28 @@ def _save_fact_embedding(db: Session, row: UserFact, fact: dict[str, Any]) -> No
                 ),
                 {"id": row.id},
             )
+        _record_embedding_slots(
+            db,
+            subject="fact",
+            subject_id=row.id,
+            source_model=source_model,
+            vector=list(embedding) if embedding else None,
+            native_dim=native_dim if isinstance(native_dim, int) else None,
+            extra=fact.get("extra_embeddings"),
+        )
         return
     row.embedding = literal
     row.embedding_source_model = source_model
     row.embedding_native_dim = native_dim
+    _record_embedding_slots(
+        db,
+        subject="fact",
+        subject_id=row.id,
+        source_model=source_model,
+        vector=list(embedding) if embedding else None,
+        native_dim=native_dim if isinstance(native_dim, int) else None,
+        extra=fact.get("extra_embeddings"),
+    )
 
 
 def _fact_vector_for_model(fact: UserFact, source_model: str) -> list[float] | None:
@@ -617,6 +761,12 @@ async def _attach_fact_embeddings(
             item["embedding"] = vector
             item["embedding_source_model"] = source_model
             item["embedding_native_dim"] = native_dim
+            item["extra_embeddings"] = await _extra_embeddings(
+                db,
+                _fact_embed_text(item),
+                user_id=user_id,
+                skip_model_id=_slot_model_id(db, source_model),
+            )
         else:
             item["embedding"] = None
         prepared.append(item)
@@ -1650,6 +1800,7 @@ def save_conversation_summary(
     is_encrypted: bool,
     when: datetime | None = None,
     claim_token: str | None = None,
+    extra_slots: list[dict[str, Any]] | None = None,
 ) -> ConversationSummary | None:
     """寫入或覆蓋這一則對話的摘要。呼叫端決定何時 commit。
 
@@ -1710,11 +1861,21 @@ def save_conversation_summary(
             params,
         )
         db.flush()
-        return (
+        saved = (
             db.query(ConversationSummary)
             .filter(ConversationSummary.conversation_id == conversation_id)
             .one()
         )
+        _record_embedding_slots(
+            db,
+            subject="summary",
+            subject_id=saved.id,
+            source_model=source_model,
+            vector=list(embedding) if embedding else None,
+            native_dim=native_dim if isinstance(native_dim, int) else None,
+            extra=extra_slots,
+        )
+        return saved
     row = existing
     if row is None:
         fields: dict[str, Any] = {
@@ -1745,6 +1906,15 @@ def save_conversation_summary(
         row.is_encrypted = is_encrypted
         row.updated_at = now
     db.flush()
+    _record_embedding_slots(
+        db,
+        subject="summary",
+        subject_id=row.id,
+        source_model=source_model,
+        vector=list(embedding) if embedding else None,
+        native_dim=native_dim if isinstance(native_dim, int) else None,
+        extra=extra_slots,
+    )
     return row
 
 
@@ -1959,6 +2129,14 @@ async def refresh_conversation(
         )
         if not _vector_is_finite(embedding):
             embedding = None
+            summary_extras: list[dict[str, Any]] = []
+        else:
+            summary_extras = await _extra_embeddings(
+                db,
+                summary,
+                user_id=conv.user_id,
+                skip_model_id=_slot_model_id(db, source_model),
+            )
         save_conversation_summary(
             db,
             user_id=conv.user_id,
@@ -1970,6 +2148,7 @@ async def refresh_conversation(
             native_dim=native_dim,
             is_encrypted=False,
             claim_token=token,
+            extra_slots=summary_extras,
         )
         # 摘要先提交。後面的事實寫入用另一個交易，失敗只丟事實。
         db.commit()

@@ -39,6 +39,7 @@ from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorS
 from app.api.ingestion.search import (  # noqa: E402
     _assert_index_matches_designation,
     _embed_query,
+    collect_chunk_hits,
 )
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.user import User
@@ -102,6 +103,7 @@ class KbResult:
     state: KbState
     hits: list[KbHit] = field(default_factory=list)
     failed_collections: list[int] = field(default_factory=list)
+    keyword_fallback: bool = False
 
 
 async def retrieve_institutional(
@@ -158,10 +160,24 @@ async def retrieve_institutional(
         for coll in collections
     ]
 
-    # 與 search.py 一致：有指定平台主 embedding 時，查詢與過濾都用它，這樣
-    # 跨庫的分數才在同一個向量空間裡（跨空間比大小是沒有意義的排序）。
-    designated = resolve_platform_embedding(db)
-    source_filter = designated.name if designated is not None else None
+    # 搜尋用的是「目前生效」的嵌入模型。重建進行中時那仍是上一個模型，
+    # 不是治理中心剛指定、還沒建完索引的那一顆。
+    source_filter = None
+    model_id = None
+    try:
+        from app.services.embedding_swap import search_model as active_embedding
+
+        active = active_embedding(db)
+    except Exception:
+        active = None
+    if active is not None and isinstance(getattr(active, "id", None), int):
+        source_filter = active.name
+        model_id = active.id
+    else:
+        designated = resolve_platform_embedding(db)
+        source_filter = designated.name if designated is not None else None
+        raw_id = getattr(getattr(designated, "model", None), "id", None)
+        model_id = raw_id if isinstance(raw_id, int) else None
 
     # 民國紀年／域內同義擴展 —— 院規正是它存在的理由（「105 年函頒」）。
     search_query = expand_query(db, query)
@@ -178,34 +194,58 @@ async def retrieve_institutional(
 
     hits: list[KbHit] = []
     failed: list[int] = []
+    keyword_fallback = False
     # 同一個 (模型, 維度) 只嵌入一次。標記時的檢查要求已標記集共用同一個嵌入
     # 模型，但那同樣是 T 時刻的檢查，所以這裡按實際欄位取用而不是假設只有一種。
     vectors: dict[tuple[str, int], list[float]] = {}
 
+    from app.services.embedding_keyword import maybe_rerank
+
     for target in targets:
         embed_model = source_filter or target.embedding_model
         cache_key = (embed_model, target.embedding_dim)
-        try:
-            vector = vectors.get(cache_key)
-            if vector is None:
+        embed_error = None
+        vector = vectors.get(cache_key)
+        if vector is None and cache_key not in vectors:
+            try:
                 vector = await _embed_query(
                     db, user, embed_model, target.embedding_dim, search_query
                 )
                 vectors[cache_key] = vector
-
+            except Exception as exc:  # noqa: BLE001 — 嵌入失敗改走關鍵字，不是整批中止
+                embed_error = exc
+                vectors[cache_key] = None
+                vector = None
+        elif vector is None:
+            embed_error = RuntimeError("embedding unavailable")
+        try:
             store = CollectionScopedPgVectorStore(pool, collection_id=target.id)
-            raw = await store.similarity_search(
-                query_embedding=vector,
+
+            async def _rerank(candidates, _store_query=search_query):
+                return await maybe_rerank(db, user, _store_query, candidates)
+
+            batch = await collect_chunk_hits(
+                store,
+                query=search_query,
+                query_vec=vector,
+                embed_error=embed_error,
+                model_id=model_id,
                 top_k=top_k,
                 min_score=threshold,
                 source_model=source_filter,
+                rerank=_rerank,
             )
+            raw = batch.hits
+            if batch.keyword_fallback:
+                keyword_fallback = True
             # 空集合的兩種意思要分開：真的沒有 vs 整庫索引在另一個嵌入空間。
             # 後者在單庫端點是 409；在這裡 409 只能弄死這一庫，不能中斷整批
             # ——所以它落在 try 裡面，變成 failed，而不是被吞成「沒命中」。
-            await _assert_index_matches_designation(
-                store, hits=raw, designated=source_filter, collection_id=target.id
-            )
+            # 側表與關鍵字路徑已經知道自己為什麼是空的，不再發這支 409。
+            if not batch.keyword_fallback and not batch.used_model_slots:
+                await _assert_index_matches_designation(
+                    store, hits=raw, designated=source_filter, collection_id=target.id
+                )
         except Exception as exc:  # noqa: BLE001 — 一庫的失敗不得中斷其餘的庫
             logger.warning(
                 "institutional_kb: collection %s 檢索失敗 (%s)",
@@ -251,10 +291,17 @@ async def retrieve_institutional(
 
     if failed and not hits:
         # ⚠ 這個 if 一定要在 PARTIAL_ERROR 前面，理由見模組 docstring。
-        return KbResult(state=KbState.SEARCH_ERROR, failed_collections=failed)
+        return KbResult(
+            state=KbState.SEARCH_ERROR,
+            failed_collections=failed,
+            keyword_fallback=keyword_fallback,
+        )
     if failed:
         return KbResult(
-            state=KbState.PARTIAL_ERROR, hits=hits, failed_collections=failed
+            state=KbState.PARTIAL_ERROR,
+            hits=hits,
+            failed_collections=failed,
+            keyword_fallback=keyword_fallback,
         )
     state = KbState.SEARCHED_HIT if hits else KbState.SEARCHED_MISS
-    return KbResult(state=state, hits=hits)
+    return KbResult(state=state, hits=hits, keyword_fallback=keyword_fallback)

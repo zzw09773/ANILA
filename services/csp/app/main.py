@@ -393,6 +393,9 @@ async def lifespan(app: FastAPI):
 
     memory_task = start_memory_idle_loop()
     retention_task = start_attachment_retention()
+    from app.services.embedding_swap import start_embedding_cleanup
+
+    embedding_cleanup_task = start_embedding_cleanup()
 
     provision_task = None
     if auto_provision_enabled():
@@ -449,6 +452,7 @@ async def lifespan(app: FastAPI):
         external_probe_task.cancel()
     memory_task.cancel()
     retention_task.cancel()
+    embedding_cleanup_task.cancel()
     await close_pool()
 
 

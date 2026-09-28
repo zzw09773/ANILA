@@ -1903,13 +1903,19 @@ async def set_platform_embedding(
         index_mismatch_warning = (
             f"平台主 embedding 已設為「{model.name}」，"
             f"但下列知識庫的索引是以其他模型建立的：{shown}。"
-            "檢索只會取用以現行模型建立索引的段落，"
-            "所以這些知識庫現在檢索不到任何內容——"
-            "它們在搜尋時會明確回報索引模型不一致，不會靜靜地回空結果。"
+            "搜尋會繼續用上一個模型，背景重新索引完成後才一次切換，期間不會空結果。"
             f"{revert_hint}"
-            "若確定要換模型，平台目前沒有重新索引的功能，"
-            "必須把這些知識庫裡的文件逐份刪除後重新上傳。"
+            "完成後 7 天內仍可改回上一個模型。"
         )
+
+    from app.services.embedding_swap import enqueue_rebuild, note_designation
+
+    designation = note_designation(
+        db,
+        target_id=model.id,
+        target_name=model.name,
+        previous_name=previous_name,
+    )
 
     log_audit_event(
         db,
@@ -1944,6 +1950,12 @@ async def set_platform_embedding(
     # shape this package exists to remove. The structured form lives in
     # the audit metadata above, which is durable and queryable.
     body["index_mismatch_warning"] = index_mismatch_warning
+    body["embedding_rebuild_started"] = bool(designation.get("rebuild_started"))
+    if designation.get("rebuild_started"):
+        try:
+            await enqueue_rebuild()
+        except Exception:
+            logger.warning("embedding rebuild enqueue failed", exc_info=True)
     return body
 
 
@@ -1973,6 +1985,44 @@ def unset_platform_embedding(
         commit=True,
     )
     return _build_response(model, caller=admin, db=db)
+
+
+@router.get("/embedding-rebuild")
+def get_embedding_rebuild(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Progress of the background re-embed, and whether rollback is still possible."""
+    del admin
+    from app.services.embedding_swap import snapshot
+
+    return snapshot(db)
+
+
+@router.post("/embedding-rebuild/rollback")
+def rollback_embedding_rebuild(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Cancel an in-flight rebuild, or switch search back while the old vectors remain."""
+    from app.services.embedding_swap import rollback
+
+    try:
+        body = rollback(db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    log_audit_event(
+        db,
+        actor=admin,
+        action="rollback_embedding_model",
+        resource_type="model",
+        resource_id=body.get("active_model_id"),
+        detail="切回上一個嵌入模型",
+        metadata=body,
+        commit=True,
+    )
+    return body
 
 
 @router.get("/{model_id}", response_model=ModelResponse)
