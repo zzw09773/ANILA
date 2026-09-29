@@ -87,13 +87,20 @@ def test_bad_config_setting_maps_to_bad_config_not_format_unsupported(
     這條採 factory 的結果「穿過 extract_text」——不是只釘建構時會拋——斷言
     到達使用者手上的是 E_PARSE_BAD_CONFIG、訊息指變數,而非「不支援 .pdf」。
     """
-    monkeypatch.setenv("DOC_PARSER", "docling")
-    monkeypatch.setenv("DOCLING_URL", "http://docling:9100")
+    from anila_core.ingestion.docling_source import (
+        DoclingEndpoint,
+        register_docling_source,
+        reset_docling_source,
+    )
+    import anila_core.ingestion.parser_registry as reg
+
+    reset_docling_source()
+    register_docling_source(
+        lambda: DoclingEndpoint("http://docling:9100", "tok")
+    )
     monkeypatch.setenv("DOCLING_TIMEOUT_SECONDS", "abc")
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "docling")
-    import anila_core.ingestion.parser_registry as reg
-
     monkeypatch.setattr(reg.ParserRegistry, "_docling_parser", None)
     monkeypatch.setattr(reg.ParserRegistry, "_docling_initialised", False)
 
@@ -106,3 +113,6 @@ def test_bad_config_setting_maps_to_bad_config_not_format_unsupported(
     # MEDIUM-A:設定名進 details(維運看得到),不進 body(使用者看不到)。
     assert "DOCLING_TIMEOUT_SECONDS" in str(excinfo.value.details)
     assert "DOCLING_TIMEOUT_SECONDS" not in excinfo.value.user_message
+    reset_docling_source()
+    ParserRegistry = reg.ParserRegistry
+    ParserRegistry._reset_docling_cache()

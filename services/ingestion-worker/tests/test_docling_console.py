@@ -56,6 +56,14 @@ def _isolated_source():
     ParserRegistry._reset_docling_cache()
 
 
+def test_unregistered_source_ignores_doc_parser_env(monkeypatch):
+    monkeypatch.setenv("DOC_PARSER", "docling")
+    monkeypatch.setenv("DOCLING_URL", "https://should-not-be-used.example.test")
+    monkeypatch.setenv("DOCLING_SERVICE_TOKEN", "tok")
+    parser = ParserRegistry.get("notes.pdf")
+    assert type(parser).__name__ == "PdfParser"
+
+
 def test_console_not_configured_uses_native_even_if_env_says_docling(monkeypatch):
     monkeypatch.setenv("DOC_PARSER", "docling")
     monkeypatch.setenv("DOCLING_URL", "https://should-not-be-used.example.test")

@@ -52,7 +52,6 @@ _PINNED_ENV: dict[str, str] = {
     "SECRET_KEY": "response-datetime-gate-not-a-real-secret",
     "ANILA_ALLOW_DEV_SECRET": "1",
     "ANILA_AUTH_MODE": "password",
-    "ANILA_DEPLOYMENT_PROFILE": "response-datetime-gate",
     "AUTO_REGISTER_MODELS": "",
     "AUTO_REGISTER_AGENTS": "",
     "AUTO_SEED_API_KEYS": "",

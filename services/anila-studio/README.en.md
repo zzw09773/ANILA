@@ -154,7 +154,7 @@ Subscribes to channel `anila:auth:token-revoke` (csp publishes). On Redis loss t
 | `JOB_STORE_KEY_PREFIX` / `JOB_STORE_TTL_SECONDS` | `anila-studio:jobs:` / `604800` (7 days) | Redis JobStore key prefix / TTL |
 | `STUDIO_ARTIFACT_REPORTING` | `true` | master switch for CSP artifact-job / artifact / trace-span reporting |
 
-> Generated images do not read a local backend URL. When the role is healthy, Studio posts to CSP `/v1/images/generations` with the caller's credential. When it is unset, slides ship without generated images. `geometric_qa.py` still reads `RENDERER_BASE_URL` from the environment.
+> Generated images do not read a local backend URL. When the role is healthy, Studio posts to CSP `/v1/images/generations` with the caller's credential. When it is unset, slides ship without generated images. `RENDERER_BASE_URL` and `ANILA_STUDIO_TWO_PASS` are read only from `app.config.Settings`.
 
 ---
 

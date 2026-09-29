@@ -13,9 +13,8 @@ and the anila-core SSRF guard. Three jobs:
    so the guard sees DB hosts on top of the ``ANILA_TRUSTED_HOSTS``
    env fallback.
 
-Env backfill (``backfill_from_env``) is insert-only. Revoke a host via
-the admin UI DELETE (``remove_host``); dropping it from the env does
-not delete the DB row. Env is only responsible for creation.
+開機不再把環境清單寫進這張表。compose 內部名稱（例如 docling、router）
+只經環境層信任。撤銷一筆仍走管理介面的 DELETE（``remove_host``）。
 
 The cache is process-local. Other CSP workers / replicas refresh on
 their own TTL tick (default 30s) — the eventual-consistency window
@@ -26,10 +25,8 @@ Acceptable because admin-driven add / remove isn't a hot path.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
-from typing import Iterable
 
 from sqlalchemy.orm import Session
 
@@ -185,50 +182,6 @@ def remove_host(db: Session, *, host_id: int, actor: User) -> bool:
     )
     _invalidate_cache()
     return True
-
-
-# ── env backfill (one-shot at startup) ────────────────────────────────────────
-
-
-def backfill_from_env(db: Session) -> int:
-    """Copy each comma-separated entry from ``ANILA_TRUSTED_HOSTS`` into
-    the DB if it doesn't already exist. Returns the number of newly
-    inserted rows.
-
-    Idempotent on the unique ``host`` column — running on every CSP boot
-    is fine. The env stays valid as a fallback after this; the DB just
-    becomes the recommended admin-facing source of truth.
-
-    Backfilled rows have ``created_by_user_id = NULL`` and a note that
-    documents the import — so admins reviewing the table can tell which
-    rows came from env vs which were admin-added.
-
-    One-way: env -> DB insert-if-missing. Removing a host from the env
-    does **not** delete the DB row. Revocation is UI DELETE
-    (``remove_host`` / ``DELETE /api/trusted-hosts/{id}``). Env is only
-    responsible for creation.
-    """
-    raw = os.environ.get("ANILA_TRUSTED_HOSTS", "").strip()
-    if not raw:
-        return 0
-    candidates = {h.strip().lower() for h in raw.split(",") if h.strip()}
-    if not candidates:
-        return 0
-    existing = {row[0].lower() for row in db.query(TrustedHost.host).all()}
-    to_insert: Iterable[str] = candidates - existing
-    inserted = 0
-    for host in to_insert:
-        row = TrustedHost(
-            host=host,
-            note="imported from ANILA_TRUSTED_HOSTS env at startup",
-            created_by_user_id=None,
-        )
-        db.add(row)
-        inserted += 1
-    if inserted:
-        db.commit()
-        _invalidate_cache()
-    return inserted
 
 
 # ── anila-core hookup (called once at app startup) ────────────────────────────

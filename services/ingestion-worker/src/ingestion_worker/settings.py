@@ -9,10 +9,9 @@ duplication.
   scoped INSERTs / UPDATEs, not DDL.
 - ``REDIS_URL`` is the queue. Single-DB, no auth, dev-default
   ``redis://redis:6379``.
-- ``EMBEDDING_BASE_URL`` + ``EMBEDDING_MODEL`` — OpenAI-compatible
-  endpoint. Sprint 1 pins the output dim to 1536 (truncated NV-embed-V2
-  via Matryoshka, or any other 1536-d model). The dim must match the
-  ``vector(1536)`` column or asyncpg raises at INSERT time.
+- ``EMBEDDING_BASE_URL`` — OpenAI-compatible endpoint, default
+  ``http://csp:8000/v1``. Output dim is 4000. The dim must match the
+  ``halfvec(4000)`` column or asyncpg raises at INSERT time.
 - ``UPLOAD_DIR`` — shared mount where CSP writes uploaded blobs and the
   worker reads them. Both services bind-mount the same host path.
 """
@@ -34,18 +33,19 @@ class WorkerSettings(BaseSettings):
     )
 
     embedding_base_url: str = Field(
-        default="http://host.docker.internal:7011/v1",
+        default="http://csp:8000/v1",
         description=(
-            "OpenAI-compatible embedding endpoint base URL. Default points at "
-            "the on-host embedding-proxy container (port 7011) which serves "
-            "nvidia/nv-embed-v2 with a /v1/embeddings shape."
+            "OpenAI-compatible embedding endpoint. Default is CSP /v1, "
+            "which is what compose also sets."
         ),
     )
     embedding_model: str = Field(
         default="",
         description=(
-            "Unused for ingest. The model name is the Console "
-            "platform_embedding role."
+            "Fallback name handed to Embedder when the caller omits "
+            "model_name. Ingest does not use it as the model: the platform "
+            "embedding role is resolved separately, and an unset role is "
+            "not filled from this value."
         ),
     )
     embedding_api_key: str = Field(
@@ -64,9 +64,10 @@ class WorkerSettings(BaseSettings):
     embedding_timeout_seconds: float = Field(
         default=30.0,
         description=(
-            "httpx timeout for ONE /v1/embeddings POST. NOT the same knob "
-            "as CSP's EMBEDDING_TIMEOUT: different variable, different "
-            "container, and the smaller of the two binds. At defaults this "
+            "This worker's own httpx deadline for one POST to CSP "
+            "/v1/embeddings (CSP then waits on Triton). Not the Console "
+            "setting proxy.embedding_timeout. Different variable, different "
+            "process, and the smaller of the two binds. At defaults this "
             "one (30 s) is shorter than CSP's whole-call budget (5 s "
             "channel-ready + 30 s = 35 s), and far shorter than CSP's three "
             "retries (~106.5 s), so the worker hangs up while CSP is still "
@@ -226,8 +227,8 @@ class WorkerSettings(BaseSettings):
         description="Bearer token; reuses the internal platform API key.",
     )
     relation_llm_verify_ssl: bool = Field(
-        default=False,
-        description="Verify TLS (dev CSP nginx uses a self-signed cert).",
+        default=True,
+        description="Verify TLS on the relation-LLM endpoint. Default on.",
     )
     relation_llm_timeout_seconds: float = Field(
         default=120.0,

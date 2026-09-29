@@ -6,9 +6,8 @@
   但 ``infra/compose/platform.yml`` 的 csp 區塊沒有那一行,而整棵樹**沒有
   任何 ``env_file:``** —— `.env` 只是 compose 的變數來源,不會整包灌進容器。
   結果是註冊 `grpc://` 端點一律 400,而 `.env` 裡明明寫著 1。
-- 第二次是 ``EMBEDDING_TIMEOUT``。runbook §3.1c 的排錯表與 ``triton_grpc``
-  的兩則錯誤訊息都叫操作者「調高 `EMBEDDING_TIMEOUT`」,那個變數同樣沒有進到
-  csp 容器:改 `.env`、`up -d csp`,`printenv` 是空的,行為一模一樣。
+- 嵌入與 LLM 逾時後來改由治理中心設定。compose 不再把那六個 Console
+  旋鈕注入 csp；氣隙仍可用行程環境變數後援，但不要加回 passthrough。
 
 兩次都**沒有任何錯誤訊息**。這正是本樹最貴的那條教訓的形狀:「讓使用者以為
 發生了什麼、後端卻收不到那個意圖」的控制項。所以這裡直接讀 compose 檔本身,
@@ -31,8 +30,6 @@ _PLATFORM_YML = _REPO_ROOT / "infra" / "compose" / "platform.yml"
 # 每一個都有「文件或程式的錯誤訊息叫操作者去設它」這個理由在後面。
 # 加新的一行進來以前先問:少了它,操作者照做會不會什麼都沒發生?
 _OPERATOR_KNOBS = [
-    # runbook §3.1c 排錯表 + client.py 兩則 DEADLINE_EXCEEDED 訊息。
-    "EMBEDDING_TIMEOUT",
     # runbook §3.1c 第 1 步 / .env.example。
     "ANILA_ALLOW_GRPC_ENDPOINT",
     # runbook §3.1c 第 2 步。
@@ -40,8 +37,6 @@ _OPERATOR_KNOBS = [
     # runbook §3.1b。
     "ANILA_ALLOW_HTTP_ENDPOINT",
     "ANILA_ALLOW_HTTP_AGENT_ENDPOINT",
-    # anila-studio ReadTimeout 那次的旋鈕。
-    "LLM_TIMEOUT",
     # 入向 Host 白名單仍必須出現在 compose（否則 library 預設 "*" 把檢查關掉）。
     # 值來自 ANILA_HOST，不再從同名的 ALLOWED_HOSTS 插值，所以不在下面那條
     # 「同名變數」檢查裡。
@@ -125,18 +120,39 @@ def test_the_knob_is_fed_from_the_same_named_variable(csp_environment, key):
     )
 
 
-def test_embedding_timeout_default_matches_the_application_default():
-    """compose 的預設值與 ``Settings.EMBEDDING_TIMEOUT`` 不可各說各話。
+_CONSOLE_SETTINGS_NOT_INJECTED = (
+    "LLM_TIMEOUT",
+    "EMBEDDING_TIMEOUT",
+    "ACCESS_TOKEN_EXPIRE_MINUTES",
+    "REFRESH_TOKEN_EXPIRE_DAYS",
+    "ANILA_ZH_NORMALIZE",
+    "ANILA_QUERY_EXPANSION",
+)
 
-    兩邊漂開的症狀是:沒設這個變數時,容器裡的值跟讀原始碼推出來的不一樣。
-    """
-    from app.config import settings
 
-    doc = yaml.safe_load(_PLATFORM_YML.read_text(encoding="utf-8"))
-    value = str(doc["services"]["csp"]["environment"]["EMBEDDING_TIMEOUT"])
-    # "${EMBEDDING_TIMEOUT:-30}" → 30
-    fallback = value.split(":-", 1)[1].rstrip("}")
-    assert int(fallback) == settings.EMBEDDING_TIMEOUT
+def _csp_env(path: Path) -> dict:
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    env = doc["services"]["csp"]["environment"]
+    assert isinstance(env, dict)
+    return env
+
+
+@pytest.mark.parametrize("key", _CONSOLE_SETTINGS_NOT_INJECTED)
+def test_console_settings_are_not_compose_injected(key):
+    """治理中心的設定只留登錄表的 env 後援，compose 不再注入。"""
+    for name in ("platform.yml", "dev.yml"):
+        env = _csp_env(_REPO_ROOT / "infra" / "compose" / name)
+        assert key not in env, f"{name} 的 csp 仍注入 {key}"
+
+
+def test_production_cors_default_is_empty_and_dev_lists_localhost():
+    prod = _csp_env(_PLATFORM_YML)
+    assert prod["ALLOWED_ORIGINS"] == "${ALLOWED_ORIGINS:-}"
+    dev = _csp_env(_REPO_ROOT / "infra" / "compose" / "dev.yml")
+    assert dev["ALLOWED_ORIGINS"] == (
+        "http://localhost:5173,http://localhost:3001,http://localhost:80,"
+        "http://localhost,https://localhost,https://localhost:4443"
+    )
 
 
 # ── 放寬旗標的「預設值」 ─────────────────────────────────────────────────────

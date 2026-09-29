@@ -58,7 +58,7 @@ docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pu
 COMPOSE_PROFILES=ops docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pull never n8n
 ```
 
-asr-gateway 跟平台一起啟動；解碼端屬模型側，在治理中心「外部服務」設定，沒設定或不健康時麥克風自己藏起來。Docling 跑在別台主機，所以 `docling-local` 不在這包裡。
+asr-gateway 跟平台一起啟動；解碼端在治理中心「外部服務」設定，沒設定或不健康時麥克風自己藏起來。文件解析也在別台，同樣在治理中心設定，這包不含文件解析服務。
 
 ## 手動回復
 

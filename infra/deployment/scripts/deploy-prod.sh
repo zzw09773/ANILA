@@ -39,18 +39,14 @@
 #   SECRET_KEY                憑證加密與登入簽章用的密鑰
 #   ANILA_HOST                站台名稱。Host 白名單與 nginx 都從它衍生
 #
-# 環境變數(可選):
-#   ANILA_REMOTE_MODELS=1   模型在別台主機:跳過本機 model container 檢查。
-#                           模型本身在治理中心登錄,這裡不探測 URL。
+# 模型只在別台，於治理中心登錄。這支腳本不檢查本機模型容器，也不建模型網路。
 #
 # 前置條件(腳本會自動 check):
 #   1. 現在 git branch 是 `prod`(避免不小心在 main 上跑)
 #   2. Docker daemon running
 #   3. docker compose v2 可用
-#   4. anila-models-net network 已存在(模型 stack 先起來)
-#   5. 模型服務(gemma4 / nv-embed-proxy)healthy
-#   6. share/pki 目錄存在(內網模型憑證)
-#   7. 必要 env 已設且非 dev fallback
+#   4. share/pki 目錄存在(內網模型憑證)
+#   5. 必要 env 已設且非 dev fallback
 # ============================================================================
 set -euo pipefail
 
@@ -132,55 +128,12 @@ check_env() {
          set -a; source /path/to/prod.env; set +a
          bash infra/deployment/scripts/deploy-prod.sh"
   fi
-  # Slice 6 旗標分域:少了 ANILA_ENV=production,「模型 http fail-closed」硬規則
-  # 不會生效(url_guard 以此判定 production)。不擋部署,但大聲提醒。
-  if [[ "${ANILA_ENV:-}" != "production" && "${ANILA_ENV:-}" != "prod" ]]; then
-    warn "ANILA_ENV 未設為 production — 正式模型 http fail-closed 守衛不會啟用;請在 .env 設 ANILA_ENV=production"
-  fi
   ok "必要 env 都已設且非 dev 值"
 }
 
 check_models_stack() {
-  # ── 遠端模型模式 (內網拓撲:模型在 10.53.100.12,平台在 10.53.100.15) ──
-  # ANILA_REMOTE_MODELS=1 → 本機沒有 models stack:跳過本機 container
-  # health,改 curl .env 給的 *_BASE_URL。compose 仍引用 external network
-  # anila-models-net (缺了 up 會失敗),這裡順手建一個空的。
-  if [[ "${ANILA_REMOTE_MODELS:-0}" == "1" ]]; then
-    if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-      log "遠端模型模式:建立空的 anila-models-net (compose external 引用需要)"
-      docker network create anila-models-net >/dev/null
-    fi
-    ok "anila-models-net network 存在 (remote-models mode)"
-    # 模型在治理中心登錄。這裡不讀 BASE_URL，也不把位址印出來。
-    return
-  fi
-
-  if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-    err "anila-models-net network 不存在"
-    fatal "請先起模型 stack:
-       bash infra/deployment/archive/model-side/model-serve.sh up trial
-       (確認 gemma4 / nv-embed-proxy 都 healthy)
-       模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
-  fi
-  ok "anila-models-net network 存在"
-
-  # 列必要的 model service,讓 user 看到 health
-  local need=(anila-model-gemma4 anila-model-nv-embed-proxy)
-  local degraded=0
-  for c in "${need[@]}"; do
-    local status
-    status=$(docker inspect "$c" --format '{{.State.Health.Status}}' 2>/dev/null || echo "missing")
-    case "$status" in
-      healthy)   ok "$c: healthy" ;;
-      starting)  warn "$c: starting (尚未就緒)" ; degraded=1 ;;
-      unhealthy) warn "$c: unhealthy(csp 對它的依賴可能 degraded)" ; degraded=1 ;;
-      missing)   err "$c: 沒 running"; degraded=1 ;;
-      *)         warn "$c: $status"; degraded=1 ;;
-    esac
-  done
-  if (( degraded > 0 )); then
-    warn "部分模型服務未就緒,csp 仍可起來但 chat/embedding 會失敗"
-  fi
+  # 模型只在別台，於治理中心登錄。沒有本機模型容器可查，也不建網路。
+  ok "模型在別台，於治理中心登錄；這裡不檢查本機模型容器"
 }
 
 check_dirs() {

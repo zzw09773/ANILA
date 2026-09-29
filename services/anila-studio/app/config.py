@@ -26,8 +26,10 @@ class Settings(BaseSettings):
     # ``X-CSP-Service-Token`` by job_reporting.py / revocation_cache.py.
     CSP_SERVICE_TOKEN: str = ""
 
-    # pptx-renderer HTTP base (Node.js service)
+    # pptx-renderer HTTP base (Node.js service)。全服務只讀這一欄。
     RENDERER_BASE_URL: str = "http://pptx-renderer:7100"
+    # 先出大綱再逐頁。false／0／no／off 關閉。
+    ANILA_STUDIO_TWO_PASS: bool = True
 
     # Redis URL — same instance csp publishes token-revoke events on.
     REDIS_URL: str = "redis://redis:6379/0"
@@ -46,8 +48,9 @@ class Settings(BaseSettings):
     # generation prompts can hit 10K+ input tokens (RAG chunks + spec
     # schema + hierarchy bullet examples + theme rules) and emit 2-5K
     # output tokens. Observed gemma4 wall-clock: 60-240s per call.
-    # csp itself defaults LLM_TIMEOUT=300 internally — production stack
-    # must override that env to ≥300 alongside this setting.
+    # LLM 逾時在治理中心設定頁（proxy.llm_timeout；登錄表的環境回退名是
+    # LLM_TIMEOUT，compose 不再注入）。INTERNAL_LLM_TIMEOUT_SECONDS 是
+    # studio 自己打 CSP 的 HTTP 用戶端逾時。
     INTERNAL_LLM_TIMEOUT_SECONDS: float = 300.0
 
     # Persistence root for non-PPTX artifacts (report HTML/PDF/DOCX, mindmap

@@ -5,12 +5,6 @@
 **已接線**：``router``（2026-09-02，`api/router_server.py` 送上游的每一通
 主模型呼叫都帶這一列；呼叫端請求本身有帶 temperature／max_tokens 時以呼叫端為準）、
 ``chips``（``PromptSuggestion``）。
-
-**建議值（尚未接線）**：``rag_qa``／``chat``／``json_gen``／``title``——表內數字
-供後續入口收斂時對齊；改它們**不會**改變今日執行行為。§9b 實測：gemma4
-家思考變體單題 reasoning 就燒 420–1258 completion tokens，因此建議地板
-偏高（chips≥1024、chat／json≥2048、rag_qa≥4096），避免
-``finish_reason=length``＋空 content 的靜默失敗。
 """
 
 from __future__ import annotations
@@ -29,11 +23,7 @@ TASK_SAMPLING: dict[str, SamplingDefaults] = {
     # 4096 會被思考變體先燒光，長 HTML 寫到一半就 length。預設對齊
     # LENGTH_RETRY_CAP，治理中心模型列仍可覆寫。
     "router": SamplingDefaults(temperature=0.3, max_tokens=32768),  # 已接線
-    "rag_qa": SamplingDefaults(temperature=0.2, max_tokens=4096),  # 建議值（尚未接線）
-    "chat": SamplingDefaults(temperature=0.4, max_tokens=2048),  # 建議值（尚未接線）
     "chips": SamplingDefaults(temperature=0.4, max_tokens=1024),  # 已接線
-    "json_gen": SamplingDefaults(temperature=0.15, max_tokens=2048),  # 建議值（尚未接線）
-    "title": SamplingDefaults(temperature=0.3, max_tokens=1024),  # 建議值（尚未接線）
 }
 
 

@@ -32,12 +32,6 @@ FLOOR_RULES = (
         "CVE-2026-54283 remains in every Starlette release below 1.3.1.",
     ),
     (
-        "services/asr-decoder/pyproject.toml",
-        "starlette",
-        "1.3.1",
-        "CVE-2026-54283 remains in every Starlette release below 1.3.1.",
-    ),
-    (
         "services/asr-gateway/pyproject.toml",
         "starlette",
         "1.3.1",
@@ -60,12 +54,6 @@ FLOOR_RULES = (
         "arq",
         "0.26",
         "Arq 0.26 is the first release with the Pydantic v2-compatible JobResult model.",
-    ),
-    (
-        "services/asr-decoder/pyproject.toml",
-        "faster-whisper",
-        "1.0",
-        "the decoder contract is tied to the CTranslate2-backed faster-whisper runtime.",
     ),
     (
         "services/asr-gateway/pyproject.toml",

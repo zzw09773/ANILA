@@ -23,15 +23,10 @@ class Settings(BaseSettings):
     # Admin Account
     ADMIN_PASSWORD: str = "changeme"
 
-    # Proxy Timeouts (seconds)
-    EMBEDDING_TIMEOUT: int = 30
-    LLM_TIMEOUT: int = 300
-
     # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
-    # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的
-    # https /v1 gateway,該 gateway 的 /v1 全路由要 Authorization: Bearer。
-    # 只注入 model 呼叫 (llm/embedding);agent dispatch 不帶,
-    # 避免 key 外流給第三方 agent。
+    # 模型不直連，走治理中心登記的 https /v1 gateway。該 gateway 的
+    # /v1 要 Authorization: Bearer。只注入 model 呼叫 (llm/embedding);
+    # agent dispatch 不帶，避免 key 外流給第三方 agent。
     MODEL_GATEWAY_API_KEY: str = ""
 
     # 警報寄信在治理中心「警報」頁設定，不讀環境變數。
@@ -57,12 +52,10 @@ class Settings(BaseSettings):
     # Site URL (for external access, used by platform links)
     SITE_URL: str = "http://localhost"
 
-    # CORS allowlist. Comma-separated origins the browser is allowed to
-    # send credentialed requests from. Required when serving the SPA from
-    # a different origin than the API (e.g. Vite dev server on :5173).
-    # Wildcard "*" is not allowed together with credentials, so this must
-    # be an explicit list in any deployment that uses the cookie flow.
-    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443"
+    # CORS。逗號分隔。正式預設空字串＝只允許同源。
+    # 本機開發來源寫在 infra/compose/dev.yml，不放在這個預設值。
+    # 不允許 "*" 搭配 credentials。
+    ALLOWED_ORIGINS: str = ""
 
     # Incoming Host-header allow-list (anti Host-header-injection /
     # cache-poisoning). Comma-separated hostnames; "*" disables the check.
@@ -88,29 +81,8 @@ class Settings(BaseSettings):
     # Format: '[{"username":"smoke-user","key":"sk-...","models":["gpt-4o-mini"],"agents":["rag-agent"]}]'
     AUTO_SEED_API_KEYS: str = ""
 
-    # P1.1 — 部門樹最大層數。SYSTEM-MAP 定「院 → 所 → 組」三層,但院內實際
-    # 編制若有第四層(例如處下設科),改這個值即可,不必動程式碼。
-    # ⚠ 只影響新建與 re-parent 的檢查;調低不會回溯處理既有超深節點。
-    ANILA_DEPARTMENT_MAX_DEPTH: int = 3
-
     # OW-1 — max sibling variants under the same parent_id (edit-re-ask /
     # regenerate forks). Exceed → 409. docs/plans/ow1-message-tree-blueprint.md
-    # OW-3 — 訊息級自訂動作（宣告式 prompt 模板；無執行面）。
-    # 每使用者每分鐘 invoke 上限（進程內固定視窗，非叢集）。
-    ANILA_ACTION_INVOKE_PER_MIN: int = 20
-
-    # P1.5 — attachment context budget
-    # model_registry.context_window 目前種子皆 NULL，以此為後備。
-    # 對話內附件可佔用的 context window 比例。
-    # DELIBERATE: conversation history is NOT subtracted dynamically from
-    # the attachment budget. The 0.7 ratio exists precisely so attachments
-    # can never occupy more than 70% of the window, leaving the remaining
-    # 30% as the allowance for history, the current question and the
-    # answer. A budget that shrank as the conversation grew would make
-    # the capacity meter a moving target and could retroactively evict an
-    # already-admitted document. Conversations that outgrow the remaining
-    # 30% are the separate 'conversation too long' problem (out of scope).
-    ANILA_ATTACHMENT_BUDGET_RATIO: float = 0.7
 
     # 中科院憑證卡登入 (branch: SSO)
     # 內網 production:唯一登入方式 = 憑證卡 (中華電信 HiPKI 本機元件 + 中科院

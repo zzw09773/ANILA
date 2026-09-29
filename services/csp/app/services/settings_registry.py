@@ -190,7 +190,8 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_INT,
         _closed_int_range(1, 3600),
         300,
-        "LLM 呼叫逾時秒數。允許 1–3600 秒。思考型模型常超過 120 秒才開始輸出。",
+        "LLM 呼叫逾時秒數。允許 1–3600 秒。思考型模型常超過 120 秒才開始輸出。"
+        "氣隙可改環境變數 LLM_TIMEOUT；compose 不再注入。",
     ),
     _spec(
         "proxy.embedding_timeout",
@@ -198,7 +199,10 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_INT,
         _closed_int_range(1, 3600),
         30,
-        "嵌入呼叫逾時秒數。允許 1–3600 秒。",
+        "嵌入呼叫逾時秒數。允許 1–3600 秒。"
+        "Triton 整通還要再加上通道就緒的 5 秒。"
+        "worker 的 EMBEDDING_TIMEOUT_SECONDS 是另一個鐘，取較短的那個。"
+        "氣隙可改環境變數 EMBEDDING_TIMEOUT；compose 不再注入。",
     ),
     _spec(
         "auth.access_token_expire_minutes",
@@ -240,7 +244,8 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_INT,
         _closed_int_range(1, 10),
         3,
-        "部門樹最大層數。允許 1–10 層。",
+        "部門樹最大層數。允許 1–10 層。"
+        "只影響新建與改上層；調低不會回溯既有較深的節點。",
     ),
     _spec(
         "limits.action_invoke_per_min",
@@ -248,7 +253,8 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_INT,
         _closed_int_range(1, 10000),
         20,
-        "每使用者每分鐘的自訂動作呼叫上限。允許 1–10000 次。",
+        "每使用者每分鐘的自訂動作呼叫上限。允許 1–10000 次。"
+        "各 process 自己的視窗，不是全平台加總。",
     ),
     _spec(
         "limits.attachment_budget_ratio",
@@ -256,7 +262,9 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_FLOAT,
         _closed_float_range(0.0, 1.0),
         0.7,
-        "附件可佔用 context window 的比例。允許 0–1（兩端都含）。",
+        "附件可佔用 context window 的比例。允許 0–1（兩端都含）。"
+        "對話紀錄不從這個比例扣；調低不會把已經收進的附件趕出。"
+        "剩下的空間留給歷史、當下的問題與回答。",
     ),
     _spec(
         "intl.zh_normalize",

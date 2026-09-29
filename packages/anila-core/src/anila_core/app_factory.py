@@ -13,7 +13,7 @@ Usage::
 
 Environment variables (see config.py for the full list)::
 
-    LLM_URL = https://172.16.120.35/v1
+    LLM_URL =
     MODEL   = (empty unless set to a model registered in CSP)
     API_KEY = (optional bearer token for ApiKeyMiddleware)
 """

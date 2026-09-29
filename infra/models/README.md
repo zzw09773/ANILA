@@ -92,7 +92,7 @@ docker compose -f infra/models/docker-compose.yml down
 
 ## 與平台 / Model Gateway 的邊界
 
-CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs/04-model-gateway-design.md)）** 才是「註冊、路由、per-model API Key、5-state 健康、`ANILA_ENV` http fail-closed、分類限制、usage trace」的所在。本 compose 只**提供上游端點**，兩件事分層：
+CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs/04-model-gateway-design.md)）** 才是「註冊、路由、per-model API Key、5-state 健康、`ANILA_ALLOW_HTTP_ENDPOINT` 拒絕 http、分類限制、usage trace」的所在。本 compose 只**提供上游端點**，兩件事分層：
 
 - **同機 docker DNS 上游（本 compose）**：`gpt-oss-20b` / `gemma4` / `nv-embed-proxy` 由平台 seed 註冊進 CSP model registry；同網內免 API Key。`nv-embed-triton` 不直接註冊，只由 `nv-embed-proxy` 內部連。生圖模型在治理中心指定，不在這份 compose。
 - **跨機模型（doc 04 的主場景）**：不同內網主機（如 `.12` gateway）的模型走 HTTPS + per-model API Key，由 CSP Model Gateway 代理——那條路徑的憑證／健康／fail-closed 治理在 CSP，不在本 compose。

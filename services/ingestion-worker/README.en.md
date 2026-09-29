@@ -211,25 +211,25 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | parallelism / timeout / skip caption above size |
 | `ENABLE_RELATION_LLM` | `true` | LLM relation-extraction master switch |
 | `RELATION_LLM_URL` | `""` | empty string disables LLM edges |
-| `RELATION_LLM_API_KEY` / `RELATION_LLM_VERIFY_SSL` | `not-set` / `false` | token / TLS. The model is the Console summary role; unset skips LLM relations |
+| `RELATION_LLM_API_KEY` / `RELATION_LLM_VERIFY_SSL` | `not-set` / `true` | token / TLS. The model is the Console summary role; unset skips LLM relations |
 | `RELATION_LLM_TIMEOUT_SECONDS` / `RELATION_LLM_MAX_CHARS` / `RELATION_LLM_MAX_CANDIDATES` | `120.0` / `12000` / `200` | timeout / input cap / candidate cap |
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding similarity-edge master switch |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | K nearest neighbours per doc / cosine floor / skip recompute above N |
-| `DOC_PARSER` / `DOCLING_OCR_LANGS` | `native` / `ch_tra,en` | Docling routing and OCR languages; read directly by anila-core, provided by compose |
+| `DOCLING_OCR_LANGS` | `ch_tra,en` | OCR languages for the remote parser. Whether to call Docling comes from the console, not `DOC_PARSER` |
 
-> `SECRET_KEY`, `ANILA_ENV`, and `ANILA_ALLOW_*` are consumed by `anila-core` security modules (credential decrypt / SSRF / http-endpoint fail-closed); compose injects them from the environment.
+> `SECRET_KEY` and `ANILA_ALLOW_*` are consumed by `anila-core` security modules (credential decrypt / SSRF / http-endpoint fail-closed); compose injects them from the environment.
 
 ---
 
 ## Relationship to other services
 
-- **CSP (governance center)**: upstream. Enqueues jobs + polls progress. **Embedding / VLM / relation-LLM calls are all routed through the CSP `/v1` proxy** (compose points at `http://csp:8000/v1`), so CSP's `proxy_service` writes `token_usage` centrally and the worker never meters itself (the `user_id` handed to `embed()` is immediately `del`'d). It authenticates to CSP with the **`ingestion-worker` system API key** (CSP writes the credential file; the worker only reads it). Before every outbound call, `anila-core` applies http-endpoint fail-closed + SSRF checks keyed on `ANILA_ENV` / `ANILA_ALLOW_*`.
+- **CSP (governance center)**: upstream. Enqueues jobs + polls progress. **Embedding / VLM / relation-LLM calls are all routed through the CSP `/v1` proxy** (compose points at `http://csp:8000/v1`), so CSP's `proxy_service` writes `token_usage` centrally and the worker never meters itself (the `user_id` handed to `embed()` is immediately `del`'d). It authenticates to CSP with the **`ingestion-worker` system API key** (CSP writes the credential file; the worker only reads it). Before every outbound call, `anila-core` applies http-endpoint fail-closed + SSRF checks keyed on `ANILA_ALLOW_*`.
 - **csp-db**: connects as `csp_app` (RLS-bound); RLS-scoped writes use `SET LOCAL anila.collection_id`. Reads documents / collections / eval_runs / user_llm_credentials; writes chunks / images / `document_relations` / status / counts.
 - **Redis**: the Arq queue backend.
 - **Shared upload dir**: CSP writes, worker reads; captioned images land in `<UPLOAD_DIR>/anila-images/<doc_id>/`.
 - **User credentials for judge / relation LLM**: user-supplied credentials (`user_llm_credentials`, AES) are decrypted just-in-time; `validate_outbound_url` (SSRF) runs before egress, and the credential object's `__repr__` masks the key.
 
-> This worker predates the redesign's Task spine / Full Trace / Artifact contract and **does not** participate in them: it reads no `X-ANILA-Task-Id`, emits no trace spans, and sets no classification level. Its only redesign touch-points are the §17.1 layout, the compose shim, and the CSP Model Gateway key + `ANILA_ENV` fail-closed egress guards.
+> This worker predates the redesign's Task spine / Full Trace / Artifact contract and **does not** participate in them: it reads no `X-ANILA-Task-Id`, emits no trace spans, and sets no classification level. Its only redesign touch-points are the §17.1 layout, the compose shim, and the CSP Model Gateway key plus `ANILA_ALLOW_*` egress guards.
 
 ---
 

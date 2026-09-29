@@ -95,10 +95,8 @@ _DEFAULT_CA_BUNDLE = Path(__file__).resolve().parent / "cspki_ca_bundle.pem"
 # 而且效期只有 30 天。CARD_CA_BUNDLE_PATH 指到不存在的檔 → CardConfigError →
 # 卡登全部 fail-closed 並在 log 大聲抱怨,不會靜默降級。
 #
-# 刻意**不**用 ``ANILA_ENV=production`` 當判準:本機開發樹自己就設了
-# ``ANILA_ENV=production``(為了讓模型端點的 http fail-closed 政策跟內網一致),
-# 綁它會讓開發機永遠走不完卡登流程,然後有人就會去把 ANILA_ENV 拔掉 ——
-# 那等於為了卡登去鬆綁 SSRF 政策,得不償失。
+# 卡登的開發放行只看上面那幾個明確旗標。不要另用部署姿態變數當判準，
+# 以免為了走完卡登流程而把 SSRF 政策一起鬆掉。
 _DEV_TEST_CA_MARKER_ORG = "ANILA DEV TEST CA - DO NOT TRUST"
 
 _TRUTHY = ("1", "true", "yes")

@@ -1,6 +1,6 @@
 # asr-gateway
 
-串流語音輸入的 WebSocket 端點。瀏覽器麥克風 → 切句 → 打 `asr-decoder` 解碼 →
+串流語音輸入的 WebSocket 端點。瀏覽器麥克風 → 切句 → 打治理中心設定的遠端解碼器 →
 把文字推回前端。**純 CPU、無 GPU、無 DB。**
 
 整體架構、WS 協定、實測證據、部署步驟見
@@ -8,7 +8,7 @@
 
 ## 職責邊界
 
-| 在 gateway | 在 decoder(`services/asr-decoder`) |
+| 在 gateway | 在遠端解碼器（治理中心「外部服務」） |
 |---|---|
 | WS 連線、JWT 驗證、per-user 併發 | faster-whisper 解碼 |
 | webrtcvad 切句、partial/final 節奏 | 無狀態:收 PCM、回文字 |
@@ -87,17 +87,14 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 
 ## 環境變數
 
+解碼位址、協定與憑證來自治理中心「外部服務」的語音那一筆。沒有 `ASR_DECODE_URL`，平台裡也沒有 `asr-decoder`。能打哪些主機由治理中心「信任主機」決定，gateway 自己的清單是空的。
+
 | 變數 | 預設 | 說明 |
 |---|---|---|
-| `ASR_DECODE_URL` | (必填) | 解碼端位置。本地 `http://asr-decoder:9000`;外部 `https://<host>[/v1]`。CSP 無 asr-primary 時的 fallback。**會過 SSRF guard**(見下)。 |
-| `ASR_DECODE_PROTOCOL` | `native` | `native`(裸 PCM + `X-Token`)或 `openai`(multipart WAV + `Bearer`)。**值不合法直接開不了機**。 |
-| `ASR_DECODER_TOKEN` | native 必填 | 與本地 decoder 共享的密鑰,兩邊同值。換機器時新機必須部署同一 token,否則 `/asr/health` 回 `decoder_unauthorized`。 |
-| `ASR_DECODE_API_KEY` | openai 必填 | 送成 `Authorization: Bearer`。治理中心那筆 asr 模型若自帶 `api_key` 以它優先。⚠ 祕密:不進 log / health / 錯誤訊息。 |
-| `ASR_OPENAI_MODEL` | `whisper-1` | multipart 的 `model` 欄位,名稱由對方端點決定。 |
-| `ASR_DECODE_URL_TTL` | `60` | 重讀 CSP asr-primary 的間隔(秒)。走 pydantic Settings,不是 import 時讀 `os.environ`。 |
+| `ASR_DECODE_URL_TTL` | `60` | 重讀治理中心語音外部服務的間隔(秒)。 |
 | `ASR_PROBE_TIMEOUT_SECONDS` | `8` | `/asr/health` 探針的總 timeout。舊值寫死 2.0s(同機時代),跨 WAN 會誤報 `decoder_unreachable` 並藏掉一支能用的麥克風。 |
 | `ASR_PROBE_CONNECT_TIMEOUT_SECONDS` | `3` | 同上,連線階段。對齊 `INTERNAL_TIMEOUT_CONNECT`。 |
-| `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT` / `ANILA_TRUSTED_HOSTS` | — | `anila_core` SSRF guard 讀的三個旗標。compose 會自動把 `asr-decoder` 併進本服務的 trusted hosts。 |
+| `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT` | — | 出向檢查允許的連線種類。主機名單在治理中心，compose 不寫入解碼主機。 |
 | `ASR_INITIAL_PROMPT` | `以下是繁體中文。` | 通用 prompt,非領域詞典。 |
 | `ASR_BEAM_SIZE` | `5` | final 解碼的 beam。 |
 | `ASR_PARTIALS_ENABLED` | `1` | 負載旋鈕:設 0 只留定稿,GPU 壓力大減。 |
@@ -109,16 +106,16 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 > 程式在讀,而名字讀起來像一個安全旗標(維運者設 0 會以為自己關掉了 http)。
 > 紀錄在 `docs/FAKE-CONTROLS.md` #31。舊 `.env` 留著那一行不會壞。
 
-### 本地與外部,兩條都是一等公民
+### native 與 openai
 
-擁有者的要求原話是「不論是本地還是外部伺服器都要可以連線」。
+協定由治理中心「外部服務」那一筆決定。兩種都打遠端解碼器，平台裡沒有本機解碼服務。
 
 | | native | openai |
 |---|---|---|
 | 路徑 | `POST {base}/transcribe` | `POST {base}/v1/audio/transcriptions` |
 | body | 無標頭 Int16 mono PCM @16k | multipart,`file` 是 **16k/mono/int16 的 WAV** |
 | 認證 | `X-Token: <shared secret>` | `Authorization: Bearer <key>` |
-| 用在 | 本地 `services/asr-decoder`、手提氣隙 bundle | 算力中心的 API 端點 |
+| 用在 | 講 ANILA native 契約的遠端解碼器 | 算力中心的 API 端點 |
 | 健康探針 | `GET /health` + 帶祕密的 `/transcribe` | 100 ms 靜音的真實辨識請求 |
 
 ⚠ **WAV framing 是 gateway 的責任,不是對方猜**。少了那 44 bytes,寬鬆的實作
@@ -131,20 +128,14 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 
 ### 出向檢查(SSRF guard)
 
-解碼位址的**兩個**採用點都過 `anila_core.security.url_guard.validate_outbound_url`
-(`endpoint_kind='model'`):啟動時的 `ASR_DECODE_URL`,以及執行中 CSP asr-primary
-指派的位址。在此之前**環境變數那條任何一層都沒驗**——解碼端還在同一台機器時
-被「operator 自己設的」擋著,一旦位址可以指到院外,它就會是平台唯一跳過 guard
-的模型呼叫。
+解碼位址採用前過 `anila_core.security.url_guard.validate_outbound_url`
+(`endpoint_kind='model'`)。位址只來自治理中心「外部服務」,沒有環境變數退路。
 
 - http 由 `ANILA_ALLOW_HTTP_ENDPOINT` 決定,跟其他 model endpoint **同一個旗標**。
-- 本地 `http://asr-decoder:9000` 是單標籤 docker 服務名,guard 一律擋;
-  platform.yml 把 `asr-decoder` 併進本服務的 `ANILA_TRUSTED_HOSTS` 放行 ——
-  那是 guard 文件寫明給 operator 的機制,**不是把檢查關掉**。
+- 信任主機來自治理中心。gateway 不把 `asr-decoder` 或任何預設主機加進清單。
 - guard **沒有為了 ASR 放寬任何一條**。迴環 / cloud metadata / link-local 一律擋。
-- ⚠ **本地語音因此也依賴 `ANILA_ALLOW_HTTP_ENDPOINT=1`。** 把它收成 `0` 的站台
-  會在**啟動時**被 reason=`scheme` 擋下 —— `ANILA_TRUSTED_HOSTS` 救不了,scheme
-  檢查排在主機名檢查前面。分診表見 `docs/runbooks/asr-voice-input.md` §3c。
+- ⚠ **純 http 的解碼位址仍要 `ANILA_ALLOW_HTTP_ENDPOINT=1`。** 把它收成 `0` 的站台
+  會被 reason=`scheme` 擋下。信任主機救不了,scheme 檢查排在主機名檢查前面。
 - ⚠ **image 裡的 guard 是 build 時的拷貝,會跟 repo 漂開。** 沒有 bind mount、
   `up -d` 不重建 → 改了 `packages/anila-core/.../url_guard.py` 之後只 `up -d`,
   這個服務仍在跑舊規則,**而且沒有任何錯誤訊息**。指紋在
@@ -152,9 +143,8 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 
 ### 解碼端憑證從哪來
 
-1. 治理中心那筆 asr 模型自帶的 `api_key`(加密的 `api_key_secret_ref`)——
-   只在**服務權杖**通道上回傳,人類呼叫者永遠拿不到。
-2. 沒有的話才用環境變數(`ASR_DECODER_TOKEN` / `ASR_DECODE_API_KEY`,依協定)。
+憑證來自治理中心「外部服務」語音那一筆,只在**服務權杖**通道上回傳,
+人類呼叫者永遠拿不到。沒有這筆就不送,不退回環境變數。
 
 ⚠ 刻意**不吃** `MODEL_GATEWAY_API_KEY` 全域退路 —— 不論是「這筆沒掛金鑰」還是
 「掛了但**解不開**」。csp 端用的是 `_asr_row_own_key`(直接解信封、失敗回 `None`),
@@ -183,8 +173,8 @@ python3 -m venv .venv
 ## 安全
 
 - **音訊零落地**:PCM 只在記憶體流轉,不寫檔、不進 log。log 只記 metadata。
-- **不弱化 SSRF/卡登/JWT 信任錨**:gateway 出向只有解碼端一個目的地(環境變數
-  或治理中心指派),兩者都過 `validate_outbound_url`;程式內無任何由 client
+- **不弱化 SSRF/卡登/JWT 信任錨**:gateway 出向只有解碼端一個目的地,位址來自
+  治理中心,採用前過 `validate_outbound_url`;程式內無任何由 client
   決定目的地的請求。
 - **祕密不外流**:解碼端憑證不進 log、不進 `/asr/health`、不進送給前端的
   錯誤訊息(`decode_client._redact` / `decode_probe._redact`)。

@@ -16,7 +16,7 @@ uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.1
 # pydantic-settings 2026-08-08 由 2.7.1 前進到 2.14.2:不是為了新功能,是為了
-# 收斂 —— ingestion-worker／router／asr-gateway／asr-decoder／anila-studio 五個
+# 收斂 —— ingestion-worker／router／asr-gateway／anila-studio 四個
 # 容器早就跑在 2.14.2(它們的 spec 是 `>=2.2` 之類的下限),同一個平台的同一套
 # 設定庫不該有兩個版本進氣隙 wheelhouse。2.15.0(2026-08-07)刻意不追。
 pydantic-settings==2.14.2

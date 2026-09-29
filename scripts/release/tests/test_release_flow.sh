@@ -1271,7 +1271,7 @@ test_optional_service_commands_name_compose_file_and_project() {
   grep -q 'current/compose.yaml' "$script" || { echo "啟動指令沒有 compose 檔"; return 1; }
   grep -q 'compose_project' "$script" || return 1
   grep -q 'current/compose.yaml' "$doc" || { echo "UPDATE.md 的指令沒有 compose 檔"; return 1; }
-  grep -q 'docling-local' "$doc" || { echo "沒有說明 docling-local 不在出貨包"; return 1; }
+  grep -q '這包不含文件解析服務' "$doc" || { echo "沒有說明文件解析不在出貨包"; return 1; }
   grep -q '硬連結' "$doc" || { echo "沒有說明快照的磁碟影響"; return 1; }
 }
 

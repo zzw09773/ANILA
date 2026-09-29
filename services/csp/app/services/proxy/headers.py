@@ -214,8 +214,8 @@ def _apply_gateway_auth(headers: dict, api_key: Optional[str] = None) -> dict:
     ``api_key`` 為 None(既有呼叫端 / 測試)時退回全域
     ``MODEL_GATEWAY_API_KEY``;Slice 6a 起呼叫端傳入
     ``resolve_model_gateway_key(model)`` 讓 per-model secret ref 優先。
-    非空才動作 — 內網拓撲下模型在 10.53.100.12 的 My-OpenAI-Frontend gateway
-    後面,/v1 全路由要 ``Authorization: Bearer``。呼叫端負責 scope:只用在
+    非空才動作 — 模型 gateway 的 /v1 要 ``Authorization: Bearer``。
+    呼叫端負責 scope:只用在
     model 呼叫,agent dispatch 不帶 (key 不該外流給第三方 agent)。
     不覆蓋既有 Authorization。
     """

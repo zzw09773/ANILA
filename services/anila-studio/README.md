@@ -165,7 +165,7 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `JOB_STORE_KEY_PREFIX` / `JOB_STORE_TTL_SECONDS` | `anila-studio:jobs:` / `604800`（7 天） | Redis JobStore key 前綴 / TTL |
 | `STUDIO_ARTIFACT_REPORTING` | `true` | CSP artifact-job / artifact / trace span 回報總開關 |
 
-> 生圖不讀本機位址。角色健康時，Studio 用呼叫者的憑證打 CSP `POST /v1/images/generations`。沒設就不配生成圖片。`geometric_qa.py` 仍直接讀 `RENDERER_BASE_URL`。
+> 生圖不讀本機位址。角色健康時，Studio 用呼叫者的憑證打 CSP `POST /v1/images/generations`。沒設就不配生成圖片。`RENDERER_BASE_URL` 與 `ANILA_STUDIO_TWO_PASS` 只讀 `app.config.Settings`。
 
 ---
 

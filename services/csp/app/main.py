@@ -366,29 +366,13 @@ async def lifespan(app: FastAPI):
     from app.services.auto_seed import auto_seed
     auto_seed()
 
-    # Trusted-host allow-list: backfill ANILA_TRUSTED_HOSTS env into the
-    # new DB table (idempotent on unique constraint), then register the
-    # cache provider with anila-core's SSRF guard so URL validation sees
-    # admin-managed hosts on top of the env fallback.
-    from app.database import SessionLocal as _SessionLocal
+    # 信任主機：治理中心的表，再加上 ANILA_TRUSTED_HOSTS 環境層。
+    # 開機不再把環境清單寫進表。
     from app.services import trusted_host_service
-    _db = _SessionLocal()
-    try:
-        inserted = trusted_host_service.backfill_from_env(_db)
-        if inserted:
-            logging.getLogger(__name__).info(
-                "trusted_hosts: backfilled %d host(s) from ANILA_TRUSTED_HOSTS env",
-                inserted,
-            )
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "trusted_hosts: env backfill failed (continuing with env-only fallback)"
-        )
-    finally:
-        _db.close()
     trusted_host_service.register_with_url_guard()
 
     # 外部服務位址在治理中心。這裡只把舊憑證外殼改寫，並讓 parser 讀這張表。
+    from app.database import SessionLocal as _SessionLocal
     from app.services.external_services import (
         register_document_parser_source,
         rewrap_legacy_credentials,
@@ -565,13 +549,9 @@ _allowed_origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    # Browsers reject "*" with allow_credentials=True. The config default
-    # covers local development (Vite dev server on :5173, nginx on :80/443,
-    # direct anila-ui container on :3001). Production must override via
-    # ALLOWED_ORIGINS env.
-    # No "*" fallback: an empty/misconfigured ALLOWED_ORIGINS denies all
-    # cross-origin requests (same-origin SPA via nginx still works) rather
-    # than silently opening the API to any origin.
+    # 正式預設是空清單：只允許同源。本機開發來源由 dev.yml 寫死。
+    # 不把空清單補成 "*"。空的 ALLOWED_ORIGINS 拒絕所有跨來源，
+    # 經 nginx 的同源 SPA 仍可用。
     allow_origins=_allowed_origins,
     allow_credentials=bool(_allowed_origins),
     allow_methods=["*"],
@@ -880,7 +860,7 @@ app.include_router(thinking_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
 app.include_router(directory_router)
-# 設定頁的後端（目前只提供 12 顆立即生效的 C 類設定）。
+# 設定頁的後端（登錄表上 21 顆立即生效的 C 類設定）。
 app.include_router(platform_settings_router)
 app.include_router(router_prompts_router)
 

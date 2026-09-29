@@ -1,9 +1,7 @@
 """文件解析位址的執行期來源。
 
 CSP 與 ingestion-worker 各註冊自己的 provider（讀治理中心那一列）。
-沒有註冊時，``ParserRegistry`` 仍走舊的 ``DOC_PARSER`` 環境變數，
-給 anila-core 自己的單元測試用。平台行程一旦註冊，環境變數就不再決定
-要不要打 Docling。
+沒有註冊時，``ParserRegistry`` 用原生解析器，不讀 ``DOC_PARSER``。
 """
 from __future__ import annotations
 

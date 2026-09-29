@@ -1,7 +1,6 @@
 # ANILA Platform — integration stack.
 #   docker-compose up -d
-# 模型推論 service 在 infra/models/docker-compose.yml (project: anila-models),
-# 透過共用 external network ``anila-models-net`` 跨 project DNS。
+# 模型在遠端，由治理中心登記。這份 compose 不加入模型網路。
 #
 # Prod initial mode 切換 (branch SSO):
 #   - 所有 secret env var 預設改成 ``${VAR:?must be set}``,缺 .env 直接 fail。
@@ -47,10 +46,9 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - csp-pgdata:/var/lib/postgresql/data
-    # Modest on purpose. 256MB fits the 62GB dev box beside the live stack
-    # and Docker's default /dev/shm. The EPYC host can raise shared_buffers
-    # later in this same command. max_connections stays 120 because PgBouncer
-    # holds the client fan-out. Changing these needs a Postgres restart.
+    # shm_size 512mb：Docker 預設 64mb 不夠。shared_buffers 仍是下面的 256MB。
+    # max_connections stays 120 because PgBouncer holds the client fan-out.
+    # Changing these needs a Postgres restart.
     shm_size: 512mb
     command:
       - postgres
@@ -191,11 +189,9 @@ services:
       # metadata / docker service name 永遠擋,不受 flag 影響。Prod 不要 set。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      # 模型 http 由 ANILA_ALLOW_HTTP_ENDPOINT 放行；ANILA_ENV 目前非判準
-      # (_is_production 尚未接線)。agent endpoint 的 http 放行走
-      # ANILA_ALLOW_HTTP_AGENT_ENDPOINT（內網 MLSteam agent 用；legacy
+      # 模型 http 由 ANILA_ALLOW_HTTP_ENDPOINT 放行。agent endpoint 的 http
+      # 放行走 ANILA_ALLOW_HTTP_AGENT_ENDPOINT（內網 agent 用；legacy
       # ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可放行但記 deprecation warning）。
-      ANILA_ENV: "${ANILA_ENV:-}"
 
       # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────
       # 警報寄信不在這裡：治理中心「警報」頁的「警報寄信」。
@@ -204,21 +200,16 @@ services:
       # 容器,而畫面與日誌看起來像是設好了。
       # 削減前它們的通道是設定頁的開機覆蓋(`app.site_url` 曾是頁面可編輯);
       # Q46 把整套開機覆蓋退役之後,compose 是它們唯一的入口。
-      # ⚠ 預設值刻意與 services/csp/app/config.py 的欄位預設一致 —— 那是兩份
-      #    會漂開的真相,改一邊要改另一邊。不寫預設(`:-`)會把「沒設」變成
-      #    **空字串**,反而蓋掉程式預設(ALLOWED_ORIGINS 會變成沒有任何來源)。
+      # 正式 CORS 預設同源（空清單）。要跨來源才在 .env 設 ALLOWED_ORIGINS。
+      # 本機開發來源寫在 dev.yml，不放在這裡。
       SITE_URL: "${SITE_URL:-http://localhost}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # protocol=triton_grpc 的 cleartext grpc:// 放行旗標(model kind 專用,
       # 與 http 旗標是姊妹分支不共用 allow-list)。grpcs:// 永遠不需要它。
       # 沒有這一行,.env 裡設 ANILA_ALLOW_GRPC_ENDPOINT=1 不會進到容器 →
       # 註冊 grpc:// 端點一律 400 reason=scheme,而且沒有任何提示。
       ANILA_ALLOW_GRPC_ENDPOINT: "${ANILA_ALLOW_GRPC_ENDPOINT:-0}"
-      # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
-      ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
-      # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
-      ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
       # 出向信任主機在治理中心。這裡只留平台自己要打的 compose 服務名，
       # 不讀 .env，殘留的模型主機名進不了容器。
       ANILA_TRUSTED_HOSTS: "docling,router"
@@ -230,19 +221,8 @@ services:
       # 憑證到期偵測連 nginx:443 的 SNI。與 nginx 服務同一行。
       # 沒有這一行，.env 的 ANILA_HOST 到不了 csp，偵測器不會讀憑證。
       ANILA_HOST: ${ANILA_HOST:?ANILA_HOST must be set}
-      ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
-      REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
-      # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
-      # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
-      # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
-      LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
-      # Embedding proxy 的上游逾時,也是 Triton gRPC 路徑「整通呼叫」預算的
-      # 主項(budget = _wait_ready 5s + EMBEDDING_TIMEOUT)。runbook §3.1c 的
-      # 排錯表叫操作者「調高 EMBEDDING_TIMEOUT」,client.py 兩則錯誤訊息也是
-      # 這樣寫 —— 少了這一行,那句指示對容器**沒有任何作用**:.env 改了、
-      # `up -d csp` 了,`printenv EMBEDDING_TIMEOUT` 仍是空的,行為一模一樣。
-      # 預設值與 app/config.py 的 Settings.EMBEDDING_TIMEOUT 同為 30。
-      EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"
+      # 權杖期限、LLM／嵌入逾時、繁簡與查詢擴展在治理中心。
+      # 登錄表仍接受同名環境變數當氣隙後援，compose 不注入。
       # 內部服務憑證。CSP 寫，各服務只讀自己的檔。人不必複製 token。
       # FILE_GID 10002 是共用目錄的群組（router）。studio 是 10003，
       # worker 是 10004，寫在內建名單裡，不從這裡覆寫。
@@ -275,16 +255,14 @@ services:
       # 模型與 agent 只在治理中心登錄。開機不讀 AUTO_REGISTER_*。
       # ingestion-worker 的系統帳號與 sk- 由 CSP 核發，明文只寫進
       # /run/anila/service-clients/ingestion-worker/token。不要再從 .env 種這把 key。
-      # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
-      # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
-      # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
-      # .env 設 ANILA_MODEL_CA_FILE=/etc/anila/pki/<file>.pem。
+      # 出向 https 的 CA 信任。模型主機若用內部 CA 或自簽，不在 certifi
+      # 預設信任鏈內，httpx 會 CERTIFICATE_VERIFY_FAILED。把 PEM 放
+      # ./share/pki/ 並在 .env 設 ANILA_MODEL_CA_FILE=/etc/anila/pki/<file>.pem。
       # 沒設 (空值) = 維持 httpx 預設 certifi 行為 (CPython 對空/不存在的
       # SSL_CERT_FILE 會 fallback 系統預設,無副作用)。
       SSL_CERT_FILE: ${ANILA_MODEL_CA_FILE-}
-      # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
-      # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
-      # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
+      # 模型 gateway 的 /v1 要 Authorization: Bearer。proxy_service 只對
+      # model 呼叫注入,agent dispatch 不帶。空值 = 不注入。
       MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY-}
       # 歸檔 2026-08-09:FLUX_BACKEND_URL / FLUX_MAX_CONCURRENT / FLUX_TIMEOUT_SECONDS
       # (＋ FLUX_CACHE_DIR 的說明) 曾列在這裡,但 services/csp 全樹零讀取點 ——
@@ -333,12 +311,6 @@ services:
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
-    networks:
-      - default
-      # 跨 project 的 external network — 解 ``gemma4`` / ``gpt-oss-20b`` /
-      # ``nv-embed-proxy`` (在 infra/models/docker-compose.yml)。bootstrap 一次:
-      #   docker network create anila-models-net
-      - anila-models-net
     depends_on:
       csp-credential-dirs:
         condition: service_completed_successfully
@@ -346,11 +318,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # 遠端 docling:與 ingestion-worker 同一條 required:false 規則——開
-      # docling-local profile 才等,沒開也不擋 csp 啟動。
-      docling:
-        condition: service_healthy
-        required: false
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
@@ -391,20 +358,12 @@ services:
       # 嵌入、視覺、關係抽取共用這一個檔。CSP 核發，worker 只讀。
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/ingestion-worker/token
       EMBEDDING_DIM: "4000"
-      # 一份文件切成幾段送。csp 的 Triton gRPC 路徑是「每段文字各一次
-      # ModelInfer,整通呼叫共用 5s + EMBEDDING_TIMEOUT 的預算,且與
-      # len(input) 無關」—— 不切批的話,文件一大就整份失敗,而 runbook
-      # §3.1c 叫操作者「縮小批次」卻沒有任何旋鈕可縮。要守的不變式是
-      # EMBEDDING_BATCH_SIZE × 每段延遲 < min(下面那個, csp 的 EMBEDDING_TIMEOUT)。
-      # 預設值與 WorkerSettings.embedding_batch_size 同為 32。
+      # 一份文件切成幾段送。CSP 的 Triton 路徑是整通呼叫共用通道就緒 5 秒
+      # 加上治理中心的嵌入逾時。批次要讓
+      # EMBEDDING_BATCH_SIZE × 每段延遲短於下面這個 worker 截止時間。
       EMBEDDING_BATCH_SIZE: "${EMBEDDING_BATCH_SIZE:-32}"
-      # 不變式的另一項。⚠ 這是 **worker 自己的 httpx 逾時**,跟 csp 區塊那個
-      # EMBEDDING_TIMEOUT 是兩個不同的鐘,而**小的那個說了算**:預設 worker 30s
-      # < csp 的 5s channel-ready + 30s = 35s,所以 worker 先掛斷。只調 csp 那一個,
-      # worker 照樣 30 秒放棄 —— 而 csp 的 to_thread 取消不掉,它會把那批做完並
-      # 記帳,向量卻沒人收。2026-08-07 補進來以前,這個變數根本到不了容器,
-      # 而 runbook 已經在印一條它是其中一項的不變式。
-      # 預設值與 WorkerSettings.embedding_timeout_seconds 同為 30。
+      # worker 打 CSP /v1/embeddings 的 httpx 截止時間（CSP 後面才是 Triton）。
+      # 不是治理中心的嵌入逾時（proxy.embedding_timeout）。兩個鐘取較短的那個。
       EMBEDDING_TIMEOUT_SECONDS: "${EMBEDDING_TIMEOUT_SECONDS:-30}"
       # Must match csp's value and the target of both upload mounts.
       UPLOAD_DIR: "${UPLOAD_DIR:-/var/anila/ingestion-uploads}"
@@ -417,7 +376,6 @@ services:
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
-      ANILA_ENV: "${ANILA_ENV:-}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # VLM image captioning: ingest 時把 [[IMAGE:id]] placeholder 換成 caption
       # 才不會 chart/diagram 變成 [image] token 消失。走 csp /v1 proxy 為了計量。
@@ -430,7 +388,7 @@ services:
       # LLM 關聯走 CSP /v1。模型名是治理中心的摘要角色，沒設就略過。
       ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
       RELATION_LLM_URL: "http://csp:8000/v1"
-      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
+      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-true}"
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
       # 文件解析位址向 CSP 問。用上面那份憑證檔，不讀設定表。
       CSP_BASE_URL: http://csp:8000
@@ -453,12 +411,6 @@ services:
         condition: service_healthy
       csp:
         condition: service_healthy
-      # 遠端 docling:有開 docling-local profile 才等;沒開(平台 host 無 docling)
-      # 也不擋整批 up —— 與 asr-decoder 的 `required: false` 同一條規則與
-      # 同一個 Compose v2.36.2 最小重現(見 asr-gateway 區塊那段長註解)。
-      docling:
-        condition: service_healthy
-        required: false
     restart: unless-stopped
     logging: *anila-logging
 
@@ -501,16 +453,8 @@ services:
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
   # /v1/, /v2/, /router/* 到對應內部 service。
   nginx:
-    # 版本＋digest 都釘死(2026-08-08,氣隙凍結前)。這是平台唯一的對外大門,
-    # 原本寫 `nginx:alpine`——完全沒有版本號,重建一次就可能換一個 nginx。
-    # digest 取的是 **manifest-list**(多架構)的那一個:
-    #   docker buildx imagetools inspect nginx:1.30.4-alpine
-    # 1.30.4-alpine 建置日 2026-07-15;1.27 線已於 2025-06-24 EOL。
-    # ⚠ 換版本時 tag 與 digest 要一起換 —— 兩者不一致時實際拉的是 digest,
-    #   tag 只剩註解作用。
-    # 2026-09-09: 1.30.4 alpine digest from nginx:stable-alpine (newer build).
-    # Rebuilds with libuuid 2.42.3. Do not use the stock tag on a host that
-    # still runs anila-nginx from nginx:1.30.4-alpine without recreating it.
+    # 與 dev 同一份 infra/docker/nginx.Dockerfile（libuuid 修補）。
+    # 不要改回官方 stock image。
     build:
       context: ../..
       dockerfile: infra/docker/nginx.Dockerfile
@@ -609,9 +553,6 @@ services:
     volumes:
       - anila-studio-artifacts:/var/anila/anila-studio-artifacts
       - anila-service-credentials:/run/anila/service-clients:ro
-    networks:
-      - default
-      - anila-models-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
@@ -819,7 +760,6 @@ services:
     expose:
       - "8200"
     environment:
-      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
       # 解碼位址與憑證在治理中心。這支服務用自己的憑證檔去讀那一列。
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/asr-gateway/token
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
@@ -839,7 +779,6 @@ services:
       CSP_BASE_URL: http://csp:8000
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      JWT_KID: anila-v1
       JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
       LOG_LEVEL: INFO
@@ -850,9 +789,6 @@ services:
         condition: service_healthy
     volumes:
       - anila-service-credentials:/run/anila/service-clients:ro
-    networks:
-      - default
-      - anila-models-net
     healthcheck:
       # timeout 要蓋得住探針:解碼端在 WAN 另一頭時 /asr/health 自己就可能花掉
       # ASR_PROBE_TIMEOUT_SECONDS(預設 8s)。舊的 5s 會把「遠端慢」誤判成
@@ -870,61 +806,9 @@ services:
     restart: unless-stopped
     logging: *anila-logging
 
-
-  docling:
-    # 遠端 docling 文件解析。只有 `--profile docling-local` 才起。
-    # 平台預設不跑它；位址在治理中心「外部服務」。
-    profiles: ["docling-local"]
-    build:
-      context: ../../services/docling-service
-      dockerfile: Dockerfile
-    image: ${ANILA_IMAGE_DOCLING:-anila/docling-service:0.1.0}
-    expose:
-      - "9100"
-    environment:
-      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-}
-      TZ: ${TZ:-Asia/Taipei}
-      # 不要用 :?。compose 變數插值在解析階段就跑,即使本服務在
-      # profiles 之後根本不會啟動。缺 token 由服務自己 fail-loud
-      # (app/main.py:_require_token)。
-      DOCLING_SERVICE_TOKEN: ${DOCLING_SERVICE_TOKEN:-}
-      DOCLING_ARTIFACTS_DIR: /var/anila/docling-artifacts
-      DOCLING_LOCAL_FILES_ONLY: ${DOCLING_LOCAL_FILES_ONLY:-1}
-      HF_HUB_OFFLINE: ${DOCLING_LOCAL_FILES_ONLY:-1}
-      TRANSFORMERS_OFFLINE: ${DOCLING_LOCAL_FILES_ONLY:-1}
-      # 與平台側(in-process 時代)同名同義。
-      DOCLING_OCR_LANGS: ${DOCLING_OCR_LANGS:-ch_tra,en}
-      DOCLING_TABLE_STRUCTURE: ${DOCLING_TABLE_STRUCTURE:-true}
-      DOCLING_PICTURE_DESCRIPTION: ${DOCLING_PICTURE_DESCRIPTION:-false}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    volumes:
-      # :ro —— decoder 只讀權重,沒有任何理由寫進去。預設值落在 models/model/
-      # 底下,權重不入 git。
-      - ${DOCLING_MODEL_HOST_DIR:-../../models/model/docling}:/var/anila/docling-artifacts:ro
-    networks:
-      - default
-    # ⚠ GPU 保留(與 asr-decoder 同)搬到 infra/compose/docling-gpu.yml。這裡
-    # 刻意不留空的 deploy: —— 平台主機沒有 nvidia runtime,寫死會讓 `up` 整批
-    # 失敗;要 GPU 的主機自己疊 docling-gpu.yml。
-    healthcheck:
-      # 模型在第一次 parse 時載入(layout + tableformer + EasyOCR,動輒 GB),
-      # ready 之前 /health 回 503。retries × interval 要蓋得住分鐘級冷啟動。
-      test: ["CMD-SHELL", "curl -sf http://localhost:9100/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    restart: unless-stopped
-    logging: *anila-logging
-
 networks:
   default:
     name: anila-net
-  # 跟 infra/models/docker-compose.yml 共用。external → 兩個 project 任一個 down
-  # 都不會刪掉它。bootstrap:  docker network create anila-models-net
-  anila-models-net:
-    external: true
-    name: anila-models-net
 
 volumes:
   csp-pgdata:
@@ -933,7 +817,7 @@ volumes:
   anila-service-credentials:
   anila-csp-local-secrets:
   anila-studio-artifacts:
-  # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
-  # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
+  # codeserver 與 n8n 仍是具名 volume（最後演練才起）。名稱留下，
+  # 避免舊資料在解凍時變成一顆空 volume。
   codeserver_config:
   n8n_data:

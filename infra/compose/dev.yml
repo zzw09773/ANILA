@@ -19,8 +19,7 @@
 #   container anila-nginx             container anila-nginx-dev
 #   ─────────────────────────────────────────────────────────
 #
-# 共用：anila-models-net (external) — 兩 stack 都要打 gemma4 / gpt-oss-20b /
-# nv-embed-proxy，這條 external network 同時 attach 不會破壞 live。
+# 模型在遠端，由治理中心登記。這份 compose 不加入模型網路。
 
 # 刻意沿用舊名：改名會讓 dev 接上一組新的空 volume，舊 dev 資料留在原處。
 name: anila-platform-dev
@@ -130,19 +129,11 @@ services:
       # 同理:dev 的 Triton embedder 走 cleartext grpc://（內網 9001 沒有 TLS），
       # 不放行就連本機都註冊不了 protocol=triton_grpc 的模型。
       ANILA_ALLOW_GRPC_ENDPOINT: "1"
-      # §6-3：assistant 落庫前 zh-TW 靜默正規化。預設 1；設 0 關閉。
-      ANILA_ZH_NORMALIZE: "${ANILA_ZH_NORMALIZE:-1}"
-      # 檢索查詢擴展（民國↔西元＋域內同義）。預設 1；設 0 關閉。
-      ANILA_QUERY_EXPANSION: "${ANILA_QUERY_EXPANSION:-1}"
       # 單標籤 docker 服務名要列在這裡才過得了 URL guard。
       ANILA_TRUSTED_HOSTS: "docling,router,loadtest-model"
-      ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
-      REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
+      # 本機開發的跨來源。正式檔的預設是空清單（同源）。
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443"
       ANILA_AUTH_MODE: "${ANILA_AUTH_MODE:-password}"
-      # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
-      # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
-      # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
-      LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
       # 內部服務憑證。與 platform.yml 同一路徑；volume 名稱分開，避免跟 live stack 混用。
       # 10002 是共用目錄（router）。studio 10003、worker 10004 寫在內建名單。
       ANILA_SERVICE_CLIENT_DIR: /run/anila/service-clients
@@ -183,16 +174,6 @@ services:
       - anila-csp-local-secrets-dev:/var/anila/csp-local-secrets
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    networks:
-      - default
-      - anila-models-net
-    # ⚠ 刻意不 depends_on docling:dev.yml 是自足檔,不定義 docling 服務本體
-    # (它只在 platform.yml:948,dev 主機 CPU-only 不跑它)。這裡「定義不存在」,
-    # `required: false` 救不了——那顆旗標只解得掉「有定義但不在啟用的 profile 裡」
-    # 這格(platform.yml 的 asr-decoder),解不掉「這組檔案根本沒定義」這格,
-    # 後者照樣硬錯誤 `depends on undefined service`。要不要起 docling 是 dev 的
-    # 環境選擇,不是 csp 的圖譜依賴 —— 與 ASR 先例一致:dev 的 asr-gateway 也不
-    # depends_on asr-decoder,只帶 working default 的 env。
     depends_on:
       csp-credential-dirs:
         condition: service_completed_successfully
@@ -256,7 +237,7 @@ services:
       # the CSP /v1 proxy → Router → gemma4, metered via the worker system key.
       ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
       RELATION_LLM_URL: "${RELATION_LLM_URL:-http://csp:8000/v1}"
-      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
+      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-true}"
       RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
@@ -294,9 +275,11 @@ services:
     environment:
       CSP_BASE_URL: http://csp:8000
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary/token
+      ANILA_SESSION_DB_PATH: /app/.anila/sessions.db
       # 主路由模型由治理中心的 router_primary 決定，不在這裡寫模型名。
     volumes:
       - anila-service-credentials-dev:/run/anila/service-clients:ro
+      - router-sessions-dev:/app/.anila
     depends_on:
       csp:
         condition: service_healthy
@@ -356,9 +339,6 @@ services:
     volumes:
       - anila-studio-artifacts-dev:/var/anila/anila-studio-artifacts
       - anila-service-credentials-dev:/run/anila/service-clients:ro
-    networks:
-      - default
-      - anila-models-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
@@ -380,10 +360,9 @@ services:
     expose:
       - "8200"
     environment:
-      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/asr-gateway/token
-      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-1}"
-      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
+      ANILA_ALLOW_HTTP_ENDPOINT: "1"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
       ANILA_TRUSTED_HOSTS: ""
       ASR_PROBE_TIMEOUT_SECONDS: ${ASR_PROBE_TIMEOUT_SECONDS:-8}
       ASR_PROBE_CONNECT_TIMEOUT_SECONDS: ${ASR_PROBE_CONNECT_TIMEOUT_SECONDS:-3}
@@ -395,7 +374,6 @@ services:
       CSP_BASE_URL: http://csp:8000
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      JWT_KID: anila-v1
       JWT_LEEWAY_SECONDS: "60"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
       LOG_LEVEL: INFO
@@ -406,9 +384,6 @@ services:
         condition: service_healthy
     volumes:
       - anila-service-credentials-dev:/run/anila/service-clients:ro
-    networks:
-      - default
-      - anila-models-net
     healthcheck:
       # 有回應就算活著,撤銷清單沒就緒除外;同 platform.yml。
       test: ["CMD-SHELL", "b=$$(curl -s -m 10 http://localhost:8200/asr/health) && [ -n \"$$b\" ] && ! printf '%s' \"$$b\" | grep -q revocation_not_ready"]
@@ -464,8 +439,10 @@ services:
 
   # ── nginx (dev 入口，獨立 port + 獨立 container_name) ───────────────────
   nginx:
-    # 版本＋digest 釘死,與 platform.yml 同一個 image(見該檔的說明)。
-    image: nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
+    # 與 platform 同一份 Dockerfile（libuuid 修補），不是官方 stock image。
+    build:
+      context: ../..
+      dockerfile: infra/docker/nginx.Dockerfile
     # ⚠️ 必須顯式不同名——compose 對 container_name 不會自動加 project prefix。
     container_name: anila-nginx-dev
     ports:
@@ -512,15 +489,11 @@ networks:
   # ⚠️ 不同名才不會跟 live stack 的 anila-net 衝突。
   default:
     name: anila-dev-net
-  # 跟 models stack + live stack 共用的 external network。
-  # 第一次 up 時若不存在,bootstrap: docker network create anila-models-net
-  anila-models-net:
-    external: true
-    name: anila-models-net
 
 volumes:
   anila-service-credentials-dev:
   anila-csp-local-secrets-dev:
   csp-pgdata-dev:
   redis-data-dev:
+  router-sessions-dev:
   anila-studio-artifacts-dev:

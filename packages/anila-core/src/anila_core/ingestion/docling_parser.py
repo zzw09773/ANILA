@@ -13,15 +13,13 @@ PPTX / XLSX / HTML in one pipeline. Compared to the ``native`` parsers
 
 平台主機永遠是 CPU-only;所有 GPU 工作(含 docling 的 layout model、
 EasyOCR、Granite picture description)都以 HTTP 端點抵達,像 ASR 一樣。
-所以 ``build_docling_parser_from_env()`` 在 ``DOC_PARSER=docling`` 時回傳
-:class:`RemoteDoclingParser`——一個只把文件位元組 POST 過去、收回 markdown
-的 httpx 客戶端。平台映像因此**不帶 docling / torch / easyocr**,只有 httpx。
+位址來自已註冊的治理中心來源，由 ``build_remote_docling_parser`` 組出
+:class:`RemoteDoclingParser`。平台映像因此**不帶 docling / torch / easyocr**,
+只有 httpx。沒有註冊來源時用原生解析器。
 
 下面的 :class:`DoclingParser` 是本機(in-process)實作,留作參考。它
 刻意把 ``docling`` import 延後,所以沒裝 ``[docling]`` extra 也能 import
-本模組;**但 ``DOC_PARSER=docling`` 缺套件時它不是「靜默退回 native」,而是
-raise ImportError**——遠端版延續這個 fail-loud,而且更嚴:非 2xx 一律大聲錯,
-絕不降級到 native parser(靜默拿較差的解析結果換一個綠燈,是這專案反覆踩的洞)。
+本模組。遠端版非 2xx 一律大聲錯,絕不降級到 native parser。
 """
 from __future__ import annotations
 
@@ -163,8 +161,7 @@ class DoclingParser:
     """Layout-aware parser backed by an in-process Docling.
 
     ⚠ 參考用，全樹無建構點（D-1，審查長 2026-08-21 裁定標記）：
-    ``build_docling_parser_from_env()`` 只回 ``RemoteDoclingParser`` 或 ``None``，
-    平台一律 CPU、docling 走遠端 GPU 服務。活路是下面的 ``RemoteDoclingParser``；
+    活路是下面的 ``RemoteDoclingParser``（治理中心註冊來源之後才會建）；
     這個類別留著是給讀 docling API 形狀的人看的，**不要為它加測試**（那會把死路
     認證成活路），要改行為去改 Remote 那邊。
 
@@ -400,7 +397,7 @@ def _normalize_title(raw: str) -> str:
 
 
 def _safe_title(document: Any, fallback: str) -> str:
-    # 與 services/docling-service/app/model.py 的 _safe_title 同源同形(wire
+    # 與遠端解析回應的標題清理同源同形(wire
     # 雙側一次改齊,批次①)。prefer real document.title(不設才常有);docling
     # 幾乎不設 title、卻把 document.name 填成 input stem(如暫存名)——
     # 所以 fallback(原始檔名)要優先於 name,不是排在 name 之後。
@@ -428,7 +425,7 @@ def _safe_page_count(document: Any) -> int:
 def _safe_ocr_flag(result: Any) -> bool:
     """OCR 有沒有真的跑過（非「OCR 被啟用」）。
 
-    與 services/docling-service/app/model.py 的 _safe_ocr_flag 同源同形
+    與遠端解析回應的 OCR 旗標同源同形
     （鏡射修的缺陷,wire 雙側一次改齊）。舊寫法掃 timings 找 "ocr" 鍵,但
     docling 不開 profiling 時 timings 恆空。決定性判準:confidence.pages[*]
     的 ocr_score 只在「OCR 真產生 cell」時才被設(post_process_cells),否則
@@ -448,7 +445,7 @@ def _safe_ocr_flag(result: Any) -> bool:
 # RemoteDoclingParser
 # ──────────────────────────────────────────────────────────────────────
 
-# Wire contract (both sides implement it, see services/docling-service):
+# Wire contract of the remote parse response:
 #   POST /parse   multipart: file / ocr_langs / table_structure /
 #                            picture_description; X-Token shared secret.
 #   200 -> {"markdown", "title", "page_count", "ocr_applied",
@@ -704,10 +701,8 @@ class RemoteDoclingParser:
             # service 回 400 "unsupported extension" = 兩端 extension 集合漂移
             # (client DOCLING_SUPPORTED_EXTS 與 service SUPPORTED_SUFFIXES 不同步),
             # 歸 format_unsupported 而非 corrupt——「不支援格式」不是「檔案壞」。
-            # ⚠ 但這個子字串是**跨服務的無守衛分類依據**:它靠 services/docling-service
-            # 端的守衛測試(tests/test_parse.py::test_unsupported_extension_detail_contract)
-            # 釘住——service 若單方面改寫/在地化,這裡就靜默退回 corrupt。改動時
-            # 兩端要一起改,或換成 wire contract 的機器欄位。
+            # ⚠ 但這個子字串是跨服務的分類依據。遠端若改寫這句，
+            # 這裡就靜默退回 corrupt。改動時兩端要一起改，或換成機器欄位。
             if "unsupported extension" in resp.text:
                 raise ParseError.format_unsupported(
                     user_message="此檔案格式不受文件解析服務支援。",
@@ -860,30 +855,4 @@ def build_remote_docling_parser(base_url: str, token: str) -> RemoteDoclingParse
         ).lower() == "true",
         timeout=_env_float("DOCLING_TIMEOUT_SECONDS", "120"),
         connect_timeout=_env_float("DOCLING_CONNECT_TIMEOUT_SECONDS", "5"),
-    )
-
-
-def build_docling_parser_from_env() -> Optional[RemoteDoclingParser]:
-    """Construct a remote Docling parser when ``DOC_PARSER=docling``, else None.
-
-    ⚠ 2026-08-17 起,``DOC_PARSER=docling`` 回 :class:`RemoteDoclingParser`
-    (遠端 GPU 端點),不再是 in-process DoclingParser 的觸發。平台映像不帶
-    docling / torch / easyocr。
-
-    Env:
-      DOC_PARSER                = "native" | "docling"        (default: native)
-      DOCLING_URL               = 遠端 parse 端點 base(如 http://docling:9100)
-      DOCLING_SERVICE_TOKEN     = 共享祕密(X-Token),可空=不送
-      DOCLING_TIMEOUT_SECONDS   = 每通 parse 總秒數(default 120)
-      DOCLING_CONNECT_TIMEOUT_SECONDS = 連線秒數(default 5)
-      DOCLING_OCR_LANGS         = comma-separated OCR lang codes
-                                  (default: "ch_tra,en")
-      DOCLING_PICTURE_DESCRIPTION = "true" | "false"          (default: false)
-      DOCLING_TABLE_STRUCTURE   = "true" | "false"            (default: true)
-    """
-    if os.getenv("DOC_PARSER", "native").lower() != "docling":
-        return None
-    return build_remote_docling_parser(
-        os.getenv("DOCLING_URL", ""),
-        os.getenv("DOCLING_SERVICE_TOKEN", ""),
     )

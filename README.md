@@ -182,7 +182,7 @@ card 登入需本機 HiPKI 讀卡元件；本地 dev 若無實體卡，將 `ANIL
 
 ### 內網 / prod 部署（走部署腳本，不直接 `docker compose up`）
 
-prod 一律走 [`infra/deployment/scripts/deploy-prod.sh`](./infra/deployment/scripts/deploy-prod.sh)：內含 pre-flight（branch / docker / env / `anila-models-net` / 模型 stack health），避免在錯的分支跑、dev fallback 值偷渡、漏起模型 stack。
+prod 一律走 [`infra/deployment/scripts/deploy-prod.sh`](./infra/deployment/scripts/deploy-prod.sh)：內含 pre-flight（branch / docker / env），避免在錯的分支跑、dev fallback 值偷渡。模型只在別台，於治理中心登錄；preflight 不找本機模型容器，也不建 `anila-models-net`。
 
 ```bash
 set -a; source /path/to/prod.env; set +a        # secret 從你的 prod .env，勿 commit

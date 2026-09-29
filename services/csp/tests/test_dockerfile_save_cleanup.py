@@ -314,7 +314,7 @@ def _ends_with_dcs_cleanup(instruction: str) -> bool:
     if any(_has_unsafe_shell_operator(segment) for segment in segments[cleanup_index:]):
         return False
 
-    # services/asr-decoder already removes one harmless base-image log after
+    # one service Dockerfile already removes a harmless base-image log after
     # its DCS cleanup.  Preserve that form, but reject any later install/build
     # or other substantive shell command.
     return all(_is_trailing_rm_f(segment) for segment in segments[cleanup_index + 1 :])

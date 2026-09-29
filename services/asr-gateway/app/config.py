@@ -14,14 +14,13 @@ class Settings(BaseSettings):
     APP_NAME: str = "asr-gateway"
     APP_VERSION: str = "0.1.0"
     LOG_LEVEL: str = "INFO"
-    ANILA_DEPLOYMENT_PROFILE: str = "development"
 
     # ── decoder ─────────────────────────────────────────────────────────
     # gateway 出向只允許這一個 URL(或治理中心指派的那一個)。兩個採用點都
     # 過 anila_core 的 SSRF guard(`validate_outbound_url`,endpoint_kind
     # ='model')—— 遠端解碼一旦成立,ASR 就是平台唯一會跳過那道門的模型呼叫。
     ASR_DECODE_URL: str = ""
-    # native 協定的共享祕密,送成 `X-Token`(本地 services/asr-decoder)。
+    # native 協定的共享祕密,送成 `X-Token`（遠端解碼器）。
     ASR_DECODER_TOKEN: str = ""
     # ── 傳輸協定 ────────────────────────────────────────────────────────
     # 'native' = ANILA 自有契約(裸 PCM + X-Token,本地 decoder / 氣隙 bundle)
@@ -86,7 +85,6 @@ class Settings(BaseSettings):
     CSP_SERVICE_TOKEN: str = ""
     REDIS_URL: str = "redis://redis:6379/0"
     REDIS_REVOCATION_CHANNEL: str = "anila:auth:token-revoke"
-    JWT_KID: str = "anila-v1"
     JWT_ALGORITHMS: tuple[str, ...] = ("RS256",)
     # ⚠ 這裡刻意**沒有** JWT_ISSUER / JWT_AUDIENCE。csp 的 create_access_token
     # 不簽 `iss` 也不簽 `aud`(services/csp/app/utils/security.py:208),studio

@@ -447,7 +447,7 @@ ANILA_HOST=<你的 FQDN 或 IP>      # 入向 Host 白名單與 nginx map 都從
 ANILA_AUTH_MODE=card-only         # 正式部署只接受這個值;擁有者的密碼登入仍在
 CARD_INITIAL_OWNERS=1147259       # 你的員工編號;加同事用 CSV
 
-ANILA_REMOTE_MODELS=1             # deploy-prod.sh preflight 不檢查本機模型容器
+# 模型在別台，於治理中心登錄。部署腳本不檢查本機模型容器。
 MODEL_GATEWAY_API_KEY=<在閘道平台簽發>
 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
@@ -474,8 +474,7 @@ fi
 #   任何 `cd <dir>` 若失敗，後續命令會**在原目錄照跑**、踩到錯的檔案。
 #   破壞性命令一律 `cd <dir> && <cmd>` 串接，**不准 `cd` 眼 `rm/cp/寫入` 分兩行**。
 set -a; source .env; set +a
-bash infra/deployment/scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
-                                        # + curl 探測 gateway (帶 Bearer key)
+bash infra/deployment/scripts/deploy-prod.sh preflight   # 模型在治理中心；不檢查本機容器、不建網路
 docker compose -p anila \
   -f compose.yaml -f intranet-image-overrides.yml \
   up -d --no-build  # image 已 load,跳過 build。語音是開機後第二步,見 intranet-image-bundle.md §5.1
@@ -711,33 +710,22 @@ docker exec anila-ingestion-worker-1 printenv EMBEDDING_TIMEOUT_SECONDS
 已經注定失敗的文件繼續花 token。刻意不做「續傳」:入索引是全份一次寫入,
 而 arq `max_tries=3` 會把記住的進度重新 embed 一次 —— 那是重複計費,不是省事。
 
-**調高 `EMBEDDING_TIMEOUT`**
+**調高嵌入逾時（治理中心 `proxy.embedding_timeout`）**
 
-```bash
-# 1. .env 改值(沒有這個鍵就自己加一行;compose 預設 30)
-#    這裡用 grep 先看現況,再自己編輯 —— 不用 sed,避免改到別的鍵。
-grep -nE '^[[:space:]]*(export[[:space:]]+)?EMBEDDING_TIMEOUT[[:space:]]*=' .env
+在治理中心設定頁改「嵌入逾時」，鍵是 `proxy.embedding_timeout`。不要寫進 `.env`，
+compose 也不再把 `EMBEDDING_TIMEOUT` 灌進 csp。改完下一個嵌入請求就用新值，
+不必重建容器。
 
-# 2. 套用:一定是 up -d(recreate),docker restart 不重載 .env
-docker compose -p anila -f compose.yaml -f intranet-image-overrides.yml up -d csp
+worker 的 `EMBEDDING_TIMEOUT_SECONDS` 是另一道期限：ingestion-worker 等待
+CSP `POST /v1/embeddings` 的上限，預設 30 秒。治理中心那顆是 CSP 再去等嵌入模型
+的時間。兩道各自計時，較短的先到。只調治理中心不會拉長 worker 這道；要拉長
+worker，才改它自己的環境變數後重建 ingestion-worker。
 
-# 3. recreate 過就要 reload nginx,否則上游 IP 是舊的 → 全站 502 但容器全綠
-docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
-
-# 4. 確認它真的到了容器裡(這一步不能跳)
-docker exec anila-csp-1 printenv EMBEDDING_TIMEOUT   # 應印出你設的值
-```
-
-它同時是整通呼叫的預算主項:budget = `_wait_ready` 5s + `EMBEDDING_TIMEOUT`,
+CSP 這顆同時是整通呼叫的預算主項:budget = `_wait_ready` 5s + 治理中心嵌入逾時,
 與批次大小無關;調到 60,單次請求的執行緒佔用上限就從 35 秒變成 65 秒,
 一個 HTTP 請求最久 `3 × 65 + 0.5 + 1.0` ≈ 196.5 秒(重試 3 次)。調之前先確認上游真的
-只是慢,而不是 model 沒載入 —— 後者調多久都不會好。
-
-> ⚠ 這個變數要有 `infra/compose/platform.yml` 的 csp 區塊裡那一行
-> `EMBEDDING_TIMEOUT: "${EMBEDDING_TIMEOUT:-30}"`(v-2026-08-03 起有)才會進到
-> 容器。compose **沒有 `env_file:`**,`.env` 只是變數來源,不會整包灌進容器 ——
-> 缺那一行的版本,`.env` 怎麼改都沒有作用,而且沒有任何錯誤訊息:`printenv` 是
-> 空的、行為一模一樣。上面那條 `printenv` 就是用來看穿這件事的。
+只是慢,而不是 model 沒載入 —— 後者調多久都不會好。worker 那道若比這顆短,
+請求會先在 worker 結束,CSP 的預算還沒用完。
 
 ### 3.1d 入向 Host 白名單（換 IP／換 FQDN 時改 `ANILA_HOST`）
 
@@ -946,5 +934,5 @@ NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose -p 
 - 空 endpoint = 停用:[`auto_seed.py`](../../services/csp/app/services/auto_seed.py)
 - 啟動安全檢查:[`startup_security.py`](../../services/csp/app/services/startup_security.py)
 - backend 卡片驗證:[`card_auth.py`](../../services/csp/app/services/card_auth.py)
-- 部署腳本 (含 `ANILA_REMOTE_MODELS=1` 遠端模型模式):[`infra/deployment/scripts/deploy-prod.sh`](../../infra/deployment/scripts/deploy-prod.sh)
+- 部署腳本（模型在治理中心，不檢查本機模型容器）:[`infra/deployment/scripts/deploy-prod.sh`](../../infra/deployment/scripts/deploy-prod.sh)
 - mock 卡片元件:[`cht/`](../../cht/) (僅 dev,內網用真 HiPKI)

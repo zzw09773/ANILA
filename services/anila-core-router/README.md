@@ -119,12 +119,12 @@ router (:9000)
    ├── GET /v1/agents                  ──▶ CSP   取 agent manifest(唯一 discovery 來源)
    ├── GET /api/models/router-primary  ──▶ CSP   取主路由 LLM(X-CSP-Service-Token)
    ├── POST /v1/chat/completions       ──▶ CSP   呼叫主 LLM 判斷是否分派
-   ├── 分派 → agent endpoint_url        ──▶ 例:image-generator → http://flux2-dev-agent:8000
+   ├── 分派 → agent endpoint_url        ──▶ 治理中心登記的 agent endpoint
 
 ```
 
 - **CSP(`CSP_BASE_URL`)**:Router 所有上游互動都經由 CSP — 撈 agent 清單、解析主路由模型、呼叫主 LLM。Router→CSP 內部端點以 `X-CSP-Service-Token` 認證。
-- **Agents**:透過 CSP 註冊(如 `image-generator`,`endpoint_url: http://flux2-dev-agent:8000`)。主 LLM 判斷需要時 Router 分派並 forward SSE。
+- **Agents**:透過 CSP 註冊。主 LLM 判斷需要時 Router 分派到該 endpoint 並 forward SSE。
 - **`/router/primary-status`**(debug):回傳 cache 的主路由模型名、last error、`service_token_source`、state file 路徑。
 
 ---

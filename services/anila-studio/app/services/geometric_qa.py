@@ -7,8 +7,9 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import logging
-import os
 from typing import Any
+
+from app.config import settings
 
 import httpx
 
@@ -41,7 +42,7 @@ async def run_geometric_qa(
     empty list — geometric QA is best-effort; the vision QA layer
     will still cover. Logs the failure.
     """
-    url = renderer_url or os.environ.get("RENDERER_BASE_URL", "http://pptx-renderer:7100")
+    url = renderer_url or settings.RENDERER_BASE_URL
     payload: dict[str, Any] = {"pptxBase64": base64.b64encode(pptx_bytes).decode("ascii")}
     if kinds:
         payload["kinds"] = list(kinds)

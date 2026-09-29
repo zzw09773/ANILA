@@ -99,7 +99,6 @@ recreate 換掉的是**容器**,不是**映像**。程式碼是 build 當下拷�
 | `services/ingestion-worker/` | `ingestion-worker` | `ingestion-worker/Dockerfile:39` `COPY services/ingestion-worker /tmp/ingestion-worker` | repo 根(`platform.yml:286`) |
 | `services/anila-core-router/` | `router` | `anila-core-router/Dockerfile:35` `COPY services/anila-core-router/main.py ./` | repo 根(`platform.yml:364`) |
 | `services/asr-gateway/` | `asr-gateway` | `asr-gateway/Dockerfile:27-28` `COPY services/asr-gateway/app/ ./app/` | repo 根(`platform.yml:735-736`) |
-| ⚠ `services/asr-decoder/` | `asr-decoder`,**兩個棧各一張** | `asr-decoder/Dockerfile:62-63`;平台棧 `platform.yml:864-867`(tag `anila/asr-decoder:0.1.0`)、模型棧 `infra/models/docker-compose.yml:457-461`(tag `asr-decoder:0.1.0`) | `../../services/asr-decoder` |
 | `services/anila-studio/` | `anila-studio` | `anila-studio/Dockerfile:64-65` `COPY app/ ./app/` | `../../services/anila-studio`(`platform.yml:459`) |
 | `services/pptx-renderer/` | `pptx-renderer` | `pptx-renderer/Dockerfile:66` `COPY server.js ./`(另有 `:63` `:69` `:75`) | `../../services/pptx-renderer`(`platform.yml:439`) |
 | ⚠ `apps/anila-shell/` | **`anila-ui`** | `anila-shell/Dockerfile:25` `COPY . ./` | `../../apps/anila-shell`(`platform.yml:530`) |
@@ -119,9 +118,6 @@ recreate 換掉的是**容器**,不是**映像**。程式碼是 build 當下拷�
   就會出現「router 已經用新規則、csp 還在用舊規則」的半新半舊狀態,兩邊都不報錯。
   `asr-gateway` 只搬 `security/` 子套件,所以動 `anila_core` 其他地方它不受影響;
   動 `security/` 則四張全要。
-- **`services/asr-decoder/` → 兩個棧兩個 tag**:只重建平台棧那張,模型棧
-  (`profiles: ["intranet"]`)那張仍是舊碼。`platform.yml:839` 警告的是「不要同時開」,
-  不是這件事。
 - **`apps/anila-shell/` → 服務叫 `anila-ui`**:目錄名跟服務名對不上,
   `docker compose build anila-shell` 會直接說沒這個服務(這種錯至少會報錯)。
 - **`infra/codeserver/`(反向)**:repo 是**掛**進 codeserver 的

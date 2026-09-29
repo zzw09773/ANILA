@@ -115,11 +115,11 @@ router (:9000)
    ├── GET /v1/agents                  ──▶ CSP   fetch agent manifest (the only discovery source)
    ├── GET /api/models/router-primary  ──▶ CSP   fetch primary LLM (X-CSP-Service-Token)
    ├── POST /v1/chat/completions       ──▶ CSP   call primary LLM to decide dispatch
-   └── dispatch → agent endpoint_url    ──▶ e.g. image-generator → http://flux2-dev-agent:8000
+   └── dispatch → agent endpoint_url    ──▶ the agent endpoint registered in the console
 ```
 
 - **CSP (`CSP_BASE_URL`)**: all upstream interactions go through CSP — fetch agent list, resolve primary model, call the primary LLM. Router→CSP internal endpoints authenticate with `X-CSP-Service-Token`.
-- **Agents**: registered via CSP (e.g. `image-generator`, `endpoint_url: http://flux2-dev-agent:8000`). When the primary LLM decides, the Router dispatches and forwards the SSE stream.
+- **Agents**: registered via CSP. When the primary LLM decides, the Router dispatches to that endpoint and forwards the SSE stream.
 - **`/router/primary-status`** (debug): returns the cached primary model name, last error, `service_token_source`, and the state-file path.
 
 ---

@@ -407,7 +407,7 @@ stop_writers() {
     nginx anila-ui anilalm anila-studio router ingestion-worker
     csp pptx-renderer backup
   )
-  local -a optional=(codeserver n8n asr-gateway docling)
+  local -a optional=(codeserver n8n asr-gateway)
   for svc in "${must[@]}"; do
     dc "$tree" stop "$svc" || die "停不了 ${svc}，不能在它還在寫的時候備份或還原"
   done
@@ -868,8 +868,6 @@ EOF
     ensure_env CODESERVER_WORKSPACE ../..
     ensure_env ANILA_AUTH_MODE card-only
     preserve_flag ANILA_ALLOW_DEV_SECRET "正式環境不允許這個開發旗標，部署前檢查會拒絕"
-    ensure_env ANILA_ENV production
-    ensure_env ANILA_REMOTE_MODELS 1
     ensure_env ANILA_ALLOW_HTTP_ENDPOINT 1
     ensure_env ANILA_ALLOW_PRIVATE_ENDPOINT 1
     ensure_env ANILA_ALLOW_HTTP_AGENT_ENDPOINT 1
@@ -955,11 +953,6 @@ fix_ownership() {
   local tree="$1"
   bash "$tree/infra/deployment/scripts/fix-runtime-ownership.sh" \
     "${COMPOSE_PROJECT_NAME:-anila}-csp:latest"
-}
-
-ensure_network() {
-  docker network inspect anila-models-net >/dev/null 2>&1 \
-    || docker network create anila-models-net >/dev/null
 }
 
 service_is_ready() {
@@ -1308,7 +1301,6 @@ prepare_tree() {
   ensure_tls "$root" "$tree"
   ensure_jwt "$tree"
   fix_ownership "$tree"
-  ensure_network
 }
 
 # 停寫入之後任何失敗都走這裡：拉起上一版。

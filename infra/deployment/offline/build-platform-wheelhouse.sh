@@ -15,11 +15,11 @@ DIST_ROOT="$OFFLINE_ROOT/dist"
 TARGET="${1:-all}"
 
 usage() {
-    echo "用法: bash infra/deployment/offline/build-platform-wheelhouse.sh [all|cp313|cp312]" >&2
+    echo "用法: bash infra/deployment/offline/build-platform-wheelhouse.sh [all|cp313]" >&2
 }
 
 case "$TARGET" in
-    all|cp313|cp312) ;;
+    all|cp313) ;;
     -h|--help)
         usage
         exit 0
@@ -73,8 +73,6 @@ if [ "$ABI" = "cp313" ]; then
     cp -a /repo/services/ingestion-worker "$SOURCE_ROOT/ingestion-worker"
     cp -a /repo/services/anila-studio "$SOURCE_ROOT/anila-studio"
     cp -a /repo/services/asr-gateway "$SOURCE_ROOT/asr-gateway"
-elif [ "$ABI" = "cp312" ]; then
-    cp -a /repo/services/asr-decoder "$SOURCE_ROOT/asr-decoder"
 else
     echo "✗ 未知 ABI: $ABI" >&2
     exit 2
@@ -133,9 +131,6 @@ case "$ABI" in
         resolve_service anila-studio "$SOURCE_ROOT/anila-studio"
         resolve_service asr-gateway "$SOURCE_ROOT/asr-gateway"
         ;;
-    cp312)
-        resolve_service asr-decoder "$SOURCE_ROOT/asr-decoder"
-        ;;
 esac
 
 # 同一 ABI 的所有服務已 append 到同一倉；多版本 distribution 可合法共存，
@@ -161,9 +156,6 @@ CONTAINER_SCRIPT
         cp313)
             expected_services=(csp ingestion-worker router anila-studio asr-gateway)
             ;;
-        cp312)
-            expected_services=(asr-decoder)
-            ;;
     esac
 
     local service manifest
@@ -179,15 +171,8 @@ CONTAINER_SCRIPT
 }
 
 case "$TARGET" in
-    all)
+    all|cp313)
         collect_abi cp313 python:3.13-slim
-        collect_abi cp312 python:3.12-slim
-        ;;
-    cp313)
-        collect_abi cp313 python:3.13-slim
-        ;;
-    cp312)
-        collect_abi cp312 python:3.12-slim
         ;;
 esac
 

@@ -15,7 +15,7 @@ appears.
 
 from __future__ import annotations
 
-import os
+from app.config import settings
 
 # ── Retrieval: images ─────────────────────────────────────────────────────
 # How many image hits to surface alongside the chunks. Pulling fewer
@@ -41,8 +41,8 @@ STUDIO_CONTENT_LIMIT_CHARS = 1500
 
 # ── Two-pass generation (2026-09-02) ─────────────────────────────────────
 # Outline first, then one retrieval per slide, then content. Off → the
-# legacy single call. Env-overridable so a deployment can compare.
-TWO_PASS_ENABLED = (os.environ.get("ANILA_STUDIO_TWO_PASS") or "1").strip().lower() not in ("0", "false", "no")
+# legacy single call. 讀 Settings，不另讀 os.environ。
+TWO_PASS_ENABLED = settings.ANILA_STUDIO_TWO_PASS
 OUTLINE_MAX_TOKENS = 2048
 PER_SLIDE_TOP_K = 4
 TWO_PASS_CHUNK_CAP = 36
@@ -68,7 +68,8 @@ FIX_MAX_TOKENS = 8192
 
 # ── Services / models ─────────────────────────────────────────────────────
 # Renderer service — same docker network, same compose stack.
-RENDERER_BASE_URL = "http://pptx-renderer:7100"
+# 唯一來源是 Settings.RENDERER_BASE_URL。
+RENDERER_BASE_URL = settings.RENDERER_BASE_URL
 
 # 不是模型名稱。call_llm_chat 看到這兩個值就向 CSP 解析對應角色。
 # 治理中心沒設時失敗，訊息點名角色；不要在這裡填預設模型名。

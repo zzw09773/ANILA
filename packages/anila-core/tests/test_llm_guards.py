@@ -90,12 +90,13 @@ def test_bumped_max_tokens_never_lowers_above_cap() -> None:
 
 
 def test_task_sampling_table_entries() -> None:
-    assert get_sampling("rag_qa") == TASK_SAMPLING["rag_qa"]
+    assert set(TASK_SAMPLING) == {"router", "chips"}
     assert get_sampling("chips").max_tokens == 1024
     assert get_sampling("chips").temperature == 0.4
-    assert get_sampling("chat").max_tokens == 2048
-    assert get_sampling("json_gen").temperature == 0.15
-    assert get_sampling("title").temperature == 0.3
+    assert get_sampling("router").max_tokens == 32768
+    for retired in ("rag_qa", "chat", "json_gen", "title"):
+        with pytest.raises(KeyError):
+            get_sampling(retired)
 
 
 def test_get_sampling_unknown_task() -> None:
@@ -103,11 +104,11 @@ def test_get_sampling_unknown_task() -> None:
         get_sampling("no-such-task")
 
 
-def test_sampling_docstring_marks_unwired_tasks() -> None:
-    """Invariant / F6: table must not claim all five tasks are wired."""
+def test_sampling_docstring_marks_wired_tasks() -> None:
     from anila_core.prompts import sampling as sampling_mod
 
     doc = sampling_mod.__doc__ or ""
     assert "已接線" in doc
-    assert "尚未接線" in doc
+    assert "尚未接線" not in doc
     assert "chips" in doc
+    assert "router" in doc

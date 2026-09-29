@@ -26,7 +26,7 @@ from anila_core.ingestion.docling_parser import (
     RemoteDoclingError,
     RemoteDoclingParser,
     _normalize_title,
-    build_docling_parser_from_env,
+    build_remote_docling_parser,
 )
 from anila_core.ingestion.errors import ParseError
 
@@ -304,31 +304,27 @@ def test_reconstructs_document_with_images(tmp_path, monkeypatch):
     assert result.images["img1"].caption == "a chart"
 
 
-# ── 5. env factory wiring ──────────────────────────────────────────────────
+# ── 5. 沒註冊來源就不看 DOC_PARSER；逾時仍由遠端 builder 讀 ──────────────
 
-def test_factory_returns_none_by_default(monkeypatch):
-    monkeypatch.setenv("DOC_PARSER", "native")
-    assert build_docling_parser_from_env() is None
+def test_unregistered_registry_ignores_doc_parser_env(monkeypatch, tmp_path):
+    from anila_core.ingestion.docling_source import reset_docling_source
+    from anila_core.ingestion.parser_registry import ParserRegistry
 
-
-def test_factory_returns_remote_when_docling(monkeypatch):
+    reset_docling_source()
+    ParserRegistry._reset_docling_cache()
     monkeypatch.setenv("DOC_PARSER", "docling")
     monkeypatch.setenv("DOCLING_URL", DOCLING_URL)
     monkeypatch.setenv("DOCLING_SERVICE_TOKEN", TOKEN)
-    parser = build_docling_parser_from_env()
-    assert parser is not None
-    assert isinstance(parser, RemoteDoclingParser)
+    parser = ParserRegistry.get(tmp_path / "a.pdf")
+    assert type(parser).__name__ != "RemoteDoclingParser"
+    reset_docling_source()
+    ParserRegistry._reset_docling_cache()
 
 
-def test_factory_bad_timeout_raises_not_falls_back(monkeypatch):
-    monkeypatch.setenv("DOC_PARSER", "docling")
-    monkeypatch.setenv("DOCLING_URL", DOCLING_URL)
+def test_remote_builder_bad_timeout_raises_not_falls_back(monkeypatch):
     monkeypatch.setenv("DOCLING_TIMEOUT_SECONDS", "not-a-number")
-    # 不再是裸 ValueError——結構化 ParseError.bad_config。(裸 ValueError 會
-    # 掉進 parsers.py 的「不支援副檔名」分支,歸錯因。)設定名進 details,
-    # 不進 body(MEDIUM-A)。
     with pytest.raises(ParseError) as excinfo:
-        build_docling_parser_from_env()
+        build_remote_docling_parser(DOCLING_URL, TOKEN)
     assert excinfo.value.code == "E_PARSE_BAD_CONFIG"
     assert "DOCLING_TIMEOUT_SECONDS" in str(excinfo.value.details)
     assert "DOCLING_TIMEOUT_SECONDS" not in excinfo.value.user_message

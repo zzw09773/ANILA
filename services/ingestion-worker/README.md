@@ -211,25 +211,25 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 | `VISION_CONCURRENCY` / `VISION_TIMEOUT_SECONDS` / `VISION_MAX_IMAGE_BYTES` | `4` / `60.0` / `8 MiB` | 並行 / 逾時 / 超過跳過 caption |
 | `ENABLE_RELATION_LLM` | `true` | LLM 關係抽取總開關 |
 | `RELATION_LLM_URL` | `""` | 空字串停用 LLM 邊 |
-| `RELATION_LLM_API_KEY` / `RELATION_LLM_VERIFY_SSL` | `not-set` / `false` | token / TLS。模型是治理中心的摘要角色，沒設就略過 LLM 關聯 |
+| `RELATION_LLM_API_KEY` / `RELATION_LLM_VERIFY_SSL` | `not-set` / `true` | token / TLS。模型是治理中心的摘要角色，沒設就略過 LLM 關聯 |
 | `RELATION_LLM_TIMEOUT_SECONDS` / `RELATION_LLM_MAX_CHARS` / `RELATION_LLM_MAX_CANDIDATES` | `120.0` / `12000` / `200` | 逾時 / 輸入上限 / 候選上限 |
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding 相似邊總開關 |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | 每文件連 K 個近鄰 / cosine 下限 / 超過略過重算 |
-| `DOC_PARSER` / `DOCLING_OCR_LANGS` | `native` / `ch_tra,en` | Docling 路由與 OCR 語系；由 anila-core 直接讀取，compose 負責提供 |
+| `DOCLING_OCR_LANGS` | `ch_tra,en` | 遠端文件解析的 OCR 語系。要不要打 Docling 由治理中心決定，不讀 `DOC_PARSER` |
 
-> `SECRET_KEY`、`ANILA_ENV`、`ANILA_ALLOW_*` 由 `anila-core` 安全模組消費（憑證解密 / SSRF / http 端點 fail-closed），compose 由環境注入。
+> `SECRET_KEY`、`ANILA_ALLOW_*` 由 `anila-core` 安全模組消費（憑證解密 / SSRF / http 端點 fail-closed），compose 由環境注入。
 
 ---
 
 ## 與其他服務的關係
 
-- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（CSP 寫進憑證檔，worker 只讀）。外連前 `anila-core` 依 `ANILA_ENV` / `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
+- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（CSP 寫進憑證檔，worker 只讀）。外連前 `anila-core` 依 `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
 - **csp-db**：以 `csp_app`（受 RLS）連線；RLS-scoped 寫入用 `SET LOCAL anila.collection_id`。讀 documents / collections / eval_runs / user_llm_credentials，寫 chunks / images / `document_relations` / 狀態 / 計數。
 - **Redis**：Arq 佇列後端。
 - **共用上傳目錄**：CSP 寫、worker 讀；captioned 圖存 `<UPLOAD_DIR>/anila-images/<doc_id>/`。
 - **Judge / relation LLM 的使用者憑證**：使用者自帶憑證（`user_llm_credentials`，AES）即時解密；外連前 `validate_outbound_url`（SSRF），憑證物件 `__repr__` 遮罩 key。
 
-> 本 worker 早於重構的 Task spine / Full Trace / Artifact 合約，且**不參與**它們：它不讀 `X-ANILA-Task-Id`、不發 trace span、不設定分類等級。與重構相關的只有 §17.1 版圖、compose shim，以及經 CSP 的 Model Gateway 金鑰 + `ANILA_ENV` fail-closed 出向守衛。
+> 本 worker 早於重構的 Task spine / Full Trace / Artifact 合約，且**不參與**它們：它不讀 `X-ANILA-Task-Id`、不發 trace span、不設定分類等級。與重構相關的只有 §17.1 版圖、compose shim，以及經 CSP 的 Model Gateway 金鑰與 `ANILA_ALLOW_*` 出向守衛。
 
 ---
 

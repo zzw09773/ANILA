@@ -37,7 +37,7 @@ Policy (current):
   generic internal-zone suffixes) and RFC1918 DNS answers. Scheme
   validation, loopback / metadata / link-local / host-gateway names
   still fail closed. Use case: docker service names in cross-stack
-  networks (e.g. ``gemma4`` in ``anila-models-net``). Only admins
+  networks (e.g. a single-label service name). Only admins
   editing compose env or the trusted-hosts UI can grow this list.
 
 The DNS check is best-effort and runs synchronously — endpoint URLs are
@@ -85,15 +85,6 @@ _HTTP_AGENT_FLAG = "ANILA_ALLOW_HTTP_AGENT_ENDPOINT"
 # flag: that would couple two transports and invite collapsing the scheme
 # branches into a shared allow-list (forbidden; see ``validate_outbound_url``).
 _GRPC_MODEL_FLAG = "ANILA_ALLOW_GRPC_ENDPOINT"
-
-
-def _is_production() -> bool:
-    """Deployment posture via ``ANILA_ENV`` in {production, prod}.
-
-    Not referenced by the scheme check since PLAN.md P0.2 (2026-07-29);
-    retained for future posture-dependent rules.
-    """
-    return os.environ.get("ANILA_ENV", "").strip().lower() in {"production", "prod"}
 
 
 def _reject_http_scheme(endpoint_kind: str) -> None:

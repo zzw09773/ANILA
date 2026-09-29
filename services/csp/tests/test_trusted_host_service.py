@@ -1,4 +1,4 @@
-"""``trusted_host_service`` cache / backfill / hook behaviour.
+"""``trusted_host_service`` cache / hook behaviour.
 
 DB-touching paths are exercised through the existing ``db`` fixture
 (SQLite, table-by-table create — TrustedHost has no JSONB so SQLite
@@ -138,45 +138,11 @@ def test_db_failure_returns_last_snapshot(db, monkeypatch):
     assert "cached-host" in fallback
 
 
-# ── env backfill ──────────────────────────────────────────────────────────────
-
-
-def test_backfill_from_env_inserts_missing(db, monkeypatch):
-    monkeypatch.setenv(
-        "ANILA_TRUSTED_HOSTS",
-        "gemma4,gpt-oss-20b,nv-embed-proxy",
-    )
-    inserted = trusted_host_service.backfill_from_env(db)
-    assert inserted == 3
-    hosts = {r.host for r in db.query(TrustedHost).all()}
-    assert hosts == {"gemma4", "gpt-oss-20b", "nv-embed-proxy"}
-
-
-def test_backfill_from_env_idempotent(db, monkeypatch):
-    """重跑 backfill 不該複製 — 第二次 inserted=0。"""
-    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma4,gpt-oss-20b")
-    first = trusted_host_service.backfill_from_env(db)
-    second = trusted_host_service.backfill_from_env(db)
-    assert first == 2
-    assert second == 0
-
-
-def test_backfill_empty_env_returns_zero(db, monkeypatch):
-    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
-    assert trusted_host_service.backfill_from_env(db) == 0
-    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "")
-    assert trusted_host_service.backfill_from_env(db) == 0
-    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", " , , ")
-    assert trusted_host_service.backfill_from_env(db) == 0
-
-
-def test_backfill_records_note_for_audit(db, monkeypatch):
-    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma4")
-    trusted_host_service.backfill_from_env(db)
-    row = db.query(TrustedHost).filter_by(host="gemma4").first()
-    assert row is not None
-    assert "imported from ANILA_TRUSTED_HOSTS" in row.note
-    assert row.created_by_user_id is None  # backfill 沒有 actor
+def test_startup_does_not_copy_env_hosts_into_the_table(db, monkeypatch):
+    """ANILA_TRUSTED_HOSTS 仍是 SSRF 的環境層，不再寫進治理中心的表。"""
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "docling,router,10.1.2.3")
+    assert not hasattr(trusted_host_service, "backfill_from_env")
+    assert db.query(TrustedHost).count() == 0
 
 
 # ── url_guard hook integration ────────────────────────────────────────────────

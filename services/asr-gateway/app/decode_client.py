@@ -1,8 +1,8 @@
 """解碼端的 HTTP 客戶端 —— 兩種傳輸都是一等公民。
 
 * **native**(`DecodeClient`)——ANILA 自有契約:`POST {base}/transcribe`,
-  body 是無標頭 Int16 mono PCM,認證是 `X-Token` 共享祕密。本地
-  `services/asr-decoder` 講這個,手提氣隙 bundle 帶的也是它。
+  body 是無標頭 Int16 mono PCM,認證是 `X-Token` 共享祕密。
+  治理中心指到講這個契約的遠端解碼器時用它。
 * **openai**(`OpenAIDecodeClient`)——`POST {base}/v1/audio/transcriptions`,
   multipart 上傳 WAV,認證是 `Authorization: Bearer`。算力中心那類外部端點
   講這個。
@@ -175,7 +175,7 @@ class _BaseDecodeClient:
 
 
 class DecodeClient(_BaseDecodeClient):
-    """ANILA 原生契約(`services/asr-decoder`)。
+    """ANILA 原生解碼契約。
 
     ⚠ 建構子第二個參數歷史上叫 `token`(`ASR_DECODER_TOKEN`),語意是共享
     祕密。改名成 `credential` 只是為了跟 openai 那條共用骨架,送出的 header

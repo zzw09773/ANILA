@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import os
 import re
 import unicodedata
 import uuid
@@ -742,8 +741,7 @@ class HtmlParser:
     """Parser for .html/.htm — stdlib tag-strip → text(不依賴 docling)。
 
     保留 <title> 當標題、丟掉 <script>/<style>、收斂空白。版面感知的 HTML
-    (表格/圖片)需要 docling(``DOC_PARSER=docling``);這是永遠可用的原生
-    fallback,讓 .html 上傳在預設 native 模式下也能解析。
+    要等治理中心註冊文件解析來源；這是沒有來源時永遠可用的原生解析。
     """
 
     def parse(self, file_path: str) -> ParsedDocument:
@@ -1335,9 +1333,8 @@ class ParserRegistry:
     """Select the appropriate parser based on file extension.
 
     By default uses the lightweight native parsers (pymupdf4llm, python-docx,
-    odfpy, ...). Set ``DOC_PARSER=docling`` in the environment to route
-    PDF/DOCX/PPTX/XLSX/HTML through Docling instead — see
-    ``ingestion.docling_parser`` for the trade-offs.
+    odfpy, ...). A registered console source can route PDF/DOCX/PPTX/XLSX/HTML
+    through the remote Docling parser instead.
     """
 
     _PARSERS: dict[str, DocumentParser] = {
@@ -1410,8 +1407,8 @@ class ParserRegistry:
     def _get_docling_parser(cls):
         """已註冊治理中心來源時，只聽那個來源。
 
-        沒註冊（anila-core 自己的測試、尚未接上的行程）才看 ``DOC_PARSER``。
-        治理中心說沒設定才回 ``None``（原生解析器）。已設定卻讀不到、
+        沒註冊就回 ``None``（原生解析器），不讀 ``DOC_PARSER``。
+        治理中心說沒設定才回 ``None``。已設定卻讀不到、
         或啟用了但沒有位址，都不會改走原生解析器。
         """
         from anila_core.ingestion.docling_source import (
@@ -1457,18 +1454,7 @@ class ParserRegistry:
             cls._docling_initialised = True
             return cls._docling_parser
 
-        if os.getenv("DOC_PARSER", "native").lower() != "docling":
-            return None
-        if not cls._docling_initialised:
-            from .docling_parser import build_docling_parser_from_env
-            # ⚠ 2026-08-17:失敗不再是「fallback 到 native」。DOC_PARSER=docling
-            # 是擁有者明示的選用──選了它、建構失敗卻靜默退回較差的 native 解析,
-            # 等於拿一個綠燈換一台被關掉的 docling。讓錯誤往上冒,operator 才會
-            # 看見。RemoteDoclingParser 的建構子刻意不 raise(缺 DOCLING_URL 是延遲
-            # 到 parse() 才驗),所以會走到這裡 raise 的只有壞設定(如過時 timeout)。
-            cls._docling_parser = build_docling_parser_from_env()
-            cls._docling_initialised = True
-        return cls._docling_parser
+        return None
 
     @classmethod
     def _reset_docling_cache(cls) -> None:
