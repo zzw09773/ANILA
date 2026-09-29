@@ -1,7 +1,7 @@
 # 從零部署實錄 — Lab 2026-09-10（內網可照抄）
 
+> **2026-09-29**：現行從零與更新見 [`docs/deploy/UPDATE.md`](../deploy/UPDATE.md)。下面是當天的實錄，不是現行程式。
 > 這份是 **2026-09-10 在 Lab（172.16.120.153）對 `main` `9434e7a6` 實際跑過的從零重部**。
-> 權威程序仍是 [`intranet-deployment-runbook.md`](./intranet-deployment-runbook.md) 與 [`first-install-rehearsal.md`](./first-install-rehearsal.md)。
 > 這裡只記：**這次按了哪些鍵、每個服務怎麼驗、內網時哪幾行必須換掉**。
 >
 > 祕密不進 git。Lab 新密碼在 host 本機 `~/anila-deliverables/from-zero-lab-20260910-200355/generated-secrets.txt`（mode 600）。

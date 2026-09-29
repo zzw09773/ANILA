@@ -125,7 +125,7 @@ npm run dev            # Vite dev server :5173
 ```bash
 docker compose -f compose.yaml build csp        # name: anila → infra/compose/platform.yml
 docker compose -f compose.yaml up -d csp
-# 日常生命週期走 infra/deployment/scripts/deploy-prod.sh；內網 bootstrap 走 infra/deployment/intranet/intranet-deploy.sh
+# 日常生命週期走 infra/deployment/scripts/deploy-prod.sh；內網更新走 docs/deploy/UPDATE.md
 ```
 
 ### 驗證閘門

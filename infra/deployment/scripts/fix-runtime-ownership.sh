@@ -90,7 +90,7 @@ fi
 
 # --network none:這一步只碰檔案系統,不需要網路。
 # --user 0:0:映像預設已經是 uid 10001,要 chown 別人的檔案必須明確要回 root。
-docker run --rm --user 0:0 --network none \
+docker run --rm --pull never --user 0:0 --network none \
   -e FIX_UID="$ANILA_RUNTIME_UID" \
   -e FIX_GID="$ANILA_RUNTIME_GID" \
   -v "$REPO_ROOT/share/uploads/ingestion:/fix/ingestion-uploads" \

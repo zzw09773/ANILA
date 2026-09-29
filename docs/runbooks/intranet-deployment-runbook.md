@@ -1,5 +1,7 @@
 # 內網部署 Runbook (restart/from-redesign annotated-tag bundle)
 
+> **2026-09-29**：下面這份是舊流程。現行出貨與內網更新見 [`docs/deploy/UPDATE.md`](../deploy/UPDATE.md)。這份留下是因為主機允許清單的說明仍以這裡為準。
+
 > **Owner**:你 (1147259)
 > **目標環境**:中科院內網,平台主機 `10.53.100.15`,對外名稱 **`https://anila.ai.ncsist.org.tw`**
 > **模型來源**:`https://aiagent2.ai.ncsist.org.tw` (=10.53.100.12,My-OpenAI-Frontend gateway,模型容器不開 port)

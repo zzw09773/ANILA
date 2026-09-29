@@ -37,10 +37,9 @@ import pytest
 
 _SCRIPT = (
     Path(__file__).resolve().parents[3]
-    / "infra"
-    / "deployment"
-    / "intranet"
-    / "intranet-deploy.sh"
+    / "scripts"
+    / "release"
+    / "release-lib.sh"
 )
 _KEY = "ANILA_ALLOW_GRPC_ENDPOINT"
 
@@ -49,7 +48,7 @@ def _env_helpers() -> str:
     """腳本裡那段 .env 存取函式(``_trim`` 起,到主流程第一行止)。"""
     text = _SCRIPT.read_text(encoding="utf-8")
     start = text.index("_trim() {")
-    end = text.index('\necho "===', start)
+    end = text.index("\n# END ENV HELPERS", start)
     return text[start:end]
 
 

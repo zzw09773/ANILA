@@ -125,7 +125,7 @@ So **changing the governance center = rebuilding the `csp` image**:
 ```bash
 docker compose -f compose.yaml build csp        # name: anila → infra/compose/platform.yml
 docker compose -f compose.yaml up -d csp
-# day-2 lifecycle via infra/deployment/scripts/deploy-prod.sh; intranet bootstrap via infra/deployment/intranet/intranet-deploy.sh
+# day-2 lifecycle via infra/deployment/scripts/deploy-prod.sh; intranet update via docs/deploy/UPDATE.md
 ```
 
 ### Verification gates

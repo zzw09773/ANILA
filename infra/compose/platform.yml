@@ -152,6 +152,9 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/csp.Dockerfile
+      args:
+        # 開發機預設。出貨打包會用另一份 compose 覆寫成 YYYY.MM.DD-N，不進 .env。
+        ANILA_RELEASE_VERSION: dev
     # 不對 host 開 port — 外部入口只有 nginx :443 (HTTPS + API key)。
     # 容器內 service-to-service 用 ``http://csp:8000`` 走 docker DNS。
     expose:
@@ -316,9 +319,9 @@ services:
       - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
       # runtime 不自動生 → 缺這把 csp /.well-known/jwks.json
-      # 回 500、登入發不了 token、anila-studio 起不來。由 infra/deployment/intranet/
-      # intranet-deploy.sh 的 [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py
-      # 產到 repo 根 ./secrets。
+      # 回 500、登入發不了 token、anila-studio 起不來。由 anila-update.sh
+      # 用 csp image（--pull never）跑 scripts/generate-jwt-keypair.py
+      # 產到安裝目錄的 secrets。
       - ../../secrets:/app/secrets:ro
       # 空 volume 第一次掛上時，繼承映像裡 /run/anila/service-clients 的
       # 10001:10002 與 mode 2750。改過 uid 之後要重建 csp 與 router 映像。
@@ -359,6 +362,9 @@ services:
 
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
+    # 執行時用標籤。digest 釘在 build-release.sh 的 pull 與 images.tsv。
+    # docker load 不會還原 manifest-list 的 RepoDigest。更新腳本改標成
+    # <專案>/redis:running，並用版本目錄裡的覆寫檔讓 compose 用那個標籤。
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
     volumes:

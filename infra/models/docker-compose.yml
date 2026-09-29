@@ -18,10 +18,10 @@
 #     models/model/      權重 (ANILA_HF_DIR 預設指這;dev 機放 symlink 也通,不搬)
 #     infra/models/      本檔 + src/ (trtllm/triton/proxy 設定)
 #
-# Day-to-day (建議用 infra/deployment/intranet/model-serve.sh,它會自動 source .env):
-#     bash infra/deployment/intranet/model-serve.sh up            # 起預設組
-#     bash infra/deployment/intranet/model-serve.sh up gemma4     # 起單一服務
-#     bash infra/deployment/intranet/model-serve.sh status|logs gemma4|down
+# Day-to-day (建議用 infra/deployment/archive/model-side/model-serve.sh,它會自動 source .env):
+#     bash infra/deployment/archive/model-side/model-serve.sh up            # 起預設組
+#     bash infra/deployment/archive/model-side/model-serve.sh up gemma4     # 起單一服務
+#     bash infra/deployment/archive/model-side/model-serve.sh status|logs gemma4|down
 # 等價的裸 compose 指令:
 #     docker compose -f infra/models/docker-compose.yml up -d ...
 #

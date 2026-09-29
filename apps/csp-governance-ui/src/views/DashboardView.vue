@@ -2,6 +2,7 @@
   <div class="page">
     <PageHead title="儀表板" subtitle="先處理需要注意的事，再看近 24 小時用量。">
       <template #actions>
+        <span class="page-head__meta">版本 {{ platformVersion }}</span>
         <span class="page-head__meta">近 24 小時 · 更新於 {{ refreshedLabel }}</span>
         <TermButton size="xs" variant="ghost" :loading="loading" @click="refresh" label="重新整理" />
       </template>
@@ -213,6 +214,7 @@ import { summarizeBackupStatus } from '../utils/backupStatus'
 import client from '../api/client'
 import { filterPlatformLinksForRelease } from '../utils/anilalmReleaseGate'
 import { formatDate } from '../utils/formatDate'
+import { platformVersionLabel } from '../utils/platformVersion'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import PlatformCard from '../components/dashboard/PlatformCard.vue'
 import ServiceHealthCard from '../components/dashboard/ServiceHealthCard.vue'
@@ -255,6 +257,7 @@ const alertError = ref('')
 const backupRaw = ref(null)
 const backupError = ref('')
 const backupTried = ref(false)
+const platformVersion = ref('…')
 const diskRaw = ref([])
 const diskError = ref('')
 const certRaw = ref(null)
@@ -399,9 +402,19 @@ async function fetchAdminWidgets() {
   }
 }
 
+async function fetchPlatformVersion() {
+  try {
+    const { data } = await client.get('/api/platform-version')
+    platformVersion.value = platformVersionLabel(data?.version)
+  } catch {
+    platformVersion.value = platformVersionLabel('')
+  }
+}
+
 async function refresh() {
   loading.value = true
   loadError.value = ''
+  const versionPromise = fetchPlatformVersion()
   try {
     // 每個資料來源各自沉澱,一個壞掉不能讓其他的看起來像「真的是 0」。
     // 這是 2026-07-31 修掉的缺陷:抓取失敗時 KPI 落到 `|| 0`,長得跟安靜的一天
@@ -441,7 +454,7 @@ async function refresh() {
       }
     }
 
-    await Promise.all([admin, health, alerts, backup, capacity])
+    await Promise.all([admin, health, alerts, backup, capacity, versionPromise])
     if (usageOk) refreshedAt.value = new Date()
   } finally {
     loading.value = false

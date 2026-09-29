@@ -139,7 +139,7 @@ flowchart TB
 |---|---|
 | [`compose`](./infra/compose/) | `platform.yml`（`anila`）＋ `dev.yml`（`anila-dev`）；由 root `compose.yaml` / `compose.dev.yaml` shim `include` |
 | [`deployment/scripts`](./infra/deployment/scripts/) | prod 生命週期：`deploy-prod.sh` ＋ `reissue-tls-cert.sh`／`reencrypt-credentials.py` 等 |
-| [`deployment/intranet`](./infra/deployment/intranet/) | air-gap 離線工具鏈：`intranet-deploy.sh`（card bootstrap）＋ `build-and-export-for-intranet.sh` ＋ 模型 / toolkit 下載與分塊搬運 |
+| [`deployment/intranet`](./infra/deployment/intranet/) | 舊 air-gap 腳本已退役。現行出貨見 [`docs/deploy/UPDATE.md`](./docs/deploy/UPDATE.md)；模型腳本在 [`deployment/archive/model-side`](./infra/deployment/archive/model-side/) |
 | [`nginx`](./infra/nginx/) | `anila.conf`（唯一外部入口設定）＋ `certs/`（live 憑證為 untracked） |
 | [`ci`](./infra/ci/) | `lint-zh-tw.sh`（繁中政策 gate，doc 11）＋ `lint-boundaries.sh`（CSP module boundary gate，doc 10 §14） |
 | [`models`](./infra/models/) | 模型 stack compose topology（獨立 lifecycle，external network `anila-models-net`） |
@@ -191,21 +191,18 @@ bash infra/deployment/scripts/deploy-prod.sh     # preflight + build + up + 等 
 
 子指令：`deploy`（預設）/ `preflight` / `up` / `down`（保留 named volumes）/ `restart` / `rebuild <svc>` / `status` / `logs <svc>` / `verify` / `wait`。
 
-### air-gap 離線交付（外網打包 → 內網 load）
+### air-gap 離線交付（外網打包 → 內網更新）
 
-中科院機房無外網：先在有外網的機器打包所有 image，再帶進內網。card 一次性 bootstrap 走 [`infra/deployment/intranet/intranet-deploy.sh`](./infra/deployment/intranet/intranet-deploy.sh)（從 `server.pfx` 抽 TLS 憑證、產 secrets、組 `.env`、接 CSPKI model-CA、產 JWT keypair），收尾交棒 `deploy-prod.sh` 做日常 lifecycle。
+中科院機房無外網。開發機打包，內網只載入、不建置、不拉取。步驟在 [`docs/deploy/UPDATE.md`](./docs/deploy/UPDATE.md)。
 
 ```bash
-# 外網機：
-bash infra/deployment/intranet/build-and-export-for-intranet.sh
-# 內網（複製 export 目錄 + repo 進來）：
-docker network create anila-models-net                        # 第一次
-docker compose -f infra/models/docker-compose.yml up -d        # 模型 stack（獨立 lifecycle）
-bash infra/deployment/intranet/intranet-deploy.sh              # card bootstrap
-bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifecycle
+# 有網路的開發機（工作目錄必須乾淨）：
+bash scripts/release/build-release.sh
+# 內網主機（沒有網路）：
+bash anila-YYYY.MM.DD-N/anila-update.sh anila-YYYY.MM.DD-N
 ```
 
-離線工具鏈（皆在 [`infra/deployment/intranet/`](./infra/deployment/intranet/)）：`download-intranet-models.sh`、`download-intranet-toolkit.sh`、`intranet-quantize-nvfp4.py`、`pack-chunks.sh` / `unpack-chunks.sh`（大檔分塊搬運）。部署細節見 [`docs/runbooks/`](./docs/runbooks/)。
+模型不跟這包走。`model-serve.sh`、權重下載與分塊在 [`infra/deployment/archive/model-side/`](./infra/deployment/archive/model-side/)。舊的 `intranet-deploy.sh` 已退役。
 
 ---
 

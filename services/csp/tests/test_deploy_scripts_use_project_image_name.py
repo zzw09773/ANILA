@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = (
-    REPO / "infra/deployment/intranet/intranet-deploy.sh",
+    REPO / "scripts/release/anila-update.sh",
     REPO / "infra/deployment/scripts/fix-runtime-ownership.sh",
 )
 
@@ -59,7 +59,7 @@ def test_gitlab_is_absent_while_n8n_and_codeserver_stay():
     assert "codeserver_config" in volumes
     assert "GITLAB_" not in platform
 
-    deploy = (REPO / "infra/deployment/intranet/intranet-deploy.sh").read_text(encoding="utf-8")
+    deploy = (REPO / "scripts/release/anila-update.sh").read_text(encoding="utf-8")
     example = (REPO / ".env.example").read_text(encoding="utf-8")
     assert "GITLAB_" not in deploy
     assert "GITLAB_" not in example

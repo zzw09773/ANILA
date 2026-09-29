@@ -62,7 +62,7 @@ models/inference/        # TensorRT-LLM / Triton 本地建置脈絡與壓測 log
 
 ## 啟動與部署
 
-建議用 `infra/deployment/intranet/model-serve.sh` 包裝（自動 `source` repo 根 `.env`、自動建 `anila-models-net`、一律帶 `--profile intranet` 故 profile 內外服務都可點名）：
+建議用 `infra/deployment/archive/model-side/model-serve.sh` 包裝（自動 `source` repo 根 `.env`、自動建 `anila-models-net`、一律帶 `--profile intranet` 故 profile 內外服務都可點名）：
 
 ```bash
 # 一次性 bootstrap：建網，並讓平台 stack 重新套用網路（restart 不會重掛新網路）
@@ -70,12 +70,12 @@ docker network create anila-models-net
 docker compose up -d csp            # 於 repo 根，經 root shim compose.yaml；csp 加入 anila-models-net
 
 # 日常操作（於 repo 根）
-bash infra/deployment/intranet/model-serve.sh up trial          # 現役組：gpt-oss-20b gemma4 nv-embed
-bash infra/deployment/intranet/model-serve.sh up intranet       # H100 組：gemma4 26b-a4b 12b 120b nv-embed
-bash infra/deployment/intranet/model-serve.sh up gemma4         # 單一服務（up 一定要給 group 或服務名）
-bash infra/deployment/intranet/model-serve.sh status            # 全部 health 一覽
-bash infra/deployment/intranet/model-serve.sh logs gemma4       # tail -f
-bash infra/deployment/intranet/model-serve.sh down              # 全停（只動模型，平台不受影響）
+bash infra/deployment/archive/model-side/model-serve.sh up trial          # 現役組：gpt-oss-20b gemma4 nv-embed
+bash infra/deployment/archive/model-side/model-serve.sh up intranet       # H100 組：gemma4 26b-a4b 12b 120b nv-embed
+bash infra/deployment/archive/model-side/model-serve.sh up gemma4         # 單一服務（up 一定要給 group 或服務名）
+bash infra/deployment/archive/model-side/model-serve.sh status            # 全部 health 一覽
+bash infra/deployment/archive/model-side/model-serve.sh logs gemma4       # tail -f
+bash infra/deployment/archive/model-side/model-serve.sh down              # 全停（只動模型，平台不受影響）
 ```
 
 等價的裸 compose 指令：
@@ -114,4 +114,4 @@ CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs
 ## 相關文件
 
 - 重設計文件：[`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、[`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
-- 部署腳本：`infra/deployment/intranet/model-serve.sh`（模型生命週期）、`infra/deployment/scripts/deploy-prod.sh`（平台生命週期） · 平台整體：[`../../README.md`](../../README.md)
+- 部署腳本：`infra/deployment/archive/model-side/model-serve.sh`（模型生命週期）、`infra/deployment/scripts/deploy-prod.sh`（平台生命週期） · 平台整體：[`../../README.md`](../../README.md)

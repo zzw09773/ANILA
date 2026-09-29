@@ -158,7 +158,7 @@ check_models_stack() {
   if ! docker network inspect anila-models-net >/dev/null 2>&1; then
     err "anila-models-net network 不存在"
     fatal "請先起模型 stack:
-       bash infra/deployment/intranet/model-serve.sh up trial
+       bash infra/deployment/archive/model-side/model-serve.sh up trial
        (確認 gemma4 / nv-embed-proxy 都 healthy)
        模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
   fi

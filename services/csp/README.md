@@ -184,7 +184,7 @@ cd services/csp && python -m pytest -q   # 或從這裡；兩者結果必須一�
 docker compose -f compose.dev.yaml up -d --build csp    # dev
 docker compose up -d csp                                 # prod（platform.yml）
 # 日常 lifecycle：infra/deployment/scripts/deploy-prod.sh
-# 內網卡登 bootstrap：infra/deployment/intranet/intranet-deploy.sh
+# 內網更新：docs/deploy/UPDATE.md（anila-update.sh）
 ```
 
 CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy`）。第一次啟動若不存在：`docker network create anila-models-net`。

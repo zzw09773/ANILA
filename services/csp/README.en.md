@@ -184,7 +184,7 @@ The full stack (redis / ingestion-worker / router / anila-studio / frontends / n
 docker compose -f compose.dev.yaml up -d --build csp    # dev
 docker compose up -d csp                                 # prod (platform.yml)
 # day-to-day lifecycle: infra/deployment/scripts/deploy-prod.sh
-# intranet card-login bootstrap: infra/deployment/intranet/intranet-deploy.sh
+# intranet update: docs/deploy/UPDATE.md (anila-update.sh)
 ```
 
 CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy`). On first boot if it doesn't exist: `docker network create anila-models-net`.

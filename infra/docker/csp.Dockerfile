@@ -155,6 +155,12 @@ RUN addgroup -g 10002 -S anila-svc-tokens \
  && rm -rf /usr/local/lib/python3.13/site-packages/pip \
  && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13 \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
+# 出貨版本。預設 dev；build-release.sh 用 compose override 寫入 YYYY.MM.DD-N。
+# 這是建置參數，不會變成執行時的環境變數。
+ARG ANILA_RELEASE_VERSION=dev
+RUN printf '%s\n' "$ANILA_RELEASE_VERSION" > /app/VERSION \
+ && chmod 644 /app/VERSION \
+ && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER anila
 
 EXPOSE 8000

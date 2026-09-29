@@ -161,9 +161,15 @@ compose 的 `backup` 服務跟資料庫共用 `anila-pgvector:local`。起來先
 
 `.env`、`secrets/`、CSP 本地金鑰 volume、nginx 私鑰要另外留一次。模型權重與 Redis 不在每日包裡。另一台用 `docs/runbooks/csp-db-backup-restore.md` 的 rsync 來拉。平台這台不設定對方位址，也不要再跑 `backup-csp-db.sh` 或改 crontab。
 
+## 出貨與內網更新（2026-09-29）
+
+有網路的開發機跑 `scripts/release/build-release.sh`，產出 `anila-YYYY.MM.DD-N`（含 asr-gateway 映像，預設不起），結束時印出壓縮檔 SHA256。內網主機沒有網路，只跑出貨包裡的 `anila-update.sh`：先拿安裝鎖，核對清單，確認治理中心有生效公告，先停寫入再備份資料庫與 studio volume，載入映像後用映像 ID 核對並標進這個 compose 專案，`docker compose up` 先不起 nginx，內部健康檢查過了才開入口。已有同名 compose 專案或 volume 卻沒有安裝記錄時，要用 `adopt` 先備份再認領：收進舊的 `.env`、準備目錄後才啟動，成功記成 `adopt`。安裝記錄一旦存在就是唯一依據，不會改寫成別的根目錄。失敗自動回復；資料庫或檔案還原失敗仍拉起原先那一版、線上資料庫不換，並同時留下更新失敗與回復失敗。手動 `rollback` 會先停寫入，再用備份時間秀出會消失的對話／訊息／文件筆數，打對版本才把備份與檔案快照換上；線上庫先改名保留，健康檢查過了才丟掉。還原失敗或健康檢查沒過，都會把資料庫、檔案、標籤與指標切回正在跑的那一版。更新、認領與回復的結果追加在 `/opt/anila/state/operations.log`，資料庫可用之後也寫稽核。第一次安裝只問 `ANILA_HOST`。儀表板顯示映像裡的版本。步驟見 `docs/deploy/UPDATE.md`。這套還沒在這台對線上那套打包或更新。
+
+舊的 `intranet-deploy.sh`、`build-and-export-for-intranet.sh`、`anila-serve.sh` 已退役，放在 `infra/deployment/archive/intranet-legacy/`，直接執行或 source 都會停。模型那邊的 `model-serve.sh`、權重下載與分塊仍在用，移到 `infra/deployment/archive/model-side/`。
+
 ## 尚未當成上線完成的項目
 
-- P2.6 打 tag／重打包
+- P2.6 出貨腳本已改寫，尚未對線上那套打包或更新（見 `docs/deploy/UPDATE.md`）
 - Q53 人資 Oracle（`csiih.vihbuy`）等資安放行 `oracledb` wheel
 - G9 對話密等標記介面
 - `app.jsx`／`router_server.py` 大檔拆分（等主流程測試穩定後再抽）

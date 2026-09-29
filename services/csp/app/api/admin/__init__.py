@@ -9,10 +9,12 @@ from app.api.admin.backup_status import router as backup_status_router
 from app.api.admin.capacity import router as capacity_router
 from app.api.admin.health_overview import router as health_overview_router
 from app.api.admin.feedback import router as feedback_router
+from app.api.admin.platform_release import router as platform_release_router
 
 __all__ = [
     "backup_status_router",
     "capacity_router",
     "health_overview_router",
     "feedback_router",
+    "platform_release_router",
 ]

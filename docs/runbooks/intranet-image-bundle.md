@@ -1,5 +1,7 @@
 # 內網 image bundle — 打包、攜帶、載入、起棧
 
+> **2026-09-29**：現行打包與更新見 [`docs/deploy/UPDATE.md`](../deploy/UPDATE.md)。下面是舊的 `build-and-export` 步驟。
+
 > **給明天要上 `.15` 做高階審查的操作者**。內網無外網,所有 image 必須以
 > tar.gz 實體攜入。本文件是操作步驟,不是歷史敘事。
 >

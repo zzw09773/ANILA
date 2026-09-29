@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# 已退役（2026-09-29）。現行出貨與內網更新見 docs/deploy/UPDATE.md。
+# 下面的函式留著，離線測試仍會讀這份文字。source 或直接執行都會停。
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  printf '這支腳本已退役。請改走 docs/deploy/UPDATE.md。\n' >&2
+  return 1
+fi
+printf '這支腳本已退役。請改走 docs/deploy/UPDATE.md。\n' >&2
+exit 1
+
 # anila-serve.sh — ANILA 平台服務管理 (薄包裝,實作在 deploy-prod.sh)
 # ============================================================================
 # 用法 (subcommand 與 deploy-prod.sh 完全相同):

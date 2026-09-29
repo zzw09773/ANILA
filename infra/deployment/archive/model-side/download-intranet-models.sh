@@ -11,7 +11,7 @@
 #   的逐塊 hash 由 pack-chunks.sh 自己產)。
 #
 # 用法:
-#   bash infra/deployment/intranet/download-intranet-models.sh /data/staging/hf
+#   bash infra/deployment/archive/model-side/download-intranet-models.sh /data/staging/hf
 #
 # 環境變數:
 #   GEN_MANIFEST=1   下載完產生 WEIGHTS-CHECKSUMS.sha256 (2TB 約 30-60 分鐘,
@@ -27,7 +27,7 @@
 # ============================================================================
 set -euo pipefail
 
-DEST="${1:?用法: bash infra/deployment/intranet/download-intranet-models.sh <本機暫存目錄,如 /data/staging/hf>}"
+DEST="${1:?用法: bash infra/deployment/archive/model-side/download-intranet-models.sh <本機暫存目錄,如 /data/staging/hf>}"
 mkdir -p "$DEST"
 
 # repo|本地目錄名 (= infra/models/docker-compose.yml 掛載時用的目錄名)

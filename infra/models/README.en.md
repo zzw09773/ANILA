@@ -62,7 +62,7 @@ models/inference/        # TensorRT-LLM / Triton local build context + perf logs
 
 ## Startup & deployment
 
-Prefer the `infra/deployment/intranet/model-serve.sh` wrapper (auto-`source`s the repo-root `.env`, auto-creates `anila-models-net`, and always passes `--profile intranet` so both in- and out-of-profile services can be named):
+Prefer the `infra/deployment/archive/model-side/model-serve.sh` wrapper (auto-`source`s the repo-root `.env`, auto-creates `anila-models-net`, and always passes `--profile intranet` so both in- and out-of-profile services can be named):
 
 ```bash
 # One-time bootstrap: create the net and re-apply networking to the platform stack
@@ -71,12 +71,12 @@ docker network create anila-models-net
 docker compose up -d csp            # at repo root, via the root shim compose.yaml; csp joins anila-models-net
 
 # Day-to-day (at repo root)
-bash infra/deployment/intranet/model-serve.sh up trial          # active set: gpt-oss-20b gemma4 nv-embed
-bash infra/deployment/intranet/model-serve.sh up intranet       # H100 set: gemma4 26b-a4b 12b 120b nv-embed
-bash infra/deployment/intranet/model-serve.sh up gemma4         # a single service (up always needs a group or service name)
-bash infra/deployment/intranet/model-serve.sh status            # health overview
-bash infra/deployment/intranet/model-serve.sh logs gemma4       # tail -f
-bash infra/deployment/intranet/model-serve.sh down              # stop all (models only; platform untouched)
+bash infra/deployment/archive/model-side/model-serve.sh up trial          # active set: gpt-oss-20b gemma4 nv-embed
+bash infra/deployment/archive/model-side/model-serve.sh up intranet       # H100 set: gemma4 26b-a4b 12b 120b nv-embed
+bash infra/deployment/archive/model-side/model-serve.sh up gemma4         # a single service (up always needs a group or service name)
+bash infra/deployment/archive/model-side/model-serve.sh status            # health overview
+bash infra/deployment/archive/model-side/model-serve.sh logs gemma4       # tail -f
+bash infra/deployment/archive/model-side/model-serve.sh down              # stop all (models only; platform untouched)
 ```
 
 Equivalent bare compose commands:
@@ -115,4 +115,4 @@ CSP's **Model Gateway (治理中心, [doc 04](../../docs/anila-redesign-docs/04-
 ## Related docs
 
 - Redesign docs: [`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md), [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
-- Deploy scripts: `infra/deployment/intranet/model-serve.sh` (model lifecycle), `infra/deployment/scripts/deploy-prod.sh` (platform lifecycle) · Platform overview: [`../../README.md`](../../README.md)
+- Deploy scripts: `infra/deployment/archive/model-side/model-serve.sh` (model lifecycle), `infra/deployment/scripts/deploy-prod.sh` (platform lifecycle) · Platform overview: [`../../README.md`](../../README.md)

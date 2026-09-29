@@ -16,12 +16,13 @@
 #         *.pem / *.key / *.ppk、*.pfx / *.p12、id_rsa* 這種沒有副檔名的
 #         ssh 私鑰、.env 與 .env.*、*.log 與輪替壓縮日誌、secrets/ 目錄、
 #         有內容的 logs/ 目錄、data/attachments、.pytest_cache
-#     (b) **內容規則**:憑證/金鑰候選檔(*.pem / *.crt / *.key,以及任何被
-#         白名單放行的命中檔)只要 bytes 裡出現私鑰區塊標頭,就是違規 ——
+#     (b) **內容規則**:每一個一般檔(含 redis 映像、不限副檔名)只要 bytes 裡
+#         出現私鑰區塊標頭,就是違規。內容例外只留給已知的公開憑證 ——
 #         **白名單放行不了它**。這條是為了堵住「把私鑰改名成 cacert.pem
 #         藏進 certifi 目錄」這種洗白路徑(2026-08-06 驗收實證的漏洞)。
 #   擋不住(已知盲區,寫在這裡是為了不要有人以為掃過就乾淨)——
-#     • 藏在其他副檔名裡的祕密:config.json 裡的 token、.py 裡寫死的密碼
+#     • 不像私鑰標頭的祕密:config.json 裡的 token、.py 裡寫死的密碼。
+#       BEGIN … PRIVATE KEY 不限副檔名,一般檔也抓。
 #     • 壓縮檔/封裝檔內部:tar / zip / jar / whl 裡面的東西看不到
 #     • 映像**設定**面的洩漏:ENV、build arg、LABEL、history —— docker export
 #       只給檔案系統,這些完全不在掃描範圍內
@@ -36,7 +37,7 @@
 #              manifest 引用缺檔 / 檔案清單是空的)
 #   exit 3  = **自我測試沒過** —— 掃描器被改壞了,在掃任何映像之前就停
 #
-# 這支腳本已接進 infra/deployment/intranet/build-and-export-for-intranet.sh
+# 這支腳本已接進 scripts/release/build-release.sh
 # (build 之後、docker save 之前;有違規就中止匯出)。
 # 也可以**單獨跑**——本機重建之後想確認一下、或事後稽核一張既有映像:
 #   bash infra/deployment/scripts/scan-image-artifacts.sh anila-csp:latest
@@ -90,9 +91,8 @@ CONTENT_RULE_NAME='private-key-content'
 # 一整串長得像真金鑰的字面值。
 PRIVATE_KEY_RE='BEGIN.*PRIVATE KEY'
 
-# 要驗內容的候選檔:憑證/金鑰家族(不分大小寫)。
-# 只驗這些是為了效能 —— 一張映像兩萬個檔,全部抽出來讀不切實際;而
-# 「把私鑰藏成別的副檔名」本來就已經被檔名家族那組規則擋住了。
+# 私鑰標頭不限副檔名。這個 regex 只留著給註解與舊測試對照;
+# needs_content_check 對每一個一般檔都回傳要讀。
 CONTENT_CANDIDATE_RE='(\.pem|\.crt|\.key)$'
 
 # ── 白名單 ──────────────────────────────────────────────────────────────────
@@ -141,8 +141,9 @@ ALLOWLIST=(
 # ── 內容例外白名單 ───────────────────────────────────────────────────────────
 # 格式:<exact-path>|<sha256>|<理由>。path 是 image rootfs 的相對路徑,不准用 glob。
 # 每一筆例外都是一次閘門收窄;雜湊與理由是它的代價;新增條目必須寫明上游公開來源與為何零機密價值 — 給第八筆條目製造摩擦力正是這段註解的目的。
+# 內容例外只允許已知的公開憑證（.pem / .crt），以及下面這一筆已釘雜湊的
+# httpolyglot 公開測試 fixture。其他私鑰，含同一路徑但雜湊不同的檔，仍然違規。
 CONTENT_ALLOWLIST=(
-    # 擷取命令: tar -xOf /tmp/anila-export-buildx-20260813/01-images/anila-codeserver_local.tar.gz blobs/sha256/e44ee3c44d52c8fe0592e5c769e8266191afddebe84bfa722f6e537b0eb9795e | gzip -dc | tar -xOf - -- usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key | sha256sum
     'usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key|6bf80cc4376ae97a69b2eb95fd3e17df4614bea2fe224e5e707806ed9bf0f2c8|httpolyglot npm 套件公開測試 fixture,全球同位元組,code-server 基底層自帶、後層已刪、僅存於層位元組'
 )
 
@@ -232,13 +233,13 @@ classify_path() {
     return 0
 }
 
-# 這個檔要不要驗內容:憑證/金鑰候選,或是「命中規則但被白名單放行」的檔。
-# 後者是重點 —— 白名單放行的東西正是最需要被讀一眼的東西。
+# 每一個一般檔都讀私鑰標頭。目錄由呼叫端排除。
+# 公開憑證沒有 PRIVATE KEY，不必靠副檔名過濾；內容例外只放已知公開憑證。
 needs_content_check() {
-    local path="${1,,}" verdict="$2"
-    [[ "$path" =~ $CONTENT_CANDIDATE_RE ]] && return 0
-    [ "$verdict" = "ALLOWED" ] && return 0
-    return 1
+    local path="${1,,}" _verdict="${2:-}"
+    # CONTENT_CANDIDATE_RE 不再當過濾器，留著是為了讓「只掃 pem/key」退不回去。
+    [[ -n "$path" || "$path" =~ $CONTENT_CANDIDATE_RE || -n "$_verdict" ]] || return 1
+    return 0
 }
 
 # 檔案內容裡有沒有私鑰區塊。回傳 0 = 有(違規)。
@@ -779,6 +780,14 @@ self_test() {
             echo "  ✗ self-test: CONTENT_ALLOWLIST sha256 必須是 64 位 hex:$content_path" >&2
             failures=$((failures + 1))
         fi
+        case "$content_path" in
+            *.pem|*.crt) ;;
+            usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key) ;;
+            *)
+                echo "  ✗ self-test: 內容例外只允許已知公開憑證（.pem/.crt），或已釘雜湊的 httpolyglot 測試 fixture:$content_path" >&2
+                failures=$((failures + 1))
+                ;;
+        esac
     done
 
     # ── tar mode fixtures ─────────────────────────────────────────────────
@@ -791,9 +800,12 @@ self_test() {
     tar_layer_root="$tar_fixture/layer-root"
     tar_bundle="$tar_fixture/fixture.tar"
     tar_missing_bundle="$tar_fixture/missing-layer.tar"
-    mkdir -p "$tar_layer_root/foo" "$tar_fixture/bundle/blobs/sha256"
+    mkdir -p "$tar_layer_root/foo" "$tar_layer_root/opt/redis" \
+        "$tar_layer_root/etc/ssl/certs" "$tar_fixture/bundle/blobs/sha256"
     printf 'safe fixture\n' > "$tar_layer_root/safe.txt"
     printf 'fixture violation\n' > "$tar_layer_root/foo/real.key"
+    printf '%s\n' '-----BEGIN PRIVATE KEY-----' > "$tar_layer_root/opt/redis/notes.txt"
+    printf '%s\n' '-----BEGIN CERTIFICATE-----' > "$tar_layer_root/etc/ssl/certs/ca.pem"
     : > "$tar_layer_root/foo/.wh.secret.key"
     tar -cf "$tar_fixture/layer.tar" -C "$tar_layer_root" .
     gzip -c "$tar_fixture/layer.tar" > "$tar_fixture/bundle/blobs/sha256/self-test-layer"
@@ -831,6 +843,14 @@ self_test() {
         fi
         if ! grep -Fq '[secret-material] foo/real.key  ← introduced by layer-1 blob=blobs/sha256/self-test-layer' "$tar_output_file"; then
             echo "  ✗ self-test: tar layer 的 real.key 沒有以 secret-material/正確 layer attribution 回報" >&2
+            failures=$((failures + 1))
+        fi
+        if ! grep -Fq '[private-key-content] opt/redis/notes.txt' "$tar_output_file"; then
+            echo "  ✗ self-test: 一般檔 notes.txt 裡的私鑰沒被抓住" >&2
+            failures=$((failures + 1))
+        fi
+        if grep -Fq '[private-key-content] etc/ssl/certs/ca.pem' "$tar_output_file"; then
+            echo "  ✗ self-test: 公開憑證被當成私鑰" >&2
             failures=$((failures + 1))
         fi
         if grep -Fq 'self-test-config  ← introduced by' "$tar_output_file"; then
@@ -883,14 +903,6 @@ if [ $# -eq 0 ]; then
     sed -n '/^# ====/,/^# ====/p' "$0" | sed 's/^# \?//' >&2
     exit 2
 fi
-
-# 給 grep 用的粗篩(把 RULES 的 regex 併成一條),避免對十萬行做 bash 迴圈。
-# 粗篩只負責挑出「可能違規或要驗內容」的行,真正判定仍然走 classify_path;
-# 內容候選(*.crt 這種不違規但要讀一眼的)也併進來,否則第二趟會漏看。
-COARSE_REGEX="$(
-    { for rule in "${RULES[@]}"; do printf '%s|' "${rule#*|}"; done
-      printf '%s' "$CONTENT_CANDIDATE_RE"; }
-)"
 
 # ── 主迴圈 ──────────────────────────────────────────────────────────────────
 TOTAL_VIOLATIONS=0
@@ -976,7 +988,7 @@ for img in "$@"; do
             printf '%s\n' "$path" >> "$candidates"
             CAND_VERDICT["$path"]="$VERDICT"
         fi
-    done < <(grep -Ei "$COARSE_REGEX" "$listing" || true)
+    done < "$listing"
 
     # 第二趟:只把候選檔抽出來讀。私鑰內容規則**壓過白名單**。
     #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 正式部署環境檢查。由 deploy-prod.sh 與 intranet-deploy.sh source。
+# 正式部署環境檢查。由 deploy-prod.sh 與 anila-update.sh source。
 # 只印鍵名，不印值。不要在這裡 source .env，也不要 set -x。
 
 _prod_env_trim() {

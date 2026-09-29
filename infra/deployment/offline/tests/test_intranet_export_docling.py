@@ -20,7 +20,7 @@ REPO_ROOT = TESTS_ROOT.parents[3]
 EXPORT_SCRIPT = Path(
     os.environ.get(
         "ANILA_EXPORT_SCRIPT",
-        str(REPO_ROOT / "infra/deployment/intranet/build-and-export-for-intranet.sh"),
+        str(REPO_ROOT / "infra/deployment/archive/intranet-legacy/build-and-export-for-intranet.sh"),
     )
 )
 DOCLING_README = REPO_ROOT / "services/docling-service/README.md"
@@ -165,7 +165,7 @@ class IntranetExportDoclingTests(unittest.TestCase):
 
     def test_default_include_asr_is_off(self) -> None:
         self.assertIn('INCLUDE_ASR="${INCLUDE_ASR:-0}"', _script_text())
-        deploy = REPO_ROOT / "infra/deployment/intranet/intranet-deploy.sh"
+        deploy = REPO_ROOT / "infra/deployment/archive/intranet-legacy/intranet-deploy.sh"
         self.assertIn('INCLUDE_ASR="${INCLUDE_ASR:-0}"', deploy.read_text(encoding="utf-8"))
 
     def test_platform_profile_args_stay_asr_only(self) -> None:
@@ -254,21 +254,17 @@ class IntranetExportDoclingTests(unittest.TestCase):
             self.assertNotIn("06-docling-gpu-host.tar", collect_checksum_files(root))
             self.assertNotIn("05-weights-docling.tar", collect_checksum_files(root))
 
-    def test_image_flag_without_weights_dir_fails_loud(self) -> None:
+    def test_retired_export_refuses_to_run(self) -> None:
+        """2026-09-29：舊匯出腳本直接執行會停，改走出貨更新文件。"""
         with tempfile.TemporaryDirectory() as temporary:
-            env = os.environ.copy()
-            env["WITH_DOCLING_IMAGE"] = "1"
-            env.pop("DOCLING_WEIGHTS_DIR", None)
             result = subprocess.run(
                 ["bash", str(EXPORT_SCRIPT), temporary],
                 capture_output=True,
                 text=True,
-                env=env,
                 cwd=str(REPO_ROOT),
             )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("DOCLING_WEIGHTS_DIR", result.stderr)
-        self.assertIn("four-piece", result.stderr)
+        self.assertIn("docs/deploy/UPDATE.md", result.stderr)
 
     def test_gpu_host_four_piece_sources_exist(self) -> None:
         for name in (
