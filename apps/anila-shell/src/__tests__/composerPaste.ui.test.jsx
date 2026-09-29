@@ -5,7 +5,7 @@ import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-libra
 import { Composer } from "../chat.jsx";
 import { ConfirmProvider } from "../confirm.jsx";
 
-const AGENTS = [{ id: "anila-router", name: "ANILA 自動選助手", short: "auto" }];
+const AGENTS = [{ id: "anila-router", name: "ANILA", short: "auto" }];
 
 function renderComposer(props = {}) {
   return render(

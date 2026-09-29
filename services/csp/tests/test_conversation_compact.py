@@ -325,7 +325,7 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0063():
+def test_alembic_heads_single_r1_0064():
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -357,16 +357,21 @@ def test_alembic_heads_single_r1_0063():
     ).read_text(encoding="utf-8")
     assert 'revision: str = "r1_0062"' in previous_head
     assert 'down_revision: Union[str, None] = "r1_0061"' in previous_head
-    head = (
+    previous_head = (
         CSP_ROOT / "migrations" / "versions" / "r1_0063_account_lifecycle.py"
     ).read_text(encoding="utf-8")
-    assert 'revision: str = "r1_0063"' in head
-    assert 'down_revision: Union[str, None] = "r1_0062"' in head
+    assert 'revision: str = "r1_0063"' in previous_head
+    assert 'down_revision: Union[str, None] = "r1_0062"' in previous_head
+    head = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0064_rename_platform_chat_entry_display.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0064"' in head
+    assert 'down_revision: Union[str, None] = "r1_0063"' in head
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0063"], f"alembic head 應為 r1_0063，實得 {heads}"
+    assert heads == ["r1_0064"], f"alembic head 應為 r1_0064，實得 {heads}"
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -383,7 +388,7 @@ def test_alembic_heads_single_r1_0063():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0063" in cli.stdout
+    assert "r1_0064" in cli.stdout
     nullable = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0055_collection_embedding_model_nullable.py"

@@ -44,7 +44,7 @@ def ensure_platform_router_model(db) -> ModelRegistry:
     if existing is None:
         row = ModelRegistry(
             name=PLATFORM_ROUTER_NAME,
-            display_name="ANILA 自動選助手",
+            display_name="ANILA",
             model_type="llm",
             endpoint_url=_platform_router_endpoint(),
             api_version="v1",

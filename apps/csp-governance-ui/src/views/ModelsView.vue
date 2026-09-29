@@ -12,6 +12,12 @@
       </template>
     </PageHead>
 
+    <TermBox data-platform-chat-entry title="平台對話入口：ANILA" pad="sm">
+      <p class="platform-entry__line">狀態：{{ platformEntry.statusLabel }}</p>
+      <p class="platform-entry__line">主要模型：{{ platformEntry.mainModelLabel }}</p>
+      <p class="platform-entry__note">{{ platformEntry.explanation }}</p>
+    </TermBox>
+
     <!-- P4.6b — 擁有者指派可設定／看見端點位址的開發者或管理員 -->
     <TermBox
       v-if="authStore.isOwner"
@@ -77,13 +83,13 @@
     <EmbeddingRebuildPanel :is-admin="authStore.isAdmin" />
 
     <div class="kpi-row">
-      <TermStat label="模型 · 總數" :value="modelsStore.models.length" />
+      <TermStat label="模型 · 總數" :value="registeredModels.length" />
       <TermStat label="健康" :value="healthyCount" tone="accent" />
       <TermStat label="降級" :value="degradedCount" :tone="degradedCount ? 'warn' : 'default'" />
       <TermStat label="異常" :value="unhealthyCount" :tone="unhealthyCount ? 'danger' : 'default'" />
     </div>
 
-    <TermBox :title="`已註冊 · ${modelsStore.models.length}`" hint="每 60 秒健康檢查" pad="none" flush>
+    <TermBox :title="`已註冊 · ${registeredModels.length}`" hint="每 60 秒健康檢查" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
@@ -100,7 +106,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="model in modelsStore.models" :key="model.id">
+          <tr v-for="model in registeredModels" :key="model.id">
             <td>
               <TermBadge :variant="healthVariant(model.health_status)" dot>{{ healthLabel(model.health_status) }}</TermBadge>
               <div v-if="testResults[model.id]?.latencyLabel" class="cell-meta cell-latency">{{ testResults[model.id].latencyLabel }}</div>
@@ -285,7 +291,7 @@
               </RowActions>
             </td>
           </tr>
-          <tr v-if="modelsStore.models.length === 0">
+          <tr v-if="registeredModels.length === 0">
             <td :colspan="tableColspan"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
           </tr>
         </tbody>
@@ -384,7 +390,7 @@
           什麼也沒送出去」的假控制項(docs/FAKE-CONTROLS.md)。
         -->
         <p v-if="form.name === 'anila-router'" class="field-note">
-          這是平台入口「ANILA 自動選助手」，不必另設金鑰；Router 轉送呼叫者 JWT／CSP sk-。
+          這是平台入口「ANILA」，不必另設金鑰；Router 轉送呼叫者 JWT／CSP sk-。
         </p>
         <TermField
           v-if="form.protocol !== 'triton_grpc' && form.name !== 'anila-router'"
@@ -724,6 +730,7 @@ import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStat
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
 import { deactivateConfirm } from '../utils/modelDeactivate.js'
 import { DEFAULT_MODEL_MAX_CONCURRENT, MODEL_LIST_REFRESH_MS, modelQueueHot } from '../utils/modelConcurrency.js'
+import { ordinaryModels, platformChatEntryCard } from '../utils/platformChatEntry.js'
 import { formatDate } from '../utils/formatDate'
 import {
   THINKING_EFFORT_OPTIONS,
@@ -736,6 +743,8 @@ import {
 const { confirm, toast } = useDialog()
 const modelsStore = useModelsStore()
 const authStore = useAuthStore()
+const registeredModels = computed(() => ordinaryModels(modelsStore.models))
+const platformEntry = computed(() => platformChatEntryCard(modelsStore.models))
 const showModal = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
@@ -871,7 +880,7 @@ function pickGrantUser(g, user) {
 }
 
 const baseModelOptions = computed(() =>
-  modelsStore.models.filter(m =>
+  registeredModels.value.filter(m =>
     m.model_type !== 'agent' && m.is_active && m.id !== editingId.value
   )
 )
@@ -890,7 +899,7 @@ const ENDPOINT_INTERNAL = '<internal>'
 const importEndpointOptions = computed(() => {
   const seen = new Set()
   const opts = []
-  for (const m of modelsStore.models) {
+  for (const m of registeredModels.value) {
     const isRedacted =
       m.endpoint_url === ENDPOINT_REDACTED || m.endpoint_url === ENDPOINT_INTERNAL
     const key = isRedacted ? `id:${m.id}` : (m.endpoint_url || `id:${m.id}`)
@@ -969,9 +978,9 @@ async function handleRevokeAuthor(grant) {
 }
 
 // KPI 以正規化五態計數，兼容舊值（online/connecting/offline）與新值。
-const healthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
-const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
-const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
+const healthyCount = computed(() => registeredModels.value.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
+const degradedCount = computed(() => registeredModels.value.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
+const unhealthyCount = computed(() => registeredModels.value.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
 const tableColspan = computed(() => (authStore.isAdmin || canSetEndpointAddress.value) ? 10 : 9)
 
 let modelListTimer = null
@@ -1586,6 +1595,15 @@ async function handlePurge(model) {
 .row-actions { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); flex-wrap: wrap; }
 .row-actions__sep { color: var(--c-border-strong); }
 
+.platform-entry__line {
+  margin: 0 0 4px;
+  font-size: var(--t-sm);
+}
+.platform-entry__note {
+  margin: 8px 0 0;
+  font-size: var(--t-xs);
+  color: var(--c-fg-3);
+}
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
 .form-section {

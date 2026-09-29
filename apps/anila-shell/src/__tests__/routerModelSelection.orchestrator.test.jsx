@@ -31,13 +31,13 @@ afterEach(() => {
 });
 
 async function chooseRouterModel(name) {
-  const trigger = await screen.findByLabelText("此則對話使用的模型，僅自動選助手時可選");
+  const trigger = await screen.findByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選");
   await waitFor(() => expect(trigger).not.toBeDisabled());
   fireEvent.click(trigger);
   const option = await screen.findAllByText(name);
   const target = option.find((el) => {
     const btn = el.closest("button");
-    return btn && btn.getAttribute("aria-label") !== "此則對話使用的模型，僅自動選助手時可選";
+    return btn && btn.getAttribute("aria-label") !== "此則對話使用的模型，僅由 ANILA 自動派工時可選";
   });
   fireEvent.click(target.closest("button"));
 }
@@ -46,7 +46,7 @@ describe("ChatRuntime router model selection", () => {
   it("renders ChatRuntime after login without TDZ crash", async () => {
     await mountOrchestrator();
     expect(screen.getByLabelText("送出")).toBeTruthy();
-    expect(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選")).toBeTruthy();
+    expect(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選")).toBeTruthy();
   });
 
   it("creates a conversation with the non-default picker model", async () => {

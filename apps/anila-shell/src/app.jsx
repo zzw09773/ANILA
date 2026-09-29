@@ -225,7 +225,7 @@ import { ArtifactPreviewProvider } from "./artifactContext.jsx";
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
   id: "anila-router",
-  name: "ANILA 自動選助手",
+  name: "ANILA",
   short: "auto",
   description: "ANILA 會幫你找合適的助手，也可能直接回答你。",
   requiresEncryption: false,

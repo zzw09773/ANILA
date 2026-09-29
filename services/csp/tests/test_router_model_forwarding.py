@@ -28,7 +28,7 @@ def test_fixed_router_endpoint_helper_rejects_foreign_host(db):
     from fastapi import HTTPException
     row = ModelRegistry(
         name=PLATFORM_ROUTER_NAME,
-        display_name="ANILA 自動選助手",
+        display_name="ANILA",
         model_type="llm",
         endpoint_url="http://evil.example:9000",
         is_active=True,

@@ -203,6 +203,7 @@ import {
   loadNotice,
   loadStatus,
 } from '../utils/loadResult'
+import { isPlatformChatEntry } from '../utils/platformChatEntry.js'
 
 const usageStore = useUsageStore()
 const authStore = useAuthStore()
@@ -273,8 +274,9 @@ const departments = ref([])
 
 const activeDepartments = computed(() => departments.value.filter(d => d.is_active))
 const filteredModels = computed(() => {
-  if (!selectedModelType.value) return models.value
-  return models.value.filter(m => m.model_type === selectedModelType.value)
+  const real = models.value.filter((model) => !isPlatformChatEntry(model))
+  if (!selectedModelType.value) return real
+  return real.filter(m => m.model_type === selectedModelType.value)
 })
 const filteredUsers = computed(() => {
   if (!selectedDepartment.value) return users.value

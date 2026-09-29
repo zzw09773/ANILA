@@ -6,6 +6,9 @@ describe("normalizeAgents", () => {
     const out = normalizeAgents([]);
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe("anila-router");
+    expect(out[0].name).toBe("ANILA");
+    expect(out[0].short).toBe("auto");
+    expect(out[0].description).toMatch(/助手/);
     expect(out[0].requiresEncryption).toBe(false);
   });
 

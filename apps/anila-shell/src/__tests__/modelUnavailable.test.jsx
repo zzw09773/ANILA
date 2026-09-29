@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 function picker() {
-  return screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選");
+  return screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選");
 }
 
 describe("對話模型已不能用", () => {

@@ -32,6 +32,7 @@ def test_ensure_creates_anila_router_when_absent(db: Session):
     row = ensure_platform_router_model(db)
     db.commit()
     assert row.name == "anila-router"
+    assert row.display_name == "ANILA"
     assert row.endpoint_url == PLATFORM_ROUTER_ENDPOINT
     assert row.is_active is True
     assert row.is_internal is True
@@ -53,6 +54,7 @@ def test_ensure_reactivates_disabled_row_without_moving_endpoint(db: Session):
     row = ensure_platform_router_model(db)
     db.commit()
     assert row.id == existing.id
+    assert row.display_name == "old label"
     assert row.is_active is True
     assert row.is_internal is True
     assert row.endpoint_url == "http://router-override:9000"

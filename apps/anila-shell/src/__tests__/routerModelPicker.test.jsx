@@ -17,13 +17,13 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選"));
+    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選"));
     expect(screen.getAllByText("GLM").length).toBeGreaterThan(0);
     expect(screen.getByText("全院預設")).toBeTruthy();
     expect(screen.getByText("Qwen")).toBeTruthy();
     expect(screen.getByText("不穩")).toBeTruthy();
     expect(screen.queryByText(/anila-router/)).toBeNull();
-    expect(screen.queryByText(/ANILA 自動選助手/)).toBeNull();
+    expect(screen.queryByText("ANILA")).toBeNull();
   });
 
   it("saves a new selection", () => {
@@ -31,7 +31,7 @@ describe("RouterModelPicker", () => {
     render(
       <RouterModelPicker models={MODELS} selectedId={3} defaultModelId={3} onChange={onChange} />,
     );
-    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選"));
+    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選"));
     fireEvent.click(screen.getByText("Qwen"));
     expect(onChange).toHaveBeenCalledWith(4);
   });
@@ -45,7 +45,7 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    const trigger = screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選");
+    const trigger = screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選");
     expect(trigger).toBeDisabled();
     expect(trigger).toHaveTextContent("Qwen 3.8 Flash");
     expect(screen.queryByText("沒有可用模型")).toBeNull();
@@ -83,7 +83,7 @@ describe("RouterModelPicker", () => {
           {
             id: 12,
             name: "anila-router",
-            display_name: "ANILA 自動選助手",
+            display_name: "ANILA",
             is_active: true,
             router_enabled: true,
             grant_sources: ["all"],
@@ -94,12 +94,12 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選"));
+    fireEvent.click(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選"));
     expect(screen.getByText("Qwen")).toBeTruthy();
     expect(screen.queryByText("glm-5.3-flash")).toBeNull();
     expect(screen.queryByText("秘密模型")).toBeNull();
     expect(screen.queryByText("已關閉選單")).toBeNull();
-    expect(screen.queryByText("ANILA 自動選助手")).toBeNull();
+    expect(screen.queryByText("ANILA")).toBeNull();
     expect(screen.queryByText("anila-router")).toBeNull();
   });
 
@@ -113,7 +113,7 @@ describe("RouterModelPicker", () => {
         onChange={() => {}}
       />,
     );
-    expect(screen.getByLabelText("此則對話使用的模型，僅自動選助手時可選")).toBeDisabled();
+    expect(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選")).toBeDisabled();
     expect(screen.getByText(/請重新選擇/)).toBeTruthy();
   });
 });

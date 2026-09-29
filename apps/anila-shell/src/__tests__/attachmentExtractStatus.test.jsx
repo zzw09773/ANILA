@@ -20,7 +20,7 @@ import {
 } from "../runtime/conversations.js";
 import { ATTACHMENT_OVERFLOW_NOTICE } from "../runtime/messageAttachments.js";
 
-const AGENTS = [{ id: "anila-router", name: "ANILA 自動選助手", short: "auto" }];
+const AGENTS = [{ id: "anila-router", name: "ANILA", short: "auto" }];
 
 const INSTANT_POLL = {
   delaysMs: [0, 0, 0, 0, 0, 0],

@@ -7,6 +7,7 @@ from app.models.department import Department
 from app.models.token_usage import TokenUsage
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
+from app.services.auto_seed import PLATFORM_ROUTER_NAME
 from app.services.department_tree import get_descendant_ids
 from app.utils.csv_formula import csv_formula_safe
 from app.utils.time_helpers import get_time_range
@@ -22,6 +23,18 @@ _TPE_TZ = timezone(timedelta(hours=8))
 # router_transport 是轉運跳；platform 是平台替使用者做的背景推理
 # （記憶整理、思考進度）。兩者都不進使用者帳單，也不灌推理總量。
 _UNBILLED_USAGE_KINDS = ("router_transport", "platform")
+
+
+def _exclude_platform_chat_entry(query, db: Session):
+    """排行與依模型圖表不列入平台對話入口。用量列本身不刪。"""
+    entry_id = (
+        db.query(ModelRegistry.id)
+        .filter(ModelRegistry.name == PLATFORM_ROUTER_NAME)
+        .scalar()
+    )
+    if entry_id is None:
+        return query
+    return query.filter(TokenUsage.model_id != entry_id)
 
 
 def _exclude_unbilled(query):
@@ -285,6 +298,8 @@ def get_chart_data(
         department_id=department_id,
         scope_ids=scope_ids,
     )
+    if group_by == "model":
+        query = _exclude_platform_chat_entry(query, db)
 
     query = query.group_by("bucket_ts")
     if group_col is not None:
@@ -358,6 +373,7 @@ def get_top_models(
         department_id=department_id,
         scope_ids=scope_ids,
     )
+    query = _exclude_platform_chat_entry(query, db)
 
     results = (
         query.group_by(TokenUsage.model_id)

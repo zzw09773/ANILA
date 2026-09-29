@@ -17,7 +17,7 @@ import { Composer, COMPOSER_LINE_HEIGHT, COMPOSER_MIN_ROWS, COMPOSER_MAX_ROWS } 
 import { ConfirmProvider } from "../confirm.jsx";
 
 const CHARS_PER_LINE = 20;
-const AGENTS = [{ id: "anila-router", name: "ANILA 自動選助手", short: "auto" }];
+const AGENTS = [{ id: "anila-router", name: "ANILA", short: "auto" }];
 
 /** 裝上一個會隨 value 改變的假排版:N 個字 → ceil(N/20) 行 × 行高。 */
 function fakeLayout(el, { charsPerLine = CHARS_PER_LINE, bleed = 0 } = {}) {
