@@ -267,7 +267,7 @@ _OUTLINE_SCHEMA_HINT = """
   ]
 }
 
-務必輸出嚴格合法的 JSON。請輸出 4-6 個 sections。
+輸出合法的 JSON（會由程式解析），4-6 個 sections。
 """
 
 

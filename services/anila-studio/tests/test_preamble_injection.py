@@ -24,10 +24,10 @@ def test_build_generation_prompt_includes_national_and_era():
     assert "民國114年" in system
     assert NATIONAL_TERMINOLOGY in system
     assert ERA_RULES in system
-    assert "── 台灣用語對映" in system
+    assert "── 台灣用語 ──" in system
     # 國家／紀年段應在台灣用語對映之前（整體內容規則區塊附近）。
-    assert system.index(NATIONAL_TERMINOLOGY) < system.index("── 台灣用語對映")
-    assert system.index(ERA_RULES) < system.index("── 台灣用語對映")
+    assert system.index(NATIONAL_TERMINOLOGY) < system.index("── 台灣用語 ──")
+    assert system.index(ERA_RULES) < system.index("── 台灣用語 ──")
     assert system.index("── 整體內容規則") < system.index(NATIONAL_TERMINOLOGY)
 
 

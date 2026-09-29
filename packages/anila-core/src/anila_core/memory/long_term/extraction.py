@@ -43,10 +43,10 @@ EXTRACTION_SYSTEM_PROMPT = f"""你是事實萃取器。只從使用者親口說�
 kind 只能是 preference 或 fact。語氣、格式、稱呼、語言是 preference，其餘是 fact。
 若無事實可萃，回 [] 空陣列。
 
-範例輸出格式（key 與 value 都是抽象佔位，請以實際抽取的內容替換；
-絕對不要在輸出中保留 `<...>` 佔位符或範例文字本身）：
+格式示意（內容僅供說明格式，實際值來自對話）：
 [
-  {{"key": "<fact_category>", "value": "<concrete_value>", "confidence": <0.0-1.0>, "kind": "fact"}}
+  {{"key": "單位", "value": "某研究所第二組", "confidence": 0.9, "kind": "fact"}},
+  {{"key": "回覆語氣", "value": "條列、精簡", "confidence": 0.8, "kind": "preference"}}
 ]
 
 只輸出 JSON，不要前言、不要解釋、不要 ```json 代碼塊。"""

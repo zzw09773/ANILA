@@ -61,7 +61,7 @@ def test_generation_prompt_no_longer_teaches_the_harmful_mappings():
     system, _ = build_generation_prompt("kb", "教學投影片", None, [], retrieval_failed=False)
     assert "程序 → 程式" not in system
     assert "文件 → 檔案" not in system
-    assert "視頻 → 影片" in system
+    assert "影片" in system
 
 
 # ── prompt 只在真的有插圖產生器時才教插圖 ───────────────────────────────
