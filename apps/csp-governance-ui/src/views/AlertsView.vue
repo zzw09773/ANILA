@@ -102,15 +102,15 @@
           <tr v-for="alert in alerts" :key="alert.id">
             <td>
               <div class="cell-row">
-                <TermDot :status="severityStatus(alert.severity)" :title="alert.severity" />
+                <TermDot :status="severityStatus(alert.severity)" :title="severityLabel(alert.severity)" />
                 <span class="cell-strong">{{ alert.title }}</span>
-                <span class="severity-tag" :class="`is-${alert.severity}`">{{ alert.severity }}</span>
+                <span class="severity-tag" :class="`is-${alert.severity}`">{{ severityLabel(alert.severity) }}</span>
               </div>
               <div class="cell-meta cell-meta--wrap">{{ alert.message }}</div>
             </td>
             <td>
-              <div class="cell-strong">{{ alert.category }}</div>
-              <div class="cell-meta">{{ alert.source_type || '—' }} / {{ alert.source_id || '—' }}</div>
+              <div class="cell-strong">{{ categoryLabel(alert.category) }}</div>
+              <div class="cell-meta">{{ categoryLabel(alert.source_type) || '—' }} / {{ sourceIdLabel(alert) }}</div>
             </td>
             <td><TermBadge :variant="statusVariant(alert.status)" dot>{{ ({ open: '待處理', acknowledged: '已確認', resolved: '已解決' })[alert.status] || alert.status }}</TermBadge></td>
             <td class="cell-meta tnum">{{ formatDate(alert.last_seen_at) }}</td>
@@ -139,6 +139,8 @@ import { extractError } from '../api/errors'
 import { ALERT_POLL_INTERVAL_MS, createPoller } from '../utils/polling'
 import { mailSettingsForForm, mailSettingsSaveBody } from '../utils/alertMailForm'
 import { refreshOpenAlertBanner } from '../utils/openAlertBanner'
+import { categoryLabel, severityLabel } from '../utils/alertLabels'
+import { diskSourceLabel } from '../utils/capacityStatus'
 import { formatDate } from '../utils/formatDate'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -235,6 +237,15 @@ async function handleResolve(alert) {
   } catch (e) { toast(extractError(e, '解決失敗'), { tone: 'error' }) }
 }
 
+function sourceIdLabel(alert) {
+  const raw = alert?.source_id
+  if (raw == null || raw === '') return '—'
+  const text = String(raw)
+  if (alert.category === 'disk' || alert.source_type === 'disk') {
+    return diskSourceLabel(text) || '—'
+  }
+  return text
+}
 function severityStatus(s) {
   return ({ low: 'info', medium: 'warn', high: 'warn', critical: 'danger' })[s] || 'idle'
 }

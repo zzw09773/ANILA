@@ -40,6 +40,48 @@
       </div>
     </TermBox>
 
+    <section v-if="authStore.isAdmin" class="dash-grid">
+      <TermBox title="磁碟" :hint="diskError ? '載入失敗' : '使用率與剩餘空間'" pad="none" flush>
+        <div v-if="diskError" class="cutover-state">
+          <p class="feedback is-err">! {{ diskError }}</p>
+          <TermButton size="xs" variant="ghost" label="重試" @click="fetchCapacity" />
+        </div>
+        <table v-else class="term-table" data-testid="disk-mounts">
+          <thead>
+            <tr>
+              <th>掛載</th>
+              <th class="num">使用率</th>
+              <th class="num">剩餘</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in diskRows" :key="row.label">
+              <td>{{ row.label }}</td>
+              <td class="num tnum">{{ row.usedLabel }}</td>
+              <td class="num tnum">{{ row.freeLabel }}</td>
+            </tr>
+            <tr v-if="diskRows.length === 0">
+              <td colspan="3"><TermEmpty message="尚無掛載資料" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
+      <TermBox title="HTTPS 憑證" :hint="certError ? '載入失敗' : '到期日'" pad="md">
+        <div v-if="certError" class="cutover-state">
+          <p class="feedback is-err">! {{ certError }}</p>
+          <TermButton size="xs" variant="ghost" label="重試" @click="fetchCapacity" />
+        </div>
+        <TermStat
+          v-else
+          label="到期日"
+          :value="certCard.dateLabel"
+          format="raw"
+          :tone="certCard.tone"
+          data-testid="tls-expiry"
+        />
+      </TermBox>
+    </section>
+
 
     <!-- KPI strip ------------------------------------------------------- -->
     <section class="kpi-grid">
@@ -164,6 +206,8 @@ import { listPlatformLinks } from '../api/platformLinks'
 import { getHealthOverview } from '../api/health'
 import { getAlertSummary } from '../api/alerts'
 import { getBackupStatus } from '../api/backup'
+import { getDiskMounts, getTlsCertificate } from '../api/capacity'
+import { diskMountRows, summarizeCertificate } from '../utils/capacityStatus'
 import { extractError } from '../api/errors'
 import { summarizeBackupStatus } from '../utils/backupStatus'
 import client from '../api/client'
@@ -211,6 +255,19 @@ const alertError = ref('')
 const backupRaw = ref(null)
 const backupError = ref('')
 const backupTried = ref(false)
+const diskRaw = ref([])
+const diskError = ref('')
+const certRaw = ref(null)
+const certError = ref('')
+
+const diskRows = computed(() => diskMountRows(diskRaw.value))
+const certCard = computed(() => {
+  const summary = summarizeCertificate(certRaw.value)
+  return {
+    ...summary,
+    dateLabel: summary.date ? formatDate(summary.date) : (summary.dateLabel || '—'),
+  }
+})
 
 const backupCard = computed(() => {
   if (!backupTried.value) {
@@ -249,6 +306,26 @@ async function fetchBackupStatus() {
     backupError.value = extractError(e, '載入備份狀態失敗')
   } finally {
     backupTried.value = true
+  }
+}
+
+async function fetchCapacity() {
+  if (!authStore.isAdmin) return
+  diskError.value = ''
+  certError.value = ''
+  try {
+    const { data } = await getDiskMounts()
+    diskRaw.value = Array.isArray(data) ? data : []
+  } catch (e) {
+    diskRaw.value = []
+    diskError.value = extractError(e, '載入磁碟狀態失敗')
+  }
+  try {
+    const { data } = await getTlsCertificate()
+    certRaw.value = data
+  } catch (e) {
+    certRaw.value = null
+    certError.value = extractError(e, '載入憑證到期日失敗')
   }
 }
 
@@ -334,6 +411,7 @@ async function refresh() {
     const health = fetchHealthOverview().catch(() => {})
     const alerts = fetchAlertSummary().catch(() => {})
     const backup = fetchBackupStatus().catch(() => {})
+    const capacity = fetchCapacity().catch(() => {})
 
     let usageOk = false
     try {
@@ -362,7 +440,7 @@ async function refresh() {
       }
     }
 
-    await Promise.all([admin, health, alerts, backup])
+    await Promise.all([admin, health, alerts, backup, capacity])
     if (usageOk) refreshedAt.value = new Date()
   } finally {
     loading.value = false

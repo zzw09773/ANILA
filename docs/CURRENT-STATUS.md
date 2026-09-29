@@ -1,7 +1,7 @@
 # 目前狀態（給交接與代理）
 
 > 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
-> 更新：2026-09-28。HEAD 以 `git log -1` 為準。
+> 更新：2026-09-29。HEAD 以 `git log -1` 為準。
 
 ## 工作守則（給人也給 AI 助手；取代已刪除的 `AGENTS.md`）
 
@@ -32,7 +32,7 @@ Postgres 前面有 PgBouncer（transaction pooling）。CSP 與 worker 的 `DATA
 
 nginx `worker_processes auto`、`worker_connections 16384`。`/v1/`、`/v2/` 的串流關掉 proxy buffering，讀寫逾時 3600 秒。連線數是整台 nginx 共用 16384，不按來源 IP 算，所以整棟樓共用一個出口 IP 時，3000 條長連線不會被單一 IP 上限擋下。速率仍是每個來源 IP 每秒 100、瞬間 burst 4000（`nodelay`）。`X-Forwarded-For` 預設不改寫來源位址；只有在設定裡明確列出的上游代理才打開 `real_ip`。
 
-每個模型在治理中心有「同時處理上限」。留空就是不限。有數字時，CSP 用 Redis 信號量跨 process 計數；聊天、嵌入、內部補全、探針都用同一份欄位快照，不會因為自己組了一個沒有這個欄位的物件而繞過上限。多出來的人排隊，依使用者輪流：A 先送 50 筆、B 隨後送 1 筆時，B 排在 A 的下一筆之後，不會等 A 剩下的 49 筆。一個人的連發不能插到別人前面。Redis 鎖一時拿不到時，已經在排隊的人維持原位繼續等；還沒排進去的才回「暫時無法確認使用人數」。串流在等待時收到 `anila.queue`，Shell 與 ANILA LM 顯示「目前使用人數較多，排隊中，你是第 N 位」。等超過 120 秒改顯示「排隊超過 120 秒，請稍後再試」。Studio 與 worker 的非串流呼叫只等、不送那個事件。模型清單顯示目前處理中與排隊人數。使用者中途斷線時，已經產生的用量記成 `partial`（沒有上游 usage 時來源是 `unavailable`）。
+每個模型在治理中心有「同時處理上限」。新登錄的預設是 16，登記者可以改，留空就是不限；既有模型不回填。有數字時，CSP 用 Redis 信號量跨 process 計數；聊天、嵌入、內部補全、探針都用同一份欄位快照，不會因為自己組了一個沒有這個欄位的物件而繞過上限。多出來的人排隊，依使用者輪流：A 先送 50 筆、B 隨後送 1 筆時，B 排在 A 的下一筆之後，不會等 A 剩下的 49 筆。一個人的連發不能插到別人前面。Redis 鎖一時拿不到時，已經在排隊的人維持原位繼續等；還沒排進去的才回「暫時無法確認使用人數」。串流在等待時收到 `anila.queue`，Shell 與 ANILA LM 顯示「目前使用人數較多，排隊中，你是第 N 位」。等超過 120 秒改顯示「排隊超過 120 秒，請稍後再試」。Studio 與 worker 的非串流呼叫只等、不送那個事件。模型清單在每個模型旁顯示處理中與排隊中的人數，約每 15 秒重抓，排隊大於 0 時醒目。使用者中途斷線時，已經產生的用量記成 `partial`（沒有上游 usage 時來源是 `unavailable`）。
 
 聊天代理在叫上游模型之前會把 SQLAlchemy 連線還回池子：授權、授權範圍、記憶、規章、附件先做完並 commit，串流與公平排隊期間不占連線，用量、稽核、記憶寫入另開短交易。`get_caller` 是同步依賴，跑在 threadpool；它若帶著未提交的交易回到 event loop，連線會一路占到端點開始，池子滿了之後下一次同步 checkout 會把整個 worker 卡住。所以授權結束時就 commit。
 
@@ -121,7 +121,7 @@ CSP 自己保管 RS256 簽章金鑰，放在資料表 `jwt_signing_keys`（遷�
 
 ## GitLab（2026-09-26 先拿掉）
 
-compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab_logs`、`gitlab_data`。nginx 各 listener 不再代理 `/gitlab`。部署腳本不再寫 `GITLAB_*`。n8n 與 code-server 仍在。
+compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab_logs`、`gitlab_data`。nginx 各 listener 不再代理 `/gitlab`。部署腳本不再寫 `GITLAB_*`。code-server 與 n8n 的定義還在，但只在最後彩排時才啟動，平常不拉起來。
 
 這次沒有刪除主機上的 Docker volume。舊的 `anila-platform_gitlab_data` 還在主機上，之後由擁有者自行移除。
 
@@ -136,7 +136,7 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 1. 以管理員打開治理中心的「外部服務」。
 2. 文件解析：填遠端 Docling 的位址、需要的話填憑證、打開啟用。不要把帳密寫進網址。沒啟用時，畫面寫明擷取走內建原生解析器。啟用之後服務中斷，擷取工作會失敗，不會改回原生解析器。
 3. 語音辨識：填遠端解碼器位址、選 native 或 openai、憑證可留空、打開啟用。健康由 CSP 背景探測，畫面只顯示上次結果，不會因為重新整理就把憑證送出去。Shell 與 ANILA LM 只在這一列是啟用且健康時顯示麥克風。頁面載入與回到視窗時各問一次，未啟用時不會去打解碼器。
-4. 要讓瀏覽器連得到語音串流，平台還要帶 `--profile asr` 把 asr-gateway 拉起來。gateway 只負責切句與轉送，位址向 CSP 讀。沒有本機 whisper。
+4. 要讓瀏覽器連得到語音串流，平台還要帶 `--profile asr` 把 asr-gateway 拉起來。gateway 只負責切句與轉送，位址向 CSP 讀。沒有本機 whisper。語音模型（權重與解碼器）屬於模型側，由別人維護；平台只留 asr-gateway。
 5. 開機不再從 `.env` 匯入文件解析或語音位址。請在治理中心「外部服務」填。`.env` 裡若還留著 `DOC_PARSER`、`DOCLING_URL`、`DOCLING_SERVICE_TOKEN`、`ASR_DECODE_URL`、`ASR_DECODER_TOKEN`、`ASR_DECODE_PROTOCOL`、`ASR_DECODE_API_KEY`、`ASR_OPENAI_MODEL`，刪掉即可，服務不會讀。
 
 憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
@@ -144,6 +144,10 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 ## 警報（2026-09-27）
 
 未處理的警報會在治理中心每一頁上方出現紅橫幅（擁有者與管理員），連到「警報」。確認或解決後橫幅消失。寄信在同一頁的「警報寄信」：SMTP 主機、連接埠、不加密／STARTTLS／SSL、選填帳密（密碼只寫入）、寄件者、群組信箱、啟用，以及「寄測試信」。沒有 `ANILA_ALERT_SMTP_*` 環境變數。寄失敗只記在該區與日誌，偵測不會停。稽核帳保留期是 365 天。
+
+磁碟使用率 80% 起為 high、95% 為 critical（2026-09-29 從 85% 下修警告線）。儀表板另有一格，只顯示掛載標籤、使用率與剩餘 GiB，不顯示宿主機路徑。
+
+HTTPS 憑證由資訊單位用院內 CA 核發，擁有者更換 `infra/nginx/certs` 的檔案。CSP 對 compose 裡的 nginx 做 TLS 連線（SNI 用既有的 `ANILA_HOST`），讀伺服端憑證的到期日，不掛載、也不讀私鑰。未滿 30 天是 high「HTTPS 憑證將於 N 天後到期，請向資訊單位申請新憑證」；未滿 7 天或已過期是 critical；換新後結案。nginx 連不上不開這條（入口無回應由既有偵測器負責）。到期日也顯示在儀表板。
 
 ## 備份（2026-09-27）
 

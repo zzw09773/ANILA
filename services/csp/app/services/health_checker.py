@@ -28,7 +28,7 @@ from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent
-from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
+from app.services.alert_service import resolve_alert_by_fingerprint
 from app.services.proxy.urls import join_upstream_path, strip_trailing_api_version
 
 logger = logging.getLogger(__name__)
@@ -243,6 +243,88 @@ async def check_model_health(
     return status
 
 
+def apply_model_health_results(db, results) -> None:
+    """把一輪模型探測寫進健康狀態與離線警報。
+
+    進入 unhealthy 才寄信，規則與其他警報相同：同一段未解決期間只寄一次，
+    解決後再次進入才再寄。訊息不帶端點位址。
+    """
+    from app.services.alert_detectors import _emit_alert
+
+    for (
+        model_id,
+        endpoint_url,
+        name,
+        display_name,
+        prev_status,
+        status,
+    ) in results:
+        model = db.get(ModelRegistry, model_id)
+        if model is None:
+            continue
+        if prev_status != status:
+            logger.info(f"模型 {name} 狀態變更: {prev_status} -> {status}")
+        if status == HEALTH_UNHEALTHY:
+            _emit_alert(
+                db,
+                fingerprint=f"health:model:{model_id}",
+                category="health",
+                severity="high",
+                title=f"模型 {display_name} 離線",
+                message=(
+                    f"無法連線至模型「{display_name}」"
+                    f"（{name}）"
+                ),
+                source_type="model",
+                source_id=model_id,
+                metadata={
+                    "model_name": name,
+                    "display_name": display_name,
+                    "endpoint_url": endpoint_url,
+                },
+            )
+        else:
+            resolve_alert_by_fingerprint(db, f"health:model:{model_id}")
+        model.health_status = status
+        model.health_checked_at = datetime.now(timezone.utc)
+
+
+def apply_agent_health_results(db, results) -> None:
+    """把一輪 Agent 探測寫進健康狀態與離線警報。寄信規則與模型相同。"""
+    from app.services.alert_detectors import _emit_alert
+
+    for agent_id, endpoint_url, name, prev_status, status in results:
+        agent = db.get(Agent, agent_id)
+        if agent is None:
+            continue
+        if prev_status != status:
+            logger.info(
+                "Agent %s 狀態變更: %s -> %s",
+                name,
+                prev_status,
+                status,
+            )
+        fingerprint = f"health:agent:{agent_id}"
+        if status == HEALTH_UNHEALTHY:
+            _emit_alert(
+                db,
+                fingerprint=fingerprint,
+                category="health",
+                severity="high",
+                title=f"Agent {name} 離線",
+                message=f"無法連線至 Agent「{name}」",
+                source_type="agent",
+                source_id=agent_id,
+                metadata={
+                    "agent_name": name,
+                    "endpoint_url": endpoint_url,
+                },
+            )
+        else:
+            resolve_alert_by_fingerprint(db, fingerprint)
+        agent.health_status = status
+
+
 def _model_probe_targets(db) -> list[dict]:
     """Snapshot of active models for the background loop, key resolved here
     (inside the DB session) so the probe itself never touches the row."""
@@ -297,51 +379,9 @@ async def _health_check_loop():
 
             db = SessionLocal()
             try:
-                for (
-                    model_id,
-                    endpoint_url,
-                    name,
-                    display_name,
-                    prev_status,
-                    status,
-                ) in results:
-                    model = db.get(ModelRegistry, model_id)
-                    if model is None:
-                        continue
-                    if prev_status != status:
-                        logger.info(
-                            f"模型 {name} 狀態變更: {prev_status} -> {status}"
-                        )
-                    if status == HEALTH_UNHEALTHY:
-                        # Message names the model, never the address;
-                        # structured metadata still stores the URL for
-                        # owner-only disclosure on the alert listing.
-                        upsert_alert(
-                            db,
-                            fingerprint=f"health:model:{model_id}",
-                            category="health",
-                            severity="high",
-                            title=f"模型 {display_name} 離線",
-                            message=(
-                                f"無法連線至模型「{display_name}」"
-                                f"（{name}）"
-                            ),
-                            source_type="model",
-                            source_id=model_id,
-                            metadata={
-                                "model_name": name,
-                                "display_name": display_name,
-                                "endpoint_url": endpoint_url,
-                            },
-                        )
-                    else:
-                        # degraded / healthy / unknown / disabled: close the
-                        # offline alert. Resolving only on healthy left
-                        # red→yellow still showing 「離線」.
-                        resolve_alert_by_fingerprint(db, f"health:model:{model_id}")
-                    model.health_status = status
-                    model.health_checked_at = datetime.now(timezone.utc)
-
+                # degraded / healthy / unknown / disabled 都結案。
+                # 只在 healthy 才結案會讓紅轉黃仍顯示「離線」。
+                apply_model_health_results(db, results)
                 db.commit()
             finally:
                 db.close()
@@ -383,43 +423,7 @@ async def _agent_health_check_loop():
 
             db = SessionLocal()
             try:
-                for agent_id, endpoint_url, name, prev_status, status in results:
-                    agent = db.get(Agent, agent_id)
-                    if agent is None:
-                        continue
-                    if prev_status != status:
-                        logger.info(
-                            "Agent %s 狀態變更: %s -> %s",
-                            name,
-                            prev_status,
-                            status,
-                        )
-                    fingerprint = f"health:agent:{agent_id}"
-                    if status == HEALTH_UNHEALTHY:
-                        # Message names the agent, never the address —
-                        # same posture as the model path. Structured
-                        # metadata still stores the URL for gated
-                        # disclosure on the alert listing
-                        # (``can_see_endpoint_address``).
-                        upsert_alert(
-                            db,
-                            fingerprint=fingerprint,
-                            category="health",
-                            severity="high",
-                            title=f"Agent {name} 離線",
-                            message=f"無法連線至 Agent「{name}」",
-                            source_type="agent",
-                            source_id=agent_id,
-                            metadata={
-                                "agent_name": name,
-                                "endpoint_url": endpoint_url,
-                            },
-                        )
-                    else:
-                        # Same as the model loop: anything other than
-                        # unhealthy clears the offline alert.
-                        resolve_alert_by_fingerprint(db, fingerprint)
-                    agent.health_status = status
+                apply_agent_health_results(db, results)
                 db.commit()
             finally:
                 db.close()

@@ -166,8 +166,8 @@ class ModelCreate(BaseModel):
     top_p: float | None = None
     presence_penalty: float | None = None
     max_tokens: int | None = None
-    # 空值 = 不限。模型登記者設定同時處理上限。
-    max_concurrent: int | None = None
+    # 新登錄預設 16。空值 = 不限。既有列不回填。
+    max_concurrent: int | None = 16
     # r1_0039/r1_0040 的兩個治理旗標先前只存在於 ModelUpdate,於是新增模型
     # 時 UI 勾了「開放給對話模型選單」/「允許使用者自選思考」會被 pydantic
     # 靜默丟掉,列上永遠吃到 ORM 預設(false / true),HTTP 卻回 200。

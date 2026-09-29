@@ -18,6 +18,7 @@ from anila_core.security.url_guard import UnsafeEndpointError, validate_outbound
 from app.models.alert import Alert
 from app.models.alert_mail import AlertMailDelivery, AlertMailSettings
 from app.models.user import User
+from app.services.alert_service import severity_is_higher
 from app.services.audit_service import log_audit_event
 from app.time_utils import as_utc
 
@@ -187,8 +188,20 @@ def send_test_mail(db: Session) -> str | None:
     return None
 
 
+def _copy_notification(delivery: AlertMailDelivery, notification) -> None:
+    delivery.category = getattr(notification, "category", None)
+    delivery.severity = getattr(notification, "severity", None)
+    delivery.title = getattr(notification, "title", None)
+    delivery.message = getattr(notification, "message", None)
+    delivery.source_type = getattr(notification, "source_type", None)
+    delivery.source_id = getattr(notification, "source_id", None)
+
+
 def deliver_open_alert(db: Session, notification) -> None:
-    """新開的警報寄一封。同一指紋在解決前不立刻重寄。失敗不往外丟。"""
+    """新開的警報寄一封。同一指紋、同一嚴重度在解決前不重寄。
+
+    嚴重度升高（例如憑證 high → critical）再寄一封。失敗不往外丟。
+    """
     try:
         row = ensure_settings(db)
         if not row.enabled:
@@ -198,20 +211,25 @@ def deliver_open_alert(db: Session, notification) -> None:
             .filter(AlertMailDelivery.fingerprint == notification.fingerprint)
             .one_or_none()
         )
-        if existing is not None:
-            return
-        delivery = AlertMailDelivery(
-            fingerprint=notification.fingerprint,
-            sent_at=None,
-            attempt_count=0,
-            category=getattr(notification, "category", None),
-            severity=getattr(notification, "severity", None),
-            title=getattr(notification, "title", None),
-            message=getattr(notification, "message", None),
-            source_type=getattr(notification, "source_type", None),
-            source_id=getattr(notification, "source_id", None),
+        escalated = existing is not None and severity_is_higher(
+            getattr(notification, "severity", None), existing.severity
         )
-        db.add(delivery)
+        if existing is not None and not escalated:
+            return
+        if existing is None:
+            delivery = AlertMailDelivery(
+                fingerprint=notification.fingerprint,
+                sent_at=None,
+                attempt_count=0,
+            )
+            _copy_notification(delivery, notification)
+            db.add(delivery)
+        else:
+            delivery = existing
+            _copy_notification(delivery, notification)
+            delivery.sent_at = None
+            delivery.attempt_count = 0
+            delivery.next_retry_at = None
         db.flush()
         _attempt_send(db, row, delivery, notification)
     except Exception:

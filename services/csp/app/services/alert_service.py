@@ -9,6 +9,11 @@ from app.models.user import User
 _SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
+def severity_is_higher(new: str | None, old: str | None) -> bool:
+    """新嚴重度比舊的高才算升級。空值最低。"""
+    return _SEVERITY_RANK.get(new or "", 0) > _SEVERITY_RANK.get(old or "", 0)
+
+
 def upsert_alert(
     db: Session,
     *,

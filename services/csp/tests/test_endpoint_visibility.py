@@ -506,12 +506,13 @@ def test_grouping_key_absent_from_all_responses(client: TestClient, db: Session)
 def test_agent_and_model_alert_messages_agree_no_raw_url():
     """Invariant 5: both health loops put the URL only in gated metadata.
 
-    Asserts on WHAT the loops pass, not on how they spell it. An earlier
+    Asserts on WHAT the write functions pass, not on how they spell it. An earlier
     version pinned the literal expression ``agent.endpoint_url``; when the
     connection-pool work snapshotted the row into locals before releasing
     the session, the behaviour was unchanged but the test went red. The
     invariant is that the address reaches ``metadata`` and never ``message``
-    — so check the call, not the source text.
+    — so check the call, not the source text. The loops hand the rows to
+    ``apply_*``; those call ``_emit_alert`` so the open transition also mails.
     """
     import ast
     import inspect
@@ -519,18 +520,23 @@ def test_agent_and_model_alert_messages_agree_no_raw_url():
     from app.services import health_checker as hc
 
     def alert_calls(fn):
-        """Every ``upsert_alert(...)`` call in ``fn``, as AST keyword maps."""
+        """Every ``_emit_alert(...)`` call in ``fn``, as AST keyword maps."""
         tree = ast.parse(inspect.getsource(fn).lstrip())
         return [
             {kw.arg: kw.value for kw in node.keywords}
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and getattr(node.func, "id", None) == "upsert_alert"
+            and getattr(node.func, "id", None) == "_emit_alert"
         ]
 
-    for fn, label in ((hc._agent_health_check_loop, "Agent"), (hc._health_check_loop, "模型")):
-        calls = alert_calls(fn)
-        assert calls, f"{label} 健康迴圈找不到 upsert_alert 呼叫"
+    pairs = (
+        (hc._health_check_loop, hc.apply_model_health_results, "模型"),
+        (hc._agent_health_check_loop, hc.apply_agent_health_results, "Agent"),
+    )
+    for loop, apply, label in pairs:
+        assert apply.__name__ in inspect.getsource(loop), apply.__name__
+        calls = alert_calls(apply)
+        assert calls, f"{label} 健康寫入找不到 _emit_alert 呼叫"
         for call in calls:
             message = ast.unparse(call["message"])
             # The address must not reach the human-readable message, whether

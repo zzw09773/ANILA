@@ -116,7 +116,11 @@
               </div>
               <div class="cell-meta">{{ model.name }}</div>
               <div v-if="model.base_model_name" class="cell-base">↳ base: {{ model.base_model_name }}</div>
-              <div class="cell-meta" data-testid="model-concurrency">同時 {{ model.inflight == null ? '—' : model.inflight }}／上限 {{ model.max_concurrent == null ? '不限' : model.max_concurrent }}，排隊 {{ model.queue_length == null ? '—' : model.queue_length }}</div>
+              <div
+                class="cell-meta"
+                :class="{ 'is-queue': modelQueueHot(model.queue_length) }"
+                data-testid="model-concurrency"
+              >處理中 {{ model.inflight == null ? '—' : model.inflight }} · 排隊中 {{ model.queue_length == null ? '—' : model.queue_length }}</div>
               <div class="cell-caps">
                 <TermBadge v-if="model.protocol" variant="" class="cap-chip">{{ protocolLabel(model.protocol) }}</TermBadge>
                 <TermBadge v-for="cap in capabilityChips(model)" :key="cap" variant="info" class="cap-chip">{{ cap }}</TermBadge>
@@ -548,7 +552,7 @@
               />
             </TermField>
           </div>
-          <TermField label="同時處理上限" optional hint="留空＝不限 · 1–10000">
+          <TermField label="同時處理上限" optional hint="預設 16 · 留空＝不限 · 1–10000">
             <input
               :value="form.max_concurrent ?? ''"
               type="number"
@@ -694,7 +698,7 @@
 
 <script setup>
 import { roleLabel } from '../utils/roleLabel'
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
 import {
@@ -719,6 +723,7 @@ import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'
 import { deactivateConfirm } from '../utils/modelDeactivate.js'
+import { DEFAULT_MODEL_MAX_CONCURRENT, MODEL_LIST_REFRESH_MS, modelQueueHot } from '../utils/modelConcurrency.js'
 import { formatDate } from '../utils/formatDate'
 import {
   THINKING_EFFORT_OPTIONS,
@@ -829,7 +834,7 @@ const defaultForm = () => ({
   thinking_effort: 'none', thinking_levels_supported: null,
   thinking_user_selectable: true,
   temperature: null, top_p: null,
-  presence_penalty: null, max_tokens: null, max_concurrent: null,
+  presence_penalty: null, max_tokens: null, max_concurrent: DEFAULT_MODEL_MAX_CONCURRENT,
 })
 const form = ref(defaultForm())
 const routerGrants = ref([])
@@ -969,10 +974,20 @@ const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHea
 const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
 const tableColspan = computed(() => (authStore.isAdmin || canSetEndpointAddress.value) ? 10 : 9)
 
+let modelListTimer = null
 onMounted(() => {
   modelsStore.fetchModels()
+  modelListTimer = setInterval(() => {
+    modelsStore.fetchModels()
+  }, MODEL_LIST_REFRESH_MS)
   loadEndpointAuthorState()
   loadAudienceOptions()
+})
+onUnmounted(() => {
+  if (modelListTimer != null) {
+    clearInterval(modelListTimer)
+    modelListTimer = null
+  }
 })
 
 function openCreateModal() { editingId.value = null; form.value = defaultForm(); routerGrants.value = []; grantsLoadState.value = "ready"; showModal.value = true }
@@ -1482,6 +1497,7 @@ async function handlePurge(model) {
 }
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-meta.is-queue { color: var(--c-warn); font-weight: 600; }
 .cell-meta--internal { color: var(--c-ok, #2ea043); }
 .cell-base { color: var(--c-info); font-size: var(--t-2xs); margin-top: 2px; }
 .internal-lock {

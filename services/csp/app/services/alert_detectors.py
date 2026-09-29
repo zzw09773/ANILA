@@ -22,7 +22,11 @@ from sqlalchemy.exc import OperationalError, TimeoutError as SATimeoutError
 from app.database import SessionLocal, engine
 from app.models.alert import Alert
 from app.services.alert_notifier import notify_alert_opened
-from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
+from app.services.alert_service import (
+    resolve_alert_by_fingerprint,
+    severity_is_higher,
+    upsert_alert,
+)
 from app.services.backup_status import BackupAssessment, assess_backup
 from app.services.storage_paths import (
     ATTACHMENT_STORAGE_ROOT,
@@ -45,8 +49,8 @@ GATEWAY_FAIL_STREAK = 5
 #: Agent dispatch: consecutive exhausted-retry failures.
 AGENT_FAIL_STREAK = 3
 
-#: Disk used% → high (morning) / critical (wake).
-DISK_WARN_PCT = 85.0
+#: Disk used% → high / critical. Warning lowered to 80% (2026-09-29).
+DISK_WARN_PCT = 80.0
 DISK_CRIT_PCT = 95.0
 
 FP_PLATFORM_INGRESS = "platform:ingress"
@@ -133,12 +137,14 @@ def _emit_alert(
     source_id: str | int | None = None,
     metadata: dict | None = None,
 ) -> bool:
-    """Upsert + notify on create/reopen. Returns True if notifier was called.
+    """Upsert + notify on create/reopen and when severity rises.
 
-    ``message`` must not contain raw endpoint addresses.
+    Returns True if the notifier was called. ``message`` must not contain
+    raw endpoint addresses.
     """
     existing = db.query(Alert).filter(Alert.fingerprint == fingerprint).first()
     was_open_transition = existing is None or existing.status == "resolved"
+    previous_severity = None if was_open_transition or existing is None else existing.severity
     upsert_alert(
         db,
         fingerprint=fingerprint,
@@ -150,7 +156,8 @@ def _emit_alert(
         source_id=source_id,
         metadata=metadata,
     )
-    if was_open_transition:
+    severity_rose = severity_is_higher(severity, previous_severity)
+    if was_open_transition or severity_rose:
         notify_alert_opened(
             fingerprint=fingerprint,
             category=category,
@@ -160,7 +167,7 @@ def _emit_alert(
             source_type=source_type,
             source_id=source_id,
         )
-    return was_open_transition
+    return was_open_transition or severity_rose
 
 
 def _resolve(db, fingerprint: str) -> None:
@@ -525,6 +532,24 @@ def disk_paths_to_check() -> list[tuple[str, str]]:
     return unique
 
 
+def current_disk_mounts() -> list[DiskSample]:
+    return [sample_disk(path, label) for label, path in disk_paths_to_check()]
+
+
+def public_disk_mounts(samples: list[DiskSample]) -> list[dict]:
+    """治理中心看的欄位。沒有宿主機路徑。"""
+    rows: list[dict] = []
+    for sample in samples:
+        rows.append(
+            {
+                "label": sample.label,
+                "used_pct": round(float(sample.used_pct), 1),
+                "free_gib": round(sample.free_bytes / (1024**3), 1),
+            }
+        )
+    return rows
+
+
 def sample_disk(path: str, label: str) -> DiskSample:
     st = os.statvfs(path)
     total = st.f_blocks * st.f_frsize
@@ -635,6 +660,61 @@ def evaluate_backup(*, db=None, path=None, now=None) -> str:
     return reason
 
 
+# ── 7. HTTPS certificate expiry (served cert, not the private key) ───────────
+
+
+def evaluate_tls_certificate(*, db=None, now=None, not_after=None, probe=None) -> str:
+    """連 compose 裡的 nginx 讀伺服端憑證。連不上不開、也不結案。
+
+    其他偵測器負責入口無回應。這裡只談到期。
+    """
+    from datetime import datetime, timezone
+
+    from app.services.tls_certificate import (
+        FP_TLS_CERTIFICATE,
+        CertificateUnreachable,
+        certificate_alert_copy,
+        read_served_not_after,
+    )
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if not_after is None:
+        reader = probe if probe is not None else read_served_not_after
+        try:
+            not_after = reader()
+        except CertificateUnreachable:
+            return "unreachable"
+    if not_after is None:
+        return "unreachable"
+    if not_after.tzinfo is None:
+        not_after = not_after.replace(tzinfo=timezone.utc)
+    severity, title, message, days = certificate_alert_copy(not_after, now)
+    if severity is None:
+        _with_db(db, resolve_fp=FP_TLS_CERTIFICATE)
+        return "ok"
+    _with_db(
+        db,
+        emit_kwargs={
+            "fingerprint": FP_TLS_CERTIFICATE,
+            "category": "certificate",
+            "severity": severity,
+            "title": title,
+            "message": message,
+            "source_type": "certificate",
+            "source_id": "nginx",
+            "metadata": {
+                "not_after": not_after.astimezone(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "days_remaining": days,
+            },
+        },
+    )
+    return severity
+
+
 # ── Background loop ──────────────────────────────────────────────────────────
 
 ALERT_INTERVAL_SECONDS = 60
@@ -654,6 +734,7 @@ async def alert_detector_pass() -> None:
     await asyncio.to_thread(evaluate_database)
     await asyncio.to_thread(evaluate_disk)
     await asyncio.to_thread(evaluate_backup)
+    await asyncio.to_thread(evaluate_tls_certificate)
     await evaluate_platform_ingress()
     from app.services.alert_mail import retry_due_alert_mail
 
@@ -684,7 +765,7 @@ async def start_alert_detectors() -> asyncio.Task:
     Gateway + agent streaks are event-driven from the proxy path.
     """
     logger.info(
-        "告警偵測背景任務已啟動 (platform/db/disk/backup; gateway/agent via proxy; "
+        "告警偵測背景任務已啟動 (platform/db/disk/backup/tls; gateway/agent via proxy; "
         "SMTP=%s)",
         "unwired",
     )

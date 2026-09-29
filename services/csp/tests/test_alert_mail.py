@@ -14,6 +14,7 @@ from app.services.alert_detectors import (
     FP_PLATFORM_INGRESS,
     PLATFORM_INGRESS_STREAK,
     evaluate_platform_ingress,
+    evaluate_tls_certificate,
     reset_streaks_for_tests,
 )
 from app.services.alert_mail import (
@@ -479,6 +480,9 @@ def test_alert_loop_retries_due_mail(monkeypatch):
     monkeypatch.setattr(
         "app.services.alert_detectors.evaluate_backup", lambda: seen.append("backup")
     )
+    monkeypatch.setattr(
+        "app.services.alert_detectors.evaluate_tls_certificate", lambda: seen.append("tls")
+    )
 
     async def _ingress():
         seen.append("ingress")
@@ -492,7 +496,7 @@ def test_alert_loop_retries_due_mail(monkeypatch):
     from app.services.alert_detectors import alert_detector_pass
 
     asyncio.run(alert_detector_pass())
-    assert seen == ["db", "disk", "backup", "ingress", "mail"]
+    assert seen == ["db", "disk", "backup", "tls", "ingress", "mail"]
 
 
 def test_disabled_mail_does_not_send(db, monkeypatch):
@@ -759,3 +763,67 @@ def test_owner_can_save_mail_settings(client, db, public_dns):
 def test_default_notifier_is_the_console_mailer():
     notifier = get_notifier()
     assert notifier.__class__.__name__ == "SmtpAlertNotifier"
+
+
+def test_certificate_escalation_sends_mail_again_without_duplicates(db, monkeypatch):
+    """憑證從 high 升到 critical 要再寄一封；嚴重度沒變不重寄。"""
+    from datetime import datetime, timedelta, timezone
+
+    _allow_loopback(monkeypatch)
+    server = FakeSmtp()
+
+    class _Bridge:
+        def send(self, notification):
+            deliver_open_alert(db, notification)
+
+    previous = set_notifier(_Bridge())
+    now = datetime(2026, 9, 29, tzinfo=timezone.utc)
+    try:
+        from app.services.alert_mail import save_mail_settings
+
+        save_mail_settings(
+            db,
+            enabled=True,
+            smtp_host="127.0.0.1",
+            smtp_port=server.port,
+            security="none",
+            username="",
+            password=None,
+            password_set=False,
+            clear_password=False,
+            from_address="anila@example.com",
+            recipients="ops@example.com",
+            actor=None,
+        )
+        db.commit()
+
+        assert evaluate_tls_certificate(
+            db=db, now=now, not_after=now + timedelta(days=29)
+        ) == "high"
+        db.commit()
+        assert len(server.messages) == 1
+        assert "高" in server.messages[0]
+        assert "29" in server.messages[0]
+
+        assert evaluate_tls_certificate(
+            db=db, now=now, not_after=now + timedelta(days=20)
+        ) == "high"
+        db.commit()
+        assert len(server.messages) == 1
+
+        assert evaluate_tls_certificate(
+            db=db, now=now, not_after=now + timedelta(days=6)
+        ) == "critical"
+        db.commit()
+        assert len(server.messages) == 2
+        assert "嚴重" in server.messages[1]
+        assert "6" in server.messages[1]
+
+        assert evaluate_tls_certificate(
+            db=db, now=now, not_after=now + timedelta(days=3)
+        ) == "critical"
+        db.commit()
+        assert len(server.messages) == 2
+    finally:
+        set_notifier(previous)
+        server.close()

@@ -224,6 +224,9 @@ services:
       # map $is_anila_host 用同一個 ${ANILA_HOST}，不用各站改 conf。
       # 萬用字元只支援 `*.suffix`；子網樣式會讓 csp 拒絕啟動。
       ALLOWED_HOSTS: "${ANILA_HOST:?ANILA_HOST must be set},localhost,127.0.0.1,::1,csp,router,anila-studio,asr-gateway,ingestion-worker,ip-literal"
+      # 憑證到期偵測連 nginx:443 的 SNI。與 nginx 服務同一行。
+      # 沒有這一行，.env 的 ANILA_HOST 到不了 csp，偵測器不會讀憑證。
+      ANILA_HOST: ${ANILA_HOST:?ANILA_HOST must be set}
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
       # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+

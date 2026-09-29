@@ -347,8 +347,25 @@ def test_disk_quiet_under_warn(db, _clean_streaks_and_notifier):
     assert _clean_streaks_and_notifier.sent == []
 
 
+def test_disk_warns_at_80_percent_and_stays_quiet_just_below(db, _clean_streaks_and_notifier):
+    """80% is the warning line. 79.9% stays quiet. Critical remains 95%."""
+    for _ in range(DB_FAIL_STREAK):
+        evaluate_disk([_sample("ingestion", 79.9)], db=db)
+    db.commit()
+    assert _by_fp(db, "disk:usage:ingestion") is None
+
+    reset_streaks_for_tests()
+    for _ in range(DB_FAIL_STREAK):
+        evaluate_disk([_sample("ingestion", 80.0)], db=db)
+    db.commit()
+    alert = _by_fp(db, "disk:usage:ingestion")
+    assert alert is not None and alert.status == "open"
+    assert alert.severity == "high"
+    assert "/tmp/" not in alert.message
+
+
 def test_disk_warn_and_critical_then_resolve(db, _clean_streaks_and_notifier):
-    """85% → high; 95% → critical; drop below warn → resolve.
+    """80% → high; 95% → critical; drop below warn → resolve.
 
     Reverted: used_pct from critical back under DISK_WARN_PCT.
     """
@@ -420,5 +437,5 @@ def test_threshold_constants_match_report():
     assert DB_FAIL_STREAK == 2
     assert GATEWAY_FAIL_STREAK == 5
     assert AGENT_FAIL_STREAK == 3
-    assert DISK_WARN_PCT == 85.0
+    assert DISK_WARN_PCT == 80.0
     assert DISK_CRIT_PCT == 95.0

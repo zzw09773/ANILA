@@ -43,7 +43,12 @@ from app.api.jwks import router as jwks_router
 from app.api.jwt_keyring import router as jwt_keyring_router
 from app.api.institutional_kb import router as institutional_kb_router
 from app.api.classification_inventory import router as classification_inventory_router
-from app.api.admin import backup_status_router, feedback_router, health_overview_router
+from app.api.admin import (
+    backup_status_router,
+    capacity_router,
+    feedback_router,
+    health_overview_router,
+)
 from app.modules.policy import router as policy_decisions_router
 from app.modules.tasks import router as tasks_router
 
@@ -102,3 +107,4 @@ api_router.include_router(institutional_kb_router)
 api_router.include_router(health_overview_router)
 api_router.include_router(feedback_router)
 api_router.include_router(backup_status_router)
+api_router.include_router(capacity_router)

@@ -1,8 +1,9 @@
 """Alert delivery. Mail settings live in the console, not in the environment.
 
-Detection still calls :func:`notify_alert_opened` on each new open. The
-notifier sends at most one message per fingerprint until that alert is
-resolved, and a delivery failure never breaks detection.
+Detection calls :func:`notify_alert_opened` on each new open and when
+severity rises. The notifier sends at most one message per fingerprint
+while that severity stays the same, until the alert is resolved. A
+delivery failure never breaks detection.
 """
 from __future__ import annotations
 

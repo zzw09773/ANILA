@@ -110,7 +110,11 @@ def test_cleanup_removes_volumes_and_only_keys_this_run_created(tmp_path: Path):
 
 
 def test_existing_private_key_is_reused_and_not_listed_for_deletion(tmp_path: Path):
-    private = tmp_path / "jwt-private.pem"
+    """Private key that already exists is not recorded. A missing public key is."""
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    jwt.chmod(0o755)
+    private = jwt / "jwt-private.pem"
     private.write_bytes(b"keep-me")
     manifest = tmp_path / "created.txt"
     manifest.write_text("", encoding="utf-8")
@@ -118,15 +122,89 @@ def test_existing_private_key_is_reused_and_not_listed_for_deletion(tmp_path: Pa
         """
         set -euo pipefail
         source "$SCRIPT"
-        chown() { return 1; }
+        openssl() {
+          local out="" prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "-out" ]; then out=$arg; fi
+            prev=$arg
+          done
+          if [ -n "$out" ]; then printf 'public\\n' > "$out"; fi
+        }
+        chown() { return 0; }
         install_loadtest_jwt "$JWT" "$CREATED"
         """,
-        JWT=str(tmp_path),
+        JWT=str(jwt),
         CREATED=str(manifest),
     )
-    assert proc.returncode != 0, proc.stderr
+    assert proc.returncode == 0, proc.stderr
     assert private.read_bytes() == b"keep-me"
-    assert manifest.read_text(encoding="utf-8") == ""
+    public = jwt / "jwt-public.pem"
+    assert public.read_bytes() == b"public\n"
+    assert manifest.read_text(encoding="utf-8").splitlines() == [str(public)]
+    assert stat.S_IMODE(jwt.stat().st_mode) == 0o770
+
+
+def test_created_manifest_lists_private_and_public_separately(tmp_path: Path):
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    jwt.chmod(0o755)
+    manifest = tmp_path / "created.txt"
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        openssl() {
+          local out="" prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "-out" ]; then out=$arg; fi
+            prev=$arg
+          done
+          if [ -n "$out" ]; then printf 'made\\n' > "$out"; fi
+        }
+        chown() { return 0; }
+        install_loadtest_jwt "$JWT" "$CREATED"
+        """,
+        JWT=str(jwt),
+        CREATED=str(manifest),
+    )
+    assert proc.returncode == 0, proc.stderr
+    private = jwt / "jwt-private.pem"
+    public = jwt / "jwt-public.pem"
+    assert manifest.read_text(encoding="utf-8").splitlines() == [str(private), str(public)]
+    assert stat.S_IMODE(jwt.stat().st_mode) == 0o770
+
+
+def test_cleanup_matches_key_paths_by_string_equality(tmp_path: Path):
+    jwt = tmp_path / "keys*"
+    jwt.mkdir()
+    real = jwt / "jwt-private.pem"
+    real.write_bytes(b"real")
+    decoy_dir = tmp_path / "keysX"
+    decoy_dir.mkdir()
+    decoy = decoy_dir / "jwt-private.pem"
+    decoy.write_bytes(b"decoy")
+    manifest = tmp_path / "created.txt"
+    manifest.write_text(f"{decoy}\n{real}\n", encoding="utf-8")
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        _remove_created_keys "$JWT" "$CREATED"
+        """,
+        JWT=str(jwt),
+        CREATED=str(manifest),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert decoy.read_bytes() == b"decoy"
+    assert not real.exists()
+    assert "拒絕刪除" in proc.stderr
+    body = SCRIPT.read_text(encoding="utf-8")
+    start = body.index("_remove_created_keys()")
+    end = body.index("\ninstall_loadtest_jwt()", start)
+    fn = body[start:end]
+    assert "case " not in fn
+    assert '[ "$path" = "$private" ]' in fn
+    assert '[ "$path" = "$public" ]' in fn
 
 
 def _isolated_loadtest_tree(tmp_path: Path) -> Path:
@@ -230,3 +308,235 @@ def test_script_exit_removes_only_keys_this_run_created():
         assert not workspace.exists()
         assert (REPO / "tools" / "loadtest" / ".jwt").exists() == repo_sidecars["jwt"]
         assert (REPO / "tools" / "loadtest" / ".test-bin").exists() == repo_sidecars["bin"]
+
+
+def test_secrets_directory_is_chowned_to_the_container_user(tmp_path: Path):
+    """目錄 0770、擁有者 10001、群組是執行者，容器才進得去，執行者也刪得了檔。"""
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    jwt.chmod(0o755)
+    chown_log = tmp_path / "chown.log"
+    chmod_log = tmp_path / "chmod.log"
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        chmod() { printf '%s\\n' "$*" >> "$CHMOD_LOG"; command chmod "$@"; }
+        openssl() {
+          local out="" prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "-out" ]; then out=$arg; fi
+            prev=$arg
+          done
+          if [ -n "$out" ]; then printf 'made\\n' > "$out"; fi
+        }
+        chown() { printf '%s\\n' "$*" >> "$CHOWN_LOG"; return 0; }
+        install_loadtest_jwt "$JWT" "$CREATED"
+        """,
+        JWT=str(jwt),
+        CREATED=str(tmp_path / "created.txt"),
+        CHOWN_LOG=str(chown_log),
+        CHMOD_LOG=str(chmod_log),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert stat.S_IMODE(jwt.stat().st_mode) == 0o770
+    chown_lines = chown_log.read_text(encoding="utf-8").splitlines()
+    assert chown_lines, "沒有呼叫 chown"
+    gid = str(os.getgid())
+    assert any(
+        line.split()[:1] == [f"10001:{gid}"] and str(jwt) in line.split()
+        for line in chown_lines
+    ), chown_lines
+    private = str(jwt / "jwt-private.pem")
+    private_lines = [line for line in chown_lines if private in line.split()]
+    assert private_lines
+    assert all(line.split()[0] == f"10001:{gid}" for line in private_lines)
+    for line in chmod_log.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if str(jwt) in parts:
+            assert parts[0] in {"770", "0770"}, line
+
+
+def test_chown_failure_does_not_widen_the_secrets_directory(tmp_path: Path):
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    jwt.chmod(0o755)
+    chmod_log = tmp_path / "chmod.log"
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        chmod() { printf '%s\\n' "$*" >> "$CHMOD_LOG"; command chmod "$@"; }
+        openssl() {
+          local out="" prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "-out" ]; then out=$arg; fi
+            prev=$arg
+          done
+          if [ -n "$out" ]; then printf 'made\\n' > "$out"; fi
+        }
+        chown() { return 1; }
+        install_loadtest_jwt "$JWT"
+        """,
+        JWT=str(jwt),
+        CHMOD_LOG=str(chmod_log),
+    )
+    assert proc.returncode != 0, proc.stderr
+    assert "0600" in proc.stderr
+    assert stat.S_IMODE(jwt.stat().st_mode) == 0o770
+    private = jwt / "jwt-private.pem"
+    assert stat.S_IMODE(private.stat().st_mode) == 0o600
+    for line in chmod_log.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if str(jwt) in parts:
+            assert parts[0] not in {"755", "775", "777", "711"}, line
+
+
+def test_new_private_key_regenerates_a_stale_public_key(tmp_path: Path):
+    """私鑰是這次新產生的時候，留下的舊公鑰必須重算，清理仍只刪這次建立的檔。"""
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    public = jwt / "jwt-public.pem"
+    public.write_bytes(b"stale-public")
+    manifest = tmp_path / "created.txt"
+    openssl_log = tmp_path / "openssl.log"
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        openssl() {
+          printf '%s\\n' "$*" >> "$OPENSSL_LOG"
+          local out="" prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "-out" ]; then out=$arg; fi
+            prev=$arg
+          done
+          if [ -z "$out" ]; then return 0; fi
+          case "$out" in
+            *jwt-private.pem) printf 'new-private\\n' > "$out" ;;
+            *jwt-public.pem) printf 'new-public\\n' > "$out" ;;
+          esac
+        }
+        chown() { return 0; }
+        docker() { return 0; }
+        install_loadtest_jwt "$JWT" "$CREATED"
+        cleanup_loadtest "$ROOT" "$JWT" "$CREATED"
+        """,
+        JWT=str(jwt),
+        CREATED=str(manifest),
+        OPENSSL_LOG=str(openssl_log),
+        ROOT=str(tmp_path),
+    )
+    assert proc.returncode == 0, proc.stderr
+    private = jwt / "jwt-private.pem"
+    assert not private.exists()
+    assert public.read_bytes() == b"new-public\n"
+    commands = openssl_log.read_text(encoding="utf-8")
+    assert "pubout" in commands
+    assert "jwt-private.pem" in commands
+    assert not manifest.exists()
+
+
+def test_repeat_install_continues_when_directory_is_already_shared_with_the_caller(tmp_path: Path):
+    """目錄已屬 10001 時 chmod 會 EPERM。0770 且群組是執行者就繼續，不改成更寬。"""
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    (jwt / "jwt-private.pem").write_bytes(b"keep")
+    (jwt / "jwt-public.pem").write_bytes(b"keep-pub")
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        chmod() { return 1; }
+        chown() { return 1; }
+        stat() {
+          local fmt="" path=""
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -c) fmt=$2; shift 2 ;;
+              *) path=$1; shift ;;
+            esac
+          done
+          local mode=770
+          case "$path" in
+            *jwt-private.pem) mode=600 ;;
+            *jwt-public.pem) mode=644 ;;
+          esac
+          case "$fmt" in
+            %a) printf '%s\\n' "$mode" ;;
+            %u) printf '10001\\n' ;;
+            %g) printf '%s\\n' "$GID" ;;
+            *) echo "stat $fmt" >&2; return 1 ;;
+          esac
+        }
+        install_loadtest_jwt "$JWT" "$CREATED"
+        """,
+        JWT=str(jwt),
+        CREATED=str(tmp_path / "created.txt"),
+        GID=str(os.getgid()),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (jwt / "jwt-private.pem").read_bytes() == b"keep"
+
+
+def test_chmod_failure_rejects_a_wider_directory(tmp_path: Path):
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        chmod() { return 1; }
+        stat() {
+          local fmt=""
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -c) fmt=$2; shift 2 ;;
+              *) shift ;;
+            esac
+          done
+          case "$fmt" in
+            %a) printf '755\\n' ;;
+            %u) printf '10001\\n' ;;
+            %g) printf '%s\\n' "$GID" ;;
+            *) return 1 ;;
+          esac
+        }
+        install_loadtest_jwt "$JWT"
+        """,
+        JWT=str(jwt),
+        GID=str(os.getgid()),
+    )
+    assert proc.returncode != 0, proc.stdout
+    assert "0770" in proc.stderr
+    assert "放寬" in proc.stderr
+
+
+def test_cleanup_unlinks_a_key_the_caller_cannot_open(tmp_path: Path):
+    """刪檔只靠目錄的 w+x。檔案 000 打不開，目錄 0770 仍刪得掉。沒有 root 時以此代替 uid 10001。"""
+    jwt = tmp_path / "jwt"
+    jwt.mkdir()
+    jwt.chmod(0o770)
+    private = jwt / "jwt-private.pem"
+    private.write_bytes(b"secret")
+    private.chmod(0o000)
+    try:
+        private.read_bytes()
+        raise AssertionError("mode 000 的金鑰不該讀得到")
+    except PermissionError:
+        pass
+    manifest = tmp_path / "created.txt"
+    manifest.write_text(f"{private}\n", encoding="utf-8")
+    proc = _run(
+        """
+        set -euo pipefail
+        source "$SCRIPT"
+        docker() { return 0; }
+        cleanup_loadtest "$ROOT" "$JWT" "$CREATED"
+        """,
+        ROOT=str(tmp_path),
+        JWT=str(jwt),
+        CREATED=str(manifest),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not private.exists()

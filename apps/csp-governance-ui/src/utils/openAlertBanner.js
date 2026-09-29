@@ -1,13 +1,8 @@
 /** 未處理警報的頁首橫幅。確認或解決後 open_count 歸零，橫幅消失。 */
 
-export const OPEN_ALERT_BANNER_POLL_MS = 60_000
+import { SEVERITY_LABEL } from './alertLabels.js'
 
-const SEVERITY_LABEL = {
-  critical: '嚴重',
-  high: '高',
-  medium: '中',
-  low: '低',
-}
+export const OPEN_ALERT_BANNER_POLL_MS = 60_000
 
 /**
  * @param {object|null|undefined} summary
