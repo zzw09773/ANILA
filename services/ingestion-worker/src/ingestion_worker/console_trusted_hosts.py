@@ -43,10 +43,11 @@ def reset_for_tests() -> None:
 
 def ensure_registered() -> None:
     global _registered
-    if _registered:
-        return
-    register_trusted_host_provider(cached_console_hosts)
-    _registered = True
+    with _lock:
+        if _registered:
+            return
+        register_trusted_host_provider(cached_console_hosts)
+        _registered = True
 
 
 def _drop_stale_hosts(now: float) -> None:
@@ -89,12 +90,15 @@ async def refresh_console_trusted_hosts(
             with _lock:
                 _drop_stale_hosts(time.monotonic())
             return
-        payload = response.json() or {}
-        fresh = {
-            str(host).strip().lower()
-            for host in (payload.get("hosts") or [])
-            if str(host).strip()
-        }
+        payload = response.json()
+        hosts = payload.get("hosts") if isinstance(payload, dict) else None
+        if not isinstance(hosts, list):
+            # 形狀不對不是「清單變空」：當成這次讀不到，沿用上一筆。
+            logger.warning("ingestion-worker: 信任主機回應格式不對")
+            with _lock:
+                _drop_stale_hosts(time.monotonic())
+            return
+        fresh = {str(host).strip().lower() for host in hosts if str(host).strip()}
     except Exception:
         logger.warning("ingestion-worker: 信任主機讀取失敗", exc_info=True)
         with _lock:

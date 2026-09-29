@@ -71,3 +71,14 @@ async def test_hosts_are_dropped_after_five_minutes_without_csp(monkeypatch):
 
     with pytest.raises(UnsafeEndpointError):
         validate_outbound_url(DOCLING, ENDPOINT_KIND_MODEL)
+
+
+@pytest.mark.asyncio
+async def test_malformed_payload_keeps_the_last_list():
+    """hosts 是字串時不能逐字拆成主機；當成這次讀不到。"""
+    async with _client(lambda r: httpx.Response(200, json={"hosts": ["172.16.120.35"]})) as ok:
+        await cth.refresh_console_trusted_hosts("http://csp:8000", "sk-worker", http_client=ok, force=True)
+    async with _client(lambda r: httpx.Response(200, json={"hosts": "172.16.120.35"})) as bad:
+        await cth.refresh_console_trusted_hosts("http://csp:8000", "sk-worker", http_client=bad, force=True)
+    assert cth.cached_console_hosts() == {"172.16.120.35"}
+    validate_outbound_url(DOCLING, ENDPOINT_KIND_MODEL)

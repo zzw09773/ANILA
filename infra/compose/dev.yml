@@ -410,8 +410,8 @@ services:
       - default
       - anila-models-net
     healthcheck:
-      # 200 與 503(解碼端未就緒)都算 gateway 活著;同 platform.yml。
-      test: ["CMD-SHELL", "code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8200/asr/health); [ \"$$code\" = 200 ] || [ \"$$code\" = 503 ]"]
+      # 有回應就算活著,撤銷清單沒就緒除外;同 platform.yml。
+      test: ["CMD-SHELL", "b=$$(curl -s -m 10 http://localhost:8200/asr/health) && [ -n \"$$b\" ] && ! printf '%s' \"$$b\" | grep -q revocation_not_ready"]
       interval: 15s
       timeout: 12s
       retries: 6

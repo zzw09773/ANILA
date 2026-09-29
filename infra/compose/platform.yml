@@ -858,10 +858,11 @@ services:
       # ASR_PROBE_TIMEOUT_SECONDS(預設 8s)。舊的 5s 會把「遠端慢」誤判成
       # 「gateway 掛了」。interval 拉到 30s 是為了不要對外部端點狂打探針
       # (探針會真的送一段 100ms 靜音去辨識)—— 2 次/分鐘。
-      # 只看 gateway 自己活著:200(可用)與 503(解碼端未就緒)都算活著。
-      # 解碼端屬模型側,它壞了不能讓這支容器變 unhealthy —— 否則每次更新的
-      # 健康等待都會失敗、整個平台被自動回復。麥克風由 /asr/health 內容決定。
-      test: ["CMD-SHELL", "code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8200/asr/health); [ \"$$code\" = 200 ] || [ \"$$code\" = 503 ]"]
+      # 只看 gateway 自己:有回應就算活著(200 可用、503 解碼端未就緒都算),
+      # 但 gateway 自己的撤銷清單沒就緒(revocation_not_ready,WS 認證會全擋)
+      # 仍算不健康。解碼端屬模型側,它壞了不能讓這支容器變 unhealthy —— 否則
+      # 每次更新的健康等待都會失敗、整個平台被自動回復。麥克風由 /asr/health 內容決定。
+      test: ["CMD-SHELL", "b=$$(curl -s -m 10 http://localhost:8200/asr/health) && [ -n \"$$b\" ] && ! printf '%s' \"$$b\" | grep -q revocation_not_ready"]
       interval: 30s
       timeout: 12s
       retries: 6
