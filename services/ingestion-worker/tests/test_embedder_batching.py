@@ -462,7 +462,9 @@ def test_the_csp_side_meter_is_still_additive_over_texts():
         f"由誰來釘這個前提,不是讓它自己消失"
     )
     source = _CSP_PROXY.read_text(encoding="utf-8")
-    assert "prompt_tokens = sum(max(1, len(t.split())) for t in texts)" in source, (
+    # 2026-09-29 起每段改用 _estimate_token_count（中文按字計），仍是逐段各自
+    # 估算再相加、與分批方式無關，所以「分批不改變帳單」的論證照樣成立。
+    assert "max(1, _estimate_token_count(model.name, t)) for t in texts" in source, (
         "CSP 的 embedding 計量式不再是「逐段文字相加」—— 分批就會改變帳單金額,"
         f"批次大小不再只是運維旋鈕。請重新推導後更新本檔({_CSP_PROXY})"
     )

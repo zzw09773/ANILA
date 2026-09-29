@@ -71,6 +71,16 @@ async def refresh_document_parser(pool: Any = None) -> None:
     del pool
     install()
     token = credential_api_key("").strip()
+    try:
+        await _refresh_document_parser(token)
+    finally:
+        # 解析位址若在私網，放行名單以治理中心的信任主機為準，同一份 sk- 去讀。
+        from ingestion_worker.console_trusted_hosts import refresh_console_trusted_hosts
+
+        await refresh_console_trusted_hosts(_csp_base(), token)
+
+
+async def _refresh_document_parser(token: str) -> None:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     url = f"{_csp_base()}/api/internal/external-services/document_parser"
     try:

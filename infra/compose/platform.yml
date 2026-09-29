@@ -438,7 +438,8 @@ services:
       DOCLING_OCR_LANGS: "${DOCLING_OCR_LANGS:-ch_tra,en}"
       DOCLING_TIMEOUT_SECONDS: "${DOCLING_TIMEOUT_SECONDS:-120}"
       DOCLING_CONNECT_TIMEOUT_SECONDS: "${DOCLING_CONNECT_TIMEOUT_SECONDS:-5}"
-      # 只放行 compose 內部的 docling。其餘信任主機在治理中心，不讀 .env。
+      # 只放行 compose 內部的 docling。私網上的解析主機（例如遠端 Docling）
+      # 由治理中心「信任主機」決定：worker 每個工作前向 CSP 讀那張表，不讀 .env。
       ANILA_TRUSTED_HOSTS: "docling"
       PYTHONUNBUFFERED: "1"
     volumes:

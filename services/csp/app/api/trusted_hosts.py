@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.external_service import SPEECH
+from app.models.external_service import DOCUMENT_PARSER, SPEECH
 from app.models.user import User
 from app.schemas.trusted_host import TrustedHostCreate, TrustedHostResponse
 from app.services import external_services as external_svc
@@ -81,14 +81,20 @@ def delete_trusted_host(
 def internal_trusted_hosts(
     db: Session = Depends(get_db),
     x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+    authorization: str | None = Header(default=None),
 ):
-    """asr-gateway 讀治理中心的信任主機。只接受語音服務權杖。"""
+    """出站服務讀治理中心的信任主機。
+
+    asr-gateway 帶語音服務權杖；ingestion-worker 帶讀文件解析的 sk-（Bearer）。
+    兩者都沿用各自讀外部服務設定的授權，其他身分一律拒絕。
+    """
+    service_key = SPEECH if (x_csp_service_token or "").strip() else DOCUMENT_PARSER
     try:
         external_svc.authorize_internal_read(
             db,
-            SPEECH,
+            service_key,
             service_token=x_csp_service_token,
-            authorization=None,
+            authorization=authorization,
         )
     except external_svc.ReaderDenied as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

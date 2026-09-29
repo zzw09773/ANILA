@@ -5,7 +5,11 @@
 兩份分歧 = 被撤銷的權杖在一個服務被擋、在另一個服務仍然通行。
 
 為什麼是副本而不是共用套件:抽到 packages 才是正解,但那超出「語音當鍵盤」
-的範圍。vendor 時只加了這段標頭,其餘一行未改。
+的範圍。vendor 時只加了這段標頭。
+
+唯一刻意的差異(2026-09-29):冷啟動同步的服務憑證。studio 讀自己的憑證檔
+(app.service_token),這份讀 asr-gateway 的專屬憑證檔(decode_endpoint._service_token)。
+兩邊都不再用共用的 CSP_SERVICE_TOKEN。撤銷判斷邏輯仍須與 studio 那份一致。
 
 ⚠ fail-closed 姿態一併繼承:cache 沒 ready 時一律拒絕認證。對 gateway 而言就是 Redis 或 csp 一倒,ASR 全斷。
 隱性相依:app.config.settings 同名欄位(CSP_BASE_URL、CSP_SERVICE_TOKEN、REDIS_URL、REDIS_REVOCATION_CHANNEL、REVOCATION_CACHE_TTL_SECONDS、REVOCATION_RECONCILE_INTERVAL_SECONDS、INTERNAL_TIMEOUT_*)。

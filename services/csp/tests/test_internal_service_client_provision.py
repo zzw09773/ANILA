@@ -1489,7 +1489,7 @@ def test_missing_private_directory_refuses_flat_publish_and_degrades_readiness(
 def test_dormant_callers_are_not_injected_with_the_retired_fleet_token():
     """asr-gateway 的 compose 不再注入共用權杖。本機生圖服務已刪除。
 
-    語音閘道的舊讀取路徑留著，重新啟用前必須改讀專屬憑證檔。
+    語音閘道 2026-09-29 重新啟用：讀解碼位址與撤銷清單都改用專屬憑證檔。
     """
     root = Path(__file__).resolve().parents[3]
     for rel in (
@@ -1505,8 +1505,12 @@ def test_dormant_callers_are_not_injected_with_the_retired_fleet_token():
         "services/asr-gateway/app/services/revocation_cache.py",
     ):
         text = (root / rel).read_text(encoding="utf-8")
-        assert "重新啟用" in text, rel
         assert "憑證檔" in text, rel
+        assert "_service_token(settings)" in text, rel
+    revocation = (root / "services/asr-gateway/app/services/revocation_cache.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'headers["X-CSP-Service-Token"] = settings.CSP_SERVICE_TOKEN' not in revocation
 
 
 def test_console_shows_plaintext_only_on_emergency_reissue():
