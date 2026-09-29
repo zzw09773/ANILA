@@ -34,14 +34,12 @@ def _admin(client, db, username="role-admin") -> dict[str, str]:
 
 
 @pytest.fixture
-def service_token_header(monkeypatch) -> dict[str, str]:
-    from app.config import settings as canonical_settings
-    from app.services import auth_service
+def service_token_header(db) -> dict[str, str]:
+    from tests.conftest import install_service_caller
 
-    token = "csk-test-model-roles-12345"
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    return {"X-CSP-Service-Token": token}
+    return install_service_caller(
+        db, "csk-test-model-roles-12345", name="test-model-roles"
+    )
 
 
 def test_list_leaves_new_roles_unset_and_keeps_existing_flags(client, db):

@@ -53,6 +53,9 @@ os.environ["ANILA_AUTH_MODE"] = "password"
 # inserts router-primary. Tests call the provisioner explicitly. Leaving
 # this on would publish tokens during every TestClient startup.
 os.environ["ANILA_SERVICE_CLIENT_AUTO_PROVISION"] = "0"
+# 共用權杖已退役。殼裡若還留著，lifespan 會拒絕啟動。
+os.environ.pop("CSP_SERVICE_TOKEN", None)
+os.environ.pop("CSP_BOOTSTRAP_TOKEN", None)
 os.environ["ANILA_SERVICE_CLIENT_DIR"] = str(Path(_TEST_DB_DIR) / "service-clients")
 # 簽章金鑰圈的週期維護在測試裡關掉，改由測試直接呼叫 advance。
 os.environ["ANILA_JWT_KEYRING_MAINTAINER"] = "0"
@@ -106,6 +109,16 @@ def _isolate_jwt_keyring():
     _load_keys.cache_clear()
     yield
     _load_keys.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_credential_alert_throttle():
+    """模型憑證警報在行程內每模型 60 秒節流一次；測試之間不可互相吃掉。"""
+    from app.services.proxy.headers import reset_credential_alert_throttle
+
+    reset_credential_alert_throttle()
+    yield
+    reset_credential_alert_throttle()
 
 
 @pytest.fixture(autouse=True)
@@ -179,6 +192,61 @@ def client(db_engine, monkeypatch):
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+def install_service_caller(
+    db, token: str, *, name: str, client_type: str = "router"
+) -> dict[str, str]:
+    """種一筆 service_clients。同名再種不同權杖時換掉舊列，不靜默沿用。"""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.service_client import ServiceClient
+    from app.services.service_token_envelope import (
+        compute_lookup_hash,
+        decode_service_token_envelope,
+        encode_service_token_envelope,
+    )
+
+    envelope = encode_service_token_envelope(token)
+    lookup = compute_lookup_hash(token)
+    existing = (
+        db.query(ServiceClient).filter(ServiceClient.client_name == name).first()
+    )
+    if existing is None:
+        db.add(
+            ServiceClient(
+                client_name=name,
+                client_type=client_type,
+                service_token_envelope=envelope,
+                service_token_lookup_hash=lookup,
+                is_active=True,
+                is_legacy=False,
+            )
+        )
+    else:
+        current = decode_service_token_envelope(existing.service_token_envelope)
+        if (
+            current != token
+            or existing.client_type != client_type
+            or not existing.is_active
+            or existing.is_legacy
+        ):
+            existing.service_token_envelope = envelope
+            existing.service_token_lookup_hash = lookup
+            existing.client_type = client_type
+            existing.is_active = True
+            existing.is_legacy = False
+            existing.service_token_previous_envelope = None
+            existing.service_token_previous_lookup_hash = None
+            existing.service_token_previous_expires_at = None
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise RuntimeError(
+            f"service caller {name!r} 的權杖與既有列衝突，沒有沿用舊列"
+        ) from exc
+    return {"X-CSP-Service-Token": token}
 
 
 # ── Fixture helpers ────────────────────────────────────────────────────────────

@@ -46,18 +46,12 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - csp-pgdata:/var/lib/postgresql/data
-    # shm_size 512mb：Docker 預設 64mb 不夠。shared_buffers 仍是下面的 256MB。
-    # max_connections stays 120 because PgBouncer holds the client fan-out.
-    # Changing these needs a Postgres restart.
-    shm_size: 512mb
-    command:
-      - postgres
-      - -c
-      - max_connections=120
-      - -c
-      - shared_buffers=256MB
-      - -c
-      - work_mem=8MB
+      - ../../infra/docker/postgres-memconf.sh:/usr/local/bin/postgres-memconf.sh:ro
+    # 記憶體參數在容器啟動時計算（cgroup 上限，否則 MemTotal）。
+    # max_connections 維持 120，因為 PgBouncer 負責客戶端扇出。
+    # /dev/shm 給平行查詢的動態共享記憶體；shared_buffers 不放在這裡。
+    shm_size: 8gb
+    entrypoint: ["/bin/sh", "/usr/local/bin/postgres-memconf.sh"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U csp -d csp"]
       interval: 5s
@@ -427,9 +421,6 @@ services:
       # 多輪派工的中途狀態（/v1/sessions/{id}/state、/answer）存在這個 SQLite；
       # 2026-09-02 之前沒有 volume，recreate 一次就全部消失（harness M2）。
       ANILA_SESSION_DB_PATH: /app/.anila/sessions.db
-      # 只在 ANILA_SERVICE_TOKEN_FILE 沒設時才當後援。路徑有設而檔案不在時，
-      # router 失敗即關閉（token_source=file_missing），不讀這個目錄。
-      ANILA_ROUTER_STATE_DIR: /app/.anila/state
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary/token
     volumes:
       - router-sessions:/app/.anila
@@ -627,6 +618,7 @@ services:
   # 都不需要人工上 host 下 chown。
   # 用 0:0 跑是必要的(要 chown 別人的檔案),但它只活幾毫秒且不開 port。
   codeserver-init:
+    profiles: ["maint"]
     build: &codeserver-build
       context: ../codeserver
       dockerfile: Dockerfile
@@ -652,6 +644,7 @@ services:
     logging: *anila-logging
 
   codeserver:
+    profiles: ["maint"]
     build: *codeserver-build
     image: *codeserver-image
     # UID/GID 要對齊 **host** 上跑 repo 的那個帳號,bind mount 進來的 repo

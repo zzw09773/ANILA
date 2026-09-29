@@ -374,9 +374,8 @@ cmd_verify() {
   # 試 /api/auth/revocations(anila-studio 的 cold-start dep)
   local revoke_check
   revoke_check=$(docker compose exec -T anila-studio sh -c \
-    "curl -sf -H 'X-CSP-Service-Token: '\$CSP_SERVICE_TOKEN \
-     http://csp:8000/api/auth/revocations?since=2026-01-01T00:00:00Z \
-     --max-time 5 -o /dev/null -w '%{http_code}'" 2>/dev/null || true)
+    'tok=$(cat "$ANILA_SERVICE_TOKEN_FILE") && curl -sf -H "X-CSP-Service-Token: ${tok}" http://csp:8000/api/auth/revocations?since=2026-01-01T00:00:00Z --max-time 5 -o /dev/null -w "%{http_code}"' \
+    2>/dev/null || true)
   revoke_check="${revoke_check:-fail}"
   if [[ "$revoke_check" == "200" ]]; then
     ok "csp /api/auth/revocations → 200 (anila-studio cold-start 通了)"

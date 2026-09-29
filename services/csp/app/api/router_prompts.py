@@ -33,7 +33,6 @@ def read_router_prompts(
         db=db,
         allowed_kinds=("service_client",),
         allowed_client_types=("router",),
-        allow_legacy_env=False,
         endpoint="GET /api/router-prompts",
     )
     prompts: dict[str, str] = {}

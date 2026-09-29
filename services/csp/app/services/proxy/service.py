@@ -31,6 +31,7 @@ from app.services.proxy.sampling import (
 )
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
+    MODEL_CREDENTIAL_UNREADABLE,
     _apply_gateway_auth,
     build_agent_headers,
     build_model_gateway_headers,
@@ -199,6 +200,8 @@ def stream_failure_user_message(
     Never interpolates exception text or endpoint addresses — open-ended
     exception classes and httpx errors routinely embed hostnames / URLs.
     """
+    if isinstance(exc, HTTPException) and exc.detail == MODEL_CREDENTIAL_UNREADABLE:
+        return MODEL_CREDENTIAL_UNREADABLE
     label = (model_name or "").strip() or "模型"
     if isinstance(exc, HTTPException):
         code = int(exc.status_code)
@@ -304,10 +307,35 @@ def resolve_proxy_tuning(db: Session) -> ProxyTuning:
     )
 
 
+# 同步 /api/ 模型呼叫的總牆鐘，含重試與退避。/v1 串流不帶 deadline，
+# 仍用 proxy.llm_timeout（nginx 允許到 3600 秒）。
+API_SYNC_MODEL_BUDGET_S = 280.0
+
+
+def sync_model_deadline() -> float:
+    return time.monotonic() + API_SYNC_MODEL_BUDGET_S
+
+
 def _get_timeout(model_type: str, tuning: ProxyTuning) -> float:
     if model_type == "embedding":
         return tuning.embedding_timeout
     return tuning.llm_timeout
+
+
+def _timeout_for_attempt(configured: float, deadline: float | None) -> float:
+    configured = float(configured)
+    if deadline is None:
+        return configured
+    remaining = deadline - time.monotonic()
+    if remaining <= 0.05:
+        raise HTTPException(status_code=504, detail="模型呼叫超過時間上限")
+    return min(configured, remaining)
+
+
+def _backoff_fits(delay: float, deadline: float | None) -> bool:
+    if deadline is None:
+        return True
+    return (deadline - time.monotonic()) > delay
 
 
 def _normalize_embed_inputs(request_body: dict) -> list[str]:
@@ -372,9 +400,11 @@ async def _proxy_triton_embedding(
     invocation_id: Optional[str] = None,
     model_name_snapshot: Optional[str] = None,
     token_source: str = "estimated",
+    deadline: float | None = None,
 ) -> dict:
     """Triton/KServe gRPC embedding path — never through join_upstream_path."""
-    from app.services.triton_grpc import TritonEmbedError, embed_texts
+    from app.services.triton_grpc import TritonEmbedError, TritonTimeout, embed_texts
+    from app.services.triton_grpc.client import CHANNEL_READY_TIMEOUT_S
 
     invocation_id = invocation_id or uuid.uuid4().hex
     model_name_snapshot = model_name_snapshot or model.name
@@ -401,7 +431,18 @@ async def _proxy_triton_embedding(
 
     start_time = time.time()
     last_error = None
+    attempts_made = 0
+    deadline_hit = False
+    # embed_texts 會在 timeout_s 之外再給連線就緒 CHANNEL_READY_TIMEOUT_S。
+    triton_deadline = None if deadline is None else deadline - CHANNEL_READY_TIMEOUT_S
     for attempt in range(tuning.max_retries):
+        try:
+            attempt_timeout = _timeout_for_attempt(timeout, triton_deadline)
+        except HTTPException:
+            last_error = "模型呼叫超過時間上限"
+            deadline_hit = True
+            break
+        attempts_made += 1
         try:
             vectors = await asyncio.to_thread(
                 embed_texts,
@@ -409,7 +450,7 @@ async def _proxy_triton_embedding(
                 model.name,
                 texts,
                 role=role,
-                timeout_s=float(timeout),
+                timeout_s=float(attempt_timeout),
             )
             duration_ms = int((time.time() - start_time) * 1000)
             # Triton 不回報 usage。用和對話相同的估算（中文按字計），
@@ -493,8 +534,14 @@ async def _proxy_triton_embedding(
             return result
         except TritonEmbedError as exc:
             last_error = str(exc)
-            if attempt < tuning.max_retries - 1:
-                delay = tuning.retry_base_delay * (2 ** attempt)
+            if isinstance(exc, TritonTimeout):
+                logger.warning(
+                    "模型 %s 上游讀取逾時，不再重試",
+                    model.name,
+                )
+                break
+            delay = tuning.retry_base_delay * (2 ** attempt)
+            if attempt < tuning.max_retries - 1 and _backoff_fits(delay, triton_deadline):
                 logger.warning(
                     "模型 %s Triton 呼叫失敗，%ss 後重試 (%s/%s): %s",
                     model.name,
@@ -519,8 +566,8 @@ async def _proxy_triton_embedding(
         except Exception as exc:
             last_error = "未預期的代理錯誤"
             logger.error("Triton 代理請求錯誤: %s", exc, exc_info=True)
-            if attempt < tuning.max_retries - 1:
-                delay = tuning.retry_base_delay * (2 ** attempt)
+            delay = tuning.retry_base_delay * (2 ** attempt)
+            if attempt < tuning.max_retries - 1 and _backoff_fits(delay, triton_deadline):
                 await asyncio.sleep(delay)
                 continue
             _note_proxy_outcome(
@@ -539,9 +586,16 @@ async def _proxy_triton_embedding(
         display_name=getattr(model, "display_name", None),
         success=False,
     )
+    if deadline_hit or (
+        triton_deadline is not None and time.monotonic() >= triton_deadline
+    ):
+        raise HTTPException(
+            status_code=504,
+            detail=f"模型呼叫超過時間上限，已嘗試 {attempts_made} 次",
+        )
     raise HTTPException(
         status_code=502,
-        detail=f"模型服務不可用，已重試 {tuning.max_retries} 次: {last_error}",
+        detail=f"模型服務不可用，已嘗試 {attempts_made} 次: {last_error}",
     )
 
 
@@ -777,6 +831,7 @@ async def _proxy_request_impl(
     model_name_snapshot: Optional[str] = None,
     request_type_override: Optional[str] = None,
     max_response_bytes: Optional[int] = None,
+    deadline: float | None = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -792,7 +847,8 @@ async def _proxy_request_impl(
     /v1 chat traffic. Run finalization lives in the ``proxy_request``
     wrapper.
     """
-    timeout = _get_timeout(model.model_type, tuning)
+    configured_timeout = _get_timeout(model.model_type, tuning)
+    timeout = configured_timeout
     invocation_id = invocation_id or uuid.uuid4().hex
     model_name_snapshot = model_name_snapshot or getattr(model, "name", None)
     conv_tier = _conversation_thinking_tier(
@@ -843,6 +899,7 @@ async def _proxy_request_impl(
             invocation_id=invocation_id or uuid.uuid4().hex,
             model_name_snapshot=model_name_snapshot or model.name,
             token_source="estimated",
+            deadline=deadline,
         )
 
     # Registry rows store bare host or ``.../v1``; join_upstream_path is
@@ -897,7 +954,7 @@ async def _proxy_request_impl(
         # task / trace headers, structurally (builder has no such params).
         req_headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
-    # Slice 6a: per-model api_key_secret_ref 優先,退回全域 env(MVP fallback)。
+    # 沒有專屬金鑰才用全域 env。專屬金鑰讀不到時這次呼叫失敗。
     if caller_authorization:
         req_headers["Authorization"] = caller_authorization
     elif model.model_type != "agent":
@@ -908,13 +965,27 @@ async def _proxy_request_impl(
                 continue
             req_headers[key] = value
 
+    attempts_made = 0
+    deadline_hit = False
     for attempt in range(tuning.max_retries):
         try:
+            timeout = _timeout_for_attempt(configured_timeout, deadline)
+        except HTTPException:
+            last_error = "模型呼叫超過時間上限"
+            deadline_hit = True
+            break
+        try:
+            attempts_made += 1
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
+                post = client.post(
                     target_url,
                     json=request_body,
                     headers=req_headers,
+                )
+                # httpx 的數字逾時是每個階段各自計，上游一點一點吐也能拖過上限。
+                # 有 deadline 時整個請求另外包一層牆鐘。
+                response = await (
+                    post if deadline is None else asyncio.wait_for(post, timeout=timeout)
                 )
 
             duration_ms = int((time.time() - start_time) * 1000)
@@ -923,8 +994,8 @@ async def _proxy_request_impl(
                 # Full upstream body stays server-side only; the client gets a
                 # generic message so internal errors / stack traces never leak.
                 last_error = f"後端回應 {response.status_code}: {_redact_upstream_text(response.text[:500], req_headers)}"
-                if attempt < tuning.max_retries - 1:
-                    delay = tuning.retry_base_delay * (2 ** attempt)
+                delay = tuning.retry_base_delay * (2 ** attempt)
+                if attempt < tuning.max_retries - 1 and _backoff_fits(delay, deadline):
                     logger.warning(
                         f"模型 {model.name} 回應 {response.status_code}，"
                         f"{delay}s 後重試 ({attempt + 1}/{tuning.max_retries})"
@@ -1095,10 +1166,16 @@ async def _proxy_request_impl(
             )
             return result
 
+        except (httpx.ReadTimeout, asyncio.TimeoutError):
+            # 上游已經收到請求。再試一次會把慢的生成乘上 GPU 負載。
+            last_error = f"讀取逾時 ({timeout}s)"
+            logger.warning("模型 %s 讀取逾時，不再重試", model.name)
+            break
+
         except httpx.TimeoutException:
             last_error = f"請求逾時 ({timeout}s)"
-            if attempt < tuning.max_retries - 1:
-                delay = tuning.retry_base_delay * (2 ** attempt)
+            delay = tuning.retry_base_delay * (2 ** attempt)
+            if attempt < tuning.max_retries - 1 and _backoff_fits(delay, deadline):
                 logger.warning(
                     f"模型 {model.name} 請求逾時，"
                     f"{delay}s 後重試 ({attempt + 1}/{tuning.max_retries})"
@@ -1110,8 +1187,8 @@ async def _proxy_request_impl(
             # Caller-facing text identifies the model; endpoint_display is
             # the visibility-gated form (real or sentinel) from the API.
             last_error = _proxy_connect_failure(model.name, endpoint_display)
-            if attempt < tuning.max_retries - 1:
-                delay = tuning.retry_base_delay * (2 ** attempt)
+            delay = tuning.retry_base_delay * (2 ** attempt)
+            if attempt < tuning.max_retries - 1 and _backoff_fits(delay, deadline):
                 logger.warning(
                     "模型 %s 連線失敗（%s），%ss 後重試 (%s/%s)",
                     model.name,
@@ -1131,8 +1208,8 @@ async def _proxy_request_impl(
             # exception classes can embed hostnames / URLs.
             last_error = "未預期的代理錯誤"
             logger.error("代理請求錯誤: %s", e, exc_info=True)
-            if attempt < tuning.max_retries - 1:
-                delay = tuning.retry_base_delay * (2 ** attempt)
+            delay = tuning.retry_base_delay * (2 ** attempt)
+            if attempt < tuning.max_retries - 1 and _backoff_fits(delay, deadline):
                 await asyncio.sleep(delay)
                 continue
 
@@ -1143,9 +1220,14 @@ async def _proxy_request_impl(
         display_name=getattr(model, "display_name", None),
         success=False,
     )
+    if deadline_hit or (deadline is not None and time.monotonic() >= deadline):
+        raise HTTPException(
+            status_code=504,
+            detail=f"模型呼叫超過時間上限，已嘗試 {attempts_made} 次",
+        )
     raise HTTPException(
         status_code=502,
-        detail=f"模型服務不可用，已重試 {tuning.max_retries} 次: {last_error}",
+        detail=f"模型服務不可用，已嘗試 {attempts_made} 次: {last_error}",
     )
 
 
@@ -1181,6 +1263,7 @@ async def proxy_request(
     model_name_snapshot: Optional[str] = None,
     request_type_override: Optional[str] = None,
     max_response_bytes: Optional[int] = None,
+    deadline: float | None = None,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -1235,6 +1318,7 @@ async def proxy_request(
                 model_name_snapshot=model_name_snapshot,
                 request_type_override=request_type_override,
                 max_response_bytes=max_response_bytes,
+                deadline=deadline,
             )
         except ModelSlotDenied as exc:
             raise HTTPException(

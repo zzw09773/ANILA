@@ -1,7 +1,7 @@
 """asr-gateway 打 CSP 用的服務憑證。
 
-``ANILA_SERVICE_TOKEN_FILE`` 有設時只讀那個檔。檔案不在就不改用
-``CSP_SERVICE_TOKEN``。路徑沒設時，呼叫端改讀自己手上的 Settings。
+``ANILA_SERVICE_TOKEN_FILE`` 有設時只讀那個檔。檔案不在就是
+``file_missing``，不改用 ``CSP_SERVICE_TOKEN``。路徑沒設時來源是 ``none``。
 日誌只記來源，不記明文。
 """
 from __future__ import annotations
@@ -14,6 +14,22 @@ logger = logging.getLogger(__name__)
 
 _token = ""
 _source = "none"
+
+
+def assert_no_legacy_shared_token() -> None:
+    """共用權杖已退役。環境裡還留著非空值就拒絕啟動。"""
+    present = [
+        name
+        for name in ("CSP_SERVICE_TOKEN", "CSP_BOOTSTRAP_TOKEN")
+        if os.environ.get(name, "").strip()
+    ]
+    if not present:
+        return
+    names = "、".join(present)
+    raise RuntimeError(
+        f"拒絕啟動：請從 .env 刪除 {names}。"
+        "各服務已改讀 ANILA_SERVICE_TOKEN_FILE 的專屬憑證，不再使用共用權杖。"
+    )
 
 
 def token() -> str:

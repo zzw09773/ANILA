@@ -179,9 +179,9 @@ def router_service_token_source() -> str:
     """Where this process's CSP service token came from.
 
     The router entrypoint replaces this with the live source
-    (``file`` / ``state_file`` / ``bootstrap`` / ``legacy_env`` / ``none``).
+    (``file`` / ``file_missing`` / ``file_error`` / ``none``).
     """
-    return "legacy_env" if (settings.csp_service_token or "").strip() else "none"
+    return "file" if (settings.csp_service_token or "").strip() else "none"
 
 
 # nginx 傳給 Router 的 Host。只轉這一個，不轉客戶端自己帶的 X-Forwarded-Host。
@@ -2759,7 +2759,7 @@ def create_router_app(
             # Empty fallback is null / source "unresolved", not a fake name.
             "router_model": model_name,
             "router_model_source": model_source,
-            # file | file_missing | file_error | state_file | bootstrap | legacy_env | none
+            # file | file_missing | file_error | none
             "token_source": router_service_token_source(),
         }
 

@@ -1,7 +1,7 @@
 # 目前狀態（給交接與代理）
 
 > 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
-> 更新：2026-09-29。HEAD 以 `git log -1` 為準。
+> 更新：2026-09-30。HEAD 以 `git log -1` 為準。
 
 ## 工作守則（給人也給 AI 助手；取代已刪除的 `AGENTS.md`）
 
@@ -28,9 +28,9 @@ CSP 與 Router 的 uvicorn worker 數在容器啟動時看 CPU（`os.cpu_count` 
 
 用量寫入每個 worker 各跑一份：佇列在 process 裡面，只有 leader 寫的話其他 worker 的用量會消失。寫入要等資料庫 commit 成功才從佇列拿掉；commit 失敗就留著重試。其餘週期工作（健康檢查、警報、備份狀態、稽核封存、記憶體整理、附件保留、向量清理、憑證週期核發、金鑰圈週期維護、外部服務探測）用 Redis 鎖 `anila:csp:background-leader` 選一個 worker。續租和釋放是比對 token 的 Lua，對不上就立刻停掉迴圈，不會把別人剛拿到的鎖延長或刪掉。鎖過期才換人。Redis 不在時這些迴圈暫停。每個 worker 仍會做啟動時那一次憑證核發與金鑰圈，並開自己的連線池。啟動遷移在 Postgres 上先拿 session advisory lock，所以多個 worker 同時起來只會有一個在跑 `upgrade head`。pytest 沒有 Redis，迴圈在那一個 process 裡照舊跑。
 
-Postgres 前面有 PgBouncer（transaction pooling）。CSP 與 worker 的 `DATABASE_URL` 指到它；遷移與備份仍直連 `csp-db`。每個 CSP process 的 SQLAlchemy 池是 2+2，ingestion 池最多 2。32 個 worker 不會把 `max_connections=120` 吃滿。執行期的 `SET` 只用 `SET LOCAL` 或 `set_config(..., true)`。Postgres 設 `max_connections=120`、`shared_buffers=256MB`、`work_mem=8MB`，`shm_size` 512MB。256MB 是故意保守：開發機只有 62GB，而且要跟線上那套一起跑；EPYC 以後要加大，改同一條 command 再重啟資料庫。
+Postgres 前面有 PgBouncer（transaction pooling）。CSP 與 worker 的 `DATABASE_URL` 指到它；遷移與備份仍直連 `csp-db`。每個 CSP process 的 SQLAlchemy 池是 2+2，ingestion 池最多 2。32 個 worker 不會把 `max_connections=120` 吃滿。執行期的 `SET` 只用 `SET LOCAL` 或 `set_config(..., true)`。`max_connections` 維持 120。`shared_buffers`、`effective_cache_size`、`maintenance_work_mem`、`work_mem` 在 csp-db 啟動時依容器看得到的記憶體計算（cgroup 有上限且小於 MemTotal 就用上限，否則用 MemTotal）：記憶體的 1/16（下限 128MB、上限 32GB）、1/2（下限 128MB、上限 256GB）、1/32（下限 64MB、上限 2GB）。`work_mem` 是記憶體的 5% 除以 120（下限 4MB、上限 64MB）。62GB 大約是 `shared_buffers=3968MB`、`effective_cache_size=31744MB`、`maintenance_work_mem=1984MB`、`work_mem=26MB`。755GB 頂到各項上限（`shared_buffers=32768MB`、`effective_cache_size=262144MB`、`maintenance_work_mem=2048MB`、`work_mem=64MB`）。cgroup 與 MemTotal 都讀不到、是 0 或不是數字時，記一筆警告，記憶體參數用 Postgres 內建預設，只帶 `max_connections=120`。`shm_size` 兩邊都是 8GB，給平行查詢用。選好的數字會在資料庫啟動時寫進日誌。
 
-nginx `worker_processes auto`、`worker_connections 16384`。`/v1/`、`/v2/` 的串流關掉 proxy buffering，讀寫逾時 3600 秒。連線數是整台 nginx 共用 16384，不按來源 IP 算，所以整棟樓共用一個出口 IP 時，3000 條長連線不會被單一 IP 上限擋下。速率仍是每個來源 IP 每秒 100、瞬間 burst 4000（`nodelay`）。`X-Forwarded-For` 預設不改寫來源位址；只有在設定裡明確列出的上游代理才打開 `real_ip`。
+nginx `worker_processes auto`、`worker_connections 16384`。`/v1/`、`/v2/` 的串流關掉 proxy buffering，讀寫逾時 3600 秒。會同步等模型、可能超過 120 秒的 `/api/` 路徑（`POST /api/thinking/summarize`、`POST /api/agents/system-prompt/suggest`、`POST /api/institutional-kb/preview`、`POST /api/ingestion/collections/{id}/search`、`POST /api/memory/recall`、`POST /api/ingestion/collections/{id}/images/search`、`POST /api/models/{id}/set-platform-embedding`；`{id}` 用 `[^/]+`，`+12` 這種 id 不會掉回 120 秒）在兩個 server block 的讀寫逾時是 300 秒。這些同步呼叫另有 280 秒的總牆鐘（含重試與退避，整個請求另包一層 `asyncio.wait_for`，上游慢慢吐也不會超過），不受 `proxy.llm_timeout`／`proxy.embedding_timeout` 拉到 3600 秒的影響；時間用完回 504。讀取逾時（含 Triton 的 `TritonTimeout`）不再重試，連線失敗與收到回應前的 5xx 照舊重試。其餘 `/api/` 維持 120 秒。連線數是整台 nginx 共用 16384，不按來源 IP 算，所以整棟樓共用一個出口 IP 時，3000 條長連線不會被單一 IP 上限擋下。速率仍是每個來源 IP 每秒 100、瞬間 burst 4000（`nodelay`）。`X-Forwarded-For` 預設不改寫來源位址；只有在設定裡明確列出的上游代理才打開 `real_ip`。
 
 每個模型在治理中心有「同時處理上限」。新登錄的預設是 16，登記者可以改，留空就是不限；既有模型不回填。有數字時，CSP 用 Redis 信號量跨 process 計數；聊天、嵌入、內部補全、探針都用同一份欄位快照，不會因為自己組了一個沒有這個欄位的物件而繞過上限。多出來的人排隊，依使用者輪流：A 先送 50 筆、B 隨後送 1 筆時，B 排在 A 的下一筆之後，不會等 A 剩下的 49 筆。一個人的連發不能插到別人前面。Redis 鎖一時拿不到時，已經在排隊的人維持原位繼續等；還沒排進去的才回「暫時無法確認使用人數」。串流在等待時收到 `anila.queue`，Shell 與 ANILA LM 顯示「目前使用人數較多，排隊中，你是第 N 位」。等超過 120 秒改顯示「排隊超過 120 秒，請稍後再試」。Studio 與 worker 的非串流呼叫只等、不送那個事件。模型清單在每個模型旁顯示處理中與排隊中的人數，約每 15 秒重抓，排隊大於 0 時醒目。使用者中途斷線時，已經產生的用量記成 `partial`（沒有上游 usage 時來源是 `unavailable`）。
 
@@ -83,9 +83,9 @@ CSP 在啟動時，以及之後每個週期（預設一小時），為內建名�
 
 三個服務都讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀；CSP 回 401／403 時再讀一次才放棄。路徑有設而檔案不在或讀不到時，不改用別的憑證。`/health`（worker 沒有 HTTP，啟動日誌與 `credential_health()`）的 `token_source` 是 `file`、`file_missing` 或 `file_error`。studio 在 `file_missing`／`file_error` 時 `/health` 是 503。
 
-自動核發開啟時（正式環境的預設），舊的共用 `CSP_SERVICE_TOKEN` 不再是任何服務身分，就算資料庫列上還留著那把祕密也一樣。這不靠環境變數裡還有沒有那把祕密。長效 `agent_credentials` 已退役（代理用 5 分鐘派工 JWT）；遷移 `r1_0048` 撤銷仍有效的列並清掉寬限複本，驗證路徑也不再接受那些列。自動核發關掉時，測試仍可用環境變數後援。
+舊的共用 `CSP_SERVICE_TOKEN` 已從設定欄位刪除，服務不會再把它讀進設定。請求只帶那把祕密會得到 401。資料庫裡 `is_legacy` 的列（現用或寬限複本）都不是身分；自動核發換掉這種列時，不把舊祕密留成寬限憑證。`.env` 或 shell 裡這兩個鍵有非空值時，部署拒絕，訊息只印鍵名。部署檢查照 compose 的讀法解析 `.env`：引號值只取到結束引號，沒加引號的值「空格 + #」起是註解。程序環境裡還看得到非空值時，該服務拒絕啟動，並請操作者刪掉。Router、Studio、asr-gateway 只讀 `ANILA_SERVICE_TOKEN_FILE`。長效 `agent_credentials` 已退役（代理用 5 分鐘派工 JWT）；遷移 `r1_0048` 撤銷仍有效的列並清掉寬限複本，驗證路徑也不再接受那些列。
 
-`asr-gateway` 的 compose 不再注入 `CSP_SERVICE_TOKEN`。程式裡的舊讀取路徑還在，重新啟用前必須改讀專屬憑證檔。本機生圖服務已刪除，不再讀 `INTERNAL_PLATFORM_API_KEY`。
+`asr-gateway` 只讀專屬憑證檔。本機生圖服務已刪除，不再讀 `INTERNAL_PLATFORM_API_KEY`。模型若有自己的金鑰而解密失敗，這次呼叫失敗（「模型暫時無法使用：憑證無法讀取，請通知管理員」），管理端測試、健康檢查、整批帶入、背景健康檢查與串流錯誤事件用同一句，不改用全域 `MODEL_GATEWAY_API_KEY`。警報與健康迴圈共用 `health:model:{id}`，同一模型只有一筆，金鑰修好、下一輪健康檢查恢復時自動結案；請求路徑上同一模型 60 秒內只送一次，寫入與寄信交給背景執行緒。沒有專屬金鑰的模型仍用全域金鑰。
 
 緊急吊銷服務憑證：治理中心「服務客戶端」按吊銷。CSP 不會把已吊銷的列重新核發，並刪掉憑證檔。要恢復時，刪掉那筆已吊銷的 `service_clients` 列，然後重啟 CSP（或等下一個週期）。worker 的 key 不在那個畫面：把名為 `ingestion-worker-system-key` 的 API key 停用後，CSP 不會再核發，並刪掉憑證檔；要恢復就刪掉那些已停用的 key 列再重啟 CSP。
 
@@ -121,7 +121,7 @@ CSP 自己保管 RS256 簽章金鑰，放在資料表 `jwt_signing_keys`（遷�
 
 ## GitLab（2026-09-26 先拿掉）
 
-compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab_logs`、`gitlab_data`。nginx 各 listener 不再代理 `/gitlab`。部署腳本不再寫 `GITLAB_*`。code-server 與 n8n 的定義還在，但只在最後彩排時才啟動，平常不拉起來。
+compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab_logs`、`gitlab_data`。nginx 各 listener 不再代理 `/gitlab`。部署腳本不再寫 `GITLAB_*`。code-server 與 `codeserver-init` 掛 `profiles: ["maint"]`，n8n 仍是 `ops`。平常 `up` 不會把它們拉起來；最後彩排才加 `--profile maint`（n8n 另加 `COMPOSE_PROFILES=ops`）。安裝腳本在 `UID`、`GID`、`DOCKER_GID` 尚未寫入，或那一行是空的、只有空白、或空引號時，用 sudo 的身分或安裝根目錄的擁有者，以及 `getent group docker`，就地換掉那一行，寫進 `state/.env`。
 
 這次沒有刪除主機上的 Docker volume。舊的 `anila-platform_gitlab_data` 還在主機上，之後由擁有者自行移除。
 

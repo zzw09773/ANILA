@@ -25,8 +25,6 @@ def service_token_header(monkeypatch):
     from app.services import auth_service
 
     token = "csk-test-external-services"
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", token, raising=False)
     return {"X-CSP-Service-Token": token}
 
 
@@ -187,7 +185,7 @@ def test_legacy_service_token_and_user_jwt_do_not_receive_the_credential(
         "/api/internal/external-services/speech",
         headers=service_token_header,
     )
-    assert internal.status_code == 403, internal.text
+    assert internal.status_code == 401, internal.text
     assert SECRET not in internal.text
     denied = client.get(
         "/api/internal/external-services/speech",

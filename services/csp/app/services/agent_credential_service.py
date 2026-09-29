@@ -81,7 +81,6 @@ AUDIT_TOKEN_ISSUED = "service_token_issued"
 AUDIT_TOKEN_ROTATED = "service_token_rotated"
 AUDIT_TOKEN_REVOKED = "service_token_revoked"
 AUDIT_TOKEN_VERIFIED = "service_token_verified"
-AUDIT_LEGACY_TOKEN_USED = "service_token_legacy_env_used"
 
 
 # Default TTLs. The bootstrap window is short on purpose — the admin
@@ -118,27 +117,6 @@ class CallerIdentity:
 # ---------------------------------------------------------------------------
 
 
-def fleet_secret_retired(token: str) -> bool:
-    """自動核發開啟時，舊的共用 CSP_SERVICE_TOKEN 不再是任何服務身分。
-
-    比對放在資料庫查找之前。列上即使還留著這把祕密，也不得通過驗證。
-    自動核發關掉時（測試預設）仍走原本的環境變數後援。
-    """
-    presented = (token or "").strip()
-    if not presented:
-        return False
-    from app.services.internal_service_clients import auto_provision_enabled
-
-    if not auto_provision_enabled():
-        return False
-    from app.config import settings
-
-    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-    if not legacy or len(legacy) != len(presented):
-        return False
-    return hmac.compare_digest(legacy, presented)
-
-
 def verify_service_token(
     db: Session,
     *,
@@ -150,8 +128,7 @@ def verify_service_token(
     ``verify_service_token`` dependency) is responsible for translating
     ``None`` into HTTP 401.
 
-    自動核發開啟且呈現的是共用 CSP_SERVICE_TOKEN 時直接沒有身分，
-    即使某列的雜湊還等於那把祕密。
+    ``is_legacy=True`` 的列（含寬限複本）不是身分。
 
     長效 ``agent_credentials`` 已退役。代理改用 5 分鐘派工 JWT，
     核發端點回 410。這裡不比對那些列，也不看 ``CSP_SERVICE_TOKEN``
@@ -163,8 +140,6 @@ def verify_service_token(
     actual security check.
     """
     if not token:
-        return None
-    if fleet_secret_retired(token):
         return None
 
     lookup_hash = compute_lookup_hash(token)
@@ -192,6 +167,8 @@ def _match_service_client(
         .all()
     )
     for client in candidates:
+        if client.is_legacy:
+            continue
         used_previous = False
         try:
             primary_pt = decode_service_token_envelope(client.service_token_envelope)
@@ -658,7 +635,6 @@ def get_active_plaintext_for_agent(
 __all__ = [
     "AUDIT_BOOTSTRAP_CONSUMED",
     "AUDIT_BOOTSTRAP_ISSUED",
-    "AUDIT_LEGACY_TOKEN_USED",
     "AUDIT_TOKEN_ISSUED",
     "AUDIT_TOKEN_REVOKED",
     "AUDIT_TOKEN_ROTATED",

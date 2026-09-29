@@ -11,8 +11,10 @@ RS256 Bearer JWT (see ``dispatch_token``). The per-agent csk- cache below
 remains for credential-rotation invalidation hooks (W2/W3); dispatch
 itself no longer reads it.
 """
+import asyncio
 import logging
 import re
+import threading
 import time
 from threading import Lock
 from typing import Optional
@@ -170,21 +172,115 @@ def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
     return headers
 
 
+MODEL_CREDENTIAL_UNREADABLE = "模型暫時無法使用：憑證無法讀取，請通知管理員"
+
+
+def credential_alert_title(display_name: str) -> str:
+    return f"模型 {display_name} 憑證無法讀取"
+
+
+def credential_alert_message(display_name: str, name: str) -> str:
+    return f"模型「{display_name}」（{name}）的專屬金鑰無法解密，請到模型頁重新設定金鑰"
+
+
+# 請求路徑上不做 DB 與寄信：同一模型 60 秒內只送一次，事件迴圈上交給背景執行緒，
+# 同時最多 4 條；滿了或寫入失敗就不記這次，下一個失敗的請求再送。
+# 指紋與健康迴圈共用，健康迴圈探到恢復時結案。
+_CREDENTIAL_ALERT_INTERVAL_S = 60.0
+_credential_alert_sent: dict[str, float] = {}
+_credential_alert_lock = threading.Lock()
+_credential_alert_slots = threading.BoundedSemaphore(4)
+
+
+def reset_credential_alert_throttle() -> None:
+    with _credential_alert_lock:
+        _credential_alert_sent.clear()
+
+
+def _forget_credential_alert(fingerprint: str) -> None:
+    with _credential_alert_lock:
+        _credential_alert_sent.pop(fingerprint, None)
+
+
+def _write_credential_alert(kwargs: dict) -> None:
+    try:
+        from app.services.alert_detectors import _emit_alert_autocommit
+
+        _emit_alert_autocommit(**kwargs)
+    except Exception:
+        _forget_credential_alert(kwargs["fingerprint"])
+        logger.exception("無法寫入模型憑證讀取失敗的警報")
+
+
+def _write_credential_alert_in_background(kwargs: dict) -> None:
+    try:
+        _write_credential_alert(kwargs)
+    finally:
+        _credential_alert_slots.release()
+
+
+def _alert_unreadable_model_credential(model) -> None:
+    model_id = getattr(model, "id", None)
+    name = getattr(model, "name", None) or (
+        str(model_id) if model_id is not None else "unknown"
+    )
+    display_name = getattr(model, "display_name", None) or name
+    fingerprint = f"health:model:{model_id if model_id is not None else name}"
+    now = time.monotonic()
+    with _credential_alert_lock:
+        last = _credential_alert_sent.get(fingerprint)
+        if last is not None and now - last < _CREDENTIAL_ALERT_INTERVAL_S:
+            return
+        _credential_alert_sent[fingerprint] = now
+    kwargs = {
+        "fingerprint": fingerprint,
+        "category": "health",
+        "severity": "high",
+        "title": credential_alert_title(display_name),
+        "message": credential_alert_message(display_name, name),
+        "source_type": "model",
+        "source_id": model_id,
+        "metadata": {"model_name": name, "display_name": display_name},
+    }
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _write_credential_alert(kwargs)
+        return
+    if not _credential_alert_slots.acquire(blocking=False):
+        _forget_credential_alert(fingerprint)
+        return
+    try:
+        threading.Thread(
+            target=_write_credential_alert_in_background,
+            args=(kwargs,),
+            name="model-credential-alert",
+            daemon=True,
+        ).start()
+    except Exception:
+        _credential_alert_slots.release()
+        _forget_credential_alert(fingerprint)
+        logger.exception("無法啟動模型憑證警報的背景寫入")
+
+
+def _fail_unreadable_model_credential(model) -> None:
+    from fastapi import HTTPException
+
+    _alert_unreadable_model_credential(model)
+    raise HTTPException(status_code=503, detail=MODEL_CREDENTIAL_UNREADABLE)
+
+
 def resolve_model_gateway_key(model) -> Optional[str]:
     """Resolve the outbound gateway bearer key for a model call (Slice 6a).
 
     The platform entry ``anila-router`` never inherits MODEL_GATEWAY_API_KEY.
     Callers must forward the verified JWT / CSP sk- instead.
 
-    doc 04 §3 New rule: per-model ``api_key_secret_ref`` takes precedence;
-    the global ``MODEL_GATEWAY_API_KEY`` env stays as the MVP fallback. The
-    secret ref is an ``enc::v1::`` AES-GCM envelope (the exact same crypto as
-    csk- / ingestion credentials); decode failures fall back to the env key
-    (fail-soft on the *key source*, never fail-open on auth — a wrong key
-    just means the gateway rejects the call) and are logged.
+    沒有專屬金鑰的模型才用全域 ``MODEL_GATEWAY_API_KEY``。有專屬金鑰但
+    解不開（或解開是空的）就失敗，不改用全域金鑰。
 
-    Returns ``None`` when neither source yields a key (bare same-host vLLM
-    with no gateway — behaviour unchanged: no Authorization header injected).
+    Returns ``None`` when a model has no per-model secret and the global
+    key is also empty (bare same-host vLLM with no gateway).
     """
     if getattr(model, "name", None) == "anila-router":
         return ""
@@ -196,15 +292,20 @@ def resolve_model_gateway_key(model) -> Optional[str]:
             )
 
             key = decode_service_token_envelope(ref)
-            if key:
-                return key
         except Exception:
-            logger.warning(
-                "per-model gateway key 解密失敗 model_id=%s,退回全域 "
-                "MODEL_GATEWAY_API_KEY",
-                getattr(model, "id", None),
+            logger.error(
+                "模型 %s 的專屬金鑰無法解密，不改用全域 MODEL_GATEWAY_API_KEY",
+                getattr(model, "name", None) or getattr(model, "id", None),
                 exc_info=True,
             )
+            _fail_unreadable_model_credential(model)
+        if not key:
+            logger.error(
+                "模型 %s 的專屬金鑰解開後是空的，不改用全域 MODEL_GATEWAY_API_KEY",
+                getattr(model, "name", None) or getattr(model, "id", None),
+            )
+            _fail_unreadable_model_credential(model)
+        return key
     return (settings.MODEL_GATEWAY_API_KEY or "").strip() or None
 
 

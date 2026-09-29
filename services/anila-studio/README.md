@@ -140,7 +140,7 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact 回報（Slice 8b，fire-and-forget） |
 
 
-另直連下游 `pptx-renderer`（`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`）。生圖不直連模型主機。CSP 回報 / trace 的認證沿用使用者 bearer JWT（CSP 以 RS256 + JWKS 重驗，維持代理語意）；若設有 legacy `CSP_SERVICE_TOKEN` 則另帶 `X-CSP-Service-Token`。
+另直連下游 `pptx-renderer`（`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`）。生圖不直連模型主機。CSP 回報 / trace 的認證沿用使用者 bearer JWT（CSP 以 RS256 + JWKS 重驗，維持代理語意），服務身分只讀 `ANILA_SERVICE_TOKEN_FILE`。
 
 ### Redis pub/sub
 
@@ -154,7 +154,7 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 |---|---|---|
 | `APP_NAME` / `APP_VERSION` / `LOG_LEVEL` | `anila-studio` / `0.1.0` / `INFO` | 服務識別 / log |
 | `CSP_BASE_URL` | `http://csp:8000` | csp 治理中心 |
-| `CSP_SERVICE_TOKEN` | `""` | 選用 s2s token；有設則 cold-start / 回報帶 `X-CSP-Service-Token` |
+| `ANILA_SERVICE_TOKEN_FILE` | 未設 | CSP 寫好的專屬憑證檔。冷啟動撤銷同步與服務呼叫只讀這個檔 |
 | `REDIS_URL` / `REDIS_REVOCATION_CHANNEL` | `redis://redis:6379/0` / `anila:auth:token-revoke` | 跟 csp 共用 Redis + 撤銷 channel |
 | `JWT_KID` / `JWT_ALGORITHMS` / `JWT_LEEWAY_SECONDS` | `anila-v1` / `("RS256",)` / `60` | JWT 設定 |
 | `JWKS_REFRESH_SECONDS` / `REVOCATION_CACHE_TTL_SECONDS` | `3600` / `2592000`（30 天） | JWKS 重抓 / 撤銷 deny-list TTL |

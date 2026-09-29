@@ -30,11 +30,7 @@ class Settings(BaseSettings):
     MODEL_GATEWAY_API_KEY: str = ""
 
     # 警報寄信在治理中心「警報」頁設定，不讀環境變數。
-
-    # 舊的艦隊共用祕密。自動核發開啟時，這把值不再是任何服務身分。
-    # CSP 不再把它加進打給 agent 的 header。留著是為了認得資料庫裡
-    # 尚未換掉的舊雜湊，以及自動核發關掉時的測試後援。
-    CSP_SERVICE_TOKEN: str = ""
+    # 舊的 CSP_SERVICE_TOKEN 已退役，設定不讀它。部署腳本會拒絕 .env 裡的非空值。
 
     # 內部憑證。CSP 核發並把明文寫進
     # ANILA_SERVICE_CLIENT_DIR/<client_name>/token。子目錄擁有者是

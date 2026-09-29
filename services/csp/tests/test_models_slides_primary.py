@@ -36,13 +36,15 @@ def admin_headers(client, db, username="admin-slides") -> dict[str, str]:
 
 
 @pytest.fixture
-def service_token_header(monkeypatch) -> dict[str, str]:
-    from app.config import settings as canonical_settings
-    from app.services import auth_service
-    token = "csk-test-slides-primary-12345"
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    return {"X-CSP-Service-Token": token}
+def service_token_header(db) -> dict[str, str]:
+    from tests.conftest import install_service_caller
+
+    return install_service_caller(
+        db,
+        "csk-test-slides-primary-12345",
+        name="test-slides-primary",
+        client_type="studio",
+    )
 
 
 class TestSetSlidesPrimary:

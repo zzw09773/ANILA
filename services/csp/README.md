@@ -148,7 +148,7 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 - **SSRF url_guard 分域（Slice 6a，doc 04 §8）**：`anila_core.security.validate_outbound_url(url, endpoint_kind=...)` 把 http 旗標按 `model` / `agent` / `generic` 分域——model endpoint 預設拒 http，**由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，2026-07-29 拍板：production 與 dev 同準，內網模型 gateway 走 http）**；agent endpoint 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` 放行（legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 fallback 但帶 deprecation 警告，供內網 MLSteam 純 http NodePort agent）。allow-list = `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env；`host.docker.internal` 為結構性拒絕，allow-list 解不開。
 - **Credential 加密**：AES-256-GCM（`anila-core` `credential_crypto` / `service_token_envelope`；涵蓋 per-model `api_key_secret_ref`、`csk-` agent 憑證、ingestion 憑證）。
 - **Token 撤銷**：持久 `token_revocations` 表 + JWT `tv` 強制 + Redis fan-out；`/api/auth/revocations` cold-start sync。
-- **startup_security**：prod 對 `SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB 密碼等 dev 預設值拒絕啟動（空 `SECRET_KEY` 永遠 fatal；`ANILA_ALLOW_DEV_SECRET=1` 降為 warn）。入站另有 CORS allowlist（無 `*` fallback）、選用 TrustedHostMiddleware、SPA 路徑遍歷防護、nginx 安全 header + rate-limit。
+- **startup_security**：prod 對 `SECRET_KEY` / `ADMIN_PASSWORD` / DB 密碼等 dev 預設值拒絕啟動（空 `SECRET_KEY` 永遠 fatal；`ANILA_ALLOW_DEV_SECRET=1` 降為 warn）。入站另有 CORS allowlist（無 `*` fallback）、選用 TrustedHostMiddleware、SPA 路徑遍歷防護、nginx 安全 header + rate-limit。
 
 ---
 
@@ -189,7 +189,7 @@ docker compose up -d csp                                 # prod（platform.yml�
 
 CSP 只在 compose 的 default network。模型在遠端，由治理中心登記。
 
-後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_KID`、`ADMIN_PASSWORD`、`ANILA_AUTH_MODE`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_PUBLIC_SHARE`。JWT PEM 路徑固定為 `secrets/jwt-{private,public}.pem`。詳見 [`.env.example`](./.env.example)。
+後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_KID`、`ADMIN_PASSWORD`、`ANILA_AUTH_MODE`、`MODEL_GATEWAY_API_KEY`、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_PUBLIC_SHARE`。JWT PEM 路徑固定為 `secrets/jwt-{private,public}.pem`。詳見 [`.env.example`](./.env.example)。
 
 ---
 

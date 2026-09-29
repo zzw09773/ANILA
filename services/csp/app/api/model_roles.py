@@ -121,7 +121,6 @@ def _admit_reader(
             db=db,
             allowed_kinds=("service_client",),
             allowed_client_types=None,
-            allow_legacy_env=True,
             endpoint="GET /api/models/roles/{role}",
         )
         return True, None

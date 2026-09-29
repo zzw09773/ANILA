@@ -10,7 +10,6 @@ CSP 暫時連不上時，沿用上一筆成功讀到的位址，不悄悄改去�
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -128,15 +127,11 @@ def guard_decode_url(url: str) -> None:
 
 
 def _service_token(settings: Settings) -> str:
-    """有憑證檔就只讀檔。沒設路徑時才用這次傳進來的 Settings（測試）。
+    """只讀專屬憑證檔 ANILA_SERVICE_TOKEN_FILE。沒有檔案就是空字串。"""
+    del settings
+    from app.service_token import token
 
-    重新啟用後走專屬憑證檔，不再注入共用 CSP_SERVICE_TOKEN。
-    """
-    if os.environ.get("ANILA_SERVICE_TOKEN_FILE", "").strip():
-        from app.service_token import token
-
-        return token()
-    return (settings.CSP_SERVICE_TOKEN or "").strip()
+    return token()
 
 
 async def refresh_decode_endpoint(

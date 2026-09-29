@@ -129,7 +129,7 @@ Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila
 | `POST /v1/chat/completions` | LLM (via csp proxy for billing; **no `/api/proxy` prefix**) |
 | `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact reporting (Slice 8b, fire-and-forget). `trace_id` on the body is a correlation id; spans are not posted |
 
-It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`). Generated images go through CSP, not a model host. CSP artifact reporting reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics); if a legacy `CSP_SERVICE_TOKEN` is set it additionally attaches `X-CSP-Service-Token`.
+It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`). Generated images go through CSP, not a model host. CSP artifact reporting reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics). The shared `CSP_SERVICE_TOKEN` is retired; service calls use the token in `ANILA_SERVICE_TOKEN_FILE`.
 
 ### Redis pub/sub
 
@@ -143,7 +143,7 @@ Subscribes to channel `anila:auth:token-revoke` (csp publishes). On Redis loss t
 |---|---|---|
 | `APP_NAME` / `APP_VERSION` / `LOG_LEVEL` | `anila-studio` / `0.1.0` / `INFO` | service identity / log |
 | `CSP_BASE_URL` | `http://csp:8000` | the csp governance center |
-| `CSP_SERVICE_TOKEN` | `""` | optional s2s token; when set, cold-start / reporting attach `X-CSP-Service-Token` |
+| `ANILA_SERVICE_TOKEN_FILE` | set by compose | per-service token file for cold-start / reporting; the retired `CSP_SERVICE_TOKEN` refuses startup if set |
 | `REDIS_URL` / `REDIS_REVOCATION_CHANNEL` | `redis://redis:6379/0` / `anila:auth:token-revoke` | shared Redis + revocation channel with csp |
 | `JWT_KID` / `JWT_ALGORITHMS` / `JWT_LEEWAY_SECONDS` | `anila-v1` / `("RS256",)` / `60` | JWT settings |
 | `JWKS_REFRESH_SECONDS` / `REVOCATION_CACHE_TTL_SECONDS` | `3600` / `2592000` (30 days) | JWKS refetch / revocation deny-list TTL |

@@ -1,4 +1,3 @@
-import hmac
 import logging
 from datetime import datetime, timezone
 
@@ -6,7 +5,6 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import text, update
 from sqlalchemy.orm import Session
-from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import ACCESS_COOKIE_NAME
 from app.models.user import User
@@ -372,25 +370,11 @@ def verify_service_token(
     Sprint 8 X / Phase A — DB-backed verify. Resolves the token in this
     order:
 
-      1. ``service_clients`` (Router / worker / platform s2s). On a stock
-         post-migration-0027 deploy the host ``CSP_SERVICE_TOKEN`` is
-         seeded as ``client_name='router-primary'``, so the fleet secret
-         matches **here** — attributed ``service_client``, not step 3.
+      1. ``service_clients`` (Router / worker / platform s2s).
          Long-lived ``agent_credentials`` are not consulted. Agents use
-         the dispatch JWT; migration 0027 rows must not become a caller
-         when ``CSP_SERVICE_TOKEN`` is unset.
-      2. ``settings.CSP_SERVICE_TOKEN`` env-var fallback — only reached
-         when no active DB row matches. Hits write
-         ``service_token_legacy_env_used`` (Signal A / legacy-token-stats).
-         That signal is often already **zero** while step 1 still serves
-         the shared secret via the seeded ``router-primary`` row.
-
-    Do **not** delete this env branch because Signal A reads zero. The
-    gate for removing step 3 is Signal B = 0 for a full release window:
-    ``COUNT(*)`` of active ``is_legacy=TRUE`` rows in both
-    ``service_clients`` and ``agent_credentials`` (see
-    ``docs/runbooks/service-token-cutover.md`` Stage 3/4). On a stock
-    deploy Signal B is **non-zero today** (the ``router-primary`` row).
+         the dispatch JWT.
+      2. 沒有對上的資料列就 401。舊的共用 ``CSP_SERVICE_TOKEN`` 不再放行。
+         沒有對上的權杖一律 401。``is_legacy`` 列不是身分。
 
     On match we attach the ``CallerIdentity`` to ``request.state`` so
     downstream handlers / proxy / usage_writer can read who triggered
@@ -403,15 +387,7 @@ def verify_service_token(
             detail="缺少 X-CSP-Service-Token header",
         )
 
-    # 每服務憑證檔啟用後，舊的共用祕密不是任何服務身分。
-    # 在資料庫查找與環境變數後援之前拒絕，避免它仍被當成 router-primary。
-    if agent_credential_service.fleet_secret_retired(x_csp_service_token):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="服務權杖無效",
-        )
-
-    # service_clients。長效 agent_credentials 不再是身分。
+    # service_clients。is_legacy 列與長效 agent_credentials 都不是身分。
     identity = agent_credential_service.verify_service_token(
         db, token=x_csp_service_token
     )
@@ -419,29 +395,8 @@ def verify_service_token(
         request.state.csp_caller = identity
         return identity
 
-    # 3) Legacy env-var fallback. Removed in cutover step 5 (see
-    #    docs/runbooks/service-token-cutover.md).
-    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-    if legacy and hmac.compare_digest(x_csp_service_token, legacy):
-        request.state.csp_caller = None  # explicit: legacy = unattributed
-        try:
-            log_audit_event(
-                db,
-                actor=None,
-                action=agent_credential_service.AUDIT_LEGACY_TOKEN_USED,
-                resource_type="service_token",
-                resource_id=None,
-                detail=(
-                    "CSP_SERVICE_TOKEN env-var fallback hit — caller "
-                    "unattributed. Schedule per-agent cutover."
-                ),
-                ip_address=getattr(request.client, "host", None),
-                commit=True,
-            )
-        except Exception:  # noqa: BLE001 — never let audit fail the request
-            logger.exception("Failed to write legacy_service_token_used audit event")
-        return None
-
+    # 舊的共用 CSP_SERVICE_TOKEN 不再是呼叫者。對得上那把祕密時，
+    # 沒有對上的權杖一律 401。
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="服務權杖無效",

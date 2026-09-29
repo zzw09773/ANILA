@@ -364,7 +364,6 @@ def test_e_bare_agent_csk_rejected_on_artifacts(client: TestClient, db, monkeypa
     assert csk.startswith("csk-")
 
     # Legacy fleet token disabled for this test so only the agent csk- is tried.
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifact-jobs",
@@ -386,7 +385,6 @@ def test_e_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monkeypatc
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifact-jobs",
@@ -405,7 +403,6 @@ def test_expired_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monk
     owner = make_user(db, username="w2_art_exp")
     agent = make_agent(db, owner, name="w2-art-exp-agent")
     token = _expired_dispatch_token(user_id=owner.id, agent_id=agent.id)
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     resp = client.post(
         "/v1/artifact-jobs",
         headers={"Authorization": f"Bearer {token}"},
@@ -439,14 +436,29 @@ def test_verify_dispatch_token_rejects_non_int_exp():
     assert verify_dispatch_token(token) is None
 
 
-def test_service_client_legacy_still_works_on_artifacts(client: TestClient, monkeypatch):
-    """service_clients / legacy fleet token path is out of W2 scope — keep."""
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "svc-w2-legacy-keep")
+def test_legacy_shared_token_rejected_on_artifacts(client: TestClient, monkeypatch):
+    """舊的共用權杖不再能建 artifact job。"""
     resp = client.post(
         "/v1/artifact-jobs",
         headers={"X-CSP-Service-Token": "svc-w2-legacy-keep"},
         json={
             "job_id": "w2-legacy-ok",
+            "artifact_type": "report",
+            "requester_user_id": 1,
+        },
+    )
+    assert resp.status_code == 401, resp.text
+
+
+def test_service_client_still_creates_artifact_job(client: TestClient, db):
+    from tests.conftest import install_service_caller
+
+    headers = install_service_caller(db, "svc-w2-real-client", name="w2-real")
+    resp = client.post(
+        "/v1/artifact-jobs",
+        headers=headers,
+        json={
+            "job_id": "w2-real-ok",
             "artifact_type": "report",
             "requester_user_id": 1,
         },
@@ -458,7 +470,6 @@ def test_access_token_still_cannot_create_artifacts(client: TestClient, db, monk
     from app.utils.security import create_access_token
 
     user = make_user(db, username="w2_user_no_art")
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     access = create_access_token(
         {
             "sub": str(user.id),
@@ -491,7 +502,6 @@ def test_f3_agent_cannot_set_arbitrary_requester_user_id(
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifact-jobs",
@@ -515,7 +525,6 @@ def test_f3_agent_cannot_set_owner_via_employee_id(
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifact-jobs",
@@ -540,7 +549,6 @@ def test_f3_agent_matching_requester_still_rejected(
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifact-jobs",
@@ -575,7 +583,6 @@ def test_f3_agent_cannot_launder_victim_task_into_artifact(
     token = issue_dispatch_token(
         user_id=attacker.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifacts",
@@ -610,7 +617,6 @@ def test_f3_agent_own_task_cannot_register_artifact(
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifacts",
@@ -633,7 +639,9 @@ def test_f3_agent_cannot_patch_foreign_job(
     attacker = make_user(db, username="w2_f3_attacker_job")
     agent = make_agent(db, attacker, name="w2-f3-patch-agent")
     # Seed victim-owned job via legacy service token, then attack with JWT.
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "svc-w2-f3-seed")
+    from tests.conftest import install_service_caller
+
+    install_service_caller(db, "svc-w2-f3-seed", name="w2-f3-seed")
     seed = client.post(
         "/v1/artifact-jobs",
         headers={"X-CSP-Service-Token": "svc-w2-f3-seed"},
@@ -649,7 +657,6 @@ def test_f3_agent_cannot_patch_foreign_job(
     token = issue_dispatch_token(
         user_id=attacker.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     resp = client.patch(
         "/v1/artifact-jobs/w2-f3-victim-job",
         headers={"Authorization": f"Bearer {token}"},
@@ -670,7 +677,9 @@ def test_f3_agent_cannot_version_foreign_artifact(
     agent = make_agent(db, attacker, name="w2-f3-ver-agent")
     victim_task = _make_task(db, victim, level="機密", trace_id="victim-ver-trace")
 
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "svc-w2-f3-ver-seed")
+    from tests.conftest import install_service_caller
+
+    install_service_caller(db, "svc-w2-f3-ver-seed", name="w2-f3-ver-seed")
     seed = client.post(
         "/v1/artifacts",
         headers={"X-CSP-Service-Token": "svc-w2-f3-ver-seed"},
@@ -691,7 +700,6 @@ def test_f3_agent_cannot_version_foreign_artifact(
     token = issue_dispatch_token(
         user_id=attacker.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     resp = client.post(
         f"/v1/artifacts/{art_id}/versions",
         headers={"Authorization": f"Bearer {token}"},
@@ -730,7 +738,6 @@ def test_f3_agent_cannot_upsert_over_victim_job(
     token = issue_dispatch_token(
         user_id=attacker.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     resp = client.post(
         "/v1/artifact-jobs",
         headers={"Authorization": f"Bearer {token}"},
@@ -776,7 +783,6 @@ def test_f3_agent_cannot_launder_victim_snapshot_into_artifact(
     token = issue_dispatch_token(
         user_id=attacker.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifacts",
@@ -822,7 +828,6 @@ def test_f3_agent_cannot_launder_victim_job_into_artifact(
     token = issue_dispatch_token(
         user_id=attacker.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
 
     resp = client.post(
         "/v1/artifacts",
@@ -875,7 +880,6 @@ def test_f3_same_user_all_four_faces_reject_dispatch_jwt(
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"}
     own = _make_task(db, owner, level="機密", trace_id="own-trace-ok")
     before = db.query(Artifact).count()
@@ -934,7 +938,6 @@ def test_poc5_agent_missing_and_foreign_both_403(
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"}
 
     victim_task = _make_task(
@@ -1028,7 +1031,9 @@ def test_poc5_legacy_token_missing_ids_still_404(
     client: TestClient, db, monkeypatch,
 ):
     """Contrast: non-agent legacy fleet token keeps genuine-missing 404s."""
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "w2-f4-legacy")
+    from tests.conftest import install_service_caller
+
+    install_service_caller(db, "w2-f4-legacy", name="w2-f4-legacy")
     headers = {"X-CSP-Service-Token": "w2-f4-legacy"}
 
     r = client.patch(
@@ -1075,7 +1080,6 @@ def test_poc5_service_client_missing_ids_still_404(
 ):
     """Contrast: service_client path keeps genuine-missing 404s too."""
     tok = _service_client_token(db, name="w2-f4-sc")
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "")
     headers = {"X-CSP-Service-Token": tok}
 
     r = client.patch(

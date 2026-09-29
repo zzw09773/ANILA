@@ -51,31 +51,19 @@ from fastapi.testclient import TestClient
 from tests.conftest import make_user
 
 
-# Pre-pick a service token value the tests reuse. We set it on
-# ``settings.CSP_SERVICE_TOKEN`` via monkeypatch so the legacy fallback
-# inside ``verify_service_token`` accepts it without needing a real
-# ``service_clients`` row (which would require encoding helpers).
+# Pre-pick a service token value the tests reuse. It is installed as a
+# ``service_clients`` row; there is no env-var fallback any more.
 _SERVICE_TOKEN = "csk-test-revocations-12345"
 
 
 @pytest.fixture
-def service_token_header(monkeypatch) -> dict[str, str]:
-    """Install a legacy-fallback service token both on the canonical
-    ``settings`` and on the bound copy inside ``auth_service`` —
-    ``auth_service`` does ``from app.config import settings`` at
-    import time, so its local binding survives any module reload we
-    might do in fixtures.
-    """
-    from app.config import settings as canonical_settings
-    from app.services import auth_service
+def service_token_header(db) -> dict[str, str]:
+    """專屬 service_clients 列。共用 CSP_SERVICE_TOKEN 已不再是呼叫者。"""
+    from tests.conftest import install_service_caller
 
-    monkeypatch.setattr(
-        canonical_settings, "CSP_SERVICE_TOKEN", _SERVICE_TOKEN, raising=False
+    return install_service_caller(
+        db, _SERVICE_TOKEN, name="test-revocations", client_type="studio"
     )
-    monkeypatch.setattr(
-        auth_service.settings, "CSP_SERVICE_TOKEN", _SERVICE_TOKEN, raising=False
-    )
-    return {"X-CSP-Service-Token": _SERVICE_TOKEN}
 
 
 @pytest.fixture(autouse=True)
@@ -253,11 +241,7 @@ def test_401_without_service_token(client: TestClient):
 
 
 def test_401_with_bogus_service_token(client: TestClient, monkeypatch):
-    """An attacker-supplied token that doesn't match any DB row or
-    the env-var fallback must get 401."""
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", _SERVICE_TOKEN, raising=False)
+    """An attacker-supplied token that doesn't match any DB row must get 401."""
     resp = client.get(
         "/api/auth/revocations",
         params={"since": "2026-05-01T00:00:00+00:00"},

@@ -1,7 +1,6 @@
 """The router takes its CSP credential from the provisioned token file."""
 from __future__ import annotations
 
-import json
 import os
 import time
 
@@ -15,8 +14,7 @@ from anila_core.config import settings
 def _reset_token_resolution() -> None:
     os.environ.pop("ANILA_SERVICE_TOKEN_FILE", None)
     os.environ.pop("CSP_BOOTSTRAP_TOKEN", None)
-    if router_main.ROUTER_STATE_FILE.exists():
-        router_main.ROUTER_STATE_FILE.unlink()
+    os.environ.pop("CSP_SERVICE_TOKEN", None)
     router_main._initialise_token_source()
     router_server.reset_router_model_cache()
 
@@ -32,16 +30,10 @@ def _point_at(monkeypatch, path) -> None:
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
 
 
-def test_file_beats_state_bootstrap_and_legacy(tmp_path, monkeypatch, caplog):
+def test_file_is_the_only_credential(tmp_path, monkeypatch, caplog):
     caplog.set_level("INFO", logger="anila-router")
     token_file = tmp_path / "router-primary.token"
     token_file.write_text("csk-from-file\n", encoding="utf-8")
-    router_main._write_state_file(
-        "csk-from-state",
-        source_meta={"note": "test"},
-    )
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
     _point_at(monkeypatch, token_file)
 
     router_main._initialise_token_source()
@@ -49,49 +41,28 @@ def test_file_beats_state_bootstrap_and_legacy(tmp_path, monkeypatch, caplog):
     assert router_main._token_source == "file"
     assert router_main._service_token == "csk-from-file"
     assert settings.csp_service_token == "csk-from-file"
-    # Seeding the state file from bootstrap must not run when the file won,
-    # and must not replace the state file's existing token.
-    stored = json.loads(router_main.ROUTER_STATE_FILE.read_text(encoding="utf-8"))
-    assert stored["token"] == "csk-from-state"
     assert "csk-from-file" not in caplog.text
-    assert "csk-from-state" not in caplog.text
-    assert "csk-from-bootstrap" not in caplog.text
-    assert "legacy-env-token" not in caplog.text
 
 
-def test_fallback_order_is_state_then_bootstrap_then_legacy(tmp_path, monkeypatch):
+def test_without_token_file_has_no_credential(tmp_path, monkeypatch):
     monkeypatch.delenv("ANILA_SERVICE_TOKEN_FILE", raising=False)
-    router_main._write_state_file("csk-from-state", source_meta={"note": "test"})
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
+
+    token, source = router_main._load_service_token()
+    assert (token, source) == ("", "none")
+
+
+def test_legacy_env_refuses_start_even_with_a_token_file(tmp_path, monkeypatch):
+    token_file = tmp_path / "router-primary.token"
+    token_file.write_text("csk-from-file\n", encoding="utf-8")
+    _point_at(monkeypatch, token_file)
     monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
+    with pytest.raises(RuntimeError, match="刪除"):
+        router_main._initialise_token_source()
 
-    token, source = router_main._load_service_token()
-    assert (token, source) == ("csk-from-state", "state_file")
-
-    router_main.ROUTER_STATE_FILE.unlink()
-    token, source = router_main._load_service_token()
-    assert (token, source) == ("csk-from-bootstrap", "bootstrap")
-
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "")
-    token, source = router_main._load_service_token()
-    assert (token, source) == ("legacy-env-token", "legacy_env")
-
-
-def test_bootstrap_fallback_seeds_state_file_without_logging_token(monkeypatch, caplog):
-    caplog.set_level("INFO", logger="anila-router")
-    monkeypatch.delenv("ANILA_SERVICE_TOKEN_FILE", raising=False)
-    if router_main.ROUTER_STATE_FILE.exists():
-        router_main.ROUTER_STATE_FILE.unlink()
+    monkeypatch.delenv("CSP_SERVICE_TOKEN")
     monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "")
-
-    router_main._initialise_token_source()
-
-    assert router_main._token_source == "bootstrap"
-    assert router_main.ROUTER_STATE_FILE.is_file()
-    stored = json.loads(router_main.ROUTER_STATE_FILE.read_text(encoding="utf-8"))
-    assert stored["token"] == "csk-from-bootstrap"
-    assert "csk-from-bootstrap" not in caplog.text
+    with pytest.raises(RuntimeError, match="CSP_BOOTSTRAP_TOKEN"):
+        router_main._initialise_token_source()
 
 
 def test_configured_file_missing_fails_closed_without_logging_fallback_values(
@@ -101,21 +72,13 @@ def test_configured_file_missing_fails_closed_without_logging_fallback_values(
     caplog.set_level("INFO", logger="anila-router")
     missing = tmp_path / "router-primary.token"
     _point_at(monkeypatch, missing)
-    router_main._write_state_file("csk-from-state", source_meta={"note": "test"})
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
 
     router_main._initialise_token_source()
 
     assert router_main._token_source == "file_missing"
     assert router_main._service_token == ""
     assert settings.csp_service_token is None
-    stored = json.loads(router_main.ROUTER_STATE_FILE.read_text(encoding="utf-8"))
-    assert stored["token"] == "csk-from-state"
     assert "file_missing" in caplog.text
-    assert "csk-from-state" not in caplog.text
-    assert "csk-from-bootstrap" not in caplog.text
-    assert "legacy-env-token" not in caplog.text
 
     router_main._reload_service_token(False)
     assert router_main._token_source == "file_missing"
@@ -128,8 +91,6 @@ def test_missing_configured_file_is_reread_when_csp_writes_it(
     caplog.set_level("INFO", logger="anila-router")
     token_file = tmp_path / "router-primary.token"
     _point_at(monkeypatch, token_file)
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
     router_main._initialise_token_source()
     assert router_main._token_source == "file_missing"
     assert router_main._service_token == ""
@@ -144,15 +105,12 @@ def test_missing_configured_file_is_reread_when_csp_writes_it(
     assert router_main._service_token == "csk-from-csp"
     assert settings.csp_service_token == "csk-from-csp"
     assert "csk-from-csp" not in caplog.text
-    assert "csk-from-bootstrap" not in caplog.text
-    assert "legacy-env-token" not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_health_reports_file_missing(client, tmp_path, monkeypatch):
     missing = tmp_path / "router-primary.token"
     _point_at(monkeypatch, missing)
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
     router_main._initialise_token_source()
 
     response = await client.get("/health")
@@ -166,9 +124,6 @@ def test_empty_configured_file_does_not_fall_back(tmp_path, monkeypatch, caplog)
     caplog.set_level("ERROR", logger="anila-router")
     token_file = tmp_path / "router-primary.token"
     token_file.write_text("   \n", encoding="utf-8")
-    router_main._write_state_file("csk-from-state", source_meta={"note": "test"})
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
     _point_at(monkeypatch, token_file)
 
     router_main._initialise_token_source()
@@ -176,11 +131,6 @@ def test_empty_configured_file_does_not_fall_back(tmp_path, monkeypatch, caplog)
     assert router_main._token_source == "file_error"
     assert router_main._service_token == ""
     assert settings.csp_service_token is None
-    stored = json.loads(router_main.ROUTER_STATE_FILE.read_text(encoding="utf-8"))
-    assert stored["token"] == "csk-from-state"
-    assert "csk-from-state" not in caplog.text
-    assert "csk-from-bootstrap" not in caplog.text
-    assert "legacy-env-token" not in caplog.text
     assert "not using fallback" in caplog.text
 
 
@@ -189,9 +139,6 @@ def test_unreadable_configured_file_does_not_fall_back(tmp_path, monkeypatch, ca
     token_file = tmp_path / "router-primary.token"
     token_file.write_text("csk-unreadable-value\n", encoding="utf-8")
     token_file.chmod(0)
-    router_main._write_state_file("csk-from-state", source_meta={"note": "test"})
-    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "csk-from-bootstrap")
-    monkeypatch.setenv("CSP_SERVICE_TOKEN", "legacy-env-token")
     _point_at(monkeypatch, token_file)
     try:
         router_main._initialise_token_source()
@@ -199,9 +146,6 @@ def test_unreadable_configured_file_does_not_fall_back(tmp_path, monkeypatch, ca
         assert router_main._service_token == ""
         assert settings.csp_service_token is None
         assert "csk-unreadable-value" not in caplog.text
-        assert "csk-from-state" not in caplog.text
-        assert "csk-from-bootstrap" not in caplog.text
-        assert "legacy-env-token" not in caplog.text
     finally:
         token_file.chmod(0o600)
 

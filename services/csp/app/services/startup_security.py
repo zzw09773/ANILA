@@ -54,7 +54,6 @@ _KNOWN_DEFAULTS: dict[str, frozenset[str]] = {
         "secret",
     }) | _PROD_PLACEHOLDERS,
     "ADMIN_PASSWORD": frozenset({"changeme", "password", "admin"}) | _PROD_PLACEHOLDERS,
-    "CSP_SERVICE_TOKEN": frozenset({"dev-service-token", "changeme"}) | _PROD_PLACEHOLDERS,
     "DB_PASSWORD": frozenset({"csp_password", "csp", "postgres", "password"}) | _PROD_PLACEHOLDERS,
     "CODESERVER_PASSWORD": frozenset({"changeme-codeserver", "changeme"}) | _PROD_PLACEHOLDERS,
     # ANILA_HOST 沒有真正的 dev default (compose 端用 ${ANILA_HOST:?} 強制設值),
@@ -78,8 +77,6 @@ def _value_for(name: str) -> str | None:
         return settings.SECRET_KEY
     if name == "ADMIN_PASSWORD":
         return settings.ADMIN_PASSWORD
-    if name == "CSP_SERVICE_TOKEN":
-        return settings.CSP_SERVICE_TOKEN
     if name == "DB_PASSWORD":
         # Pull the password out of DATABASE_URL — that's the only place ops
         # configures it in this stack.
@@ -89,6 +86,25 @@ def _value_for(name: str) -> str | None:
         except Exception:
             return None
     return os.environ.get(name)
+
+
+def assert_legacy_shared_tokens_absent() -> None:
+    """共用權杖已退役。只看環境變數，抓手動 ``docker run -e``。
+
+    ``.env`` 裡的同一行由部署腳本拒絕。設定物件不再讀這兩個鍵。
+    不看 ``ANILA_ALLOW_DEV_SECRET``。
+    """
+    present: list[str] = []
+    for name in ("CSP_SERVICE_TOKEN", "CSP_BOOTSTRAP_TOKEN"):
+        if os.environ.get(name, "").strip():
+            present.append(name)
+    if not present:
+        return
+    names = "、".join(present)
+    raise RuntimeError(
+        f"拒絕啟動：請從 .env 刪除 {names}。"
+        "各服務已改讀 ANILA_SERVICE_TOKEN_FILE 的專屬憑證，不再使用共用權杖。"
+    )
 
 
 def assert_no_dev_defaults() -> None:

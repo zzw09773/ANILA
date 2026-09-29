@@ -48,15 +48,10 @@ services:
       - "127.0.0.1:5533:5432"
     volumes:
       - csp-pgdata-dev:/var/lib/postgresql/data
-    shm_size: 512mb
-    command:
-      - postgres
-      - -c
-      - max_connections=120
-      - -c
-      - shared_buffers=256MB
-      - -c
-      - work_mem=8MB
+      - ../../infra/docker/postgres-memconf.sh:/usr/local/bin/postgres-memconf.sh:ro
+    # 與 platform.yml 同一支啟動腳本、同一個 shm。
+    shm_size: 8gb
+    entrypoint: ["/bin/sh", "/usr/local/bin/postgres-memconf.sh"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U csp -d csp"]
       interval: 5s

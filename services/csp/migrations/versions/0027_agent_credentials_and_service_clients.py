@@ -272,20 +272,21 @@ def _add_caller_columns_to_token_usage(inspector: sa.Inspector) -> None:
 def _backfill_legacy_credentials(bind) -> None:
     """Encrypt the existing CSP_SERVICE_TOKEN env var into per-row credentials.
 
-    Only runs when ``settings.CSP_SERVICE_TOKEN`` is non-empty. Importing
+    Only runs when the process environment still has a non-empty value. Importing
     the helper modules at function scope (not module scope) keeps the
     migration importable even if the app package fails to load —
     important during fresh-DB ``alembic upgrade head`` runs.
     """
     # Local imports — keep migration importable even if app config is
     # half-broken (typical during first-time bring-up).
-    from app.config import settings
+    import os
+
     from app.services.service_token_envelope import (
         compute_lookup_hash,
         encode_service_token_envelope,
     )
 
-    legacy_token = (settings.CSP_SERVICE_TOKEN or "").strip()
+    legacy_token = os.environ.get("CSP_SERVICE_TOKEN", "").strip()
     if not legacy_token:
         # Clean install or operator chose to start without the legacy
         # shared token. No-op: admins issue per-agent tokens via the

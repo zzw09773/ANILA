@@ -22,9 +22,6 @@ class Settings(BaseSettings):
     # csp (control plane) HTTP base — used by csp_client for RAG, model
     # roles, LLM proxy, image generation, and revocations cold-start sync.
     CSP_BASE_URL: str = "http://csp:8000"
-    # Service-to-service shared secret (legacy). Sent as
-    # ``X-CSP-Service-Token`` by job_reporting.py / revocation_cache.py.
-    CSP_SERVICE_TOKEN: str = ""
 
     # pptx-renderer HTTP base (Node.js service)。全服務只讀這一欄。
     RENDERER_BASE_URL: str = "http://pptx-renderer:7100"

@@ -4,7 +4,12 @@
 """
 from __future__ import annotations
 
+import os
+
 import pytest
+
+os.environ.pop("CSP_SERVICE_TOKEN", None)
+os.environ.pop("CSP_BOOTSTRAP_TOKEN", None)
 
 
 @pytest.fixture(autouse=True)

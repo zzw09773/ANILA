@@ -22,7 +22,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.artifact import ExportRecord
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
@@ -63,8 +62,10 @@ def _model_decisions(db, model_id):
 
 
 @pytest.fixture(autouse=True)
-def _svc_token(monkeypatch):
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", SVC_TOKEN)
+def _svc_token(db):
+    from tests.conftest import install_service_caller
+
+    install_service_caller(db, SVC_TOKEN, name="oe4-svc")
     yield
 
 

@@ -54,7 +54,7 @@ bash /opt/anila/anila-update.sh adopt /opt/anila/versions/<目前版本>
 codeserver、n8n、asr-gateway 的映像在包裡，預設不起。codeserver 與 n8n 留到最後演練。腳本印出的指令帶目前這版的 compose 檔與專案名，同樣是 `--no-build --pull never`：
 
 ```bash
-docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pull never codeserver
+docker compose -f /opt/anila/current/compose.yaml -p anila --profile maint up -d --no-build --pull never codeserver
 COMPOSE_PROFILES=ops docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pull never n8n
 ```
 

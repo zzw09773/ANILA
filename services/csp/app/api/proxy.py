@@ -52,7 +52,10 @@ from app.services.health_checker import HEALTH_HEALTHY, normalize_health_status
 from app.services.model_roles import resolve_role
 from app.services.auth_service import is_admin_tier
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
-from app.services.proxy.headers import resolve_model_gateway_key
+from app.services.proxy.headers import (
+    MODEL_CREDENTIAL_UNREADABLE,
+    resolve_model_gateway_key,
+)
 from app.services.proxy.service import resolve_proxy_tuning
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
 from app.services.proxy.urls import join_upstream_path
@@ -1793,6 +1796,19 @@ async def list_models_openai(
     })
 
 
+def _unreadable_credential_stream(exc: HTTPException):
+    """串流已經要開始時，憑證讀不到要走 anila.error，不要用通用的暫時無法使用。"""
+    if exc.detail != MODEL_CREDENTIAL_UNREADABLE:
+        return None
+    from app.services.proxy.service import format_anila_stream_error
+
+    return StreamingResponse(
+        iter([format_anila_stream_error(MODEL_CREDENTIAL_UNREADABLE)]),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 async def _complete_dispatched_model(
     request: Request,
     call: DispatchModelCall,
@@ -1831,7 +1847,14 @@ async def _complete_dispatched_model(
         else "/v1/chat/completions"
     )
     target_url = join_upstream_path(base_snap.endpoint_url, chat_path)
-    gateway_api_key = resolve_model_gateway_key(base_snap)
+    try:
+        gateway_api_key = resolve_model_gateway_key(base_snap)
+    except HTTPException as exc:
+        streamed = _unreadable_credential_stream(exc) if stream else None
+        if streamed is not None:
+            release_request_session(db)
+            return streamed
+        raise
     release_request_session(db)
     if stream:
         upstream = proxy_stream(
@@ -2312,11 +2335,18 @@ async def chat_completions(
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     # 同上：串流在 handler 回傳之後才抽乾，值必須在這裡解。
     tuning = resolve_proxy_tuning(db)
-    caller_authorization, router_extra_headers, usage_kind, gateway_api_key = (
-        _prepare_platform_router_forward(
-            db, request, caller, body, model, conv_id_int
+    try:
+        caller_authorization, router_extra_headers, usage_kind, gateway_api_key = (
+            _prepare_platform_router_forward(
+                db, request, caller, body, model, conv_id_int
+            )
         )
-    )
+    except HTTPException as exc:
+        streamed = _unreadable_credential_stream(exc) if stream else None
+        if streamed is not None:
+            release_request_session(db)
+            return streamed
+        raise
     # 路由器才會執行協定行。原文語料跟著這一次轉送走，模型本體看不到這個欄位。
     from app.services.auto_seed import PLATFORM_ROUTER_NAME
     if model.name == PLATFORM_ROUTER_NAME and side.protocol_lines:

@@ -131,7 +131,6 @@ def list_revocations(
         db=db,
         allowed_kinds=("service_client",),
         allowed_client_types=None,
-        allow_legacy_env=True,
         endpoint="GET /api/auth/revocations",
     )
     if since.tzinfo is None:

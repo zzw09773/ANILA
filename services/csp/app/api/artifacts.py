@@ -32,14 +32,12 @@ nginx ``/v1`` 直通吃得到 service 面):
 
 from __future__ import annotations
 
-import hmac
 import logging
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.database import get_db
 from app.middleware.caller import ACCESS_COOKIE_NAME, _extract_bearer, get_caller
 from app.models.artifact import Artifact, ArtifactJob
@@ -147,9 +145,6 @@ def _resolve_service_token(request: Request, db: Session):
     if not token:
         return False, None, None
 
-    if agent_credential_service.fleet_secret_retired(token):
-        raise HTTPException(status_code=401, detail="服務權杖無效")
-
     identity = agent_credential_service.verify_service_token(db, token=token)
     if identity is not None:
         if identity.kind == "agent":
@@ -160,11 +155,8 @@ def _resolve_service_token(request: Request, db: Session):
         request.state.csp_caller = identity
         return True, identity, None
 
-    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-    if legacy and hmac.compare_digest(token, legacy):
-        request.state.csp_caller = None  # legacy = unattributed
-        return True, None, None
     # header present but invalid → 明確 401(不是 403)。
+    # 舊的共用 CSP_SERVICE_TOKEN 不再放行。
     raise HTTPException(status_code=401, detail="服務權杖無效")
 
 

@@ -27,7 +27,7 @@ DB 狀態,再看測試本身。
 `app.*` 之前把 `SECRET_KEY` / `ANILA_ALLOW_DEV_SECRET` / `ANILA_AUTH_MODE` /
 臨時 `DATABASE_URL` 等變數釘死,這幾個就不依 cwd。
 ⚠ 其餘 `Settings` 欄位(如 `ADMIN_PASSWORD`、`CARD_INITIAL_OWNERS`、
-`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`)從 repo 根跑時仍會讀到機上
+`MODEL_GATEWAY_API_KEY`)從 repo 根跑時仍會讀到機上
 `.env`——目前沒有測試依賴它們的 ambient 值,新增依賴前先來這裡補釘。
 
 > ⚠ **2026-08-05 補充 —— 這份基準線這次是怎麼量的**

@@ -414,7 +414,7 @@ def test_conversation_blocking_and_admin_only_routes(
     assert client.get("/api/usage/by-client", headers=ua_h).status_code == 403
     assert (
         client.get("/api/usage/legacy-token-stats", headers=ua_h).status_code
-        == 403
+        == 404
     )
 
     users_body = client.get("/api/users", headers=ua_h).json()

@@ -250,6 +250,10 @@ def apply_model_health_results(db, results) -> None:
     解決後再次進入才再寄。訊息不帶端點位址。
     """
     from app.services.alert_detectors import _emit_alert
+    from app.services.proxy.headers import (
+        credential_alert_message,
+        credential_alert_title,
+    )
 
     for (
         model_id,
@@ -258,6 +262,7 @@ def apply_model_health_results(db, results) -> None:
         display_name,
         prev_status,
         status,
+        credential_error,
     ) in results:
         model = db.get(ModelRegistry, model_id)
         if model is None:
@@ -270,10 +275,15 @@ def apply_model_health_results(db, results) -> None:
                 fingerprint=f"health:model:{model_id}",
                 category="health",
                 severity="high",
-                title=f"模型 {display_name} 離線",
+                title=(
+                    credential_alert_title(display_name)
+                    if credential_error
+                    else f"模型 {display_name} 離線"
+                ),
                 message=(
-                    f"無法連線至模型「{display_name}」"
-                    f"（{name}）"
+                    credential_alert_message(display_name, name)
+                    if credential_error
+                    else f"無法連線至模型「{display_name}」（{name}）"
                 ),
                 source_type="model",
                 source_id=model_id,
@@ -327,21 +337,35 @@ def apply_agent_health_results(db, results) -> None:
 
 def _model_probe_targets(db) -> list[dict]:
     """Snapshot of active models for the background loop, key resolved here
-    (inside the DB session) so the probe itself never touches the row."""
+    (inside the DB session) so the probe itself never touches the row.
+
+    專屬金鑰讀不到的模型記成 credential_error，這一輪不拿全域金鑰去探。
+    """
+    from fastapi import HTTPException
+
     from app.services.proxy.headers import resolve_model_gateway_key
 
-    return [
-        {
-            "model_id": m.id,
-            "endpoint_url": m.endpoint_url,
-            "name": m.name,
-            "display_name": m.display_name,
-            "prev_status": m.health_status,
-            "protocol": m.protocol or "openai_compatible",
-            "api_key": resolve_model_gateway_key(m),
-        }
-        for m in db.query(ModelRegistry).filter(ModelRegistry.is_active.is_(True)).all()
-    ]
+    targets = []
+    for m in db.query(ModelRegistry).filter(ModelRegistry.is_active.is_(True)).all():
+        credential_error = None
+        api_key = None
+        try:
+            api_key = resolve_model_gateway_key(m)
+        except HTTPException as exc:
+            credential_error = str(exc.detail)
+        targets.append(
+            {
+                "model_id": m.id,
+                "endpoint_url": m.endpoint_url,
+                "name": m.name,
+                "display_name": m.display_name,
+                "prev_status": m.health_status,
+                "protocol": m.protocol or "openai_compatible",
+                "api_key": api_key,
+                "credential_error": credential_error,
+            }
+        )
+    return targets
 
 
 async def _health_check_loop():
@@ -365,16 +389,28 @@ async def _health_check_loop():
                 model_id, endpoint_url, name, display_name, prev_status = (
                     t["model_id"], t["endpoint_url"], t["name"], t["display_name"], t["prev_status"],
                 )
-                status = await check_model_health(
-                    model_id,
-                    endpoint_url,
-                    endpoint_kind="model",
-                    protocol=t["protocol"],
-                    model_name=name,
-                    api_key=t["api_key"],
-                )
+                credential_error = t.get("credential_error")
+                if credential_error:
+                    status = HEALTH_UNHEALTHY
+                else:
+                    status = await check_model_health(
+                        model_id,
+                        endpoint_url,
+                        endpoint_kind="model",
+                        protocol=t["protocol"],
+                        model_name=name,
+                        api_key=t["api_key"],
+                    )
                 results.append(
-                    (model_id, endpoint_url, name, display_name, prev_status, status)
+                    (
+                        model_id,
+                        endpoint_url,
+                        name,
+                        display_name,
+                        prev_status,
+                        status,
+                        credential_error,
+                    )
                 )
 
             db = SessionLocal()

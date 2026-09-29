@@ -30,6 +30,7 @@ from starlette.websockets import WebSocketState
 
 from app import auth as auth_mod
 from app.config import Settings, settings as default_settings
+from app.service_token import source as service_token_source
 from app.decode_client import (
     DecodeClient,
     make_decode_client,
@@ -141,6 +142,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from app.service_token import assert_no_legacy_shared_token
+
+        assert_no_legacy_shared_token()
         if not skip_upstreams:
             await jwks_client.start(app)
             cache = revocation_cache_mod.get_revocation_cache()
@@ -307,7 +311,7 @@ def _register_routes(app: FastAPI) -> None:
             # 治理中心指派的金鑰優先;沒有才用環境變數那把。
             # ⚠ 只交給探針去發請求,**不進 body**(下面沒有任何 key 欄位)。
             decoder_token=current_decode_credential(s),
-            service_token_configured=bool((s.CSP_SERVICE_TOKEN or "").strip()),
+            service_token_configured=service_token_source() == "file",
             skip_decoder_probe=bool(
                 getattr(app.state, "skip_decoder_probe", False)
             ),

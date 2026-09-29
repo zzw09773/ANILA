@@ -20,12 +20,27 @@ def _reload():
     return service_token
 
 
+def test_unset_path_ignores_legacy_settings_token(monkeypatch):
+    monkeypatch.delenv("ANILA_SERVICE_TOKEN_FILE", raising=False)
+    token = _reload()
+    assert token.source() == "none"
+    assert token.token() == ""
+    assert token.headers() == {}
+
+
+def test_startup_refuses_nonempty_legacy_token(monkeypatch):
+    from app.service_token import assert_no_legacy_shared_token
+
+    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "still-set")
+    with pytest.raises(RuntimeError, match="刪除"):
+        assert_no_legacy_shared_token()
+
+
 def test_configured_file_is_the_only_credential(tmp_path, monkeypatch):
     secret = "csk-studio-from-file"
     path = tmp_path / "anila-studio.token"
     path.write_text(secret + "\n", encoding="utf-8")
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-legacy-env", raising=False)
     token = _reload()
     assert token.source() == "file"
     assert token.token() == secret
@@ -36,7 +51,6 @@ def test_configured_file_is_the_only_credential(tmp_path, monkeypatch):
 
 def test_missing_file_does_not_fall_back(tmp_path, monkeypatch):
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(tmp_path / "missing.token"))
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-legacy-env", raising=False)
     token = _reload()
     assert token.source() == "file_missing"
     assert token.token() == ""
@@ -50,7 +64,6 @@ def test_unreadable_file_does_not_fall_back(tmp_path, monkeypatch):
     path.write_text(secret + "\n", encoding="utf-8")
     path.chmod(0)
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-legacy-env", raising=False)
     try:
         token = _reload()
         assert token.source() == "file_error"
@@ -79,7 +92,6 @@ async def test_image_role_rereads_token_once_after_401(tmp_path, monkeypatch):
     path = tmp_path / "anila-studio.token"
     path.write_text("csk-stale\n", encoding="utf-8")
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-legacy-env", raising=False)
     _reload()
     from app.services.studio_model_primary import (
         _reset_for_tests,

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import io
 import logging
 import os
@@ -515,20 +514,10 @@ def authorize_internal_read(
 
 
 def _authorize_service_token(db: Session, service_key: str, token: str) -> None:
-    from app.config import settings
     from app.services import agent_credential_service
 
-    if agent_credential_service.fleet_secret_retired(token):
-        raise ReaderDenied(403, "無法確認服務類型的舊權杖")
     identity = agent_credential_service.verify_service_token(db, token=token)
     if identity is None:
-        legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-        if (
-            legacy
-            and len(legacy) == len(token)
-            and hmac.compare_digest(token, legacy)
-        ):
-            raise ReaderDenied(403, "無法確認服務類型的舊權杖")
         raise ReaderDenied(401, "服務權杖無效")
     if identity.kind != "service_client" or identity.service_client_id is None:
         raise ReaderDenied(403, "這個身分不能讀外部服務憑證")

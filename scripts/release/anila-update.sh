@@ -832,6 +832,41 @@ link_persistent() {
   ln -sfn "$root/state/certs" "$tree/infra/nginx/certs"
 }
 
+# 備份檔擁有者與 codeserver 權限。已有非空值就不覆寫。
+# UID=、空白、空引號都算沒設，就地換掉那一行。
+ensure_host_account() {
+  local uid gid docker_gid root
+  root="$(install_root)"
+  if ! env_has_value UID; then
+    if [[ -n "${SUDO_UID:-}" ]]; then
+      uid="$SUDO_UID"
+    elif [[ -d "$root" ]]; then
+      uid="$(stat -c %u "$root")"
+    else
+      uid="$(stat -c %u .)"
+    fi
+    set_env UID "$uid"
+  fi
+  if ! env_has_value GID; then
+    if [[ -n "${SUDO_GID:-}" ]]; then
+      gid="$SUDO_GID"
+    elif [[ -d "$root" ]]; then
+      gid="$(stat -c %g "$root")"
+    else
+      gid="$(stat -c %g .)"
+    fi
+    set_env GID "$gid"
+  fi
+  if ! env_has_value DOCKER_GID; then
+    docker_gid="$(getent group docker 2>/dev/null | awk -F: '{print $3}' || true)"
+    if [[ -n "$docker_gid" ]]; then
+      set_env DOCKER_GID "$docker_gid"
+    else
+      printf '找不到 docker 群組，未寫入 DOCKER_GID。compose 會用預設 999。\n' >&2
+    fi
+  fi
+}
+
 ensure_platform_env() {
   local tree="$1"
   (
@@ -880,6 +915,7 @@ EOF
     if [[ -s share/pki/model-ca.pem ]]; then
       ensure_env ANILA_MODEL_CA_FILE /etc/anila/pki/model-ca.pem
     fi
+    ensure_host_account
     if [[ -e .env || -L .env ]]; then
       chmod 600 "$(readlink -f -- .env)"
     fi
@@ -1576,7 +1612,7 @@ cmd_update() {
   record_audit "$dest" update "${old:-none}" "$new" success
   ok "更新完成：${old:-none} → ${new}"
   printf 'codeserver 與 n8n 的映像已在本機，預設沒有啟動。最後演練才執行：\n'
-  printf '  docker compose -f %q -f %q -p %q up -d --no-build --pull never codeserver\n' \
+  printf '  docker compose -f %q -f %q -p %q --profile maint up -d --no-build --pull never codeserver\n' \
     "$(install_root)/current/compose.yaml" "$(install_root)/current/.anila-images.yml" "$(compose_project)"
   printf '  COMPOSE_PROFILES=ops docker compose -f %q -f %q -p %q up -d --no-build --pull never n8n\n' \
     "$(install_root)/current/compose.yaml" "$(install_root)/current/.anila-images.yml" "$(compose_project)"

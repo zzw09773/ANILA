@@ -498,7 +498,6 @@ def test_agent_credentials_are_not_a_caller_without_the_fleet_env(db, monkeypatc
 
     monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
     monkeypatch.setenv("CSP_SERVICE_TOKEN", "")
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "", raising=False)
 
     legacy = "csk-fleet-shared-from-0027"
     previous = "csk-fleet-previous-still-in-grace"
@@ -621,7 +620,6 @@ def test_migration_revokes_every_active_agent_credential(db, db_engine):
 def test_legacy_env_var_fallback_still_recognised(db, monkeypatch):
     """Even after migration, an agent that hasn't cut over yet still works."""
     legacy_token = "fleet-shared-token-from-the-old-days"
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", legacy_token)
 
     # No DB rows match — verify_service_token returns None, and the
     # auth_service dependency is the one that does the env-var

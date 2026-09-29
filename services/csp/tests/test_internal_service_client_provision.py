@@ -341,7 +341,6 @@ def test_file_token_reaches_router_primary_and_legacy_token_is_rejected(
     from app.config import settings
 
     legacy = "legacy-shared-token-not-in-the-credential-file"
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
 
     model = ModelRegistry(
         name="prov-router-llm",
@@ -373,7 +372,7 @@ def test_file_token_reaches_router_primary_and_legacy_token_is_rejected(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": legacy},
     )
-    assert rejected.status_code == 403, rejected.text
+    assert rejected.status_code == 401, rejected.text
     assert token not in rejected.text
 
 
@@ -385,7 +384,6 @@ def test_seeded_legacy_row_is_replaced_and_rejected_immediately(
     from app.config import settings
 
     legacy = "legacy-shared-token-from-migration-0027"
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
     now = datetime.now(timezone.utc)
     db.add(
         ServiceClient(
@@ -440,7 +438,7 @@ def test_seeded_legacy_row_is_replaced_and_rejected_immediately(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": legacy},
     )
-    assert rejected.status_code == 403, rejected.text
+    assert rejected.status_code == 401, rejected.text
     assert token not in rejected.text
     assert legacy not in rejected.text
 
@@ -451,7 +449,6 @@ def test_active_token_equal_to_legacy_env_is_replaced_without_grace(
     from app.config import settings
 
     legacy = "legacy-shared-token-still-the-active-hash"
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
     db.add(
         ServiceClient(
             client_name="router-primary",
@@ -459,7 +456,7 @@ def test_active_token_equal_to_legacy_env_is_replaced_without_grace(
             service_token_envelope=encode_service_token_envelope(legacy),
             service_token_lookup_hash=compute_lookup_hash(legacy),
             service_token_issued_at=datetime.now(timezone.utc),
-            is_legacy=False,
+            is_legacy=True,
             is_active=True,
         )
     )
@@ -467,6 +464,9 @@ def test_active_token_equal_to_legacy_env_is_replaced_without_grace(
     directory = tmp_path / "service-clients"
     _ensure(db, directory)
     assert _plaintext(directory) != legacy
+    row = db.query(ServiceClient).filter_by(client_name="router-primary").one()
+    assert row.is_legacy is False
+    assert row.service_token_previous_lookup_hash is None
     assert agent_credential_service.verify_service_token(db, token=legacy) is None
 
 
@@ -477,7 +477,6 @@ def test_legacy_previous_token_is_cleared_without_waiting_for_grace(
 
     legacy = "legacy-shared-token-kept-as-previous"
     current = generate_service_token()
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
     now = datetime.now(timezone.utc)
     db.add(
         ServiceClient(
@@ -490,20 +489,22 @@ def test_legacy_previous_token_is_cleared_without_waiting_for_grace(
             service_token_previous_expires_at=now + timedelta(hours=23),
             service_token_issued_at=now - timedelta(days=1),
             service_token_rotated_at=now - timedelta(hours=1),
-            is_legacy=False,
+            is_legacy=True,
             is_active=True,
         )
     )
     db.commit()
     directory = tmp_path / "service-clients"
     outcome = _ensure(db, directory)
-    assert outcome[0].action == "legacy_previous_cleared"
-    assert _plaintext(directory) == current
+    assert outcome[0].action == "replaced_legacy"
+    fresh = _plaintext(directory)
+    assert fresh != current
+    assert fresh != legacy
+    row = db.query(ServiceClient).filter_by(client_name="router-primary").one()
+    assert row.service_token_previous_lookup_hash is None
     assert agent_credential_service.verify_service_token(db, token=legacy) is None
-    assert (
-        agent_credential_service.verify_service_token(db, token=current).used_previous_token
-        is False
-    )
+    assert agent_credential_service.verify_service_token(db, token=current) is None
+    assert agent_credential_service.verify_service_token(db, token=fresh) is not None
 
 
 def test_two_provisioners_rotate_once_and_file_matches_committed_row(
@@ -1229,14 +1230,11 @@ def test_fleet_secret_is_not_a_service_identity_when_files_are_in_use(
 ):
     """自動核發開啟後，舊的共用 CSP_SERVICE_TOKEN 不能再當任何服務身分。"""
     from app.api import artifacts
-    from app.config import settings as canonical_settings
     from app.services import auth_service
     from fastapi import HTTPException
 
     legacy = "csk-fleet-shared-secret"
     monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
     now = datetime.now(timezone.utc)
     db.add(
         ServiceClient(
@@ -1387,7 +1385,6 @@ def test_flat_token_marker_force_rotates_router_without_grace(
     from app.config import settings
 
     monkeypatch.setenv("ANILA_SERVICE_CLIENT_AUTO_PROVISION", "1")
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "", raising=False)
     old = "csk-copied-from-flat-file"
     previous = "csk-previous-still-in-grace"
     now = datetime.now(timezone.utc)
@@ -1530,3 +1527,14 @@ def test_console_shows_plaintext_only_on_emergency_reissue():
     )[0]
     assert "service_token" not in create
     assert "service_token" not in rotate
+
+
+def test_install_service_caller_replaces_a_different_token(db):
+    from tests.conftest import install_service_caller
+
+    first = "csk-install-caller-first"
+    second = "csk-install-caller-second"
+    install_service_caller(db, first, name="install-caller", client_type="router")
+    install_service_caller(db, second, name="install-caller", client_type="router")
+    assert agent_credential_service.verify_service_token(db, token=first) is None
+    assert agent_credential_service.verify_service_token(db, token=second) is not None

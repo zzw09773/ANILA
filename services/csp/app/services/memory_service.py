@@ -323,7 +323,11 @@ async def _embed_via_proxy(
     See ``tests/test_memory_embed_not_metered.py``.
     """
     from anila_core.embeddings.dims import fit_stored_vector
-    from app.services.proxy.service import proxy_request, resolve_proxy_tuning
+    from app.services.proxy.service import (
+        proxy_request,
+        resolve_proxy_tuning,
+        sync_model_deadline,
+    )
     from app.services.proxy.snapshot import snapshot_model
 
     resolved = _resolved_for_embed(db, model_id=model_id)
@@ -360,6 +364,7 @@ async def _embed_via_proxy(
         embedding_input_role=embedding_input_role,
         record_usage=False,
         tuning=tuning,
+        deadline=sync_model_deadline(),
     )
     rows = list(data.get("data") or [])
     rows.sort(key=lambda item: int(item.get("index", 0)) if isinstance(item, dict) else 0)

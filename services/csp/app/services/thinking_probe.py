@@ -41,7 +41,10 @@ from anila_core.security import (
     validate_outbound_url,
 )
 
-from app.services.proxy.headers import resolve_model_gateway_key
+from app.services.proxy.headers import (
+    MODEL_CREDENTIAL_UNREADABLE,
+    resolve_model_gateway_key,
+)
 from app.services.proxy.urls import join_upstream_path
 
 logger = logging.getLogger(__name__)
@@ -146,7 +149,12 @@ async def probe_thinking_effort(model_like: Any, level: str) -> ProbeResult:
     # 要讀 400 內文判斷 reasoning_effort，不能走 complete_chat（4xx 會被收成失敗）。
     # 金鑰仍用 proxy 的 resolve_model_gateway_key，不在這裡另做解密。
     headers = {"Content-Type": "application/json"}
-    api_key = resolve_model_gateway_key(model_like)
+    try:
+        api_key = resolve_model_gateway_key(model_like)
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or MODEL_CREDENTIAL_UNREADABLE
+        logger.error("thinking probe skipped: model credential cannot be read")
+        return ProbeResult("unreachable", str(detail))
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = {

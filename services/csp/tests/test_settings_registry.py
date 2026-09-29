@@ -108,6 +108,10 @@ REMOVED_ENV_NAMES = {
     "ANILA_ALERT_SMTP_USE_TLS",
 }
 
+# 已退役、但各服務啟動與部署腳本仍會讀它的名字，只為了看到非空值就拒絕。
+# 不放進 REMOVED_ENV_NAMES，否則「沒人讀」那條守衛會把拒絕邏輯本身當成違規。
+REFUSED_ENV_NAMES = {"CSP_SERVICE_TOKEN"}
+
 _SETTINGS_REDUCTION_COMMIT = "18916a56"
 
 
@@ -322,7 +326,7 @@ def test_deployment_scan_ignores_comments_but_catches_assignments(tmp_path):
 
 def test_removed_env_inventory_covers_generated_config_removals():
     """A newly omitted Settings field cannot evade the retired-name guard."""
-    assert _removed_config_env_names() <= REMOVED_ENV_NAMES
+    assert _removed_config_env_names() <= REMOVED_ENV_NAMES | REFUSED_ENV_NAMES
 
 
 def test_settings_reduction_downgrade_refuses_to_fabricate_rows():

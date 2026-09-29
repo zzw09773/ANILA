@@ -17,10 +17,9 @@ Auth
 ====
 Reuse studio's existing CSP auth: the user's bearer JWT
 (``Authorization: Bearer``), identical to every ``csp_client`` call — CSP
-re-verifies it (RS256 + JWKS) so user-on-behalf-of semantics hold. When a
-legacy ``CSP_SERVICE_TOKEN`` is configured we additionally attach
-``X-CSP-Service-Token`` (mirroring the revocation cold-start path), so 8a
-may accept either credential.
+re-verifies it (RS256 + JWKS) so user-on-behalf-of semantics hold. The
+service identity, when one is attached, comes only from
+``ANILA_SERVICE_TOKEN_FILE``.
 
 Resilience
 ==========

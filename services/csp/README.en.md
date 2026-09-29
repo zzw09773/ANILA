@@ -148,7 +148,7 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 - **SSRF url_guard kind split (Slice 6a, doc 04 §8)**: `anila_core.security.validate_outbound_url(url, endpoint_kind=...)` domain-splits the http flag across `model` / `agent` / `generic` — a model endpoint rejects http by default and **admits it only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (PLAN.md P0.2, 2026-07-29: uniform across production and dev; the intranet model gateway speaks plain http)**; an agent endpoint is allowed over http via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` (legacy `ANILA_ALLOW_HTTP_ENDPOINT` still works as a deprecation-warned fallback, for the intranet MLSteam plain-http NodePort agent). The allow-list = the `trusted_hosts` table + the `ANILA_TRUSTED_HOSTS` env; `host.docker.internal` is a structural deny and cannot be allow-listed.
 - **Credential encryption**: AES-256-GCM (`anila-core` `credential_crypto` / `service_token_envelope`; covers per-model `api_key_secret_ref`, `csk-` agent credentials, ingestion credentials).
 - **Token revocation**: durable `token_revocations` table + JWT `tv` enforcement + Redis fan-out; `/api/auth/revocations` for cold-start sync.
-- **startup_security**: in prod, dev defaults for `SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB passwords refuse to boot (an empty `SECRET_KEY` is always fatal; `ANILA_ALLOW_DEV_SECRET=1` downgrades to a warning). Inbound hardening also includes a CORS allow-list (no `*` fallback), optional TrustedHostMiddleware, SPA path-traversal guard, and nginx security headers + rate-limit.
+- **startup_security**: in prod, dev defaults for `SECRET_KEY` / `ADMIN_PASSWORD` / DB passwords refuse to boot (an empty `SECRET_KEY` is always fatal; `ANILA_ALLOW_DEV_SECRET=1` downgrades to a warning). Inbound hardening also includes a CORS allow-list (no `*` fallback), optional TrustedHostMiddleware, SPA path-traversal guard, and nginx security headers + rate-limit.
 
 ---
 
@@ -189,7 +189,7 @@ docker compose up -d csp                                 # prod (platform.yml)
 
 CSP stays on the compose default network. Models are remote and registered in the console.
 
-Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_KID`, `ADMIN_PASSWORD`, `ANILA_AUTH_MODE`, `CSP_SERVICE_TOKEN`, `MODEL_GATEWAY_API_KEY`, `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_PUBLIC_SHARE`. JWT PEM paths are fixed at `secrets/jwt-{private,public}.pem`. See [`.env.example`](./.env.example).
+Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_KID`, `ADMIN_PASSWORD`, `ANILA_AUTH_MODE`, `MODEL_GATEWAY_API_KEY`, `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_PUBLIC_SHARE`. JWT PEM paths are fixed at `secrets/jwt-{private,public}.pem`. See [`.env.example`](./.env.example).
 
 ---
 

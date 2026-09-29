@@ -85,7 +85,7 @@ EOS
 
   cat > "$bindir/docker" <<'EOS'
 #!/usr/bin/env bash
-echo "docker $*" >> "${DOCKER_LOG:-/tmp/anila-f6-docker.log}"
+echo "docker $*" >> "${DOCKER_LOG:-$HOME/.anila-deploy-verify-docker.log}"
 joined="$*"
 if [[ "$1" == "compose" && "$2" == "exec" ]]; then
   if [[ "$joined" == *"localhost:8000/health"* ]]; then
@@ -97,6 +97,10 @@ if [[ "$1" == "compose" && "$2" == "exec" ]]; then
     exit 1
   fi
   if [[ "$joined" == *"revocations"* ]]; then
+    if [[ "$joined" != *"ANILA_SERVICE_TOKEN_FILE"* || "$joined" == *"CSP_SERVICE_TOKEN"* ]]; then
+      echo "legacy-token"
+      exit 1
+    fi
     echo "${VERIFY_REVOKE:-200}"
     [[ "${VERIFY_REVOKE:-200}" == "200" ]] && exit 0
     exit 1
@@ -169,10 +173,10 @@ run_case() {
   make_repo "$H"
   : > "$H/docker.log"
   set +e
-  run_cmd "$H" "$subcmd" >/tmp/anila-f6-last.out 2>&1
+  run_cmd "$H" "$subcmd" >"$BASE/last.out" 2>&1
   local rc=$?
   set -e
-  tail -n 12 /tmp/anila-f6-last.out
+  tail -n 12 "$BASE/last.out"
   assert_eq "$rc" "$want" "$name"
 }
 

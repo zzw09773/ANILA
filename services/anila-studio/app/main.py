@@ -69,6 +69,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     is the correct behaviour for a service that cannot verify identity. k8s
     / docker will restart and try again.
     """
+    from app.service_token import assert_no_legacy_shared_token
+
+    assert_no_legacy_shared_token()
     logger.info("[%s] startup: bringing up JWKS + revocation cache", settings.APP_NAME)
     await jwks_client.start(app)
     revocation_cache = revocation_cache_mod.get_revocation_cache()

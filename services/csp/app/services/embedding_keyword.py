@@ -19,7 +19,11 @@ async def maybe_rerank(db: Session, user, query: str, hits: list):
         return hits
     try:
         from app.services.memory_service import _summary_model
-        from app.services.proxy.service import proxy_request, resolve_proxy_tuning
+        from app.services.proxy.service import (
+            proxy_request,
+            resolve_proxy_tuning,
+            sync_model_deadline,
+        )
         from app.services.proxy.snapshot import snapshot_model
 
         model = _summary_model(db)
@@ -59,6 +63,7 @@ async def maybe_rerank(db: Session, user, query: str, hits: list):
             endpoint_path=f"/{api_version}/chat/completions",
             record_usage=False,
             tuning=tuning,
+            deadline=sync_model_deadline(),
         )
         text = data["choices"][0]["message"]["content"]
         indexes = parse_rerank_indexes(text, len(hits))

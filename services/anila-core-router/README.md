@@ -35,7 +35,7 @@ Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`,並公告 pseud
 `main.py` 不只是薄殼,它在 app factory 之外額外負責:
 
 1. **主路由模型 TTL refresh**(`_refresh_primary` / `_ensure_primary`,`PRIMARY_TTL_SECONDS=60`)+ `/v1/chat/completions` 的 503 gate middleware。主模型沒有背景 timer:startup 觸發一次,之後由 gate middleware 在過期時 lazy refresh。憑證檔另有一個週期重讀(預設 30 秒,見 `ANILA_SERVICE_TOKEN_RELOAD_SECONDS`)。
-2. **Service token 解析**(`_load_service_token` / `_initialise_token_source`):有設 `ANILA_SERVICE_TOKEN_FILE` 時只讀那個檔。檔案不在是 `file_missing`,讀不到或是空的是 `file_error`;兩種都不改走別的憑證,並照週期重讀,CSP 寫上檔之後會自己恢復。後三個(state file、`CSP_BOOTSTRAP_TOKEN`、`CSP_SERVICE_TOKEN`)只在 `ANILA_SERVICE_TOKEN_FILE` **沒設**時才用。`CSP_BOOTSTRAP_TOKEN` 有值且 state file 還沒有時,會把該值抄進 state file(mode 0600),**不做 HTTP 交換**。啟動 log 只記來源名稱,不記明文。`/health` 的 `token_source` 是 `file`、`file_missing`、`file_error`、`state_file`、`bootstrap`、`legacy_env` 或 `none`。
+2. **Service token 解析**(`_load_service_token` / `_initialise_token_source`):只讀 `ANILA_SERVICE_TOKEN_FILE`。檔案不在是 `file_missing`,讀不到或是空的是 `file_error`;兩種都不改走別的憑證,並照週期重讀,CSP 寫上檔之後會自己恢復。路徑沒設時來源是 `none`。`CSP_SERVICE_TOKEN`、`CSP_BOOTSTRAP_TOKEN` 不是設定欄位;程序環境裡還有非空值就拒絕啟動。啟動 log 只記來源名稱,不記明文。`/health` 的 `token_source` 是 `file`、`file_missing`、`file_error` 或 `none`。
 3. **憑證檔變更會重讀**;CSP 回 401/403 時再強制讀一次後重試,然後才放棄。
 
 > `main.py` 對 CSP 只主動發一個呼叫 `GET /api/models/router-primary`(帶 `X-CSP-Service-Token`);`GET /v1/agents`、`POST /v1/chat/completions`、agent dispatch + SSE forward 都在 SDK `router_server.py`。Router **不**持有自己的 user API Key:它用 caller(UI / OpenAI SDK)的 Bearer API Key 回打 CSP data plane,因此 caller 看得到的 agent = Router 能分派的 agent(不放大權限)。
@@ -75,7 +75,11 @@ compose 中 `router` 只用 `expose: 9000`(**沒有** host port),外部走 nginx
 
 ```bash
 docker build -f services/anila-core-router/Dockerfile -t anila-core-router .
-docker run -p 9000:9000 -e CSP_BASE_URL=http://csp:8000 -e CSP_SERVICE_TOKEN=dev-service-token anila-core-router
+docker run -p 9000:9000 \
+  -e CSP_BASE_URL=http://csp:8000 \
+  -e ANILA_SERVICE_TOKEN_FILE=/run/anila/service-clients/router-primary/token \
+  -v /path/to/router-primary/token:/run/anila/service-clients/router-primary/token:ro \
+  anila-core-router
 ```
 
 ### 方式 3:單機 uvicorn(開發)
@@ -95,9 +99,6 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | `CSP_BASE_URL` | CSP 基底 URL;容器內為 `http://csp:8000` | `http://csp:8000` |
 | `ANILA_SERVICE_TOKEN_FILE` | CSP 寫好的憑證檔。compose 為 `/run/anila/service-clients/router-primary/token` | 未設 |
 | `ANILA_SERVICE_TOKEN_RELOAD_SECONDS` | 週期重讀憑證檔的間隔,最短 5 秒 | `30` |
-| `CSP_BOOTSTRAP_TOKEN` | 只在 `ANILA_SERVICE_TOKEN_FILE` 沒設、且 state file 也沒有時,抄進 state file | `""` |
-| `CSP_SERVICE_TOKEN` | 只在憑證檔路徑沒設時的最後後援:舊式共用祕密。router-primary 有自己的憑證後,打不進 router-only 端點 | `""` |
-| `ANILA_ROUTER_STATE_DIR` | state file `service_token.json`(mode 0600)的目錄。憑證檔路徑有設時不用它 | `/var/lib/anila-router` |
 
 SDK(`router_server`)另讀 **Full Trace opt-in** env(見 doc `09` §10 凍結線):
 
@@ -125,7 +126,7 @@ router (:9000)
 
 - **CSP(`CSP_BASE_URL`)**:Router 所有上游互動都經由 CSP — 撈 agent 清單、解析主路由模型、呼叫主 LLM。Router→CSP 內部端點以 `X-CSP-Service-Token` 認證。
 - **Agents**:透過 CSP 註冊。主 LLM 判斷需要時 Router 分派到該 endpoint 並 forward SSE。
-- **`/router/primary-status`**(debug):回傳 cache 的主路由模型名、last error、`service_token_source`、state file 路徑。
+- **`/router/primary-status`**(debug):回傳 cache 的主路由模型名、last error、`service_token_source`、CSP 位址。
 
 ---
 

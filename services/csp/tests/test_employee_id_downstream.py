@@ -97,14 +97,13 @@ class TestAgentHeaders:
 
 class TestServiceTokenScoping:
     def test_model_gateway_never_gets_token_even_when_legacy_configured(self, monkeypatch):
-        """Even with a legacy fleet-shared CSP_SERVICE_TOKEN set, the
+        """Even with a legacy fleet-shared CSP_SERVICE_TOKEN left in the
+        environment (settings no longer read it), the
         model-gateway path never carries it. Agent dispatch uses a signed
         JWT Bearer, not X-CSP-Service-Token (P2.1)."""
         from app.services import proxy_service
 
-        monkeypatch.setattr(
-            proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
-        )
+        monkeypatch.setenv("CSP_SERVICE_TOKEN", "csk-legacy")
         agent_h = build_agent_headers(user_id=1, department=None, agent_id=99)
         assert "X-CSP-Service-Token" not in agent_h
         assert agent_h["Authorization"].startswith("Bearer ")
@@ -116,9 +115,7 @@ class TestServiceTokenScoping:
         must not appear on the wire even when configured."""
         from app.services import proxy_service
 
-        monkeypatch.setattr(
-            proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
-        )
+        monkeypatch.setenv("CSP_SERVICE_TOKEN", "csk-legacy")
         h = build_agent_headers(user_id=1, department=2, agent_id=12345)
         assert "X-CSP-Service-Token" not in h
         assert h["Authorization"].startswith("Bearer ")
@@ -178,9 +175,7 @@ class TestProxyStreamRoutingNeverLeaksToken:
         # http single-label mock target needs the dev SSRF allowances.
         monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
         monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
-        monkeypatch.setattr(
-            proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
-        )
+        monkeypatch.setenv("CSP_SERVICE_TOKEN", "csk-legacy")
         _HeaderCapturingClient.last_headers = {}
         monkeypatch.setattr(
             proxy_service.httpx,
@@ -274,9 +269,7 @@ class TestProxyRequestRoutingNeverLeaksToken:
     def test_model_request_forwards_employee_id_but_never_service_token(self, monkeypatch):
         monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
         monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
-        monkeypatch.setattr(
-            proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
-        )
+        monkeypatch.setenv("CSP_SERVICE_TOKEN", "csk-legacy")
         monkeypatch.setattr(
             proxy_service.settings, "MODEL_GATEWAY_API_KEY", "", raising=False
         )

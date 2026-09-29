@@ -48,7 +48,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
-from app.services.proxy.service import resolve_proxy_tuning
+from app.services.proxy.service import resolve_proxy_tuning, sync_model_deadline
 from app.services.proxy_service import downstream_identity, proxy_request
 from app.services.endpoint_author_service import visible_endpoint_url
 from app.services.relation_resolver import scope_collection_rls
@@ -420,6 +420,7 @@ async def _embed_query(
         # Query-side: must not silently fall through to Triton's documents input.
         embedding_input_role="query",
         tuning=tuning,
+        deadline=sync_model_deadline(),
     )
 
     try:

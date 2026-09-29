@@ -29,12 +29,21 @@ CSP_URL_B = "https://csp-decoder-b.example.test:9000"
 TOKEN = "csk-test-asr-decode"
 
 
+@pytest.fixture(autouse=True)
+def _service_token_file(tmp_path, monkeypatch):
+    path = tmp_path / "asr.token"
+    path.write_text(TOKEN + "\n", encoding="utf-8")
+    monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
+    from app.service_token import reload
+
+    reload()
+
+
 def _settings(**overrides) -> Settings:
     base = dict(
         ASR_DECODE_URL=ENV_URL,
         ASR_DECODER_TOKEN="t",
         CSP_BASE_URL="http://csp.test",
-        CSP_SERVICE_TOKEN=TOKEN,
     )
     base.update(overrides)
     return Settings(**base)

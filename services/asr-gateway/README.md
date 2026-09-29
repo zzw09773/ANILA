@@ -100,7 +100,8 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 | `ASR_PARTIALS_ENABLED` | `1` | 負載旋鈕:設 0 只留定稿,GPU 壓力大減。 |
 | `ASR_OPENCC_MODE` | `off` | `off`/`s2t`/`s2tw`。⚠ 不要用 s2twp(見規劃書 §10)。 |
 | `ASR_MAX_SESSION_SECONDS` | `300` | 單次語音上限;逾時先 flush 再斷。 |
-| `CSP_BASE_URL` / `CSP_SERVICE_TOKEN` / `REDIS_URL` / `JWT_*` | — | 與 anila-studio 同名同義。`CSP_SERVICE_TOKEN` 是撤銷 cache 冷啟動同步用,漏了 cache 永遠不 ready → 所有 WS 被拒。 |
+| `ANILA_SERVICE_TOKEN_FILE` | — | 撤銷 cache 冷啟動同步讀這個憑證檔。路徑有設而檔案不在時失敗即關閉,cache 不 ready,所有 WS 被拒。 |
+| `CSP_BASE_URL` / `REDIS_URL` / `JWT_*` | — | 與 anila-studio 同名同義。 |
 
 > `ASR_ALLOW_HTTP_DECODER` 已於 2026-08-05 **退役**:它從被馴服之後就沒有任何
 > 程式在讀,而名字讀起來像一個安全旗標(維運者設 0 會以為自己關掉了 http)。

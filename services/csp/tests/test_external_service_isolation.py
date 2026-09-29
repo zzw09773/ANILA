@@ -164,8 +164,6 @@ def test_legacy_env_token_cannot_read_either_credential(client, db, monkeypatch)
     from app.services import auth_service
 
     legacy = "csk-legacy-external-iso"
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", legacy, raising=False)
     headers = _admin(client, db)
     _save(client, headers, "speech", base_url=SPEECH_URL, credential=SECRET)
     _save(client, headers, "document_parser", credential=SECRET)
@@ -174,7 +172,7 @@ def test_legacy_env_token_cannot_read_either_credential(client, db, monkeypatch)
             f"/api/internal/external-services/{key}",
             headers={"X-CSP-Service-Token": legacy},
         )
-        assert response.status_code == 403, response.text
+        assert response.status_code == 401, response.text
         assert SECRET not in response.text
 
 

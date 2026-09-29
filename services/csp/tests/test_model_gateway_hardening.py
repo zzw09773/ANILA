@@ -49,7 +49,7 @@ from app.services.service_token_envelope import (
     decode_service_token_envelope,
     encode_service_token_envelope,
 )
-from tests.conftest import make_agent, make_model, make_user
+from tests.conftest import login, make_agent, make_model, make_user
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +118,43 @@ def test_resolve_none_when_no_key(monkeypatch):
     monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "")
     model = SimpleNamespace(id=3, api_key_secret_ref=None)
     assert resolve_model_gateway_key(model) is None
+
+
+def test_unreadable_per_model_secret_does_not_use_global_key(monkeypatch, caplog):
+    from fastapi import HTTPException
+
+    from app.config import settings
+    from app.database import SessionLocal
+    from app.models.alert import Alert
+
+    monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "sk-global-fallback")
+    caplog.set_level("ERROR")
+    model = SimpleNamespace(
+        id=77,
+        name="broken-model",
+        api_key_secret_ref="enc::v1::not-a-real-envelope",
+    )
+    fingerprint = "health:model:77"
+    db = SessionLocal()
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            resolve_model_gateway_key(model)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail == "模型暫時無法使用：憑證無法讀取，請通知管理員"
+        assert "sk-global-fallback" not in caplog.text
+
+        with pytest.raises(HTTPException):
+            resolve_model_gateway_key(model)
+        rows = db.query(Alert).filter(Alert.fingerprint == fingerprint).all()
+        assert len(rows) == 1
+        assert "broken-model" in rows[0].message
+        # 與健康迴圈同一筆、同一句標題，恢復時由健康迴圈結案。
+        assert rows[0].title == "模型 broken-model 憑證無法讀取"
+        for row in rows:
+            db.delete(row)
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_build_response_never_leaks_secret():
@@ -404,6 +441,105 @@ def test_agent_ceiling_deny_blocks_before_dispatch(db):
     assert "機密" in (denies[0].reason or "")
 
 
+_UNREADABLE = "模型暫時無法使用：憑證無法讀取，請通知管理員"
+
+
+def _broken_secret_model(db, name: str) -> ModelRegistry:
+    model = make_model(db, name=name)
+    model.endpoint_url = "https://gateway.example.com/v1"
+    model.api_key_secret_ref = "enc::v1::not-a-real-envelope"
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+def test_admin_probe_and_import_share_unreadable_credential_message(client, db):
+    admin = make_user(db, "cred_unread_admin", role="admin")
+    token = login(client, admin.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    model = _broken_secret_model(db, "cred-unread-probe")
+
+    probed = client.post(f"/api/models/{model.id}/test", headers=headers)
+    assert probed.status_code == 503, probed.text
+    assert probed.json()["detail"] == _UNREADABLE
+
+    checked = client.post(f"/api/models/{model.id}/health-check", headers=headers)
+    assert checked.status_code == 503, checked.text
+    assert checked.json()["detail"] == _UNREADABLE
+
+    imported = client.post(
+        "/api/models/import",
+        headers=headers,
+        json={"source_model_id": model.id},
+    )
+    assert imported.status_code == 503, imported.text
+    assert imported.json()["detail"] == _UNREADABLE
+
+
+def test_health_checker_records_unreadable_credential(db):
+    from app.models.alert import Alert
+    from app.services.health_checker import (
+        _model_probe_targets,
+        apply_model_health_results,
+    )
+
+    model = _broken_secret_model(db, "cred-unread-health")
+    targets = [t for t in _model_probe_targets(db) if t["model_id"] == model.id]
+    assert len(targets) == 1
+    assert targets[0]["credential_error"] == _UNREADABLE
+    target = targets[0]
+    apply_model_health_results(
+        db,
+        [
+            (
+                target["model_id"],
+                target["endpoint_url"],
+                target["name"],
+                target["display_name"],
+                target["prev_status"],
+                HEALTH_UNHEALTHY,
+                target["credential_error"],
+            )
+        ],
+    )
+    db.flush()
+    db.refresh(model)
+    assert model.health_status == HEALTH_UNHEALTHY
+    alert = (
+        db.query(Alert)
+        .filter(Alert.fingerprint == f"health:model:{model.id}")
+        .one()
+    )
+    assert alert.title == f"模型 {model.display_name} 憑證無法讀取"
+    assert model.name in alert.message
+    assert "金鑰無法解密" in alert.message
+
+
+def test_streaming_chat_uses_unreadable_credential_message(client, db, monkeypatch):
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
+    admin = make_user(db, "cred_unread_stream", role="admin")
+    token = login(client, admin.username)
+    model = make_model(db, name="cred-unread-stream")
+    model.endpoint_url = "http://mock-llm:8080/v1"
+    model.api_key_secret_ref = "enc::v1::not-a-real-envelope"
+    db.commit()
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "model": model.name,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert "anila.error" in response.text
+    assert _UNREADABLE in response.text
+    assert "暫時無法使用" in response.text
+
+
 def test_agent_ceiling_allow_task_linked_records_allow(db):
     owner = make_user(db, "agent_owner_allow", role="developer")
     user = make_user(db, "agent_caller_allow")
@@ -420,3 +556,60 @@ def test_agent_ceiling_allow_task_linked_records_allow(db):
     allows = [d for d in _agent_decisions(db, agent.id) if d.decision == "allow"]
     assert len(allows) == 1
     assert allows[0].task_id == task.id
+
+
+def test_unreadable_credential_alert_leaves_the_event_loop(monkeypatch):
+    """在事件迴圈上觸發時，寫警報與寄信交給背景執行緒，且 60 秒內同一模型只送一次。"""
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    from app.services.proxy import headers as headers_mod
+
+    written = []
+    done = threading.Event()
+
+    def fake_write(kwargs):
+        written.append((threading.current_thread().name, kwargs["fingerprint"]))
+        done.set()
+
+    monkeypatch.setattr(headers_mod, "_write_credential_alert", fake_write)
+    model = SimpleNamespace(
+        id=78,
+        name="broken-loop-model",
+        api_key_secret_ref="enc::v1::not-a-real-envelope",
+    )
+
+    async def fail_twice():
+        for _ in range(2):
+            with pytest.raises(HTTPException):
+                resolve_model_gateway_key(model)
+
+    asyncio.run(fail_twice())
+    assert done.wait(5)
+    assert written == [("model-credential-alert", "health:model:78")]
+
+
+def test_failed_credential_alert_write_is_retried_by_the_next_request(monkeypatch):
+    """寫入失敗不佔 60 秒節流，下一個失敗的請求會再送一次。"""
+    from fastapi import HTTPException
+
+    from app.services import alert_detectors
+
+    calls = []
+
+    def broken_emit(**kwargs):
+        calls.append(kwargs["fingerprint"])
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(alert_detectors, "_emit_alert_autocommit", broken_emit)
+    model = SimpleNamespace(
+        id=79,
+        name="broken-ledger-model",
+        api_key_secret_ref="enc::v1::not-a-real-envelope",
+    )
+    for _ in range(2):
+        with pytest.raises(HTTPException):
+            resolve_model_gateway_key(model)
+    assert calls == ["health:model:79", "health:model:79"]

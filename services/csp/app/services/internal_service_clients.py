@@ -550,10 +550,8 @@ def _ensure_one(
             )
             if action == "ok":
                 action = "force_rotated"
-        elif _active_is_legacy_shared(row):
-            # Migration 0027 stored the fleet CSP_SERVICE_TOKEN on this row.
-            # Republishing it, or keeping it for the grace window, leaves the
-            # shared secret able to call router-only endpoints.
+        elif row.is_legacy:
+            # 舊共用祕密不得留在寬限期。換發時 previous 清空。
             action = _claim_new_token(db, row, now, previous_grace=None)
             if action == "ok":
                 action = "replaced_legacy"
@@ -561,8 +559,6 @@ def _ensure_one(
             action = _claim_new_token(db, row, now, previous_grace=grace)
             if action == "ok":
                 action = "rotated"
-        elif _previous_is_legacy_shared(row):
-            action = _clear_legacy_previous(db, row)
         else:
             action = "unchanged"
 
@@ -941,37 +937,6 @@ def _claim_new_token(
     return "ok"
 
 
-def _clear_legacy_previous(db: Session, row: ServiceClient) -> str:
-    """Drop a grace-window copy of the fleet secret without rotating."""
-    expected = row.service_token_lookup_hash
-    previous = row.service_token_previous_lookup_hash
-    result = db.execute(
-        update(ServiceClient)
-        .where(
-            ServiceClient.id == row.id,
-            ServiceClient.service_token_lookup_hash == expected,
-            ServiceClient.service_token_previous_lookup_hash == previous,
-        )
-        .values(
-            service_token_previous_envelope=None,
-            service_token_previous_lookup_hash=None,
-            service_token_previous_expires_at=None,
-        )
-        .execution_options(synchronize_session=False)
-    )
-    if result.rowcount != 1:
-        db.rollback()
-        return "lost"
-    client_name = row.client_name
-    db.expire(row)
-    logger.error(
-        "internal service client %s still trusted the legacy shared token "
-        "during grace; that previous token is no longer accepted",
-        client_name,
-    )
-    return "legacy_previous_cleared"
-
-
 def _finish(
     db: Session,
     name: str,
@@ -1043,33 +1008,10 @@ def _rotation_due(row: ServiceClient, now: datetime, rotate_after: timedelta) ->
     return anchor is None or now - anchor >= rotate_after
 
 
-def _legacy_shared_hash() -> str | None:
-    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-    if not legacy:
-        return None
-    return compute_lookup_hash(legacy)
-
-
 def _hash_is(stored: str | None, expected: str | None) -> bool:
     if not stored or not expected or len(stored) != len(expected):
         return False
     return hmac.compare_digest(stored, expected)
-
-
-def _active_is_legacy_shared(row: ServiceClient) -> bool:
-    """True when this row is the migration-0027 fleet secret.
-
-    ``is_legacy`` is the seed flag. A row whose active hash still equals
-    the current ``CSP_SERVICE_TOKEN`` is the same credential even if the
-    flag was cleared.
-    """
-    if row.is_legacy:
-        return True
-    return _hash_is(row.service_token_lookup_hash, _legacy_shared_hash())
-
-
-def _previous_is_legacy_shared(row: ServiceClient) -> bool:
-    return _hash_is(row.service_token_previous_lookup_hash, _legacy_shared_hash())
 
 
 def _spec_from_json(item: object) -> InternalServiceClientSpec | None:

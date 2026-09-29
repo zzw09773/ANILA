@@ -25,8 +25,9 @@ import pytest
 import pytest_asyncio
 
 os.environ.setdefault("CSP_BASE_URL", "http://csp:8000")
-os.environ.setdefault("CSP_SERVICE_TOKEN", "pytest-fixed-not-a-real-token")
-os.environ["ANILA_ROUTER_STATE_DIR"] = tempfile.mkdtemp(prefix="pytest-router-")
+# 共用權杖已退役。import 時 _initialise_token_source 看到非空值會拒絕啟動。
+os.environ.pop("CSP_SERVICE_TOKEN", None)
+os.environ.pop("CSP_BOOTSTRAP_TOKEN", None)
 
 _cwd = os.getcwd()
 os.chdir(tempfile.mkdtemp(prefix="pytest-router-cwd-"))

@@ -1,32 +1,20 @@
 """ANILA Core Router — deployment entrypoint.
 
 The Router's outgoing CSP credential is a per-client token that CSP
-provisions itself. Nobody copies it into an env file. Resolution order:
+provisions itself. Nobody copies it into an env file. The only source
+is ``ANILA_SERVICE_TOKEN_FILE`` (compose:
+``/run/anila/service-clients/router-primary/token``, written by CSP,
+mode 0640). Re-read when the file changes, on a timer, and once after
+CSP returns 401 or 403. A missing file is ``file_missing``; an
+unreadable or empty file is ``file_error``. Both keep being re-read so
+a later CSP write is picked up. The plaintext is never logged.
 
-    1. **Token file** — ``ANILA_SERVICE_TOKEN_FILE``
-       (compose: ``/run/anila/service-clients/router-primary/token``,
-       written by CSP, mode 0640). Re-read when the file changes, on a
-       timer, and once after CSP returns 401 or 403.
-       If this path is configured, no other credential is used.
-       A missing file is ``file_missing``; an unreadable or empty file
-       is ``file_error``. Both keep being re-read so a later CSP write
-       is picked up. The plaintext is never logged.
-
-    2. **State file** — ``{ANILA_ROUTER_STATE_DIR}/service_token.json``.
-       Fallback only when ``ANILA_SERVICE_TOKEN_FILE`` is unset.
-
-    3. **CSP_BOOTSTRAP_TOKEN** — legacy escape hatch, used only when the
-       token file is unset and the state file is empty. The value is
-       copied into the state file. This does not call CSP.
-
-    4. **CSP_SERVICE_TOKEN** — the old fleet-wide secret, used only when
-       the token file is unset and the earlier fallbacks are empty.
-       Router-only CSP endpoints reject it once ``router-primary`` has
-       its own credential (403 ``legacy_env_cannot_satisfy_client_type``).
+A non-empty ``CSP_SERVICE_TOKEN`` or ``CSP_BOOTSTRAP_TOKEN`` in the
+process environment refuses startup. Those names are not settings
+fields, and there is no state-file credential.
 
 Startup logs the source name (``file``, ``file_missing``, ``file_error``,
-``state_file``, ``bootstrap``, ``legacy_env``, or ``none``) and
-``/health`` reports it as ``token_source``. The plaintext is never logged.
+or ``none``) and ``/health`` reports it as ``token_source``.
 
 Usage:
     uvicorn main:app --host 0.0.0.0 --port 9000
@@ -66,16 +54,11 @@ app = _router_server.create_router_app()
 
 
 CSP_BASE_URL = os.environ.get("CSP_BASE_URL", "http://csp:8000").rstrip("/")
-ROUTER_STATE_DIR = Path(
-    os.environ.get("ANILA_ROUTER_STATE_DIR", "/var/lib/anila-router")
-)
-ROUTER_STATE_FILE = ROUTER_STATE_DIR / "service_token.json"
-ROUTER_CLIENT_NAME = "router-primary"
 
 # In-memory cache of the s2s token used in CSP-bound requests.
-# ``file`` is the CSP-provisioned credential. The other names are fallbacks.
+# Only the CSP-provisioned file is a credential.
 _service_token: str = ""
-# file | file_missing | file_error | state_file | bootstrap | legacy_env | none
+# file | file_missing | file_error | none
 _token_source: str = "none"
 _file_mtime_ns: int | None = None
 _token_watch_task: asyncio.Task | None = None
@@ -118,62 +101,56 @@ def _token_file_disposition(path: Path) -> str:
     return "ready"
 
 
+def _refuse_legacy_token_env() -> None:
+    """共用權杖已退役。環境裡還留著非空值就拒絕啟動。"""
+    present = []
+    if _legacy_env_token():
+        present.append("CSP_SERVICE_TOKEN")
+    if _bootstrap_env_token():
+        present.append("CSP_BOOTSTRAP_TOKEN")
+    if not present:
+        return
+    names = "、".join(present)
+    raise RuntimeError(
+        f"拒絕啟動：請從 .env 刪除 {names}。"
+        "各服務已改讀 ANILA_SERVICE_TOKEN_FILE 的專屬憑證，不再使用共用權杖。"
+    )
+
+
 def _load_service_token() -> tuple[str, str]:
     """Resolve the Router's outgoing s2s token.
 
     Returns ``(token, source)``. Source is ``file``, ``file_missing``,
-    ``file_error``, ``state_file``, ``bootstrap``, ``legacy_env``, or
-    ``none``. Never raises and never logs the token. When
-    ``ANILA_SERVICE_TOKEN_FILE`` is set, a missing file is
-    ``file_missing`` and an unreadable or empty file is ``file_error``.
-    Neither falls through to another credential. State file, bootstrap,
-    and the legacy env secret are used only when that path is unset.
+    ``file_error``, or ``none``. Never logs the token. The state file
+    and the retired shared secrets are not credentials.
     """
     token_file = _service_token_file_path()
-    if token_file is not None:
-        disposition = _token_file_disposition(token_file)
-        if disposition == "missing":
-            logger.error(
-                "Router token file is missing; not using fallback credentials"
-            )
-            return "", "file_missing"
-        if disposition == "error":
-            return "", "file_error"
-        if disposition == "ready":
-            try:
-                token = token_file.read_text(encoding="utf-8").strip()
-            except OSError as exc:
-                logger.error(
-                    "Router token file is unreadable (%s); not using fallback credentials",
-                    exc.__class__.__name__,
-                )
-                return "", "file_error"
-            if not token:
-                logger.error(
-                    "Router token file is empty; not using fallback credentials"
-                )
-                return "", "file_error"
-            return token, "file"
+    if token_file is None:
+        return "", "none"
+    disposition = _token_file_disposition(token_file)
+    if disposition == "missing":
+        logger.error(
+            "Router token file is missing; not using fallback credentials"
+        )
+        return "", "file_missing"
+    if disposition == "error":
         return "", "file_error"
-    if ROUTER_STATE_FILE.is_file():
+    if disposition == "ready":
         try:
-            data = json.loads(ROUTER_STATE_FILE.read_text(encoding="utf-8"))
-            token = (data.get("token") or "").strip()
-            if token:
-                return token, "state_file"
-        except (OSError, json.JSONDecodeError) as exc:
+            token = token_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
             logger.error(
-                "Router state file %s unreadable: %s. Falling back.",
-                ROUTER_STATE_FILE,
-                exc,
+                "Router token file is unreadable (%s); not using fallback credentials",
+                exc.__class__.__name__,
             )
-    bootstrap = _bootstrap_env_token()
-    if bootstrap:
-        return bootstrap, "bootstrap"
-    legacy = _legacy_env_token()
-    if legacy:
-        return legacy, "legacy_env"
-    return "", "none"
+            return "", "file_error"
+        if not token:
+            logger.error(
+                "Router token file is empty; not using fallback credentials"
+            )
+            return "", "file_error"
+        return token, "file"
+    return "", "file_error"
 
 
 def _remember_file_mtime() -> None:
@@ -225,55 +202,10 @@ def _reload_service_token(force: bool = False) -> None:
     logger.info("Router service token reloaded from %s", source)
 
 
-def _write_state_file(token: str, *, source_meta: dict) -> None:
-    """Persist ``token`` to the state file with mode 0600 (best effort)."""
-    ROUTER_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "token": token,
-        "previous_token": None,
-        "previous_expires_at": None,
-        "client_name": ROUTER_CLIENT_NAME,
-        "csp_url": CSP_BASE_URL,
-        **source_meta,
-        "schema_version": 1,
-    }
-    tmp = ROUTER_STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-    tmp.replace(ROUTER_STATE_FILE)
-
-
-def _seed_state_from_bootstrap(token: str) -> None:
-    """Copy the legacy bootstrap env value into the state file once.
-
-    This is not an HTTP exchange with CSP. It runs only when
-    ``ANILA_SERVICE_TOKEN_FILE`` is unset and the state file is empty.
-    """
-    if ROUTER_STATE_FILE.is_file():
-        return
-    _write_state_file(
-        token,
-        source_meta={
-            "issued_at": None,
-            "label": None,
-            "credential_id": None,
-            "note": "seeded from CSP_BOOTSTRAP_TOKEN env at first start",
-        },
-    )
-    logger.info(
-        "Router state file seeded from CSP_BOOTSTRAP_TOKEN at %s",
-        ROUTER_STATE_FILE,
-    )
-
-
 def _initialise_token_source() -> None:
     """Resolve the credential and remember which source won."""
+    _refuse_legacy_token_env()
     token, source = _load_service_token()
-    if source == "bootstrap" and token:
-        _seed_state_from_bootstrap(token)
     _publish_service_token(token, source)
     if source in {"file_error", "file_missing"}:
         logger.error(
@@ -292,9 +224,7 @@ def _initialise_token_source() -> None:
         return
     logger.warning(
         "Router service token source=none csp=%s. Expected "
-        "ANILA_SERVICE_TOKEN_FILE to be provisioned by CSP. State file, "
-        "CSP_BOOTSTRAP_TOKEN, and CSP_SERVICE_TOKEN are used only when "
-        "that path is unset.",
+        "ANILA_SERVICE_TOKEN_FILE to be provisioned by CSP.",
         CSP_BASE_URL,
     )
 
@@ -512,5 +442,4 @@ async def primary_status() -> dict:
         "ttl_seconds": PRIMARY_TTL_SECONDS,
         "service_token_source": _token_source,
         "csp_base_url": CSP_BASE_URL,
-        "state_file": str(ROUTER_STATE_FILE),
     }

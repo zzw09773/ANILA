@@ -24,6 +24,13 @@ _trim() {
 }
 _env_key_re() { printf '^[[:space:]]*(export[[:space:]]+)?%s[[:space:]]*=' "$1"; }
 env_has_key() { grep -qE "$(_env_key_re "$1")" .env 2>/dev/null; }
+# 空白、只有空白、或空引號都算沒設。UID/GID/DOCKER_GID 用這個判斷，
+# 再交給 set_env 換掉那一行，避免檔尾再追加一筆。
+env_has_value() {
+  local val
+  val="$(_trim "$(get_env "$1")")"
+  [ -n "$val" ]
+}
 
 # .env 在正式機是指向 state/.env 的 symlink。直接 mv 到 .env 會把連結
 # 換成一般檔，密鑰落在版本目錄，下一版又會重新產生 SECRET_KEY。

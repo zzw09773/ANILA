@@ -17,7 +17,6 @@ async def test_cold_start_sync_sends_the_token_file(monkeypatch, tmp_path):
     token_file = tmp_path / "token"
     token_file.write_text("svc-token-from-file\n", encoding="utf-8")
     monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(token_file))
-    monkeypatch.setattr(revocation_cache_mod.settings, "CSP_SERVICE_TOKEN", "")
 
     seen: dict[str, str] = {}
 

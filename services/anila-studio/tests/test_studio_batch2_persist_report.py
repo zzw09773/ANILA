@@ -21,7 +21,6 @@ BASE = settings.CSP_BASE_URL
 @respx.mock
 async def test_job_created_report_sends_requester_user_id(monkeypatch):
     monkeypatch.setattr(settings, "STUDIO_ARTIFACT_REPORTING", True, raising=False)
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-x", raising=False)
     route = respx.post(f"{BASE}/v1/artifact-jobs").mock(return_value=httpx.Response(201, json={"job_id": "j1"}))
     await job_reporting.report_job_created(
         bearer="b", job_id="j1", artifact_type="slides", status="queued",
@@ -36,7 +35,6 @@ async def test_job_created_report_sends_requester_user_id(monkeypatch):
 @respx.mock
 async def test_non_numeric_task_id_is_dropped_not_sent(monkeypatch):
     monkeypatch.setattr(settings, "STUDIO_ARTIFACT_REPORTING", True, raising=False)
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", "csk-x", raising=False)
     route = respx.post(f"{BASE}/v1/artifact-jobs").mock(return_value=httpx.Response(201, json={"job_id": "j1"}))
     await job_reporting.report_job_created(
         bearer="b", job_id="j1", artifact_type="slides", status="queued",

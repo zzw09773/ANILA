@@ -9,6 +9,7 @@ without re-pinning ``services/csp/requirements.txt``.
 
 from app.services.triton_grpc.client import (
     TritonEmbedError,
+    TritonTimeout,
     embed_texts,
     parse_grpc_endpoint,
     probe_triton_health,
@@ -17,6 +18,7 @@ from app.services.triton_grpc.client import (
 
 __all__ = [
     "TritonEmbedError",
+    "TritonTimeout",
     "embed_texts",
     "parse_grpc_endpoint",
     "probe_triton_health",

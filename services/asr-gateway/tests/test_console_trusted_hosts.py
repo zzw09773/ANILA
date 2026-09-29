@@ -16,6 +16,16 @@ from app.decode_endpoint import guard_decode_url
 
 
 @pytest.fixture(autouse=True)
+def _service_token_file(tmp_path, monkeypatch):
+    path = tmp_path / "asr.token"
+    path.write_text("csk-asr\n", encoding="utf-8")
+    monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
+    from app.service_token import reload
+
+    reload()
+
+
+@pytest.fixture(autouse=True)
 def _clear_console_host_cache():
     reset_console_trusted_hosts()
     yield
@@ -32,7 +42,6 @@ async def test_console_host_allows_the_decoder_when_env_list_is_empty(monkeypatc
     )
     settings = Settings(
         CSP_BASE_URL="http://csp.test",
-        CSP_SERVICE_TOKEN="csk-asr",
     )
     await refresh_console_trusted_hosts(settings, force=True)
     guard_decode_url("http://asr-decoder:9000")
@@ -58,7 +67,6 @@ async def test_removed_host_stops_passing_after_the_stale_window(monkeypatch):
     respx.get("http://csp.test/api/internal/trusted-hosts").mock(side_effect=answer)
     settings = Settings(
         CSP_BASE_URL="http://csp.test",
-        CSP_SERVICE_TOKEN="csk-asr",
     )
     await refresh_console_trusted_hosts(settings, force=True)
     guard_decode_url("http://asr-decoder:9000")

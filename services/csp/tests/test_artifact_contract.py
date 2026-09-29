@@ -31,7 +31,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.artifact import Artifact, ArtifactJob, ArtifactVersion, ExportRecord
 from app.models.classification import ClassificationEvent
 from app.models.policy_decision import PolicyDecision
@@ -45,10 +44,11 @@ _SVC = {"X-CSP-Service-Token": SVC_TOKEN}
 
 
 @pytest.fixture(autouse=True)
-def _svc_token(monkeypatch):
-    """本模組內把 legacy CSP_SERVICE_TOKEN 設成已知值,供 /v1 service 面測試
-    (function-scoped,測完自動還原,不外洩到別模組)。"""
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", SVC_TOKEN)
+def _svc_token(db):
+    """/v1 服務面用專屬 service_clients 列，不再用共用權杖。"""
+    from tests.conftest import install_service_caller
+
+    install_service_caller(db, SVC_TOKEN, name="artifact-contract")
     yield
 
 

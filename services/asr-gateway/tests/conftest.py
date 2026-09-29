@@ -20,6 +20,8 @@ _CORE_SRC = _REPO_ROOT / "packages" / "anila-core" / "src"
 if _CORE_SRC.is_dir() and str(_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_CORE_SRC))
 
+os.environ.pop("CSP_SERVICE_TOKEN", None)
+os.environ.pop("CSP_BOOTSTRAP_TOKEN", None)
 os.environ.setdefault("ASR_DECODE_URL", "https://decoder.invalid:9000")
 os.environ.setdefault("ASR_DECODER_TOKEN", "conftest-token")
 

@@ -39,12 +39,21 @@ def _clean_cache():
     reset_decode_endpoint_cache()
 
 
+@pytest.fixture(autouse=True)
+def _service_token_file(tmp_path, monkeypatch):
+    path = tmp_path / "asr.token"
+    path.write_text("csk-test\n", encoding="utf-8")
+    monkeypatch.setenv("ANILA_SERVICE_TOKEN_FILE", str(path))
+    from app.service_token import reload
+
+    reload()
+
+
 def _settings(**overrides) -> Settings:
     base = dict(
         ASR_DECODE_URL=ENV_URL,
         ASR_DECODER_TOKEN="shared-token",
         CSP_BASE_URL="http://csp.test",
-        CSP_SERVICE_TOKEN="csk-test",
     )
     base.update(overrides)
     return Settings(**base)

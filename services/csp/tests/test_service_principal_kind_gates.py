@@ -171,16 +171,13 @@ def test_router_primary_rejects_worker_client_type(client: TestClient, db):
     assert "client_type" in resp.json()["detail"]
 
 
-def test_revocations_still_accepts_legacy_env_token(
+def test_revocations_rejects_legacy_env_token(
     client: TestClient, db, monkeypatch
 ):
-    """Unattributed env fallback still admitted when no client_type gate."""
-    from app.config import settings as canonical_settings
+    """共用權杖不再能讀撤銷清單。"""
     from app.services import auth_service
 
     token = "csk-kindgate-legacy-revocations"
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", token, raising=False)
 
     admin = make_user(db, username="kindgate-rev-admin", role="admin")
     db.add(
@@ -198,7 +195,8 @@ def test_revocations_still_accepts_legacy_env_token(
         params={"since": since},
         headers={"X-CSP-Service-Token": token},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == "服務權杖無效"
 
 
 def test_as_str_set_rejects_bare_str():
@@ -215,9 +213,8 @@ def test_as_str_set_rejects_bare_str():
 
 
 def test_r2_helper_refuses_unattributed_when_client_types_set(db):
-    """Even with allow_legacy_env=True, a client_type restriction must
-    refuse identity is None — otherwise deactivating the owning row
-    silently widens admission.
+    """A client_type restriction must refuse identity is None —
+    otherwise deactivating the owning row silently widens admission.
     """
     from fastapi import HTTPException
 
@@ -227,24 +224,18 @@ def test_r2_helper_refuses_unattributed_when_client_types_set(db):
             db=db,
             allowed_kinds=("service_client",),
             allowed_client_types=("router",),
-            allow_legacy_env=True,
             endpoint="GET /api/models/router-primary",
         )
     assert ei.value.status_code == 403
-    assert "client_type" in ei.value.detail
+    assert "沒有服務身分" in ei.value.detail
 
 
-def test_f6_env_rotated_without_db_row_returns_403_on_router_primary(
+def test_f6_env_rotated_without_db_row_returns_401_on_router_primary(
     client: TestClient, db, monkeypatch
 ):
-    """LANDMINE: rotate CSP_SERVICE_TOKEN in .env without rotating the
-    ``router-primary`` service_clients row → callers present the new
-    secret → DB miss → env fallback (identity None) → kind gate 403.
-
-    Exact ``detail`` string is what operators see; keep in sync with
-    ``docs/runbooks/service-token-cutover.md`` Hazard section.
+    """共用權杖不再是呼叫者。只換環境裡的祕密、資料庫列還是舊的，
+    呈現新祕密得到 401，到不了 kind gate。
     """
-    from app.config import settings as canonical_settings
     from app.services import auth_service
 
     _plant_router_primary(db)
@@ -263,29 +254,47 @@ def test_f6_env_rotated_without_db_row_returns_403_on_router_primary(
     db.commit()
 
     # Operator rotated .env only — CSP now holds the new secret.
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", new, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", new, raising=False)
 
     resp = client.get(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": new},
     )
-    assert resp.status_code == 403, (
-        f"expected 403 when env rotated without DB row, "
+    assert resp.status_code == 401, (
+        f"expected 401 when the shared token is not a service identity, "
         f"got {resp.status_code}: {resp.text}"
     )
-    expected_detail = (
-        "GET /api/models/router-primary 要求 client_type=['router'];"
-        "未歸屬的 legacy env token 無法證明 client_type"
-    )
-    assert resp.json() == {"detail": expected_detail}
+    assert resp.json()["detail"] == "服務權杖無效"
 
-    # Control: presenting the still-current DB secret still works.
-    ok = client.get(
+    # is_legacy 列上的現用權杖也不是身分。
+    legacy = client.get(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": old},
     )
-    assert ok.status_code == 200, ok.text
+    assert legacy.status_code == 401, legacy.text
+    assert "api_key" not in legacy.text
+
+
+def test_legacy_row_cannot_read_asr_primary(client: TestClient, db):
+    """作用中的 is_legacy 列讀不到 asr-primary，回應裡也沒有 api_key。"""
+    _plant_asr_primary(db)
+    token = "csk-kindgate-legacy-asr"
+    db.add(
+        ServiceClient(
+            client_name="asr-gateway",
+            client_type="asr",
+            service_token_envelope=encode_service_token_envelope(token),
+            service_token_lookup_hash=compute_lookup_hash(token),
+            is_legacy=True,
+            is_active=True,
+        )
+    )
+    db.commit()
+    resp = client.get(
+        "/api/models/asr-primary",
+        headers={"X-CSP-Service-Token": token},
+    )
+    assert resp.status_code == 401, resp.text
+    assert "api_key" not in resp.text
 
 
 def test_r2_inactive_router_primary_row_fails_closed_on_router_primary(
@@ -294,18 +303,15 @@ def test_r2_inactive_router_primary_row_fails_closed_on_router_primary(
     """INVARIANT: client_type restriction must not vanish when the owning
     service_clients row is deactivated (ordinary rotate/cutover action).
 
-    Production shape: fleet secret lives in service_clients
-    client_name='router-primary'. Deactivate → DB miss → env fallback
-    → identity None. Gate must 403, not silently allow.
+    Production shape: the token lives on service_clients
+    client_name='router-primary'. Deactivate → DB miss → 401.
+    The shared env value must not become a caller.
 
     PROVE RED (helper layer): see
     ``test_r2_helper_refuses_unattributed_when_client_types_set`` — flip
-    the ``client_types is not None`` fail-closed while keeping
-    ``allow_legacy_env=True``. Call site here uses ``allow_legacy_env=False``
-    as a second belt; mutating only the helper branch will not redden
-    *this* integration test.
+    the ``client_types is not None`` fail-closed there; this integration
+    test only covers the route wiring.
     """
-    from app.config import settings as canonical_settings
     from app.services import auth_service
 
     _plant_router_primary(db)
@@ -326,19 +332,16 @@ def test_r2_inactive_router_primary_row_fails_closed_on_router_primary(
     row.is_active = False
     db.commit()
 
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", fleet, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", fleet, raising=False)
 
     resp = client.get(
         "/api/models/router-primary",
         headers={"X-CSP-Service-Token": fleet},
     )
-    assert resp.status_code == 403, (
-        f"expected fail-closed 403 after deactivating owning row, "
+    assert resp.status_code == 401, (
+        f"expected fail-closed 401 after deactivating owning row, "
         f"got {resp.status_code}: {resp.text}"
     )
-    detail = resp.json()["detail"]
-    assert "client_type" in detail or "legacy" in detail.lower()
+    assert resp.json()["detail"] == "服務權杖無效"
 
 
 def test_r4_denial_writes_diagnosable_audit_without_secrets(

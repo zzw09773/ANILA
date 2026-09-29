@@ -25,7 +25,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.conversation import Conversation
 from app.models.handoff import Handoff
 from app.models.message import Message
@@ -38,8 +37,10 @@ _SVC = {"X-CSP-Service-Token": SVC_TOKEN}
 
 
 @pytest.fixture(autouse=True)
-def _svc_token(monkeypatch):
-    monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", SVC_TOKEN)
+def _svc_token(db):
+    from tests.conftest import install_service_caller
+
+    install_service_caller(db, SVC_TOKEN, name="p24-a01")
     yield
 
 

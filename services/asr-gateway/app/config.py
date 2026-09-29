@@ -79,10 +79,7 @@ class Settings(BaseSettings):
     # 個檔的 VENDORED 標頭),它們直接讀 settings.<NAME>。改名 = 副本壞掉,
     # 而且要到 runtime 才炸。新增欄位請放到本區塊之外。
     CSP_BASE_URL: str = "http://csp:8000"
-    # revocation cache 冷啟動要拿它以 X-CSP-Service-Token 打 csp 的
-    # /api/auth/revocations 做全量同步。漏了它 cache 永遠不 ready,fail-closed
-    # 之下所有 WS 一律被拒,而症狀長得像 auth 壞掉。
-    CSP_SERVICE_TOKEN: str = ""
+    # 撤銷清單冷啟動讀 ANILA_SERVICE_TOKEN_FILE，不讀共用權杖。
     REDIS_URL: str = "redis://redis:6379/0"
     REDIS_REVOCATION_CHANNEL: str = "anila:auth:token-revoke"
     JWT_ALGORITHMS: tuple[str, ...] = ("RS256",)

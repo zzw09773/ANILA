@@ -313,8 +313,10 @@ async def lifespan(app: FastAPI):
     from app.services.startup_security import (
         assert_card_dev_bypass_not_in_a_real_boot,
         assert_intranet_lockdown_consistency,
+        assert_legacy_shared_tokens_absent,
         assert_no_dev_defaults,
     )
+    assert_legacy_shared_tokens_absent()
     assert_no_dev_defaults()
     # Branch SSO: 驗證單一 ANILA_AUTH_MODE，避免 auth policy 自相矛盾。
     assert_intranet_lockdown_consistency()

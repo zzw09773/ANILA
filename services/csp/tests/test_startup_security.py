@@ -161,3 +161,25 @@ def test_empty_secret_key_raises_even_in_dev(monkeypatch, reload_startup_securit
     with pytest.raises(RuntimeError) as excinfo:
         ss.assert_no_dev_defaults()
     assert "SECRET_KEY" in str(excinfo.value)
+
+
+def test_legacy_shared_token_refuses_startup(monkeypatch):
+    from app.config import settings
+    from app.services.startup_security import assert_legacy_shared_tokens_absent
+
+    monkeypatch.delenv("CSP_SERVICE_TOKEN", raising=False)
+    monkeypatch.delenv("CSP_BOOTSTRAP_TOKEN", raising=False)
+    assert_legacy_shared_tokens_absent()
+
+    monkeypatch.setenv("CSP_SERVICE_TOKEN", "still-here")
+    with pytest.raises(RuntimeError, match="刪除") as excinfo:
+        assert_legacy_shared_tokens_absent()
+    assert "CSP_SERVICE_TOKEN" in str(excinfo.value)
+
+    monkeypatch.delenv("CSP_SERVICE_TOKEN")
+    monkeypatch.setenv("CSP_BOOTSTRAP_TOKEN", "still-here")
+    with pytest.raises(RuntimeError, match="CSP_BOOTSTRAP_TOKEN"):
+        assert_legacy_shared_tokens_absent()
+
+    monkeypatch.delenv("CSP_BOOTSTRAP_TOKEN")
+    assert_legacy_shared_tokens_absent()

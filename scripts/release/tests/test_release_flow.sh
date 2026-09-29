@@ -1273,6 +1273,8 @@ test_optional_service_commands_name_compose_file_and_project() {
   grep -q 'current/compose.yaml' "$doc" || { echo "UPDATE.md 的指令沒有 compose 檔"; return 1; }
   grep -q '這包不含文件解析服務' "$doc" || { echo "沒有說明文件解析不在出貨包"; return 1; }
   grep -q '硬連結' "$doc" || { echo "沒有說明快照的磁碟影響"; return 1; }
+  grep -q -- '--profile maint' "$script" || { echo "啟動指令沒有 maint profile"; return 1; }
+  grep -q -- '--profile maint' "$doc" || { echo "UPDATE.md 沒有 maint profile"; return 1; }
 }
 
 test_dev_secret_flag_is_warned_then_refused() {
@@ -2431,6 +2433,176 @@ check "跨裝置還原改成複製" test_share_restore_stage_falls_back_on_exdev
 check "第二個更新拿不到鎖就停" test_second_run_stops_without_touching_incoming
 check "沒人持有鎖才清暫存" test_stale_incoming_removed_when_lock_is_free
 check "退役腳本被 source 也會停" test_retired_scripts_refuse_when_sourced
+
+_write_platform_env() {
+  local tree="$1"
+  mkdir -p "$tree"
+  cat > "$tree/.env" <<'EOF'
+ANILA_HOST=lab
+SECRET_KEY=k
+ADMIN_PASSWORD=p
+CSP_DB_PASSWORD=d
+CSP_APP_DB_PASSWORD=a
+CODESERVER_PASSWORD=c
+EOF
+  chmod 600 "$tree/.env"
+}
+
+test_host_account_written_from_sudo_and_docker_group() {
+  local tree="$tmp/host-sudo"
+  _write_platform_env "$tree"
+  getent() {
+    if [[ "$1" == group && "$2" == docker ]]; then
+      printf 'docker:x:136:\n'
+      return 0
+    fi
+    command getent "$@"
+  }
+  SUDO_UID=4242 SUDO_GID=2424 ensure_platform_env "$tree"
+  (
+    cd "$tree"
+    [[ "$(get_env UID)" == 4242 ]]
+    [[ "$(get_env GID)" == 2424 ]]
+    [[ "$(get_env DOCKER_GID)" == 136 ]]
+  )
+}
+
+test_host_account_fills_blank_keys() {
+  local tree="$tmp/host-blank"
+  _write_platform_env "$tree"
+  printf '\nUID=\nGID=""\nDOCKER_GID='"'"'   '"'"'\nUID=   \n' >> "$tree/.env"
+  getent() { printf 'docker:x:136:\n'; }
+  SUDO_UID=4242 SUDO_GID=2424 ensure_platform_env "$tree"
+  (
+    cd "$tree"
+    [[ "$(get_env UID)" == 4242 ]]
+    [[ "$(get_env GID)" == 2424 ]]
+    [[ "$(get_env DOCKER_GID)" == 136 ]]
+    [[ "$(grep -cE '^[[:space:]]*(export[[:space:]]+)?UID[[:space:]]*=' .env)" == 1 ]]
+    [[ "$(grep -cE '^[[:space:]]*(export[[:space:]]+)?GID[[:space:]]*=' .env)" == 1 ]]
+    [[ "$(grep -cE '^[[:space:]]*(export[[:space:]]+)?DOCKER_GID[[:space:]]*=' .env)" == 1 ]]
+  )
+}
+
+test_host_account_keeps_existing_values() {
+  local tree="$tmp/host-keep"
+  _write_platform_env "$tree"
+  printf '\nUID=7\nGID=8\nDOCKER_GID=9\n' >> "$tree/.env"
+  getent() { printf 'docker:x:136:\n'; }
+  SUDO_UID=4242 SUDO_GID=2424 ensure_platform_env "$tree"
+  (
+    cd "$tree"
+    [[ "$(get_env UID)" == 7 ]]
+    [[ "$(get_env GID)" == 8 ]]
+    [[ "$(get_env DOCKER_GID)" == 9 ]]
+  )
+}
+
+test_host_account_without_sudo_uses_install_root_owner() {
+  local root="$tmp/acct-root" tree="$tmp/acct-tree"
+  mkdir -p "$root"
+  _write_platform_env "$tree"
+  export ANILA_INSTALL_ROOT="$root"
+  unset SUDO_UID SUDO_GID
+  getent() { printf 'docker:x:136:\n'; }
+  ensure_platform_env "$tree"
+  (
+    cd "$tree"
+    [[ "$(get_env UID)" == "$(stat -c %u "$root")" ]]
+    [[ "$(get_env GID)" == "$(stat -c %g "$root")" ]]
+    [[ "$(get_env DOCKER_GID)" == 136 ]]
+  )
+}
+
+test_postgres_memconf_62_and_755() {
+  local script="$ROOT/infra/docker/postgres-memconf.sh"
+  local mem62="$tmp/meminfo-62" mem755="$tmp/meminfo-755"
+  local cg="$tmp/cgroup-max" small="$tmp/cgroup-small"
+  printf 'MemTotal:       65011712 kB\n' > "$mem62"
+  printf 'MemTotal:       791674880 kB\n' > "$mem755"
+  printf 'max\n' > "$cg"
+  printf '8589934592\n' > "$small"
+  sh -c '
+    set -eu
+    POSTGRES_MEMCONF_LIB=1
+    . "$1"
+    export POSTGRES_MEMINFO="$2" POSTGRES_CGROUP_MAX="$3"
+    kib=$(postgres_visible_kib)
+    postgres_compute "$kib"
+    [ "$shared" = 3968 ] || { echo "62 shared=$shared"; exit 1; }
+    [ "$cache" = 31744 ] || { echo "62 cache=$cache"; exit 1; }
+    [ "$maint" = 1984 ] || { echo "62 maint=$maint"; exit 1; }
+    [ "$work" = 26 ] || { echo "62 work=$work"; exit 1; }
+    export POSTGRES_MEMINFO="$4"
+    kib=$(postgres_visible_kib)
+    postgres_compute "$kib"
+    [ "$shared" = 32768 ] || { echo "755 shared=$shared"; exit 1; }
+    [ "$cache" = 262144 ] || { echo "755 cache=$cache"; exit 1; }
+    [ "$maint" = 2048 ] || { echo "755 maint=$maint"; exit 1; }
+    [ "$work" = 64 ] || { echo "755 work=$work"; exit 1; }
+    export POSTGRES_MEMINFO="$2" POSTGRES_CGROUP_MAX="$5"
+    kib=$(postgres_visible_kib)
+    [ "$kib" = 8388608 ] || { echo "cgroup kib=$kib"; exit 1; }
+    postgres_compute "$kib"
+    [ "$shared" = 512 ] || { echo "cgroup shared=$shared"; exit 1; }
+  ' sh "$script" "$mem62" "$cg" "$mem755" "$small"
+}
+
+test_postgres_memconf_logs_chosen_values() {
+  local bin="$tmp/pg-bin" script="$ROOT/infra/docker/postgres-memconf.sh"
+  mkdir -p "$bin"
+  cat > "$bin/docker-entrypoint.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$POSTGRES_EXEC_LOG"
+exit 0
+EOF
+  chmod +x "$bin/docker-entrypoint.sh"
+  printf 'MemTotal:       65011712 kB\n' > "$tmp/meminfo-log"
+  printf 'max\n' > "$tmp/cgroup-log"
+  PATH="$bin:$PATH" \
+    POSTGRES_MEMINFO="$tmp/meminfo-log" \
+    POSTGRES_CGROUP_MAX="$tmp/cgroup-log" \
+    POSTGRES_EXEC_LOG="$tmp/pg-exec.log" \
+    sh "$script" >"$tmp/pg-out" 2>"$tmp/pg-err"
+  grep -q 'shared_buffers=3968MB' "$tmp/pg-err"
+  grep -q 'work_mem=26MB' "$tmp/pg-err"
+  grep -q 'max_connections=120' "$tmp/pg-exec.log"
+  grep -q 'shared_buffers=3968MB' "$tmp/pg-exec.log"
+}
+
+test_postgres_memconf_unreadable_uses_defaults() {
+  local bin="$tmp/pg-bin-bad" script="$ROOT/infra/docker/postgres-memconf.sh"
+  mkdir -p "$bin"
+  cat > "$bin/docker-entrypoint.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$POSTGRES_EXEC_LOG"
+exit 0
+EOF
+  chmod +x "$bin/docker-entrypoint.sh"
+  printf 'MemTotal:       0 kB\n' > "$tmp/meminfo-zero"
+  printf 'MemTotal:       nope kB\n' > "$tmp/meminfo-bad"
+  run_one() {
+    PATH="$bin:$PATH" \
+      POSTGRES_MEMINFO="$1" \
+      POSTGRES_CGROUP_MAX="$2" \
+      POSTGRES_EXEC_LOG="$3" \
+      sh "$script" >"$tmp/pg-bad-out" 2>"$tmp/pg-bad-err"
+    grep -q '警告' "$tmp/pg-bad-err"
+    grep -q '^postgres -c max_connections=120$' "$3"
+    ! grep -q 'shared_buffers' "$3"
+  }
+  run_one "$tmp/meminfo-zero" "$tmp/cgroup-missing" "$tmp/pg-zero.log"
+  run_one "$tmp/meminfo-bad" "$tmp/cgroup-missing" "$tmp/pg-bad.log"
+  run_one "$tmp/meminfo-absent" "$tmp/cgroup-missing" "$tmp/pg-absent.log"
+}
+
+check "安裝腳本寫入 UID GID DOCKER_GID" test_host_account_written_from_sudo_and_docker_group
+check "空白的主機帳號會就地補上" test_host_account_fills_blank_keys
+check "已設的主機帳號不被覆寫" test_host_account_keeps_existing_values
+check "沒有 sudo 時用安裝根目錄的擁有者" test_host_account_without_sudo_uses_install_root_owner
+check "Postgres 記憶體計算 62GB 與 755GB" test_postgres_memconf_62_and_755
+check "Postgres 啟動時記下算出的參數" test_postgres_memconf_logs_chosen_values
+check "讀不到記憶體時用 Postgres 內建預設" test_postgres_memconf_unreadable_uses_defaults
 
 if [[ "$_fail_count" -ne 0 ]]; then
   printf '%s 項失敗\n' "$_fail_count" >&2

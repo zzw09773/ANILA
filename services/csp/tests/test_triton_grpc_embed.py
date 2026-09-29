@@ -273,3 +273,39 @@ def test_join_upstream_path_not_used_for_triton(monkeypatch):
         )
     )
     assert called["join"] == 0
+
+
+@pytest.mark.parametrize(
+    ("error_cls", "expected_calls"),
+    [("TritonTimeout", 1), ("TritonEmbedError", _PROXY_TUNING.max_retries)],
+)
+def test_triton_timeout_is_not_retried(monkeypatch, error_cls, expected_calls):
+    """逾時代表上游已經在算，再送一次只加重負載；其他錯誤照舊重試。"""
+    from app.services import triton_grpc
+
+    calls = {"n": 0}
+    error = getattr(triton_grpc, error_cls)
+
+    def fake_embed(endpoint_url, model_name, texts, *, role, timeout_s=30.0):
+        calls["n"] += 1
+        raise error("upstream failed")
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("app.services.triton_grpc.embed_texts", fake_embed)
+    monkeypatch.setattr(proxy_impl.asyncio, "sleep", no_sleep)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            proxy_impl.proxy_request(
+                model=_model(),
+                api_key_id=None,
+                user_id=1,
+                department_id=None,
+                request_body={"model": "nv-embed-v2", "input": ["doc"]},
+                endpoint_path="/v1/embeddings",
+                tuning=_PROXY_TUNING,
+            )
+        )
+    assert calls["n"] == expected_calls

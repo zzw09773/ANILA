@@ -1264,11 +1264,6 @@ def get_router_primary(
         db=db,
         allowed_kinds=("service_client",),
         allowed_client_types=("router",),
-        # Must be False: unattributed legacy cannot prove client_type
-        # (helper also refuse-closed if these ever disagree).
-        # LANDMINE: rotating CSP_SERVICE_TOKEN in .env without rotating
-        # the router-primary DB row → identity is None → 403 here.
-        allow_legacy_env=False,
         endpoint="GET /api/models/router-primary",
     )
     model = (
@@ -1388,7 +1383,6 @@ def get_slides_primary(
             db=db,
             allowed_kinds=("service_client",),
             allowed_client_types=None,
-            allow_legacy_env=True,
             endpoint="GET /api/models/slides-primary",
         )
         is_svc = True
@@ -1558,7 +1552,6 @@ def get_asr_primary(
             db=db,
             allowed_kinds=("service_client",),
             allowed_client_types=None,
-            allow_legacy_env=True,
             endpoint="GET /api/models/asr-primary",
         )
         is_svc = True
@@ -1676,7 +1669,7 @@ async def _probe_embedding_native_dim(
     never trust a configured value. Caller owns the session lifecycle.
     """
     from anila_core.memory.long_term import EMBED_DIM
-    from app.services.proxy.service import proxy_request
+    from app.services.proxy.service import proxy_request, sync_model_deadline
 
     api_version = getattr(model, "api_version", None)
     if api_version not in ("v1", "v2"):
@@ -1692,6 +1685,7 @@ async def _probe_embedding_native_dim(
             embedding_input_role="query",
             record_usage=False,
             tuning=tuning,
+            deadline=sync_model_deadline(),
         )
         vec = response["data"][0]["embedding"]
     except HTTPException:

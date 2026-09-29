@@ -1,11 +1,10 @@
 """anila-studio 打 CSP 用的服務憑證。
 
 ``ANILA_SERVICE_TOKEN_FILE`` 有設時只讀那個檔。檔案不在是
-``file_missing``，讀不到或是空的是 ``file_error``。兩種都不改用
-``CSP_SERVICE_TOKEN``。檔案變更（mtime）時重讀；呼叫端在 401／403
+``file_missing``，讀不到或是空的是 ``file_error``。路徑沒設時來源是
+``none``。檔案變更時重讀；呼叫端在 401／403
 之後應再呼叫 :func:`reload` ``force=True`` 一次。
 
-路徑沒設時才用 ``CSP_SERVICE_TOKEN``，來源是 ``legacy_env`` 或 ``none``。
 日誌與健康輸出只記來源名稱，不記明文。
 """
 from __future__ import annotations
@@ -14,8 +13,6 @@ import logging
 import os
 import stat
 from pathlib import Path
-
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +36,21 @@ def token() -> str:
     return _token
 
 
+def assert_no_legacy_shared_token() -> None:
+    """共用權杖已退役。只看環境變數，抓手動 ``docker run -e``。"""
+    present: list[str] = []
+    for name in ("CSP_SERVICE_TOKEN", "CSP_BOOTSTRAP_TOKEN"):
+        if os.environ.get(name, "").strip():
+            present.append(name)
+    if not present:
+        return
+    names = "、".join(present)
+    raise RuntimeError(
+        f"拒絕啟動：請從 .env 刪除 {names}。"
+        "各服務已改讀 ANILA_SERVICE_TOKEN_FILE 的專屬憑證，不再使用共用權杖。"
+    )
+
+
 def headers() -> dict[str, str]:
     value = token()
     if not value:
@@ -55,8 +67,7 @@ def reload(force: bool = False) -> None:
     global _token, _source, _mtime_ns
     path = _path()
     if path is None:
-        legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-        _publish(legacy, "legacy_env" if legacy else "none")
+        _publish("", "none")
         _mtime_ns = None
         return
     # 這個檔案系統覆寫後 mtime 可能不變，所以每次都讀內容。檔案只有一行。

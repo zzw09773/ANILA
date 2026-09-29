@@ -612,12 +612,10 @@ def test_emergency_rotation_publishes_retired_kids_for_the_revocation_cache(
     assert len(seen) == 1
     assert set(seen[0]) == set(published_before)
 
-    from app.config import settings as canonical_settings
-    from app.services import auth_service
+    from tests.conftest import install_service_caller
 
     token = "csk-test-jwt-kid-revoke"
-    monkeypatch.setattr(canonical_settings, "CSP_SERVICE_TOKEN", token, raising=False)
-    monkeypatch.setattr(auth_service.settings, "CSP_SERVICE_TOKEN", token, raising=False)
+    install_service_caller(db, token, name="jwt-kid-revoke", client_type="studio")
     listed = client.get(
         "/api/auth/revocations",
         params={"since": "2020-01-01T00:00:00Z"},

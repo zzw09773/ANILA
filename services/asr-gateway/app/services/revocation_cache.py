@@ -12,7 +12,7 @@
 兩邊都不再用共用的 CSP_SERVICE_TOKEN。撤銷判斷邏輯仍須與 studio 那份一致。
 
 ⚠ fail-closed 姿態一併繼承:cache 沒 ready 時一律拒絕認證。對 gateway 而言就是 Redis 或 csp 一倒,ASR 全斷。
-隱性相依:app.config.settings 同名欄位(CSP_BASE_URL、CSP_SERVICE_TOKEN、REDIS_URL、REDIS_REVOCATION_CHANNEL、REVOCATION_CACHE_TTL_SECONDS、REVOCATION_RECONCILE_INTERVAL_SECONDS、INTERNAL_TIMEOUT_*)。
+隱性相依:app.config.settings 同名欄位(CSP_BASE_URL、REDIS_URL、REDIS_REVOCATION_CHANNEL、REVOCATION_CACHE_TTL_SECONDS、REVOCATION_RECONCILE_INTERVAL_SECONDS、INTERNAL_TIMEOUT_*)。服務憑證只讀 ANILA_SERVICE_TOKEN_FILE。
 
 原檔 docstring:
 ────────────────────────────────────────────────────────────────────────

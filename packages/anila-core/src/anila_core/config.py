@@ -29,7 +29,7 @@ from typing import Optional
 
 try:
     from pydantic_settings import BaseSettings  # type: ignore[import]
-    from pydantic import Field
+    from pydantic import Field, model_validator
     from pydantic_settings import SettingsConfigDict  # type: ignore[import]
 
     class Settings(BaseSettings):
@@ -63,7 +63,10 @@ try:
         )
         csp_service_token: Optional[str] = Field(
             default=None,
-            description="Service-to-service token CSP injects; agents verify this header.",
+            description=(
+                "Router 呼叫 CSP 的服務權杖。只在執行期由 ANILA_SERVICE_TOKEN_FILE "
+                "寫入；環境變數或 .env 裡的舊 CSP_SERVICE_TOKEN 一律不收。"
+            ),
         )
 
         # ── API / Auth ────────────────────────────────────────────────
@@ -92,6 +95,12 @@ try:
             env_file_encoding="utf-8",
             case_sensitive=False,
         )
+
+        @model_validator(mode="after")
+        def _service_token_never_from_env(self) -> "Settings":
+            # 不開 validate_assignment，執行期的 settings.csp_service_token = ... 不經過這裡。
+            object.__setattr__(self, "csp_service_token", None)
+            return self
 
 except ImportError:
     # Fallback when pydantic-settings is not installed

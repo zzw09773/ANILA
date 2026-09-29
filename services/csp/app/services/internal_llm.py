@@ -95,7 +95,11 @@ async def complete_chat(
     呼叫端要在進這裡之前讀完資料庫。這個函式會 ``commit`` 把連線還回池子，
     再走出向 HTTP。失敗丟 :class:`InternalCompletionError`。
     """
-    from app.services.proxy.service import proxy_request, resolve_proxy_tuning
+    from app.services.proxy.service import (
+        proxy_request,
+        resolve_proxy_tuning,
+        sync_model_deadline,
+    )
 
     snapshot = _snapshot(model)
     tuning = resolve_proxy_tuning(db)
@@ -116,6 +120,7 @@ async def complete_chat(
             usage_kind="inference" if on_behalf_of_user else "platform",
             request_type_override=None if on_behalf_of_user else "internal",
             tuning=tuning,
+            deadline=sync_model_deadline(),
         )
     except HTTPException as exc:
         raise InternalCompletionError(exc.status_code) from exc

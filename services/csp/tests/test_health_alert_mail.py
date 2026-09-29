@@ -31,6 +31,7 @@ def test_model_offline_mails_on_transition_and_not_again_until_reopen(db):
         model.display_name,
         model.health_status,
         HEALTH_UNHEALTHY,
+        None,
     )
     try:
         apply_model_health_results(db, [row])
@@ -44,7 +45,7 @@ def test_model_offline_mails_on_transition_and_not_again_until_reopen(db):
         assert secret_url not in note.message
         assert secret_url not in note.title
 
-        healthy = row[:-1] + (HEALTH_HEALTHY,)
+        healthy = row[:-2] + (HEALTH_HEALTHY, None)
         apply_model_health_results(db, [healthy])
         db.commit()
         apply_model_health_results(db, [row])

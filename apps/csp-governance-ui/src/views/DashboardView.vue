@@ -121,42 +121,8 @@
       </TermBox>
     </section>
 
-    <!-- Sprint 8 X / Phase H — admin observability strip ---------------- -->
+    <!-- admin observability strip --------------------------------------- -->
     <section v-if="authStore.isAdmin" class="dash-grid">
-      <!-- legacy-token cutover progress widget -->
-      <TermBox
-        title="舊版服務憑證"
-        :hint="legacyTokenHint"
-        :tone="legacyTokenStats?.count_24h ? 'warn' : ''"
-        pad="md"
-      >
-        <div v-if="legacyTokenStats" class="cutover">
-          <div class="cutover__stats">
-            <TermStat label="近 24 小時命中" :value="legacyTokenStats.count_24h" :tone="legacyTokenStats.count_24h ? 'warn' : 'ok'" />
-            <TermStat label="近 7 天命中"  :value="legacyTokenStats.count_7d" />
-            <TermStat label="近 30 天命中" :value="legacyTokenStats.count_30d" />
-          </div>
-          <p class="cutover__last">
-            <span class="cutover__k">最近出現</span>
-            <span class="cutover__v tnum">{{ legacyTokenStats.last_seen_at ? formatDate(legacyTokenStats.last_seen_at) : 'never (cutover clean)' }}</span>
-          </p>
-          <p v-if="legacyTokenStats.count_30d === 0" class="cutover__hint cutover__hint--ok">
-            ✓ 30 天內沒有舊版憑證命中，可安排從環境設定移除舊憑證。
-          </p>
-          <p v-else class="cutover__hint cutover__hint--warn">
-            仍有服務使用舊版環境變數憑證。請到稽核紀錄依來源位址找出尚未更換的主機。
-          </p>
-        </div>
-        <div v-else-if="legacyTokenLoading || !legacyTokenTried" class="cutover-state">
-          <TermEmpty message="載入中…" />
-        </div>
-        <div v-else class="cutover-state">
-          <p class="feedback is-err">! {{ legacyTokenError || '無法載入舊版 token 統計' }}</p>
-          <TermButton size="xs" variant="ghost" :loading="legacyTokenLoading" label="重試" @click="fetchAdminWidgets" />
-        </div>
-      </TermBox>
-
-      <!-- top-5 agents over the last 30 days -->
       <TermBox title="熱門助手 · 30 天" hint="依呼叫端歸屬的用量" pad="none" flush>
         <table class="term-table">
           <thead>
@@ -175,11 +141,14 @@
               <td class="num tnum">{{ formatNum(a.total_tokens) }}</td>
               <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
             </tr>
-            <tr v-if="topAgents.length === 0 && legacyTokenTried && !legacyTokenLoading && !legacyTokenError">
+            <tr v-if="topAgents.length === 0 && topAgentsTried && !topAgentsLoading && !topAgentsError">
               <td colspan="3"><TermEmpty message="過去 30 天無歸屬呼叫端的 Agent 用量" /></td>
             </tr>
-            <tr v-if="topAgents.length === 0 && legacyTokenTried && !legacyTokenLoading && legacyTokenError">
-              <td colspan="3"><TermEmpty message="熱門 Agent 一併載入失敗 · 請重試上方卡片" /></td>
+            <tr v-if="topAgents.length === 0 && topAgentsTried && !topAgentsLoading && topAgentsError">
+              <td colspan="3">
+                <p class="feedback is-err">! {{ topAgentsError }}</p>
+                <TermButton size="xs" variant="ghost" :loading="topAgentsLoading" label="重試" @click="fetchAdminWidgets" />
+              </td>
             </tr>
           </tbody>
         </table>
@@ -235,17 +204,10 @@ const loading = ref(false)
 const loadError = ref('')
 const summaryLoaded = ref(false)
 
-// Sprint 8 X / Phase H — admin-only observability widgets.
-//   legacyTokenStats: cutover progress for the legacy long-lived service credential
-//                     fallback. When sustained at 0 for a release window
-//                     ops can drop the env var and remove the fallback
-//                     branch in auth_service.verify_service_token.
-//   topAgents:        top-5 by 30-day caller-attributed token spend.
-const legacyTokenStats = ref(null)
-const legacyTokenLoading = ref(false)
-const legacyTokenTried = ref(false) // avoids a flash of "failed" before first fetch
-const legacyTokenError = ref('')
 const topAgents = ref([])
+const topAgentsLoading = ref(false)
+const topAgentsTried = ref(false)
+const topAgentsError = ref('')
 
 // P3.3 / attic W3-3⑦④ — 服務健康 + 告警摘要。
 // 刻意不吃 dashboard 靜默失敗慣例:留白會被讀成「一切正常」。
@@ -344,14 +306,6 @@ async function fetchAlertSummary() {
   }
 }
 
-const legacyTokenHint = computed(() => {
-  if (legacyTokenLoading.value || !legacyTokenTried.value) return '載入中'
-  if (legacyTokenError.value) return '載入失敗'
-  if (!legacyTokenStats.value) return ''
-  const c = legacyTokenStats.value.count_24h
-  return c === 0 ? '24 小時內無舊 token 回退' : `24 小時內 ${c} 次舊 token 回退`
-})
-
 /** Avoid TermStat's Number(x)||0 turning "—" into a fake zero. */
 const kpiFormat = computed(() => (summaryLoaded.value ? 'compact' : 'raw'))
 
@@ -383,22 +337,19 @@ const refreshedLabel = computed(() => {
 
 async function fetchAdminWidgets() {
   if (!authStore.isAdmin) return
-  legacyTokenLoading.value = true
-  legacyTokenError.value = ''
+  topAgentsLoading.value = true
+  topAgentsError.value = ''
   try {
-    const [{ data: stats }, { data: agents }] = await Promise.all([
-      client.get('/api/usage/legacy-token-stats'),
-      client.get('/api/usage/top-agents', { params: { days: 30, limit: 5 } }),
-    ])
-    legacyTokenStats.value = stats
+    const { data: agents } = await client.get('/api/usage/top-agents', {
+      params: { days: 30, limit: 5 },
+    })
     topAgents.value = Array.isArray(agents) ? agents : []
   } catch (e) {
-    legacyTokenStats.value = null
     topAgents.value = []
-    legacyTokenError.value = `舊版 token 統計載入失敗：${extractError(e, '未知錯誤')}`
+    topAgentsError.value = `熱門助手載入失敗：${extractError(e, '未知錯誤')}`
   } finally {
-    legacyTokenLoading.value = false
-    legacyTokenTried.value = true
+    topAgentsLoading.value = false
+    topAgentsTried.value = true
   }
 }
 

@@ -84,6 +84,10 @@ class TritonEmbedError(RuntimeError):
     """Upstream Triton call failed; message is safe for logs, not for clients."""
 
 
+class TritonTimeout(TritonEmbedError):
+    """時間用完：單次 RPC 逾時或整批預算耗盡。上游已經在算，重試只會加重負載。"""
+
+
 class _Budget:
     """Wall-clock ceiling for one whole client call (see module docstring).
 
@@ -108,7 +112,7 @@ class _Budget:
     def remaining_for(self, per_rpc_s: float, *, what: str) -> float:
         left = self.remaining()
         if left <= 0:
-            raise TritonEmbedError(
+            raise TritonTimeout(
                 f"triton call exceeded its {self.total:g}s budget before {what}"
             )
         return min(per_rpc_s, left)
@@ -331,7 +335,7 @@ def embed_texts(
                     # the call's time. Saying DEADLINE_EXCEEDED here would send
                     # an operator hunting a slow upstream when the actual
                     # answer is "this batch is too big for one call".
-                    raise TritonEmbedError(
+                    raise TritonTimeout(
                         f"triton call exceeded its {budget.total:g}s budget "
                         f"({len(texts)} 段文字未在時限內完成;請縮小批次或調高 "
                         f"EMBEDDING_TIMEOUT)"
@@ -341,7 +345,7 @@ def embed_texts(
                 # the batch advice above would be actively misleading for it —
                 # ``code=DEADLINE_EXCEEDED`` alone was too, since it named the
                 # symptom and not one thing the operator can do.
-                raise TritonEmbedError(
+                raise TritonTimeout(
                     f"triton 未在 {infer_s:g}s 內回應 ModelInfer —— 上游過慢或"
                     f"該 model 未載入;確認 Triton 上的 model name 與 "
                     f"EMBEDDING_TIMEOUT"
