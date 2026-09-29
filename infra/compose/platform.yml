@@ -807,11 +807,9 @@ services:
   # 純 CPU、無 DB、無 GPU。語音與辨識結果都不落地 —— 只當鍵盤。
   # 解碼位址不在這份 compose，在治理中心「外部服務」。
   #
-  # ⚠ profiles: 預設不啟動。要開:COMPOSE_PROFILES=asr
-  #   (nginx 端已用變數式 proxy_pass,沒開也不會讓 nginx 起不來)。
+  # 預設就啟動(2026-09-29 負責人決定):純 CPU、不落地,解碼端沒設定或不健康時
+  # 麥克風自己會藏起來,不需要另外開 profile。本機解碼器已移除,解碼端屬模型側。
   asr-gateway:
-    # asr 與 asr-remote 都只起這支 gateway。本機解碼器已移除。
-    profiles: ["asr", "asr-remote"]
     build:
       # ⚠ context 是 repo 根目錄(不是 services/asr-gateway):Dockerfile 要複製
       # packages/anila-core 的 SSRF guard 進來。同 router / ingestion-worker。
@@ -859,7 +857,10 @@ services:
       # ASR_PROBE_TIMEOUT_SECONDS(預設 8s)。舊的 5s 會把「遠端慢」誤判成
       # 「gateway 掛了」。interval 拉到 30s 是為了不要對外部端點狂打探針
       # (探針會真的送一段 100ms 靜音去辨識)—— 2 次/分鐘。
-      test: ["CMD-SHELL", "curl -sf http://localhost:8200/asr/health || exit 1"]
+      # 只看 gateway 自己活著:200(可用)與 503(解碼端未就緒)都算活著。
+      # 解碼端屬模型側,它壞了不能讓這支容器變 unhealthy —— 否則每次更新的
+      # 健康等待都會失敗、整個平台被自動回復。麥克風由 /asr/health 內容決定。
+      test: ["CMD-SHELL", "code=$$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8200/asr/health); [ \"$$code\" = 200 ] || [ \"$$code\" = 503 ]"]
       interval: 30s
       timeout: 12s
       retries: 6

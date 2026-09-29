@@ -343,11 +343,13 @@ class RevocationCache:
         url = f"{settings.CSP_BASE_URL}/api/auth/revocations"
         params = {"since": since.isoformat()}
         headers: dict[str, str] = {}
-        # 重新啟用前必須改讀專屬憑證檔。這條仍會送出舊權杖，compose 已不再注入。
-        if settings.CSP_SERVICE_TOKEN:
-            # csp's verify_service_token accepts this header (the
-            # legacy env-var fallback path), no DB row needed.
-            headers["X-CSP-Service-Token"] = settings.CSP_SERVICE_TOKEN
+        # 和讀解碼位址同一份憑證：有 ANILA_SERVICE_TOKEN_FILE 就只讀那個檔
+        # （CSP 核發的 asr-gateway 專屬憑證），沒設路徑才用 Settings（測試）。
+        from app.decode_endpoint import _service_token
+
+        service_token = _service_token(settings)
+        if service_token:
+            headers["X-CSP-Service-Token"] = service_token
 
         timeout = httpx.Timeout(
             settings.INTERNAL_TIMEOUT_SECONDS,

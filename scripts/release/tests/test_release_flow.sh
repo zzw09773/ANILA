@@ -765,17 +765,19 @@ test_operations_log_appends_even_when_database_accepts() {
   [[ "$(wc -l < "$root/state/operations.log" | tr -d '[:space:]')" == "3" ]] || return 1
 }
 
-test_asr_gateway_shipped_but_not_started() {
+# 2026-09-29 負責人決定：asr-gateway 跟平台一起啟動（解碼端屬模型側，
+# 沒設定或不健康時麥克風自己藏起來，容器健康只看 gateway 本身）。
+test_asr_gateway_shipped_and_started() {
   local line
   line="$(release_catalog | awk '$1=="asr-gateway" { print $2, $4 }')"
-  [[ "$line" == "anila-asr-gateway:latest no" ]] || {
+  [[ "$line" == "anila-asr-gateway:latest yes" ]] || {
     echo "asr-gateway 清單是 [$line]" >&2
     return 1
   }
-  if services_to_start | grep -qx asr-gateway; then
-    echo "asr-gateway 被預設啟動" >&2
+  services_to_start | grep -qx asr-gateway || {
+    echo "asr-gateway 沒有預設啟動" >&2
     return 1
-  fi
+  }
 }
 
 test_build_release_builds_asr_gateway() {
@@ -825,7 +827,7 @@ test_build_release_builds_asr_gateway() {
     cat "$log" >&2
     return 1
   }
-  awk '$1=="asr-gateway" { print $4 }' "$ROOT/scripts/release/images.tsv" | grep -qx no || return 1
+  awk '$1=="asr-gateway" { print $4 }' "$ROOT/scripts/release/images.tsv" | grep -qx yes || return 1
 }
 
 check "set_env 保留 symlink 並把 state/.env 設成 600" test_set_env_keeps_symlink_and_mode
@@ -2167,7 +2169,7 @@ check "開發旗標會警告並被正式部署拒絕" test_dev_secret_flag_is_wa
 check "redis 以 digest 釘住" test_redis_image_is_pinned_by_digest
 check "清單拒絕穿越與多出來的檔" test_manifest_rejects_traversal_and_unlisted_files
 check "密鑰掃描含 env、憑證與 PRIVATE KEY" test_secrets_scan_rejects_env_keys_and_private_key_blocks
-check "asr-gateway 進清單但預設不啟動" test_asr_gateway_shipped_but_not_started
+check "asr-gateway 進清單且預設啟動" test_asr_gateway_shipped_and_started
 check "打包會建置 asr-gateway" test_build_release_builds_asr_gateway
 check "未指定安裝根目錄時拒絕對專案 anila 停服務" test_unset_install_root_refuses_live_project
 check "工作樹對專案 anila 拒絕停服務" test_worktree_refuses_stop_on_live_project

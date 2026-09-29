@@ -56,10 +56,9 @@ codeserver、n8n、asr-gateway 的映像在包裡，預設不起。codeserver �
 ```bash
 docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pull never codeserver
 COMPOSE_PROFILES=ops docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pull never n8n
-COMPOSE_PROFILES=asr docker compose -f /opt/anila/current/compose.yaml -p anila up -d --no-build --pull never asr-gateway
 ```
 
-asr-gateway 仍只用既有的 `asr` profile，要開語音才另外起來。Docling 跑在別台主機，所以 `docling-local` 不在這包裡。
+asr-gateway 跟平台一起啟動；解碼端屬模型側，在治理中心「外部服務」設定，沒設定或不健康時麥克風自己藏起來。Docling 跑在別台主機，所以 `docling-local` 不在這包裡。
 
 ## 手動回復
 

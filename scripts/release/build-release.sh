@@ -27,7 +27,7 @@ services:
       args:
         ANILA_RELEASE_VERSION: "${ver}"
 EOF
-  info "建置平台映像（含 codeserver、n8n、asr-gateway；內網預設不起這三個）"
+  info "建置平台映像（含 codeserver、n8n、asr-gateway；內網預設不起 codeserver 與 n8n）"
   # 建置上下文是 HEAD 的乾淨檢出，不是工作目錄。被忽略的檔進不了映像。
   docker compose -f "$src/compose.yaml" -f "$override" build \
     csp-db pgbouncer csp-credential-dirs csp ingestion-worker router nginx \

@@ -1,6 +1,8 @@
 # Runbook — 串流語音輸入(ASR)
 
 對話框那顆麥克風按鈕的開關、驗證與故障分診。
+
+> **2026-09-29 起已過時的部分：** asr-gateway 不再使用 `asr`／`asr-remote` profile，跟平台一起啟動；本機解碼器（`asr-decoder`）已移除，解碼端屬模型側，位址與協定在治理中心「外部服務」設定。下文凡是 `--profile asr`、`COMPOSE_PROFILES=asr`、`asr-decoder` 的步驟都不用做。本文件會在最後重寫手冊時一併更新。
 架構與 WS 協定見 `services/asr-gateway/README.md`;compose 定義在
 `infra/compose/platform.yml`(`asr-gateway` / `asr-decoder`,兩者都在 `asr` profile)。
 

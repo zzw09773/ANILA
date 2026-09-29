@@ -1588,9 +1588,6 @@ cmd_update() {
     "$(install_root)/current/compose.yaml" "$(install_root)/current/.anila-images.yml" "$(compose_project)"
   printf '  COMPOSE_PROFILES=ops docker compose -f %q -f %q -p %q up -d --no-build --pull never n8n\n' \
     "$(install_root)/current/compose.yaml" "$(install_root)/current/.anila-images.yml" "$(compose_project)"
-  printf 'asr-gateway 的映像已在本機，預設沒有啟動（profile 仍是 asr）。要開語音才執行：\n'
-  printf '  COMPOSE_PROFILES=asr docker compose -f %q -f %q -p %q up -d --no-build --pull never asr-gateway\n' \
-    "$(install_root)/current/compose.yaml" "$(install_root)/current/.anila-images.yml" "$(compose_project)"
 }
 
 _finish_failed_manual_rollback() {
