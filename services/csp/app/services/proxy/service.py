@@ -412,7 +412,11 @@ async def _proxy_triton_embedding(
                 timeout_s=float(timeout),
             )
             duration_ms = int((time.time() - start_time) * 1000)
-            prompt_tokens = sum(max(1, len(t.split())) for t in texts)
+            # Triton 不回報 usage。用和對話相同的估算（中文按字計），
+            # 空白切詞會把一整段中文算成 1 個 token。
+            prompt_tokens = sum(
+                max(1, _estimate_token_count(model.name, t)) for t in texts
+            )
             result = {
                 "object": "list",
                 "model": model.name,

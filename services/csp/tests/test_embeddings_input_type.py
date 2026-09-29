@@ -270,3 +270,26 @@ def test_unknown_input_type_is_400_at_the_http_boundary(
 
     assert resp.status_code == 400, resp.text
     assert called == []
+
+
+def test_chinese_embedding_input_is_counted_by_characters_not_whitespace(
+    client, db, monkeypatch, _grpc_endpoint_allowed
+):
+    """Triton does not report usage; a whitespace split counted a whole Chinese
+    sentence as 1 token, so API-key embedding usage looked like zero."""
+    _register_triton_embedder(db)
+
+    def fake_embed(endpoint_url, model_name, texts, *, role, timeout_s=30.0):
+        return [[0.1] * 4 for _ in texts]
+
+    monkeypatch.setattr("app.services.triton_grpc.embed_texts", fake_embed)
+
+    text = "找出去年的採購紀錄並依單位彙整"
+    resp = _post_embeddings(
+        client, db, "/v1/embeddings", {"model": "nv-embed-v2", "input": [text, text]}
+    )
+
+    assert resp.status_code == 200, resp.text
+    usage = resp.json()["usage"]
+    assert usage["prompt_tokens"] >= 2 * 10
+    assert usage["total_tokens"] == usage["prompt_tokens"]
