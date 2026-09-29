@@ -23,6 +23,28 @@ test('Agent／基礎模型兩面板標題用 phaseGRangeLabel，不是 rangeLabe
   )
 })
 
+test('代理管理員看不到用量 CSV 匯出，管理員仍看得到', () => {
+  const source = readSource('views/UsageView.vue')
+  const buttonAt = source.indexOf('label="匯出 CSV"')
+  assert.ok(buttonAt > 0, '用量頁要留著匯出 CSV')
+  const button = source.slice(Math.max(0, buttonAt - 220), buttonAt)
+  assert.match(button, /v-if="!authStore\.isDeputy"/)
+})
+
+test('代理管理員看部門與 Agent 彙總，看不到每人用量', () => {
+  const source = readSource('views/UsageView.vue')
+  const usersAt = source.indexOf('熱門 · 使用者')
+  const usersBox = source.slice(Math.max(0, usersAt - 160), usersAt)
+  assert.match(usersBox, /v-if="authStore\.isAdmin"/)
+  assert.doesNotMatch(usersBox, /isDeputy/)
+  const deptAt = source.indexOf('熱門 · 部門')
+  const deptBox = source.slice(Math.max(0, deptAt - 180), deptAt)
+  assert.match(deptBox, /isDeputy/)
+  const agentAt = source.indexOf('熱門 · Agent')
+  const agentBox = source.slice(Math.max(0, agentAt - 180), agentAt)
+  assert.match(agentBox, /isDeputy/)
+})
+
 test('phaseGRangeLabel 把 sub-day 視窗誠實標成 24h', () => {
   const source = readSource('views/UsageView.vue')
   // 4h/12h/24h → 24h；7d/30d → 原樣。

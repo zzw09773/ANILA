@@ -24,7 +24,8 @@
           <input type="checkbox" v-model="includeArchived" /> 顯示已封存
         </label>
         <label v-if="isAdmin" class="filters__toggle">
-          <input type="checkbox" v-model="showAllCollections" /> 顯示他人的知識庫（管理員）
+          <input type="checkbox" v-model="showAllCollections" /> 顯示全部知識庫（管理員）
+          <span class="cell-meta">未勾選時只列出自己的，以及原擁有者已調離的單位庫。</span>
         </label>
       </div>
     </TermBox>
@@ -43,6 +44,7 @@
             <span class="cc__name">{{ c.name }}</span>
             <TermBadge :variant="c.status === 'active' ? 'ok' : ''">{{ c.status === 'active' ? '使用中' : (c.status === 'archived' ? '已封存' : c.status) }}</TermBadge>
             <TermBadge v-if="c.anila_searchable" variant="ok">ANILA 可檢索</TermBadge>
+            <TermBadge v-if="c.owner_left_unit" variant="warn">原擁有者已調離單位</TermBadge>
           </div>
           <div class="cc__id tnum">id #{{ c.id }}</div>
         </header>
@@ -80,6 +82,10 @@
           >{{ c.anila_searchable ? '取消 ANILA 檢索標記' : '標記為 ANILA 可檢索' }}</button>
           <span class="cc__sep">·</span>
           <button class="term-action term-action--danger" @click="confirmDelete(c)">刪除</button>
+          <form v-if="isAdmin && c.owner_left_unit" class="cc__transfer" @submit.prevent="transferOwner(c)">
+            <input v-model="transferNames[c.id]" class="term-input" placeholder="接手者的使用者名稱" />
+            <button class="term-action" type="submit" :disabled="transferringId === c.id">移交擁有者</button>
+          </form>
           <p v-if="markStates[c.id].reason" class="cc__foot-note cell-meta">{{ markStates[c.id].reason }}</p>
           <p v-if="markErrors[c.id]" class="cc__foot-note feedback is-err">{{ markErrors[c.id] }}</p>
         </footer>
@@ -100,6 +106,16 @@
         >
           <select v-model="form.classification_level" class="term-select">
             <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+          </select>
+        </TermField>
+        <TermField
+          v-if="isAdmin"
+          label="單位範圍"
+          hint="全院／不限單位只有擁有者本人能讀，不能同時標成全院可檢索。選了單位之後，這個單位和下級單位都能讀。"
+        >
+          <select v-model="form.departmentScope" class="term-select">
+            <option value="institute">全院／不限單位</option>
+            <option v-for="dept in departments" :key="dept.id" :value="String(dept.id)">{{ dept.name }}</option>
           </select>
         </TermField>
         <TermField label="切塊策略">
@@ -151,8 +167,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
+import { listCollections, createCollection, updateCollection, deleteCollection, transferCollection } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
+import { listDepartments } from '../api/departments'
 import { extractError } from '../api/errors'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -167,7 +184,10 @@ const showAllCollections = ref(false)
 const collections = ref([])
 const loadingCollections = ref(false)
 const error = ref('')
+const transferNames = ref({})
+const transferringId = ref(null)
 
+const departments = ref([])
 const creating = ref(false)
 const submitting = ref(false)
 const formError = ref('')
@@ -240,6 +260,20 @@ async function loadModels() {
   }
 }
 
+function defaultDepartmentScope() {
+  const own = authStore.user?.department_id
+  return own != null ? String(own) : 'institute'
+}
+
+async function loadDepartments() {
+  try {
+    const { data } = await listDepartments()
+    departments.value = Array.isArray(data) ? data.filter((dept) => dept.is_active !== false) : []
+  } catch {
+    departments.value = []
+  }
+}
+
 function openCreateModal() {
   formError.value = ''
   // 256 matches HierarchicalChunker's post-Sprint-9-X default leaf budget.
@@ -248,9 +282,11 @@ function openCreateModal() {
     classification_level: '無機密',
     captionMode: 'platform',
     caption_model: '',
+    departmentScope: defaultDepartmentScope(),
   }
   creating.value = true
   if (!modelOptions.value.length) loadModels()
+  if (isAdmin.value) loadDepartments()
 }
 
 async function submitCreate() {
@@ -283,7 +319,7 @@ async function submitCreate() {
       form.value.captionMode === 'on' ? true
         : form.value.captionMode === 'off' ? false
           : null
-    await createCollection({
+    const payload = {
       name: form.value.name,
       description: form.value.description || null,
       chunking_config: { strategy: s, params },
@@ -292,7 +328,13 @@ async function submitCreate() {
       caption_model: caption_enabled === true
         ? (form.value.caption_model || null)
         : null,
-    })
+    }
+    if (isAdmin.value) {
+      payload.department_id = form.value.departmentScope === 'institute'
+        ? null
+        : Number(form.value.departmentScope)
+    }
+    await createCollection(payload)
     creating.value = false
     await loadCollections()
   } catch (e) {
@@ -368,6 +410,24 @@ async function toggleAnilaSearchable(c) {
     markErrors.value[c.id] = '標記失敗：' + extractError(e, e.message)
   } finally {
     markingId.value = null
+  }
+}
+
+async function transferOwner(c) {
+  const username = String(transferNames.value[c.id] || '').trim()
+  if (!username) {
+    error.value = '請填接手者的使用者名稱'
+    return
+  }
+  transferringId.value = c.id
+  try {
+    await transferCollection(c.id, username)
+    error.value = ''
+    await loadCollections()
+  } catch (e) {
+    error.value = `移交失敗：${extractError(e, e.message)}`
+  } finally {
+    transferringId.value = null
   }
 }
 
@@ -475,6 +535,14 @@ function humanBytes(n) {
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
 /* 停用原因／後端拒絕訊息各自佔滿一行（cc__foot 是 wrap 的 flex）。 */
 .cc__foot-note { flex-basis: 100%; margin: 2px 0 0; line-height: 1.5; }
+.cc__transfer {
+  flex-basis: 100%;
+  display: flex;
+  gap: var(--gap-2);
+  align-items: center;
+  margin-top: 4px;
+}
+.cc__transfer .term-input { flex: 1; min-width: 0; }
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 </style>

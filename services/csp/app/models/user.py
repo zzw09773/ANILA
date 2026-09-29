@@ -23,7 +23,9 @@ class User(Base):
     username = Column(String(100), unique=True, nullable=False, index=True)
     email = Column(String(255), nullable=True)
     hashed_password = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="user")  # 'owner' / 'admin' / 'user' / 'developer' (tier: owner > admin > dev ≈ user)
+    # owner / admin / deputy / developer / user / system。
+    # deputy 不是 admin tier，權限是另外一張允許清單。
+    role = Column(String(20), nullable=False, default="user")
     department_id = Column(
         Integer,
         ForeignKey("departments.id", ondelete="SET NULL"),
@@ -46,6 +48,8 @@ class User(Base):
     # Powers the "上次登入" column in the admin user panel and lets audit
     # reports flag dormant accounts without scanning AuditLog.
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    # 閒置停用寫 inactivity。手動停用與拒絕待審都清成空，刷卡才不會誤走重新核准。
+    disabled_reason = Column(String(32), nullable=True)
     # Server-synced chat-UI preferences (folders / stars / tweaks). Keeps the
     # ANILA UI's per-user settings off browser localStorage so they follow the
     # user across shared PKI-card workstations.

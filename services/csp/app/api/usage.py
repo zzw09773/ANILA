@@ -10,7 +10,7 @@ from app.schemas.token_usage import (
     TopUserUsage,
     TopDepartmentUsage,
 )
-from app.services.auth_service import get_current_user, is_admin_tier, require_admin
+from app.services.auth_service import get_current_user, is_admin_tier, is_deputy, require_admin
 from app.services.unit_admin_service import (
     get_unit_admin_scope_ids,
     is_unit_admin,
@@ -61,6 +61,27 @@ def _resolve_usage_caller_filters(
     return current_user.id, None, None
 
 
+_DEPUTY_AGGREGATE_ONLY = "代理管理員只能查看彙總用量"
+
+
+def _deputy_platform_aggregate(
+    current_user: User,
+    *,
+    user_id: int | None = None,
+    group_by: str | None = None,
+) -> bool:
+    """代理管理員只看全平台彙總。單位管理員身份不能把這條路改成單位明細。
+
+    回傳 True 表示呼叫端應把 user_id、department、scope 都清空。
+    指定某人、或 group_by=user，直接 403。
+    """
+    if not (is_deputy(current_user) and not is_admin_tier(current_user)):
+        return False
+    if user_id is not None or group_by == "user":
+        raise HTTPException(status_code=403, detail=_DEPUTY_AGGREGATE_ONLY)
+    return True
+
+
 def _require_admin_or_unit_admin(
     db: Session, current_user: User
 ) -> list[int] | None:
@@ -95,10 +116,13 @@ def usage_summary(
     db: Session = Depends(get_db),
 ):
     # admin / owner 看到整 tenant aggregate;單位管理員看管理單位;
-    # 一般 user 只看自己。
-    user_id, department_id, scope_ids = _resolve_usage_caller_filters(
-        db, current_user, department_id
-    )
+    # 一般 user 只看自己。代理管理員看全平台彙總，不打開個人明細。
+    if _deputy_platform_aggregate(current_user):
+        user_id, department_id, scope_ids = None, None, None
+    else:
+        user_id, department_id, scope_ids = _resolve_usage_caller_filters(
+            db, current_user, department_id
+        )
     return get_usage_summary(
         db,
         range_key=range,
@@ -123,8 +147,11 @@ def usage_chart(
 ):
     # 一般 user 只看得到自己的資料,group_by 也回退成 total。
     # admin / owner 都享 tenant-wide 視野。單位管理員可 group_by
-    # department/model/user。
-    if is_admin_tier(current_user):
+    # department/model/user。代理管理員只看全平台彙總。
+    if _deputy_platform_aggregate(current_user, user_id=user_id, group_by=group_by):
+        user_id = None
+        department_id = None
+    elif is_admin_tier(current_user):
         pass
     elif is_unit_admin(db, current_user):
         user_id, department_id, scope_ids = _resolve_usage_caller_filters(
@@ -166,9 +193,12 @@ def top_models(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    user_id, department_id, scope_ids = _resolve_usage_caller_filters(
-        db, current_user, department_id
-    )
+    if _deputy_platform_aggregate(current_user):
+        user_id, department_id, scope_ids = None, None, None
+    else:
+        user_id, department_id, scope_ids = _resolve_usage_caller_filters(
+            db, current_user, department_id
+        )
     return get_top_models(
         db,
         limit=limit,
@@ -189,6 +219,8 @@ def top_users(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if is_deputy(current_user) and not is_admin_tier(current_user):
+        raise HTTPException(status_code=403, detail=_DEPUTY_AGGREGATE_ONLY)
     default_scope = _require_admin_or_unit_admin(db, current_user)
     if default_scope is not None:
         # unit admin: force/validate scope
@@ -228,6 +260,15 @@ def top_departments(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if _deputy_platform_aggregate(current_user):
+        return get_top_departments(
+            db,
+            limit=limit,
+            model_type=model_type,
+            department_id=None,
+            scope_ids=None,
+            range_key=range,
+        )
     default_scope = _require_admin_or_unit_admin(db, current_user)
     if default_scope is not None:
         if department_id is None:
@@ -269,6 +310,10 @@ def top_agents(
     db: Session = Depends(get_db),
 ):
     """Top-N agents by token consumption over the last ``days`` days."""
+    if _deputy_platform_aggregate(current_user):
+        return get_top_agents(
+            db, days=days, limit=limit, department_id=None, scope_ids=None,
+        )
     default_scope = _require_admin_or_unit_admin(db, current_user)
     if default_scope is not None:
         if department_id is None:
@@ -376,7 +421,14 @@ def export_csv(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if is_admin_tier(current_user):
+    # CSV 每一列都是某人、某部門、某模型的用量，不是彙總。代理管理員不能匯出。
+    if is_deputy(current_user) and not is_admin_tier(current_user):
+        raise HTTPException(status_code=403, detail="代理管理員不能匯出用量明細")
+    if _deputy_platform_aggregate(current_user, user_id=user_id):
+        user_id = None
+        department_id = None
+        scope_ids = None
+    elif is_admin_tier(current_user):
         scope_ids = None
     elif is_unit_admin(db, current_user):
         user_id, department_id, scope_ids = _resolve_usage_caller_filters(

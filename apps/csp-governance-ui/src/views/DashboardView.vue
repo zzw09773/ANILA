@@ -13,7 +13,7 @@
     </div>
 
     <!-- P3.3 / P3.4 companion — 服務健康總覽 + 告警摘要（admin only） ---- -->
-    <section v-if="authStore.isAdmin" class="dash-grid">
+    <section v-if="authStore.isSteward" class="dash-grid">
       <ServiceHealthCard
         :overview="healthOverview"
         :loading="healthLoading"
@@ -24,7 +24,7 @@
     </section>
 
     <TermBox
-      v-if="authStore.isAdmin"
+      v-if="authStore.isSteward"
       title="最後一次備份"
       :hint="backupError ? '載入失敗' : backupCard.hint"
       pad="md"
@@ -110,12 +110,12 @@
         </ul>
         <hr class="ops__rule" />
         <div class="ops__quick">
-          <router-link to="/api-keys" class="ops__link">→ 建立 API 金鑰</router-link>
-          <router-link to="/models" class="ops__link">→ 檢視模型</router-link>
-          <router-link to="/usage" class="ops__link">→ 用量分析</router-link>
+          <router-link v-if="!authStore.isDeputy" to="/api-keys" class="ops__link">→ 建立 API 金鑰</router-link>
+          <router-link v-if="!authStore.isDeputy" to="/models" class="ops__link">→ 檢視模型</router-link>
+          <router-link v-if="!authStore.isDeputy" to="/usage" class="ops__link">→ 用量分析</router-link>
           <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ 註冊 Agent</router-link>
           <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ 稽核紀錄</router-link>
-          <router-link v-if="authStore.isAdmin" to="/feedback" class="ops__link">→ 使用者回饋</router-link>
+          <router-link v-if="authStore.isSteward" to="/feedback" class="ops__link">→ 使用者回饋</router-link>
         </div>
       </TermBox>
     </section>
@@ -281,7 +281,7 @@ const backupCard = computed(() => {
 })
 
 async function fetchHealthOverview() {
-  if (!authStore.isAdmin) return
+  if (!authStore.isSteward) return
   healthLoading.value = true
   healthError.value = ''
   try {
@@ -296,7 +296,7 @@ async function fetchHealthOverview() {
 }
 
 async function fetchBackupStatus() {
-  if (!authStore.isAdmin) return
+  if (!authStore.isSteward) return
   backupError.value = ''
   try {
     const { data } = await getBackupStatus()
@@ -330,7 +330,7 @@ async function fetchCapacity() {
 }
 
 async function fetchAlertSummary() {
-  if (!authStore.isAdmin) return
+  if (!authStore.isSteward) return
   alertError.value = ''
   try {
     const { data } = await getAlertSummary()
@@ -366,6 +366,7 @@ function kpiValue(n) {
 
 const scopeLabel = computed(() => {
   if (authStore.isAdmin) return '全部功能'
+  if (authStore.isDeputy) return '代理管理員'
   if (authStore.isDeveloper) return 'Agent 與知識庫'
   return '個人金鑰與用量'
 })

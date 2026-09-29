@@ -7,7 +7,7 @@
       </div>
       <div class="page-head__actions">
         <TimeRangeSelector v-model="selectedRange" @update:model-value="refreshUsage" />
-        <TermButton size="md" variant="default" @click="handleExport" label="匯出 CSV" />
+        <TermButton v-if="!authStore.isDeputy" size="md" variant="default" @click="handleExport" label="匯出 CSV" />
       </div>
     </header>
 
@@ -93,7 +93,7 @@
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" :title="`熱門 · 部門 · ${rangeLabel}`" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin || authStore.isDeputy" :title="`熱門 · 部門 · ${rangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr><th>部門</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
@@ -130,7 +130,7 @@
       </TermBox>
 
       <!-- Sprint 8 X / Phase G — caller attribution rollups (admin) -->
-      <TermBox v-if="authStore.isAdmin" :title="`熱門 · Agent · ${phaseGRangeLabel}`" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin || authStore.isDeputy" :title="`熱門 · Agent · ${phaseGRangeLabel}`" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
@@ -244,8 +244,15 @@ const phaseGRangeLabel = computed(() => ({
 })[selectedRange.value] || selectedRange.value)
 
 async function fetchPhaseGRollups() {
-  if (!authStore.isAdmin) return
   const days = rangeToDays(selectedRange.value)
+  // 基礎模型歸屬是管理員端點。代理管理員只拿全平台的 Agent 彙總。
+  if (authStore.isDeputy && !authStore.isAdmin) {
+    topAgentsResult.value = await loadList(
+      () => client.get('/api/usage/top-agents', { params: { days, limit: 10 } }),
+    )
+    return
+  }
+  if (!authStore.isAdmin) return
   const [agents, models] = await Promise.all([
     loadList(() => client.get('/api/usage/top-agents', { params: { days, limit: 10 } })),
     loadList(() => client.get('/api/usage/by-base-model', { params: { days } })),
@@ -301,12 +308,10 @@ function buildRankingParams() {
 async function refreshRankings() {
   const r = buildRankingParams()
   await usageStore.fetchTopModels(10, r)
-  if (authStore.isAdmin) {
-    await Promise.all([
-      usageStore.fetchTopUsers(10, r),
-      usageStore.fetchTopDepartments(10, r),
-    ])
-  }
+  const jobs = []
+  if (authStore.isAdmin || authStore.isDeputy) jobs.push(usageStore.fetchTopDepartments(10, r))
+  if (authStore.isAdmin) jobs.push(usageStore.fetchTopUsers(10, r))
+  if (jobs.length) await Promise.all(jobs)
 }
 async function refreshUsage() {
   const usageParams = buildUsageParams()

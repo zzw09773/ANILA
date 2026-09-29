@@ -98,6 +98,31 @@ def admin_token(client, db) -> str:
     return login(client, "mark_admin")
 
 
+def test_mark_guard_uses_the_same_institutional_definition(client, db, admin_token):
+    """全院檢索只算 department_id 為空的已標記庫。單位庫即使旗標開著，也不當成已標記集。"""
+    from app.models.department import Department
+
+    unit = Department(name="標記單位", is_active=True)
+    db.add(unit)
+    db.commit()
+    departmental = _create_collection(client, admin_token, "單位嵌入庫")
+    institutional = _create_collection(client, admin_token, "院級嵌入庫")
+    row = db.get(IngestionCollection, departmental["id"])
+    row.department_id = unit.id
+    row.anila_searchable = True
+    row.embedding_model = "unit-embed"
+    other = db.get(IngestionCollection, institutional["id"])
+    other.department_id = None
+    other.embedding_model = "institute-embed"
+    db.commit()
+    marked = client.patch(
+        f"/api/ingestion/collections/{institutional['id']}",
+        json={"anila_searchable": True},
+        headers=_auth(admin_token),
+    )
+    assert marked.status_code == 200, marked.text
+
+
 def test_non_admin_cannot_mark(client, db):
     """標記是密等相鄰操作,只有 admin 能動。"""
     make_user(db, username="plain_user", role="developer")
@@ -319,3 +344,114 @@ def test_mark_round_trips_and_writes_audit(client, db, admin_token):
     assert len(audits) == 2, [parse_metadata(a.metadata_json) for a in audits]
     closing = parse_metadata(audits[-1].metadata_json)
     assert closing["from"] is True and closing["to"] is False
+
+
+def test_unit_library_cannot_be_published_and_institute_library_cannot_gain_a_unit(
+    client, db, admin_token
+):
+    """全院檢索是公開給全院。有單位的庫不能標記；已標記的院級庫不能再綁單位。"""
+    from app.models.department import Department
+
+    unit = Department(name="不能公開的單位", is_active=True)
+    db.add(unit)
+    db.commit()
+    make_user(db, username="unit_mark_owner", department_id=unit.id)
+    owner_token = login(client, "unit_mark_owner")
+    unit_library = _create_collection(client, owner_token, "單位庫")
+    assert unit_library["department_id"] == unit.id
+    refused = client.patch(
+        f"/api/ingestion/collections/{unit_library['id']}",
+        json={"anila_searchable": True},
+        headers=_auth(admin_token),
+    )
+    assert refused.status_code == 409, refused.text
+    assert "全院" in refused.json()["detail"]
+    stayed = client.get(
+        f"/api/ingestion/collections/{unit_library['id']}",
+        headers=_auth(admin_token),
+    )
+    assert stayed.json()["anila_searchable"] is False
+    assert stayed.json()["department_id"] == unit.id
+
+    institute = _create_collection(client, admin_token, "院級庫")
+    assert institute["department_id"] is None
+    marked = client.patch(
+        f"/api/ingestion/collections/{institute['id']}",
+        json={"anila_searchable": True},
+        headers=_auth(admin_token),
+    )
+    assert marked.status_code == 200, marked.text
+    assert marked.json()["anila_searchable"] is True
+    bound = client.patch(
+        f"/api/ingestion/collections/{institute['id']}",
+        json={"department_id": unit.id},
+        headers=_auth(admin_token),
+    )
+    assert bound.status_code == 409, bound.text
+    assert "單位" in bound.json()["detail"]
+    fresh = client.get(
+        f"/api/ingestion/collections/{institute['id']}",
+        headers=_auth(admin_token),
+    )
+    assert fresh.json()["anila_searchable"] is True
+    assert fresh.json()["department_id"] is None
+
+
+def test_resulting_state_after_every_patch_and_same_department_is_a_noop(
+    client, db, admin_token
+):
+    """結果態不能同時可檢索又有單位。同一請求清掉單位再標記可以。
+    department_id 跟現值一樣（含 null→null）是空操作：不 409、不查部門是否啟用。
+    """
+    from app.models.department import Department
+
+    unit = Department(name="兩段單位", is_active=True)
+    db.add(unit)
+    db.commit()
+    make_user(db, username="two_step_owner", department_id=unit.id)
+    owner_token = login(client, "two_step_owner")
+    library = _create_collection(client, owner_token, "兩段庫")
+    url = f"/api/ingestion/collections/{library['id']}"
+
+    marked = client.patch(url, json={"anila_searchable": True}, headers=_auth(admin_token))
+    assert marked.status_code == 409, marked.text
+    stayed = client.get(url, headers=_auth(admin_token))
+    assert stayed.json()["anila_searchable"] is False
+    assert stayed.json()["department_id"] == unit.id
+
+    cleared = client.patch(
+        url,
+        json={"department_id": None, "anila_searchable": True},
+        headers=_auth(admin_token),
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["anila_searchable"] is True
+    assert cleared.json()["department_id"] is None
+
+    before = client.get(url, headers=_auth(admin_token)).json()["updated_at"]
+    noop = client.patch(url, json={"department_id": None}, headers=_auth(admin_token))
+    assert noop.status_code == 200, noop.text
+    assert noop.json()["anila_searchable"] is True
+    assert noop.json()["department_id"] is None
+    assert noop.json()["updated_at"] == before
+
+    bound = client.patch(
+        url, json={"department_id": unit.id}, headers=_auth(admin_token)
+    )
+    assert bound.status_code == 409, bound.text
+    assert "單位" in bound.json()["detail"]
+    fresh = client.get(url, headers=_auth(admin_token))
+    assert fresh.json()["anila_searchable"] is True
+    assert fresh.json()["department_id"] is None
+
+    other = _create_collection(client, owner_token, "原值庫")
+    unit.is_active = False
+    db.commit()
+    same = client.patch(
+        f"/api/ingestion/collections/{other['id']}",
+        json={"department_id": unit.id},
+        headers=_auth(admin_token),
+    )
+    assert same.status_code == 200, same.text
+    assert same.json()["department_id"] == unit.id
+    assert same.json()["anila_searchable"] is False

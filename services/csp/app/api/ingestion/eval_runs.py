@@ -262,7 +262,7 @@ def get_eval_run(
     run = db.query(IngestionEvalRun).filter(IngestionEvalRun.id == run_id).first()
     if run is None:
         raise HTTPException(status_code=404, detail="Eval run not found")
-    _require_collection_access(db, current_user, run.collection_id)
+    _require_collection_access(db, current_user, run.collection_id, write=False)
     return EvalRunResponse.model_validate(run)
 
 
@@ -275,7 +275,7 @@ def list_eval_runs(
     db: Annotated[Session, Depends(get_db)] = None,
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ) -> list[EvalRunResponse]:
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, write=False)
     rows = (
         db.query(IngestionEvalRun)
         .filter(IngestionEvalRun.collection_id == collection_id)

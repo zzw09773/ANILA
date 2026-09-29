@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h1 class="page-head__title">使用者</h1>
-        <p class="page-head__sub">{{ canAdminUsers ? '角色 · 審核 · 模型 + Agent 允許清單 · 密碼重設' : '單位內人事：核准 · 停用 · 恢復' }}</p>
+        <p class="page-head__sub">{{ pageSubtitle }}</p>
       </div>
       <TermButton v-if="canAdminUsers" variant="primary" @click="openCreateModal" label="新增使用者" />
     </header>
@@ -31,6 +31,7 @@
             <option value="user">一般使用者</option>
             <option value="developer">開發者</option>
             <option value="admin">管理員</option>
+            <option value="deputy">代理管理員</option>
             <option value="owner">擁有者</option>
             <option value="system">系統</option>
           </select>
@@ -57,7 +58,7 @@
       <span>已選 <strong>{{ selectedUserIds.length }}</strong> 筆 · 批次操作依序呼叫既有端點</span>
       <div class="bulkbar__actions">
         <TermButton size="xs" @click="handleBulkApprove" label="批次核准" />
-        <TermButton size="xs" variant="danger" @click="handleBulkDeactivate" label="批次停用" />
+        <TermButton v-if="!authStore.isDeputy" size="xs" variant="danger" @click="handleBulkDeactivate" label="批次停用" />
         <TermButton size="xs" variant="ghost" @click="selectedUserIds = []" label="清除" />
       </div>
     </div>
@@ -99,9 +100,10 @@
             <td>
               <RowActions>
                 <button v-if="!user.is_approved" class="term-action" @click="handleApprove(user)">核准</button>
+                <button v-if="!user.is_approved" class="term-action term-action--danger" @click="handleReject(user)">拒絕</button>
                 <button v-if="canAdminUsers" class="term-action" @click="openEditModal(user)">編輯</button>
                 <button v-if="canAdminUsers" class="term-action" @click="openRouterModelsModal(user)">對話可用模型</button>
-                <button v-if="user.is_active && user.is_approved" class="term-action term-action--danger" @click="handleDeactivate(user)">停用</button>
+                <button v-if="user.is_active && user.is_approved && !authStore.isDeputy" class="term-action term-action--danger" @click="handleDeactivate(user)">停用</button>
                 <button v-if="!user.is_active" class="term-action" @click="handleActivate(user)">啟用</button>
                 <template v-if="canAdminUsers" #more>
                   <button class="term-action" @click="openAllowedModelsModal(user)">API 金鑰可用模型</button>
@@ -179,6 +181,8 @@
             <option value="user">一般使用者</option>
             <option value="developer">開發者</option>
             <option value="admin">管理員</option>
+            <option v-if="authStore.isOwner" value="deputy">代理管理員</option>
+            <option v-else-if="editingId && form.role === 'deputy'" value="deputy" disabled>代理管理員</option>
             <option v-if="authStore.isOwner" value="owner">擁有者</option>
           </select>
         </TermField>
@@ -340,6 +344,12 @@ const authStore = useAuthStore()
 // list 亦 require_admin），本頁對單位管理員不畫那些入口。
 // 用量在 /usage；部門樹 CRUD 不在單位管理員範圍。
 const canAdminUsers = computed(() => authStore.isAdmin)
+const pageSubtitle = computed(() => {
+  if (authStore.isDeputy && !authStore.isAdmin) return '核准待審帳號 · 拒絕 · 重新啟用'
+  return canAdminUsers.value
+    ? '角色 · 審核 · 模型 + Agent 允許清單 · 密碼重設'
+    : '單位內人事：核准 · 停用 · 恢復'
+})
 
 const users = ref([])
 // ⚠ 這三份目錄以前是 `try { ... } catch {}`，讀取失敗時停在 []，
@@ -599,6 +609,14 @@ async function handleApprove(user) {
     await fetchUsers()
   } catch (e) { setFeedback('error', extractError(e, '核准失敗')) }
 }
+async function handleReject(user) {
+  if (!window.confirm(`拒絕「${user.username}」的待審申請？`)) return
+  try {
+    await client.post(`/api/users/${user.id}/reject`)
+    setFeedback('success', `已拒絕「${user.username}」`)
+    await fetchUsers()
+  } catch (e) { setFeedback('error', extractError(e, '拒絕失敗')) }
+}
 async function handleDeactivate(user) {
   if (!window.confirm(`停用「${user.username}」？`)) return
   try {
@@ -710,7 +728,7 @@ async function handleBulkDeactivate() {
 
 function roleVariant(role) {
   if (role === 'owner') return 'danger'
-  if (role === 'admin') return 'warn'
+  if (role === 'admin' || role === 'deputy') return 'warn'
   if (role === 'developer') return 'info'
   return ''
 }
@@ -720,6 +738,7 @@ function elevatedRole(role) {
 function roleHelp(role) {
   if (role === 'owner') return 'owner 是平台營運者 — 獨占掌控認證提供者、hard-purge、原始稽核欄位，以及 admin/owner 角色管理。'
   if (role === 'admin') return 'admin 可管理使用者、模型、稽核、計費與用量。無法建立/降級 admin 或變更平台層級設定。'
+  if (role === 'deputy') return '代理管理員最多 3 人，只能核准、拒絕待審、重新啟用、看警報與回饋、張貼公告。不能改設定、刪資料或指派角色。'
   if (role === 'developer') return 'developer 可註冊 Agent 並下載樣板。'
   return ''
 }

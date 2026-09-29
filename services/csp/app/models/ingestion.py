@@ -115,6 +115,13 @@ class IngestionCollection(Base):
     # 'anilalm' / NULL (pre-r1_0029 legacy — still listed for the owner
     # under every surface so existing corpora are never orphaned).
     origin = Column(String(32), nullable=True)
+    # 建立當下的單位。空值＝個人庫（含 anilalm）。調單位不改這欄，讀取時再對部門樹。
+    department_id = Column(
+        Integer,
+        ForeignKey("departments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # ── 四級分類共通欄位(doc 08 §5,Slice 3a;backfill floor=無機密,
     # 最終等級以人工分類盤點為準,doc 08 §15)────────────────────────────
     classification_level = Column(
@@ -127,7 +134,9 @@ class IngestionCollection(Base):
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # ANILA 聊天可直接檢索這個庫（SYSTEM-MAP §3 的「不需要 agent」那條路）。
+    # 管理員明示把這個庫公開給全院聊天檢索（SYSTEM-MAP §3 的「不需要 agent」）。
+    # 意思是全院，不是單位內。有 department_id 的庫不能標記；已標記的院級庫
+    # （department_id 為 NULL）也不能再綁單位。既有的院級庫不回填、不取消。
     # ⚠ 只有「無機密」能開,由 DB CHECK ck_ingestion_collections_anila_searchable_unclassified
     # 閉合(見上方 ``__table_args__``＋migration r1_0033)—— 升密時忘了取消
     # 標記會讓 UPDATE 失敗,不是靜默留洞。

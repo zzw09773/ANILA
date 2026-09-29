@@ -80,6 +80,40 @@ def _descendants_from_children(
     return result
 
 
+def load_parent_map(db: Session) -> dict[int, int | None]:
+    """一次載入整棵部門樹的父節點。同一請求裡不要每列各查一次。"""
+    return {dept_id: parent_id for dept_id, parent_id in _load_edges(db)}
+
+
+def ancestor_ids_from_parent_map(
+    parent_of: dict[int, int | None],
+    dept_id: int,
+    include_self: bool = False,
+) -> set[int]:
+    """用已經載入的父節點表走祖先。環狀父節點會停住。"""
+    result: set[int] = set()
+    if include_self:
+        result.add(dept_id)
+    current = parent_of.get(dept_id)
+    seen: set[int] = set()
+    while current is not None and current not in seen:
+        seen.add(current)
+        result.add(current)
+        current = parent_of.get(current)
+    return result
+
+
+def get_ancestor_ids(
+    db: Session,
+    dept_id: int,
+    include_self: bool = False,
+) -> set[int]:
+    """回傳 ``dept_id`` 的所有祖先 id（可選含自身）。環狀父節點會停住。"""
+    return ancestor_ids_from_parent_map(
+        load_parent_map(db), dept_id, include_self=include_self
+    )
+
+
 def get_descendant_ids(
     db: Session,
     dept_id: int,

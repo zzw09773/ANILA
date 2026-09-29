@@ -25,6 +25,7 @@ KEEP_KEYS = [
     "auth.access_token_expire_minutes",
     "auth.refresh_token_expire_days",
     "auth.jwt_rotation_days",
+    "auth.inactivity_disable_days",
     "limits.department_max_depth",
     "limits.action_invoke_per_min",
     "limits.attachment_budget_ratio",
@@ -48,7 +49,7 @@ def test_overview_is_exactly_twenty_immediate_c_rows(client, db):
     response = client.get(OVERVIEW_URL, headers=_admin_headers(client, db))
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["total"] == 20
+    assert body["total"] == 21
     assert [item["key"] for item in body["items"]] == KEEP_KEYS
     assert all(item["class"] == "C" and item["editable"] for item in body["items"])
     assert all("restart_required" not in item for item in body["items"])
@@ -142,4 +143,4 @@ def test_token_lifetime_is_read_at_issuance_and_old_exp_is_embedded(db):
 
 
 def test_registry_has_same_count_as_api_contract():
-    assert len(SETTINGS) == len(KEEP_KEYS) == 20
+    assert len(SETTINGS) == len(KEEP_KEYS) == 21

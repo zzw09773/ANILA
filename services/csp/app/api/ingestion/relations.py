@@ -85,7 +85,7 @@ def list_relations(
 ) -> list[DocumentRelationResponse]:
     """List a collection's edges, newest first, with src/dst titles and the
     resolved / ambiguous flags the relations tab renders."""
-    _require_collection_access(db, current_user, collection_id)
+    _require_collection_access(db, current_user, collection_id, write=False)
     rr.scope_collection_rls(db, collection_id)
 
     edges = (

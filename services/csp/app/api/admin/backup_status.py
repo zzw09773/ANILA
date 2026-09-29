@@ -8,12 +8,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.models.user import User
-from app.services.auth_service import require_admin
+from app.services.auth_service import require_steward
 from app.services.backup_status import assess_backup, public_backup_view
 
 router = APIRouter(prefix="/api/admin", tags=["備份"])
 
 
 @router.get("/backup-status")
-def get_backup_status(_admin: User = Depends(require_admin)) -> dict:
+def get_backup_status(_admin: User = Depends(require_steward)) -> dict:
     return public_backup_view(assess_backup())

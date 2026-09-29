@@ -50,7 +50,7 @@ from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
-from app.services.auth_service import require_admin
+from app.services.auth_service import is_admin_tier, require_admin, require_steward
 from app.services.feedback_notice import mark_feedback_read
 from app.schemas.base import ApiResponseModel
 from app.schemas.contracts.classification import (
@@ -381,7 +381,7 @@ class FeedbackReadResult(BaseModel):
 @router.post("/read", response_model=FeedbackReadResult)
 def mark_all_feedback_read(
     body: FeedbackReadUpdate,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_steward),
     db: Session = Depends(get_db),
 ) -> FeedbackReadResult:
     """把這位管理員的已讀水位推到給定時間，且不會比原本更早。其他管理員不動。"""
@@ -410,7 +410,7 @@ def list_feedback(
     format: Literal["json", "csv"] = Query(
         "json", description="csv = 依目前篩選匯出(忽略 limit,匯出整個篩選結果)"
     ),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_steward),
     db: Session = Depends(get_db),
 ) -> FeedbackListResponse | StreamingResponse:
     """列出有評分的助理訊息。JSON 永不回傳訊息正文;CSV 另附提問與被評分回覆。
@@ -438,6 +438,8 @@ def list_feedback(
         q = q.filter(Message.rating == rating)
 
     if format == "csv":
+        if not is_admin_tier(admin):
+            raise HTTPException(status_code=403, detail="需要管理員權限")
         return _export_csv(q, only_with_comment=only_with_comment, db=db, admin=admin)
 
     # 頂部好評／差評看同一時間窗與 agent／模型篩選，不受「目前只看差評」影響。

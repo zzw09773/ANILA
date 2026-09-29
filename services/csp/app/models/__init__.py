@@ -8,6 +8,7 @@ locate a name``. Import order here is alphabetical — SQLAlchemy handles the
 actual dependency resolution once every class is registered.
 """
 
+from app.models.account_inactivity import AccountInactivityState
 from app.models.agent import (
     Agent,
     AgentCollectionBinding,

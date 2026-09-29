@@ -15,6 +15,7 @@ import {
   setListImpl,
   setConvImpl,
   setPostImpl,
+  setMeImpl,
 } from './helpers/feedbackClientMock.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -48,12 +49,14 @@ function row(overrides = {}) {
 }
 
 let View
+let piniaRuntime
 
 async function loadView() {
   if (View) return View
   // Compile the browser SFC, not ssrLoadModule (which produces ssrRender).
-  // Keep Vue and the mock external so the mounted component shares this test's instances.
+  // Keep Vue, Pinia, and the mock external so the mounted component shares this test's instances.
   const require = createRequire(import.meta.url)
+  const piniaUrl = pathToFileURL(require.resolve('pinia')).href
   const result = await build({
     configFile: false,
     root: ROOT,
@@ -72,15 +75,17 @@ async function loadView() {
       minify: false,
       lib: { entry: resolve(ROOT, 'src/views/FeedbackView.vue'), formats: ['es'] },
       rollupOptions: {
-        external: ['vue', 'feedback-test-client'],
+        external: ['vue', 'pinia', 'feedback-test-client'],
         output: { inlineDynamicImports: true, paths: {
           vue: pathToFileURL(require.resolve('vue')).href,
+          pinia: piniaUrl,
           'feedback-test-client': pathToFileURL(MOCK).href,
         } },
       },
     },
   })
   const chunk = (Array.isArray(result) ? result[0] : result).output.find((item) => item.type === 'chunk' && item.isEntry)
+  piniaRuntime = await import(piniaUrl)
   View = (await import(`data:text/javascript;base64,${Buffer.from(chunk.code).toString('base64')}`)).default
   return View
 }
@@ -96,8 +101,20 @@ function mountView() {
   const el = document.createElement('div')
   document.body.appendChild(el)
   const app = createApp(View)
+  app.use(piniaRuntime.createPinia())
   app.mount(el)
   return { el, app }
+}
+
+async function settle() {
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve()
+    await nextTick()
+  }
+}
+
+function csvButtons() {
+  return [...document.querySelectorAll('button')].filter((button) => button.textContent.includes('匯出 CSV'))
 }
 
 function viewButtons() {
@@ -112,6 +129,20 @@ test.before(async () => {
 test.afterEach(() => {
   document.body.replaceChildren()
   resetFeedbackClient()
+})
+
+test('回饋 CSV 只給管理員，代理管理員看不到匯出按鈕', async () => {
+  setMeImpl(async () => ({ data: { role: 'deputy', username: 'deputy' } }))
+  const deputy = mountView()
+  await settle()
+  assert.equal(csvButtons().length, 0)
+  deputy.app.unmount()
+
+  setMeImpl(async () => ({ data: { role: 'admin', username: 'admin' } }))
+  const admin = mountView()
+  await settle()
+  assert.equal(csvButtons().length, 1)
+  admin.app.unmount()
 })
 
 test('FeedbackView 用插值顯示正文，沒有 v-html，並走 getConversationAll', () => {

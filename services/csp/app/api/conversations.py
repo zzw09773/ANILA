@@ -515,7 +515,7 @@ def create_conversation(
     # to avoid a circular dependency between conversations and ingestion.
     if body.collection_id is not None:
         from app.api.ingestion.collections import _require_collection_access
-        _require_collection_access(db, current_user, body.collection_id)
+        _require_collection_access(db, current_user, body.collection_id, write=False)
     from app.services.router_model_policy import RouterModelPolicyError, resolve_router_model
     selection = None
     try:

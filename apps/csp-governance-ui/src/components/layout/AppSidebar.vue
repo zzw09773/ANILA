@@ -56,6 +56,23 @@ const nav = useShellNav()
 const { open, narrow } = nav
 
 const menuGroups = computed(() => {
+  if (authStore.isDeputy && !authStore.isAdmin) {
+    return [
+      { label: '主要', items: [
+        { path: '/', label: '儀表板' },
+        { path: '/usage', label: '用量' },
+      ] },
+      { label: '人員與單位', items: [{ path: '/users', label: '使用者' }] },
+      {
+        label: '管理',
+        items: [
+          { path: '/alerts', label: '警報' },
+          { path: '/feedback', label: '使用者回饋' },
+          { path: '/banners', label: '公告橫幅' },
+        ],
+      },
+    ]
+  }
   const groups = [
     {
       label: '主要',
@@ -129,6 +146,7 @@ function isActive(path) {
 
 const scopeLabel = computed(() => {
   if (authStore.isAdmin) return '全部功能'
+  if (authStore.isDeputy) return '代理管理員'
   if (authStore.isUnitAdmin) return '人事與用量'
   if (authStore.isDeveloper) return 'Agent 與知識庫'
   return '個人金鑰與用量'

@@ -46,7 +46,7 @@ def create_studio_job_token(
     """
     from app.api.ingestion.collections import _require_collection_access
 
-    coll = _require_collection_access(db, current_user, body.collection_id)
+    coll = _require_collection_access(db, current_user, body.collection_id, write=False)
     stored = coll.classification_level or "無機密"
     try:
         classification = ClassificationLevel.from_storage(stored).value

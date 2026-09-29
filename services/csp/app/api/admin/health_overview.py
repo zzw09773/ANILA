@@ -42,7 +42,7 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
-from app.services.auth_service import require_admin
+from app.services.auth_service import require_steward
 from app.services.health_checker import (
     BASE_SERVICE_SPECS,
     HEALTH_HEALTHY,
@@ -158,7 +158,7 @@ def _entry_from_result(spec, result, checked_at: str) -> ServiceHealthEntry:
 @router.get("/overview", response_model=HealthOverviewResponse)
 async def health_overview(
     request: Request,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_steward),
     db: Session = Depends(get_db),
 ) -> HealthOverviewResponse:
     """彙總基礎服務 + model/agent 註冊表的健康狀態。

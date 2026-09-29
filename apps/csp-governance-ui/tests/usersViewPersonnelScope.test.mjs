@@ -50,6 +50,15 @@ test('人事動作走單位管理員可用的端點', () => {
   )
 })
 
+test('建立使用者只有擁有者能選代理管理員；編輯時非擁有者看到停用的現職', () => {
+  const src = stripComments(usersView)
+  const modal = src.slice(src.indexOf('編輯 · 使用者'), src.indexOf('label="部門"'))
+  assert.match(modal, /v-if="authStore\.isOwner"/)
+  assert.match(modal, /value="deputy"/)
+  assert.match(modal, /editingId && form\.role === 'deputy'/)
+  assert.match(modal, /disabled/)
+})
+
 test('單位管理員可進 /users，側欄只給使用者頁', () => {
   assert.match(routerSrc, /requiresPersonnel/)
   assert.match(sidebarSrc, /isUnitAdmin && !authStore.isAdmin/)

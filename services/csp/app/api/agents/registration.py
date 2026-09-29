@@ -538,7 +538,7 @@ def _validate_collection_access_for_ids(
     from app.api.ingestion.collections import _require_collection_access
 
     for cid in collection_ids:
-        _require_collection_access(db, user, cid)
+        _require_collection_access(db, user, cid, write=False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

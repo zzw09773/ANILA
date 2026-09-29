@@ -66,7 +66,7 @@
           <TermButton @click="fetchData" label="查詢" />
         </div>
       </div>
-      <div class="filters__export">
+      <div v-if="authStore.isAdmin" class="filters__export">
         <TermButton
           @click="downloadCsv"
           label="匯出 CSV(目前篩選)"
@@ -183,12 +183,14 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { listFeedback, exportFeedbackCsv, getConversationAll, markFeedbackRead } from '../api/feedback'
+import { useAuthStore } from '../stores/auth'
 import { refreshOpenAlertBanner } from '../utils/openAlertBanner'
 import { extractError } from '../api/errors'
 import { formatDate } from '../utils/formatDate'
 import { createRatedReplySession } from '../utils/feedbackRatedReply'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 
+const authStore = useAuthStore()
 const items = ref([])
 const summary = ref({ total: 0, up: 0, down: 0, with_comment: 0 })
 const pageError = ref('')

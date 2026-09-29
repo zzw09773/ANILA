@@ -71,3 +71,6 @@ export const raiseCollectionClassification = (collectionId, classificationLevel)
 
 export const deleteCollection = (collectionId) =>
   client.delete(`/api/ingestion/collections/${collectionId}`)
+
+export const transferCollection = (collectionId, username) =>
+  client.post(`/api/ingestion/collections/${collectionId}/transfer`, { username })

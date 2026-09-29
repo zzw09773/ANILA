@@ -423,6 +423,7 @@ async def lifespan(app: FastAPI):
     )
     from app.services.memory_service import start_memory_idle_loop
     from app.services.attachment_retention import start_attachment_retention
+    from app.services.inactivity_service import start_inactivity_sweep
     from app.services.embedding_swap import start_embedding_cleanup
     from app.services.jwt_keyring import (
         assert_active_key_decryptable,
@@ -440,6 +441,7 @@ async def lifespan(app: FastAPI):
         ledger_task = await start_audit_checkpointer()
         memory_task = start_memory_idle_loop()
         retention_task = start_attachment_retention()
+        inactivity_task = start_inactivity_sweep()
         embedding_cleanup_task = start_embedding_cleanup()
         tasks.extend(
             [
@@ -449,6 +451,7 @@ async def lifespan(app: FastAPI):
                 ledger_task,
                 memory_task,
                 retention_task,
+                inactivity_task,
                 embedding_cleanup_task,
             ]
         )

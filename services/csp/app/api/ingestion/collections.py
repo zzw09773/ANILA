@@ -29,19 +29,35 @@ from sqlalchemy.orm import Session
 
 from app.api.agents._common import effective_agent_policy_level
 from app.database import get_db
+from app.models.department import Department
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.modules.policy import apply_classification
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.ingestion import (
+    CollectionTransferRequest,
     CollectionClassificationRaise,
     CollectionCreate,
     CollectionResponse,
     CollectionUpdate,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, is_admin_tier
+from app.services.auth_service import (
+    get_current_user,
+    is_admin_tier,
+    require_admin,
+)
+from app.services.collection_scope import (
+    annotate_owner_left,
+    can_read_collection,
+    can_write_collection,
+    department_scope_contains,
+    load_owners,
+    owner_left_unit,
+    select_visible_collections,
+)
+from app.services.department_tree import load_parent_map
 from app.services.ingestion_classification import (
     agents_bound_below_level,
     cascade_raise_documents,
@@ -126,6 +142,14 @@ _ANILA_SEARCHABLE_CHECK = "ck_ingestion_collections_anila_searchable_unclassifie
 # 存在的路比不給路更糟:照做的人會以為是自己弄錯了。
 # (刻意不寫「共 N 則」:那個數字每多一道檢查就過期一次,這個檔案已經為此
 # 錯過兩輪。要知道有幾則,去數 ``_guard_anila_searchable`` 的 raise。)
+# 全院檢索是管理員把「沒有單位」的知識庫公開給全院。有單位的庫不能標記，
+# 已標記的院級庫也不能再綁單位。既有 department_id 為 NULL 的院級庫維持原樣。
+_INSTITUTIONAL_DEPARTMENT_CONFLICT = (
+    "全院檢索標記是管理員把知識庫公開給全院，不能同時綁定單位。"
+    "有單位的知識庫不能標記為全院可檢索；已是全院可檢索的知識庫不能再指定單位。"
+)
+
+
 _MARK_ERRORS = {
     "not_admin": (
         "只有管理員可以設定 ANILA 檢索標記。這個標記等同於把整個庫公開給"
@@ -143,15 +167,17 @@ _MARK_ERRORS = {
 
 
 def _require_collection_access(
-    db: Session, user: User, collection_id: int
+    db: Session,
+    user: User,
+    collection_id: int,
+    *,
+    write: bool = True,
 ) -> IngestionCollection:
-    """Resolve the collection + confirm caller can manage it.
+    """寫入只限管理員，或仍在這個庫單位範圍內的建立者。同單位（含下級）只能讀。
 
-    Returns the row (callers usually need other fields anyway).
-    Admin bypasses; non-admin must be the ``created_by`` owner. Future
-    Sprint may add a ``collection_access_grants`` table for sharing
-    across users; this helper is the single point that needs to grow
-    when that lands.
+    建立者調離單位範圍後不能再上傳、刪除文件、重做、修改或刪除知識庫。
+    沒有單位的庫仍由建立者寫。移交之後只有新的擁有者（或管理員）能寫。
+    讀取（write=False）才放進這個單位與下級。單位歸屬看當下，不在調單位時改寫列。
     """
     coll = (
         db.query(IngestionCollection)
@@ -163,14 +189,32 @@ def _require_collection_access(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Collection {collection_id} not found",
         )
-    if is_admin_tier(user):
+    if write:
+        allowed = can_write_collection(db, user, coll)
+    else:
+        allowed = can_read_collection(db, user, coll)
+    if allowed:
         return coll
-    if coll.created_by != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"No access to collection {collection_id}",
-        )
-    return coll
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"No access to collection {collection_id}",
+    )
+
+
+def _collection_response(
+    db: Session,
+    coll: IngestionCollection,
+    *,
+    owners: dict | None = None,
+    parent_of: dict | None = None,
+) -> CollectionResponse:
+    body = CollectionResponse.model_validate(coll)
+    if owners is None:
+        body.owner_left_unit = annotate_owner_left(db, coll)
+    else:
+        owner = owners.get(coll.created_by) if coll.created_by is not None else None
+        body.owner_left_unit = owner_left_unit(db, coll, owner, parent_of=parent_of)
+    return body
 
 
 # Back-compat alias so other endpoint files (documents.py / eval_runs.py /
@@ -195,12 +239,25 @@ def _require_agent_access(db: Session, user: User, agent_id: int):  # noqa: ARG0
 # ── ANILA 檢索標記／升密失敗收尾 ───────────────────────────────────────────
 
 
+def _refuse_institutional_department_mix(
+    searchable: bool, department_id: int | None
+) -> None:
+    """全院公開與單位範圍不能同時成立。"""
+    if searchable and department_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_INSTITUTIONAL_DEPARTMENT_CONFLICT,
+        )
+
+
 def _guard_anila_searchable(db: Session, coll: IngestionCollection) -> None:
-    """開標記前的四道檢查。⚠ 全部要給做法,不能只說不行。
+    """開標記前的檢查。⚠ 全部要給做法,不能只說不行。
 
     只在「開啟」時跑。關閉永遠放行:每一則拒絕訊息都叫人去關標記,把關閉
-    也擋起來等於把自己寫的出口封死。
+    也擋起來等於把自己寫的出口封死。呼叫前要先把這次的 department_id
+    寫上物件：這裡看的是套用之後的單位，不是改欄位之前的舊值。
     """
+    _refuse_institutional_department_mix(True, coll.department_id)
     # (1) 密等。DB CHECK 已經擋死了,這裡先攔一次是為了把
     # 「conflicts with an existing collection」那種 409 換成看得懂的話。
     stored_level = getattr(coll, "classification_level", None) or _UNCLASSIFIED
@@ -225,10 +282,13 @@ def _guard_anila_searchable(db: Session, coll: IngestionCollection) -> None:
 
     # (3) 嵌入空間。已標記集必須是同一個嵌入模型,否則 ANILA 那邊把兩組
     # 分數排在一起比大小,而那兩組分數根本不在同一個空間裡。
+    # 全院檢索與這裡用同一個定義：department_id IS NULL。
+    # institutional_kb 的清單也是這兩個條件，單位庫即使旗標被寫上也不算已標記集。
     marked_model = (
         db.query(IngestionCollection.embedding_model)
         .filter(
             IngestionCollection.anila_searchable.is_(True),
+            IngestionCollection.department_id.is_(None),
             IngestionCollection.id != coll.id,
         )
         .first()
@@ -299,6 +359,34 @@ def _abort_raise_rolled_back(
     ) from exc
 
 
+def _create_department_id(db: Session, current_user: User, payload: CollectionCreate, origin: str | None) -> int | None:
+    """建庫的單位範圍。anilalm 一律不限單位。沒送就用建立者的單位。
+
+    管理員可以選全院／不限單位（null）或指定一個使用中的單位。
+    非管理員送出自己現在的單位，與沒送相同，接受。其他值拒絕，不能自己做成全院庫。
+    """
+    if origin == "anilalm":
+        return None
+    if "department_id" not in payload.model_fields_set:
+        return current_user.department_id
+    if not is_admin_tier(current_user):
+        if payload.department_id == current_user.department_id:
+            return current_user.department_id
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理員可以指定知識庫的單位範圍",
+        )
+    if payload.department_id is None:
+        return None
+    dept = db.get(Department, payload.department_id)
+    if dept is None or not dept.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="部門不存在或已停用",
+        )
+    return dept.id
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -351,6 +439,7 @@ def create_collection(
     _refuse_classification_for_anilalm(origin, level)
 
     caption_model = _normalized_caption_model(db, payload.caption_model)
+    department_id = _create_department_id(db, current_user, payload, origin)
 
     coll = IngestionCollection(
         name=payload.name,
@@ -367,6 +456,7 @@ def create_collection(
         classification_level=level.to_storage(),
         caption_enabled=payload.caption_enabled,
         caption_model=caption_model,
+        department_id=department_id,
     )
     db.add(coll)
     try:
@@ -398,7 +488,7 @@ def create_collection(
             "caption_model": caption_model,
         },
     )
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.get(
@@ -412,7 +502,9 @@ def list_collections(
     owned_only: bool = Query(
         True,
         description=(
-            "預設只列自己的 collections；admin 設 False 可看全部"
+            "預設：一般使用者看到自己的庫，以及同單位（含下級）的單位庫。"
+            "管理員預設只看到自己的庫，以及原擁有者已調離的單位庫。"
+            "設為 False 才列出全部知識庫，而且只有管理員能這樣查。"
         ),
     ),
     origin: Optional[str] = Query(
@@ -432,13 +524,11 @@ def list_collections(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[CollectionResponse]:
-    """List collections accessible to the current user.
+    """列出這個人看得到的知識庫。
 
-    Sprint 4: no ``agent_id`` filter. Default behaviour:
-    - non-admin: only own collections (admin-bypass when ``owned_only=False``
-      is rejected for non-admins).
-    - admin: own collections by default; pass ``owned_only=false`` to
-      see every collection on the platform.
+    預設：一般使用者看到自己的庫，以及同單位（含下級）的單位庫。沒有單位的庫
+    只有擁有者看得到。管理員預設只看到自己的庫，以及原擁有者已調離的單位庫。
+    ``owned_only=false`` 才列出全部知識庫，而且只有管理員能這樣查。
 
     Origin filter (r1_0029): same shape as conversations — CSP governance
     passes ``origin=csp``, ANILALM passes ``origin=anilalm``. Pre-origin
@@ -467,8 +557,6 @@ def list_collections(
         )
 
     q = db.query(IngestionCollection)
-    if owned_only:
-        q = q.filter(IngestionCollection.created_by == current_user.id)
     if not include_archived:
         q = q.filter(IngestionCollection.status == "active")
     if origin is not None:
@@ -486,7 +574,15 @@ def list_collections(
             )
         )
     rows = q.order_by(IngestionCollection.id).all()
-    return [CollectionResponse.model_validate(r) for r in rows]
+    if owned_only:
+        rows, owners, parent_of = select_visible_collections(db, current_user, rows)
+    else:
+        owners = load_owners(db, rows)
+        parent_of = load_parent_map(db)
+    return [
+        _collection_response(db, row, owners=owners, parent_of=parent_of)
+        for row in rows
+    ]
 
 
 @router.get(
@@ -498,8 +594,59 @@ def get_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    coll = _require_collection_access(db, current_user, collection_id)
-    return CollectionResponse.model_validate(coll)
+    coll = _require_collection_access(db, current_user, collection_id, write=False)
+    return _collection_response(db, coll)
+
+
+@router.post(
+    "/api/ingestion/collections/{collection_id}/transfer",
+    response_model=CollectionResponse,
+)
+def transfer_collection(
+    collection_id: int,
+    payload: CollectionTransferRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> CollectionResponse:
+    """改擁有者，不改單位範圍，也不自動轉給別人。"""
+    coll = (
+        db.query(IngestionCollection)
+        .filter(IngestionCollection.id == collection_id)
+        .first()
+    )
+    if coll is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection {collection_id} not found",
+        )
+    username = payload.username.strip()
+    target = db.query(User).filter(User.username == username).first()
+    if target is None or not target.is_active or not target.is_approved:
+        raise HTTPException(status_code=404, detail="找不到這位使用者")
+    if coll.department_id is not None and not department_scope_contains(
+        db, coll.department_id, target.department_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="新的擁有者必須在這個知識庫的單位範圍內（含下級單位）",
+        )
+    previous = coll.created_by
+    coll.created_by = target.id
+    db.commit()
+    db.refresh(coll)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="collection_owner_transfer",
+        resource_type="ingestion_collection",
+        resource_id=coll.id,
+        detail=(
+            f"知識庫「{coll.name}」擁有者 {previous} → {target.username}"
+            f"（department_id={coll.department_id} 未改）"
+        ),
+        commit=True,
+    )
+    return _collection_response(db, coll)
 
 
 @router.post(
@@ -717,7 +864,7 @@ def raise_collection_classification(
         _abort_raise_rolled_back(exc, collection_id, previous, target)
 
     db.refresh(coll)
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.patch(
@@ -732,7 +879,41 @@ def update_collection(
 ) -> CollectionResponse:
     coll = _require_collection_access(db, current_user, collection_id)
 
+    department_in_payload = "department_id" in payload.model_fields_set
+    # 送進來的單位跟現值一樣（含 null→null）不是變更：不 403、不 409、不查部門是否還啟用。
+    department_is_noop = (
+        department_in_payload and payload.department_id == coll.department_id
+    )
+    if department_in_payload and not department_is_noop and not is_admin_tier(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有管理員可以變更知識庫的單位範圍",
+        )
+    next_searchable = (
+        bool(coll.anila_searchable)
+        if payload.anila_searchable is None
+        else bool(payload.anila_searchable)
+    )
+    next_department = (
+        coll.department_id
+        if department_is_noop or not department_in_payload
+        else payload.department_id
+    )
+    # 看的是套用全部欄位之後的結果，不是「這次改了哪一個欄位」。
+    _refuse_institutional_department_mix(next_searchable, next_department)
+    if department_in_payload and not department_is_noop and payload.department_id is not None:
+        dept = db.get(Department, payload.department_id)
+        if dept is None or not dept.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="部門不存在或已停用",
+            )
+
     changed: dict[str, object] = {}
+    # 單位先寫上，下面的標記檢查才看得到這次 PATCH 的結果，而不是舊的單位。
+    if department_in_payload and not department_is_noop:
+        coll.department_id = next_department
+        changed["department_id"] = next_department
     # ── ANILA 檢索標記 ──────────────────────────────────────────────────
     # 擁有者本人也不行:``_require_collection_access`` 放行的是「管理自己的庫」,
     # 而標記的影響範圍是全院的聊天檢索,不是這一個庫。所以在這裡多一道 admin
@@ -774,8 +955,10 @@ def update_collection(
         coll.caption_model = _normalized_caption_model(db, payload.caption_model)
         changed["caption_model"] = coll.caption_model
 
+    # 單位和全院可檢索的互斥已經在寫入前用結果狀態擋過，這裡不再查一次。
+
     if not changed:
-        return CollectionResponse.model_validate(coll)
+        return _collection_response(db, coll)
 
     coll.updated_at = datetime.now(timezone.utc)
     try:
@@ -816,7 +999,7 @@ def update_collection(
                 "embedding_model": coll.embedding_model,
             },
         )
-    return CollectionResponse.model_validate(coll)
+    return _collection_response(db, coll)
 
 
 @router.delete(
@@ -836,6 +1019,7 @@ def delete_collection(
     audit benefit to keeping orphan rows because the audit_log has a
     timestamped record of the delete itself.
     """
+    # 代理管理員刪自己的庫與一般使用者相同。別人的庫仍由寫入檢查拒絕。
     coll = _require_collection_access(db, current_user, collection_id)
     snapshot = {"name": coll.name, "created_by": coll.created_by}
     db.delete(coll)

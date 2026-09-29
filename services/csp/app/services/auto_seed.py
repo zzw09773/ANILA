@@ -141,6 +141,18 @@ def auto_seed():
                 for item in keys_config:
                     username = item["username"]
                     user = db.query(User).filter(User.username == username).first()
+                    requested_role = item.get(
+                        "role", user.role if user is not None else "user"
+                    )
+                    deputy_locked = requested_role == "deputy" or (
+                        user is not None and user.role == "deputy"
+                    )
+                    if user is None and requested_role == "deputy":
+                        logger.error(
+                            "seed 不建立代理管理員 %s：略過角色指派，沒有帳號所以其餘設定也不套用",
+                            username,
+                        )
+                        continue
                     if user is None:
                         seed_pw = item.get("password")
                         if not seed_pw:
@@ -170,9 +182,15 @@ def auto_seed():
                     else:
                         if item.get("email"):
                             user.email = item["email"]
-                        user.role = item.get("role", user.role)
-                        user.is_active = True
-                        user.is_approved = True
+                        if deputy_locked:
+                            logger.error(
+                                "seed 略過 %s 的代理角色指派與重新啟用，其餘設定仍套用",
+                                username,
+                            )
+                        else:
+                            user.role = item.get("role", user.role)
+                            user.is_active = True
+                            user.is_approved = True
 
                     raw_key = item["key"]
                     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()

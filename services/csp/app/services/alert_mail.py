@@ -171,6 +171,7 @@ def send_test_mail(db: Session) -> str | None:
     try:
         _transmit(
             row,
+            db=db,
             subject="ANILA 警報寄信測試",
             body=(
                 "這是一封測試信。\n"
@@ -304,6 +305,7 @@ def _attempt_send(db: Session, row: AlertMailSettings, delivery: AlertMailDelive
         label = _SEVERITY_LABEL.get(notification.severity, notification.severity)
         _transmit(
             row,
+            db=db,
             subject=f"ANILA 警報（{label}）：{notification.title}",
             body=(
                 f"{notification.title}\n\n"
@@ -379,11 +381,61 @@ def _smtp_tls_context():
     return ssl.create_default_context()
 
 
-def _transmit(row: AlertMailSettings, *, subject: str, body: str) -> None:
+def steward_recipient_addresses(db) -> list[str]:
+    """在職且已核准的擁有者、代理管理員信箱。擁有者在前。"""
+    from app.models.user import User
+
+    rows = (
+        db.query(User)
+        .filter(
+            User.role.in_(("owner", "deputy")),
+            User.is_active.is_(True),
+            User.is_approved.is_(True),
+        )
+        .all()
+    )
+    owners: list[str] = []
+    deputies: list[str] = []
+    for user in rows:
+        address = (user.email or "").strip()
+        if not address:
+            continue
+        if user.role == "owner":
+            owners.append(address)
+        else:
+            deputies.append(address)
+    return owners + deputies
+
+
+def merge_alert_recipients(db, configured: list[str]) -> list[str]:
+    """設定的收件者在前，接著才是擁有者與在職代理。重複只留一筆，最多 24 個。
+
+    放不進去的記一筆警告，寫出略過幾個。測試信與正式警報都用這一份。
+    """
+    seen: set[str] = set()
+    merged: list[str] = []
+    dropped = 0
+    for address in list(configured) + steward_recipient_addresses(db):
+        key = address.lower()
+        if key in seen:
+            continue
+        if len(merged) >= 24:
+            dropped += 1
+            continue
+        seen.add(key)
+        merged.append(address)
+    if dropped:
+        logger.warning("警報收件者超過 24 個，略過 %s 個", dropped)
+    return merged
+
+
+def _transmit(row: AlertMailSettings, *, subject: str, body: str, db=None) -> None:
     import smtplib
     from email.message import EmailMessage
 
     recipients = parse_recipients(row.recipients)
+    if db is not None:
+        recipients = merge_alert_recipients(db, recipients)
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = row.from_address.strip()

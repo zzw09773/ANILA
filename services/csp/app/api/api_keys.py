@@ -13,11 +13,17 @@ from app.services.audit_service import log_audit_event, log_audit_event_or_raise
 from app.services.auth_service import (
     get_current_user,
     is_admin_tier,
+    is_deputy,
     require_interactive_user,
 )
 from app.services.api_key_service import create_api_key
 
 router = APIRouter(prefix="/api/keys", tags=["API Key 管理"])
+
+
+def _reject_deputy_key_change(user: User) -> None:
+    if is_deputy(user):
+        raise HTTPException(status_code=403, detail="代理管理員不能變更 API 金鑰")
 
 
 def _build_response(api_key: ApiKey) -> dict:
@@ -59,6 +65,7 @@ def create_key(
     current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
+    _reject_deputy_key_change(current_user)
     if is_admin_tier(current_user):
         effective_model_ids = request.model_ids
     else:
@@ -114,6 +121,7 @@ def update_key(
     current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
+    _reject_deputy_key_change(current_user)
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
@@ -155,6 +163,7 @@ def regenerate_key(
     current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
+    _reject_deputy_key_change(current_user)
     old_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not old_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
@@ -203,6 +212,7 @@ def revoke_key(
     current_user: User = Depends(require_interactive_user),
     db: Session = Depends(get_db),
 ):
+    _reject_deputy_key_change(current_user)
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")

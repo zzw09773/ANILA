@@ -870,7 +870,7 @@ async def search_collection(
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_access(db, current_user, collection_id, write=False)
 
     if coll.status != "active":
         raise HTTPException(
@@ -1122,7 +1122,7 @@ async def search_collection_images(
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_access(db, current_user, collection_id, write=False)
 
     if coll.status != "active":
         raise HTTPException(

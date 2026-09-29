@@ -21,6 +21,14 @@ class AlertResponse(ApiResponseModel):
     resolved_at: datetime | None = None
 
 
+class InactivityNotice(BaseModel):
+    """最近一次閒置排程要給治理頁的藍色通知。count 為 0 時整段省略。"""
+
+    phase: str
+    count: int
+    days: int
+
+
 class AlertSummary(BaseModel):
     open_count: int
     acknowledged_count: int
@@ -29,6 +37,7 @@ class AlertSummary(BaseModel):
     highest_open_severity: str | None = None
     # 跟警報同一支摘要，治理中心橫幅不用再多打一輪。
     unread_feedback_count: int = 0
+    inactivity_notice: InactivityNotice | None = None
 
 
 class AlertStatusUpdate(BaseModel):

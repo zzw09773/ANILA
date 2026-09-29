@@ -157,10 +157,10 @@ async def stream_job(
             detail=f"Job {job_id} not found",
         )
 
-    # Owns + 404 in one call. ``_require_collection_access`` raises
+    # Read check + 404 in one call. ``_require_collection_access`` raises
     # 404 when the collection is gone (orphan job after parent delete);
-    # 403 when the caller doesn't own it.
-    coll = _require_collection_access(db, current_user, job.collection_id)
+    # 403 when the caller cannot read it.
+    coll = _require_collection_access(db, current_user, job.collection_id, write=False)
 
     return StreamingResponse(
         _stream(job_id, coll.id),

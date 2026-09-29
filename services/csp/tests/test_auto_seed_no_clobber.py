@@ -185,3 +185,81 @@ def test_skip_reason_tells_deactivated_apart_from_unregistered():
     # Two distinct rows, distinct identifiers: a single-row fixture would pass
     # even if the function ignored its argument and returned a constant.
     assert auto_seed.seed_model_skip_reason("another-absent", inactive) == "未註冊"
+
+
+def test_seed_does_not_create_promote_or_reenable_a_deputy(db, monkeypatch, caplog):
+    import logging
+
+    plain = User(
+        username="seed-plain",
+        hashed_password=hash_password("password"),
+        role="user",
+        is_active=True,
+        is_approved=True,
+    )
+    quiet = User(
+        username="seed-quiet-deputy",
+        hashed_password=hash_password("password"),
+        role="deputy",
+        is_active=False,
+        is_approved=True,
+    )
+    db.add(plain)
+    db.add(quiet)
+    db.commit()
+    payload = [
+        {
+            "username": "seed-new-deputy",
+            "password": "secret-secret",
+            "role": "deputy",
+            "key": "deputy-key-aaaaaaaa",
+        },
+        {
+            "username": "seed-plain",
+            "password": "secret-secret",
+            "role": "deputy",
+            "key": "deputy-key-bbbbbbbb",
+        },
+        {
+            "username": "seed-quiet-deputy",
+            "password": "secret-secret",
+            "email": "quiet-deputy@example.invalid",
+            "role": "deputy",
+            "key": "deputy-key-cccccccc",
+        },
+        {
+            "username": "seed-normal",
+            "password": "secret-secret",
+            "role": "user",
+            "key": "normal-key-dddddddd",
+        },
+    ]
+    monkeypatch.setattr(auto_seed, "SessionLocal", lambda: _KeepOpen(db))
+    monkeypatch.setattr(auto_seed.settings, "AUTO_SEED_API_KEYS", json.dumps(payload))
+    with caplog.at_level(logging.ERROR, logger="app.services.auto_seed"):
+        auto_seed.auto_seed()
+
+    assert db.query(User).filter(User.username == "seed-new-deputy").one_or_none() is None
+    db.refresh(plain)
+    db.refresh(quiet)
+    assert plain.role == "user"
+    assert plain.is_active is True
+    assert quiet.role == "deputy"
+    assert quiet.is_active is False
+    assert quiet.email == "quiet-deputy@example.invalid"
+    from app.models.api_key import ApiKey
+    import hashlib
+
+    quiet_key = db.query(ApiKey).filter(
+        ApiKey.key_hash == hashlib.sha256(b"deputy-key-cccccccc").hexdigest()
+    ).one()
+    assert quiet_key.user_id == quiet.id
+    plain_key = db.query(ApiKey).filter(
+        ApiKey.key_hash == hashlib.sha256(b"deputy-key-bbbbbbbb").hexdigest()
+    ).one()
+    assert plain_key.user_id == plain.id
+    normal = db.query(User).filter(User.username == "seed-normal").one()
+    assert normal.role == "user"
+    assert normal.is_active is True
+    assert "代理" in caplog.text
+    assert "其餘" in caplog.text

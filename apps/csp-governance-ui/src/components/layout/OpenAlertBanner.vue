@@ -20,6 +20,7 @@ import {
   subscribeOpenAlertBanner,
 } from '../../utils/openAlertBanner'
 import { publishUnreadFeedback } from '../../utils/unreadFeedbackBanner'
+import { publishInactivityNotice } from '../../utils/inactivityNotice'
 
 const model = ref(null)
 let requestGen = 0
@@ -31,6 +32,7 @@ async function load() {
     if (gen !== requestGen) return
     model.value = openAlertBannerModel(data)
     publishUnreadFeedback(data)
+    publishInactivityNotice(data)
   } catch {
     // 這次讀不到就留著上次的橫幅，不要把整頁弄壞。
   }

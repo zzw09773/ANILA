@@ -41,6 +41,7 @@ KEEP_KEYS = {
     "auth.access_token_expire_minutes",
     "auth.refresh_token_expire_days",
     "auth.jwt_rotation_days",
+    "auth.inactivity_disable_days",
     "limits.department_max_depth",
     "limits.action_invoke_per_min",
     "limits.attachment_budget_ratio",

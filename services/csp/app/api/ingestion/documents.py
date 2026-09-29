@@ -205,15 +205,21 @@ class DocumentDetailResponse(DocumentResponse):
 
 
 def _resolve_collection(
-    db: Session, user: User, collection_id: int
+    db: Session,
+    user: User,
+    collection_id: int,
+    *,
+    write: bool = True,
 ) -> IngestionCollection:
     """Sprint 4: collection access keyed on ownership, not agent_id.
 
     ``_require_collection_access`` does its own row fetch + 404 + ACL —
-    we just delegate. Returning the row keeps the existing call sites
-    working unchanged.
+    we just delegate. Reads pass ``write=False`` (current unit, including
+    child units). Mutations keep the default write check: an admin, or the
+    creator while they are still inside a department-scoped collection.
+    同單位的人不能上傳、刪除或重做。調離單位範圍的建立者也不行。
     """
-    return _require_collection_access(db, user, collection_id)
+    return _require_collection_access(db, user, collection_id, write=write)
 
 
 def _document_response(
@@ -277,6 +283,7 @@ async def upload_document(
     happens async. Caller polls ``GET /api/ingestion/documents/{id}``
     to watch status transitions.
     """
+    # 寫入只限擁有者或管理員。同單位的人只能讀。
     coll = _resolve_collection(db, current_user, collection_id)
 
     # Auth / collection resolve done; release before reading the upload body
@@ -754,7 +761,7 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[DocumentResponse]:
-    coll = _resolve_collection(db, current_user, collection_id)
+    coll = _resolve_collection(db, current_user, collection_id, write=False)
     rows = (
         db.query(IngestionDocument)
         .filter(IngestionDocument.collection_id == collection_id)
@@ -807,7 +814,7 @@ def get_document(
     )
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    coll = _resolve_collection(db, current_user, doc.collection_id)
+    coll = _resolve_collection(db, current_user, doc.collection_id, write=False)
 
     latest_job = (
         db.query(IngestionJob)
@@ -1008,7 +1015,7 @@ async def list_document_chunks(
     )
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    coll = _resolve_collection(db, current_user, doc.collection_id)
+    coll = _resolve_collection(db, current_user, doc.collection_id, write=False)
     collection_id = coll.id
     # Auth done; release before asyncpg store await (no SQLAlchemy work during it).
     db.commit()
@@ -1075,7 +1082,7 @@ async def get_chunk_embedding_debug(
     )
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    coll = _resolve_collection(db, current_user, doc.collection_id)
+    coll = _resolve_collection(db, current_user, doc.collection_id, write=False)
     collection_id = coll.id
     # Auth done; release before asyncpg fetch.
     db.commit()
@@ -1121,7 +1128,7 @@ def download_document_blob(
     )
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    _resolve_collection(db, current_user, doc.collection_id)  # auth check
+    _resolve_collection(db, current_user, doc.collection_id, write=False)  # auth check
 
     if not doc.storage_path or not os.path.exists(doc.storage_path):
         raise HTTPException(status_code=410, detail="Blob no longer on disk")

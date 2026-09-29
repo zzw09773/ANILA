@@ -11,6 +11,8 @@ from app.schemas.alert import AlertResponse, AlertStatusUpdate, AlertSummary
 from app.services.alert_mail import (
     AlertMailConfigError,
     ensure_settings,
+    merge_alert_recipients,
+    parse_recipients,
     public_view,
     save_mail_settings,
     send_test_mail,
@@ -23,7 +25,8 @@ from app.services.alert_service import (
 )
 from app.services.feedback_notice import count_unread_feedback
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import require_admin
+from app.services.auth_service import require_admin, require_steward
+from app.services.inactivity_service import inactivity_notice
 from app.services.endpoint_author_service import can_see_endpoint_address
 
 router = APIRouter(prefix="/api/alerts", tags=["告警中心"])
@@ -76,7 +79,7 @@ def list_alerts(
     status: str | None = Query(None, regex="^(open|acknowledged|resolved)$"),
     severity: str | None = Query(None, regex="^(low|medium|high|critical)$"),
     category: str | None = None,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_steward),
     db: Session = Depends(get_db),
 ):
     query = db.query(Alert).order_by(Alert.last_seen_at.desc())
@@ -141,19 +144,22 @@ def post_alert_test_mail(
         raise HTTPException(status_code=400, detail=exc.public_message) from exc
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    row = ensure_settings(db)
+    recipients = merge_alert_recipients(db, parse_recipients(row.recipients))
     db.commit()
     if error:
-        return {"ok": False, "error": error}
-    return {"ok": True, "error": None}
+        return {"ok": False, "error": error, "recipients": recipients}
+    return {"ok": True, "error": None, "recipients": recipients}
 
 
 @router.get("/summary", response_model=AlertSummary)
 def alert_summary(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_steward),
     db: Session = Depends(get_db),
 ):
     payload = summarize_alerts(db)
     payload["unread_feedback_count"] = count_unread_feedback(db, admin)
+    payload["inactivity_notice"] = inactivity_notice(db)
     return payload
 
 
@@ -161,7 +167,7 @@ def alert_summary(
 def ack_alert(
     alert_id: int,
     request: AlertStatusUpdate,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_steward),
     db: Session = Depends(get_db),
 ):
     alert = db.query(Alert).filter(Alert.id == alert_id).first()

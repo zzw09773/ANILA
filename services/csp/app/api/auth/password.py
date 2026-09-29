@@ -25,6 +25,7 @@ from app.schemas.user import (
 from app.services.audit_service import log_audit_event
 from app.services.token_revocation import commit_token_revocation
 from app.services.auth_service import (
+    InactivityDisabled,
     authenticate_user,
     create_tokens,
     get_current_user,
@@ -34,6 +35,7 @@ from app.services.auth_service import (
     LOCAL_PASSWORD_DISABLED_SENTINEL,
     TOKEN_LIFETIMES_KEY,
 )
+from app.services.inactivity_service import resume_after_inactivity
 from app.utils.security import decode_token, hash_password, verify_password
 
 from ._common import (
@@ -107,6 +109,20 @@ def login(
         )
 
     result = authenticate_user(db, request.username, request.password)
+    if isinstance(result, InactivityDisabled):
+        # 帳密不允許的人（卡片限定下的非擁有者）不改狀態、不動閒置錨點。
+        if card_only and result.user.role != "owner":
+            raise HTTPException(status_code=404)
+        message = resume_after_inactivity(
+            db, result.user, ip_address=ip_address,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "inactivity_reapproval",
+                "message": message or "帳號因閒置暫停，已送出重新啟用申請",
+            },
+        )
     if result is None:
         log_audit_event(
             db,
@@ -166,8 +182,9 @@ def login(
             commit=True,
         )
         raise HTTPException(status_code=404)
-    tokens = create_tokens(result, db, include_lifetimes=True)
+    # 放行之後、發 token 之前才寫登入時間。被拒絕的帳密不能把閒置時鐘歸零。
     _stamp_last_login(db, result)
+    tokens = create_tokens(result, db, include_lifetimes=True)
     log_audit_event(
         db,
         actor=result,

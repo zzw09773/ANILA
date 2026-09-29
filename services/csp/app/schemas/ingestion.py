@@ -98,6 +98,15 @@ class CollectionCreate(BaseModel):
             "NULL = legacy dual-surface visibility."
         ),
     )
+    department_id: int | None = Field(
+        default=None,
+        description=(
+            "單位範圍。沒送就用建立者目前的單位。"
+            "管理員可以送 null 表示全院／不限單位，或指定一個使用中的單位。"
+            "非管理員不能指定。全院可檢索不能和單位同時存在；"
+            "這個欄位只決定範圍，不會順便打開 anila_searchable。"
+        ),
+    )
     caption_enabled: bool | None = Field(
         default=None,
         description=(
@@ -159,10 +168,18 @@ class CollectionUpdate(BaseModel):
     anila_searchable: bool | None = Field(
         default=None,
         description=(
-            "ANILA 聊天可否直接檢索本庫。僅管理員可設；開啟前要過四道檢查"
-            "（本庫是無機密／不是個人知識庫／嵌入模型與已標記集一致／庫內"
-            "沒有密等文件）。關閉（false）不受那四道限制——每一則拒絕訊息"
-            "叫人去做的正是這個動作，把它擋住等於把出口封死。"
+            "管理員把這個知識庫公開給全院聊天檢索。只適用於沒有單位的院級庫；"
+            "已綁定單位的庫不能標記，已標記的院級庫也不能再指定單位。"
+            "僅管理員可設；開啟前還要過密等、個人庫、嵌入模型、庫內文件檢查。"
+            "關閉（false）不受那些限制——每一則拒絕訊息叫人去做的正是這個動作，"
+            "把它擋住等於把出口封死。既有沒有單位、已經標記的院級庫維持原樣。"
+        ),
+    )
+    department_id: int | None = Field(
+        default=None,
+        description=(
+            "單位範圍。全院檢索（anila_searchable）是公開給全院，不能和單位同時存在。"
+            "只有管理員可以改。沒送這個欄位就維持原單位。"
         ),
     )
     caption_enabled: bool | None = Field(
@@ -237,6 +254,8 @@ class CollectionResponse(ApiResponseModel):
     bytes_stored: int
     created_by: int
     origin: str | None = None
+    department_id: int | None = None
+    owner_left_unit: bool = False
     classification_level: str = "無機密"
     # 標記後端真的收到了嗎——沒有這個欄位，一次成功的 PATCH 就只是「回了 200，
     # 畫面什麼也沒變」，正是本專案盤點過的靜默成功形狀。
@@ -245,6 +264,12 @@ class CollectionResponse(ApiResponseModel):
     caption_model: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class CollectionTransferRequest(BaseModel):
+    """把單位知識庫的擁有者改成另一位使用者。單位範圍不動。"""
+
+    username: str = Field(..., min_length=1, max_length=100)
 
 
 # ── Document relations (cross-document edges, design v2 §3/§8) ───────────────

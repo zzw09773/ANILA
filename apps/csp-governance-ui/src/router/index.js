@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { deputyMayOpen } from './deputyPages.js'
 
 const routes = [
   {
@@ -56,19 +57,19 @@ const routes = [
         path: 'alerts',
         name: 'Alerts',
         component: () => import('../views/AlertsView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresSteward: true },
       },
       {
         path: 'feedback',
         name: 'Feedback',
         component: () => import('../views/FeedbackView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresSteward: true },
       },
       {
         path: 'banners',
         name: 'Banners',
         component: () => import('../views/BannersView.vue'),
-        meta: { requiresAdmin: true },
+        meta: { requiresSteward: true },
       },
       // 平台設定總覽 —— 96 顆設定四區三態。讀寫同一道 admin 門
       // (後端 router 級 Depends(require_admin))，所以這裡照 /users 的形狀。
@@ -195,7 +196,22 @@ router.beforeEach(async (to, from, next) => {
 
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
     next('/login')
-  } else if (to.meta.requiresPersonnel && !authStore.isAdmin && !authStore.isUnitAdmin) {
+  } else if (
+    to.meta.requiresAuth !== false
+    && !deputyMayOpen(to.path, {
+      isDeputy: authStore.isDeputy,
+      isAdmin: authStore.isAdmin,
+    })
+  ) {
+    next('/')
+  } else if (
+    to.meta.requiresPersonnel
+    && !authStore.isAdmin
+    && !authStore.isUnitAdmin
+    && !authStore.isDeputy
+  ) {
+    next('/')
+  } else if (to.meta.requiresSteward && !authStore.isSteward) {
     next('/')
   } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
     // ``isAdmin`` is admin-OR-owner (tier check). Don't compare role

@@ -57,7 +57,7 @@
             <TermButton :disabled="busy"
               :label="b.show_on_login ? '取消登入頁公開' : '登入頁公開'"
               @click="toggleShowOnLogin(b)" />
-            <TermButton :disabled="busy" label="刪除" @click="handleDelete(b)" />
+            <TermButton v-if="authStore.isAdmin" :disabled="busy" label="刪除" @click="handleDelete(b)" />
           </div>
         </li>
       </ul>
@@ -67,12 +67,14 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useAuthStore } from '../stores/auth'
 import { listBanners, createBanner, updateBanner, deleteBanner } from '../api/banners'
 import { TermBox, TermButton, TermBadge, TermField, PageHead } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { extractError } from '../api/errors'
 
 const { confirm } = useDialog()
+const authStore = useAuthStore()
 const banners = ref([])
 const error = ref('')
 const busy = ref(false)

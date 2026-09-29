@@ -616,11 +616,18 @@ def _provision_external_user(
                 "為避免帳號接管風險，自動合併已停用，請聯絡 admin 手動處理。"
             )
 
+    role = provider.default_role or "user"
+    if role == "deputy":
+        logger.error(
+            "OIDC 預設角色不得是代理管理員，%s 改以一般使用者建立",
+            username or email or subject,
+        )
+        role = "user"
     candidate_user = User(
         username=_generate_unique_username(db, username or email or subject),
         email=email,
         hashed_password=hash_password(secrets.token_urlsafe(32)),
-        role=provider.default_role or "user",
+        role=role,
         department_id=_validate_default_department(db, provider.default_department_id),
         is_active=True,
         is_approved=True,

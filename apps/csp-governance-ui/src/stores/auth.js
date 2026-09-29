@@ -21,6 +21,8 @@ export const useAuthStore = defineStore('auth', () => {
   const isAdmin = computed(() =>
     user.value?.role === 'admin' || user.value?.role === 'owner',
   )
+  const isDeputy = computed(() => user.value?.role === 'deputy')
+  const isSteward = computed(() => isAdmin.value || isDeputy.value)
   // Assignment-based, not a users.role. Populated by GET /api/auth/me.
   const isUnitAdmin = computed(() => !!user.value?.is_unit_admin)
   const isDeveloper = computed(() =>
@@ -85,6 +87,8 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     isOwner,
     isAdmin,
+    isDeputy,
+    isSteward,
     isUnitAdmin,
     isDeveloper,
     login,

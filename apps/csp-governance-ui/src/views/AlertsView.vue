@@ -14,7 +14,7 @@
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <TermBox title="警報寄信" hint="內網郵件伺服器。密碼存進去之後不會再顯示。收件者請用群組信箱。">
+    <TermBox v-if="authStore.isAdmin" title="警報寄信" hint="內網郵件伺服器。密碼存進去之後不會再顯示。收件者請用群組信箱。">
       <div v-if="mailNotice" class="feedback">{{ mailNotice }}</div>
       <div v-if="mailError || mail.last_error" class="feedback is-err">
         ! {{ mailError || mail.last_error }}
@@ -118,7 +118,7 @@
               <div class="row-actions">
                 <button v-if="alert.status === 'open'" class="term-action" @click="handleAck(alert)">確認</button>
                 <span v-if="alert.status === 'open' && alert.status !== 'resolved'" class="row-actions__sep">·</span>
-                <button v-if="alert.status !== 'resolved'" class="term-action" @click="handleResolve(alert)">解決</button>
+                <button v-if="alert.status !== 'resolved' && authStore.isAdmin" class="term-action" @click="handleResolve(alert)">解決</button>
               </div>
             </td>
           </tr>
@@ -133,6 +133,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useAuthStore } from '../stores/auth'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
 import { getAlertMail, sendAlertTestMail, updateAlertMail } from '../api/alertMail'
 import { extractError } from '../api/errors'
@@ -146,6 +147,7 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '.
 import { useDialog } from '../composables/useDialog'
 
 const { toast } = useDialog()
+const authStore = useAuthStore()
 const alerts = ref([])
 const summary = ref({ open_count: 0, acknowledged_count: 0, resolved_count: 0, high_count: 0 })
 const filters = ref({ status: '', severity: '', category: '' })
@@ -200,7 +202,12 @@ async function sendTest() {
   try {
     await updateAlertMail(mailSettingsSaveBody(mail.value))
     const { data } = await sendAlertTestMail()
-    if (data.ok) mailNotice.value = '測試信已送出。'
+    const sentTo = Array.isArray(data.recipients) ? data.recipients.filter(Boolean) : []
+    if (data.ok) {
+      mailNotice.value = sentTo.length
+        ? `測試信已送出：${sentTo.join('、')}`
+        : '測試信已送出。'
+    }
     else mailError.value = data.error || '寄測試信失敗'
     await loadMail()
   } catch (e) {
@@ -213,9 +220,11 @@ async function sendTest() {
 const poller = createPoller(fetchData, { intervalMs: ALERT_POLL_INTERVAL_MS })
 onMounted(() => {
   fetchData()
-  loadMail().catch((e) => {
-    mailError.value = extractError(e, '載入寄信設定失敗')
-  })
+  if (authStore.isAdmin) {
+    loadMail().catch((e) => {
+      mailError.value = extractError(e, '載入寄信設定失敗')
+    })
+  }
   poller.start()
 })
 onUnmounted(() => {

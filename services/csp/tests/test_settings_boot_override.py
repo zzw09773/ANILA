@@ -33,5 +33,5 @@ def test_startup_security_guards_keep_their_order_before_migrations():
 def test_only_twenty_c_settings_are_declared():
     from app.services.settings_registry import EDITABLE_CLASSES, SETTINGS, SettingClass
 
-    assert len(SETTINGS) == 20
+    assert len(SETTINGS) == 21
     assert EDITABLE_CLASSES == frozenset({SettingClass.C})

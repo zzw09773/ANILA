@@ -85,13 +85,13 @@ test('橫幅畫面上出現，摘要變成已解決後從頁面拿掉', async ()
   app.unmount()
 })
 
-test('橫幅每 60 秒更新，而且只有管理員看得到', () => {
+test('橫幅每 60 秒更新，而且管理員與代理管理員看得到', () => {
   assert.equal(OPEN_ALERT_BANNER_POLL_MS, 60_000)
   const layout = stripComments(readSource('components/layout/AppLayout.vue'))
   const banner = stripComments(readSource('components/layout/OpenAlertBanner.vue'))
   const alerts = stripComments(readSource('views/AlertsView.vue'))
   assert.match(layout, /OpenAlertBanner/)
-  assert.match(layout, /v-if="isAdmin"/)
+  assert.match(layout, /v-if="isSteward"/)
   assert.match(banner, /openAlertBannerModel/)
   assert.match(banner, /OPEN_ALERT_BANNER_POLL_MS/)
   assert.match(banner, /createPoller/)
@@ -135,4 +135,5 @@ test('警報頁有寄信區與寄測試信，密碼欄是 write-only', () => {
   assert.match(alerts, /last_error/)
   assert.match(alerts, /mailSettingsForForm/)
   assert.match(alerts, /mailSettingsSaveBody/)
+  assert.match(alerts, /data\.recipients/)
 })

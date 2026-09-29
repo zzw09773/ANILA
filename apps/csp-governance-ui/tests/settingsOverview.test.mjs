@@ -47,6 +47,7 @@ const EXPECTED = [
   ['auth.access_token_expire_minutes', 'ACCESS_TOKEN_EXPIRE_MINUTES'],
   ['auth.refresh_token_expire_days', 'REFRESH_TOKEN_EXPIRE_DAYS'],
   ['auth.jwt_rotation_days', 'JWT_ROTATION_DAYS'],
+  ['auth.inactivity_disable_days', null],
   ['limits.department_max_depth', 'ANILA_DEPARTMENT_MAX_DEPTH'],
   ['limits.action_invoke_per_min', 'ANILA_ACTION_INVOKE_PER_MIN'],
   ['limits.attachment_budget_ratio', 'ANILA_ATTACHMENT_BUDGET_RATIO'],
@@ -81,7 +82,7 @@ function row(key, index = 0, overrides = {}) {
 }
 
 test('registry and UI contract contain exactly the twenty C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 20)
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 21)
   assert.equal(SECTION_DEFS.length, 3)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))
@@ -180,4 +181,11 @@ test('text settings (router prompts) get a preview cell, a textarea and a reset-
   assert.match(viewSource, /重設為出貨預設/u)
   assert.match(readFileSync(resolve(HERE, '../src/utils/settingsView.js'), 'utf8'), /30 秒內/u)
   assert.match(viewSource, /handleResetToDefault/u)
+})
+
+test('閒置天數在帳號區，單位是天，每日排程才套用', () => {
+  const item = row('auth.inactivity_disable_days')
+  assert.equal(sectionIdFor(item), 'account')
+  assert.equal(settingUnit(item), '天')
+  assert.equal(applyWhenLabel(item), '下一次每日排程檢查就生效')
 })

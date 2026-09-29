@@ -12,12 +12,14 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.user import User
 from app.schemas.card import (
     CARD_PENDING_APPROVAL_MESSAGE,
     CARD_PENDING_REGISTRATION_MESSAGE,
     CardChallengeResponse,
     CardVerifyRequest,
 )
+from app.services.inactivity_service import resume_after_inactivity
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import create_tokens
 from app.services.card_auth import CardAuthError
@@ -119,6 +121,40 @@ def card_verify(
             detail=str(exc),
         ) from exc
 
+    # 停用帳號不能拿到權杖。閒置停用改回待審，錨點改成這次登入。
+    # 管理員若已重新啟用，以資料庫現況為準，不要沿用驗章當下的停用快照。
+    if not user.is_active:
+        message = resume_after_inactivity(db, user, ip_address=ip_address)
+        if message is not None:
+            payload = {
+                "status": "pending_approval",
+                "employee_id": claims.employee_id,
+                "display_name": claims.display_name,
+                "email": claims.email,
+                "registration_token": None,
+                "expires_in": None,
+                "message": message,
+            }
+            return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+        fresh = db.get(User, user.id, populate_existing=True)
+        if fresh is not None and fresh.is_active:
+            user = fresh
+        else:
+            log_audit_event(
+                db,
+                action="card_login",
+                resource_type="auth",
+                resource_id=user.id,
+                status="failure",
+                detail="憑證卡登入拒絕: 帳號已停用",
+                ip_address=ip_address,
+                commit=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="此帳號已停用",
+            )
+
     # ── Pending branch ───────────────────────────────────────────────────
     if not user.is_approved:
         if user.department_id is None:
@@ -165,8 +201,9 @@ def card_verify(
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
 
     # ── Approved: 正常登入流程 ───────────────────────────────────────────
-    tokens = create_tokens(user, db, include_lifetimes=True)
+    # 先原子寫入登入時間。停用若搶先提交，這次不發 token。
     _stamp_last_login(db, user)
+    tokens = create_tokens(user, db, include_lifetimes=True)
     log_audit_event(
         db,
         actor=user,

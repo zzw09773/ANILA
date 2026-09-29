@@ -3,15 +3,13 @@
 Split from the original ``app/api/auth.py`` god-module (837L) — bodies moved
 verbatim; only this import header is new.
 """
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.middleware.cookies import set_session_cookies
 from app.models.user import User
-from app.services.auth_service import TOKEN_LIFETIMES_KEY
+from app.services.auth_service import TOKEN_LIFETIMES_KEY, record_successful_login
 
 
 router = APIRouter(prefix="/api/auth", tags=["認證"])
@@ -56,8 +54,10 @@ def _finalize_login(response: Response, tokens: dict, db: Session) -> dict:
 
 
 def _stamp_last_login(db: Session, user: User) -> None:
-    """Record the current timestamp on the user's profile. Called on every
-    successful login path (local, LDAP, OIDC) so the admin user panel can
-    show ``last_login_at`` without scanning the audit log."""
-    user.last_login_at = datetime.now(timezone.utc)
-    db.commit()
+    """Record login only while the account is still active and approved.
+
+    Callers must do this before issuing tokens. Zero rows means a disable
+    won the race; refuse the login instead of handing out a session.
+    """
+    if not record_successful_login(db, user):
+        raise HTTPException(status_code=401, detail="使用者不存在或已停用")

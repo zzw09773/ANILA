@@ -106,7 +106,7 @@ def get_image_blob(
         collection_id = int(collection_id)
 
         # Real access gate (RLS below is defence-in-depth). Raises 403/404.
-        _require_collection_access(db, current_user, collection_id)
+        _require_collection_access(db, current_user, collection_id, write=False)
 
         # Scope the connection, then read the row under RLS. set_config(...,
         # is_local => true) is txn-scoped → never leaks to the next pooled user.
@@ -143,7 +143,7 @@ def get_image_blob(
                 detail=f"Image {image_id} not found",
             )
         collection_id = int(row.collection_id)
-        _require_collection_access(db, current_user, collection_id)
+        _require_collection_access(db, current_user, collection_id, write=False)
         storage_path = str(row.storage_path)
         mime = str(row.mime) if row.mime else "image/png"
 

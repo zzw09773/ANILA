@@ -21,8 +21,15 @@ from app.schemas.user import (
 )
 from app.services.audit_service import log_audit_event, log_audit_event_or_raise
 from app.services.auth_service import (
+    DEPUTY_CAP,
+    DEPUTY_ROLE,
+    active_deputy_count,
+    ensure_deputy_capacity,
+    lock_deputy_capacity,
     get_current_user,
+    guard_deputy_role_change,
     is_admin_tier,
+    is_deputy,
     is_owner,
     require_admin,
 )
@@ -99,7 +106,7 @@ def list_users(
 ):
     query = db.query(User)
 
-    if is_admin_tier(current_user):
+    if is_admin_tier(current_user) or is_deputy(current_user):
         if department_id is not None:
             scope = get_descendant_ids(db, department_id, include_self=True)
             query = query.filter(User.department_id.in_(sorted(scope)))
@@ -133,16 +140,28 @@ def create_user(
     db: Session = Depends(get_db),
 ):
     _ensure_owner_for_elevated(request.role, admin)
+    # 擁有者檢查先做。部門與帳號名稱先驗證，名額最後才擋，
+    # 避免名額已滿時把不存在的部門也回成 409。
+    guard_deputy_role_change(
+        db,
+        actor=admin,
+        current_role=None,
+        new_role=request.role,
+        will_be_counted=False,
+    )
     existing = db.query(User).filter(User.username == request.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="使用者名稱已存在")
+    department_id = _validate_department_id(db, request.department_id)
+    if request.role == DEPUTY_ROLE:
+        ensure_deputy_capacity(db)
 
     user = User(
         username=request.username,
         email=request.email,
         hashed_password=hash_password(request.password),
         role=request.role,
-        department_id=_validate_department_id(db, request.department_id),
+        department_id=department_id,
     )
     db.add(user)
     db.commit()
@@ -162,9 +181,11 @@ def create_user(
 @router.get("/{user_id}", response_model=UserResponse)
 def get_user(
     user_id: int,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if not is_admin_tier(current_user) and not is_deputy(current_user):
+        raise HTTPException(status_code=403, detail="需要管理員權限")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
@@ -186,22 +207,46 @@ def update_user(
     # Owner-only gate: editing an admin/owner row OR promoting any row
     # to admin/owner both go through this check. Either side being
     # elevated is enough to require the higher tier.
-    new_role = update_data.get("role")
+    new_role = update_data.get("role") if "role" in update_data else None
     _ensure_owner_for_elevated(user.role, admin)
     _ensure_owner_for_elevated(new_role, admin)
-
+    # 輸入先驗證。部門不存在要回 400，不能先被代理名額的 409 蓋掉。
     if "department_id" in update_data:
         update_data["department_id"] = _validate_department_id(
             db,
             update_data["department_id"],
         )
+    resulting_role = new_role if "role" in update_data else user.role
+    # 角色改成代理的當下就佔名額，不論目前是否已核准或啟用。
+    # 已經是代理的人（含停用、未核准）不會因為這次更新再佔一次。
+    becoming_deputy = resulting_role == DEPUTY_ROLE and user.role != DEPUTY_ROLE
+    guard_deputy_role_change(
+        db,
+        actor=admin,
+        current_role=user.role,
+        new_role=new_role,
+        will_be_counted=becoming_deputy,
+    )
     # admin / owner 都是 admin tier;捕捉「從 admin-tier 掉下去」的轉換,
     # owner→admin 維持 admin-tier 不需要 cascade,admin→owner 是升級也不需要。
     # 只在離開 admin-tier 時 (admin→user / developer 或 owner→user / developer)
     # 才需要把 API key 權限收斂回 user allowlist 並讓舊 JWT 失效。
     was_admin_tier = is_admin_tier(user)
+    # 只寫這次有送的欄位。明確的 null 只接受信箱與單位。
+    # is_active / local_password_disabled 設成 null 會把停用帳號寫壞。
+    explicit_active = update_data.get("is_active") if "is_active" in update_data else None
     for field, value in update_data.items():
+        if value is None and field not in ("department_id", "email"):
+            continue
         setattr(user, field, value)
+    # 有送 is_active 就跟停用／恢復同一套收尾：清掉閒置原因。
+    # 停用還要作廢舊權杖，否則刷卡會把閒置停用誤當成重新待審。
+    if explicit_active is True:
+        user.is_active = True
+        user.disabled_reason = None
+    elif explicit_active is False:
+        user.is_active = False
+        user.disabled_reason = None
 
     revoked_after_demotion = False
     if was_admin_tier and not is_admin_tier(user):
@@ -209,10 +254,12 @@ def update_user(
         _cascade_user_key_permissions(db, user, allowed_ids)
         user.token_version = (user.token_version or 0) + 1
         revoked_after_demotion = True
+    if explicit_active is False and not revoked_after_demotion:
+        user.token_version = (user.token_version or 0) + 1
 
-    if revoked_after_demotion:
+    if revoked_after_demotion or explicit_active is False:
         # Same path as logout / deactivate: durable row + pub/sub so
-        # anila-studio / asr-gateway drop the old admin-tier JWT.
+        # anila-studio / asr-gateway drop the old JWT.
         commit_token_revocation(db, user)
     else:
         db.commit()
@@ -416,15 +463,18 @@ def batch_approve_users(
         raise HTTPException(status_code=400, detail="user_ids 不可為空")
 
     actor_is_admin = is_admin_tier(current_user)
+    actor_is_deputy = is_deputy(current_user)
+    # 代理管理員即使同時是單位管理員，核准也走全平台，不縮到自己的單位。
+    platform = actor_is_admin or actor_is_deputy
     unit_scope: set[int] | None = None
-    if not actor_is_admin:
+    if not platform:
         unit_scope = get_unit_admin_scope_ids(db, current_user)
         if unit_scope is None:
             raise HTTPException(status_code=403, detail="需要管理員權限")
 
     if has_dept:
         dept_id = body.department_id
-        if not actor_is_admin and dept_id not in unit_scope:
+        if not platform and dept_id not in unit_scope:
             raise HTTPException(
                 status_code=403,
                 detail="僅能查詢自己管理單位的資料",
@@ -436,7 +486,7 @@ def batch_approve_users(
         # Authorised set may only shrink between the two scope reads (unit_scope
         # vs this traversal). A re-parent under the caller's node between them
         # must not expand effective reach.
-        if not actor_is_admin:
+        if not platform:
             dept_ids = dept_ids & unit_scope
         candidates = (
             db.query(User)
@@ -468,7 +518,7 @@ def batch_approve_users(
             user = by_id.get(uid)
             if user is None:
                 continue
-            if actor_is_admin:
+            if platform:
                 candidates.append(user)
             elif user.department_id is not None and user.department_id in unit_scope:
                 candidates.append(user)
@@ -483,8 +533,8 @@ def batch_approve_users(
     for user in candidates:
         if not actor_is_admin:
             # In-scope elevated: visible in list but not manageable → rejected
-            # (same reason as single-user approve 403). Scope already filtered
-            # above; do NOT re-call get_unit_admin_scope_ids per row.
+            # (same reason as single-user approve 403). Deputies are not
+            # admin-tier, so they take this branch too.
             if user.role in _ELEVATED_ROLES:
                 rejected.append(
                     BatchApproveRejectedItem(
@@ -505,6 +555,16 @@ def batch_approve_users(
             status_code=400,
             detail=f"單次最多核准 {_BATCH_APPROVE_CAP} 個帳號",
         )
+    incoming_deputies = [
+        user for user in to_approve if user.role == DEPUTY_ROLE
+    ]
+    if incoming_deputies:
+        lock_deputy_capacity(db)
+        # 這些人已經是代理，核准不會再佔一個名額。人數仍用同一套規則。
+        incoming_ids = [user.id for user in incoming_deputies]
+        others = active_deputy_count(db, exclude_user_ids=incoming_ids)
+        if others + len(incoming_deputies) > DEPUTY_CAP:
+            raise HTTPException(status_code=409, detail="代理管理員最多 3 人")
 
     if not body.dry_run:
         for user in to_approve:
@@ -561,10 +621,13 @@ def approve_user(
     db: Session = Depends(get_db),
 ):
     actor_is_unit_admin = False
-    if is_admin_tier(current_user):
+    # 代理管理員即使同時是單位管理員，核准也走全平台，不縮到自己的單位。
+    if is_admin_tier(current_user) or is_deputy(current_user):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
+        if is_deputy(current_user) and user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
     else:
         # Non-admin: missing and out-of-scope must be indistinguishable (404).
         scope = get_unit_admin_scope_ids(db, current_user)
@@ -579,6 +642,10 @@ def approve_user(
         if user.role in _ELEVATED_ROLES:
             raise HTTPException(status_code=403, detail="需要管理員權限")
         actor_is_unit_admin = True
+
+    # 已經是代理就已佔名額。排除本人，避免核准第三位時把自己算進去而失敗。
+    if user.role == DEPUTY_ROLE and not user.is_approved:
+        ensure_deputy_capacity(db, exclude_user_id=user.id)
 
     if user.is_approved:
         return {"message": f"使用者「{user.username}」已是核准狀態"}
@@ -600,12 +667,57 @@ def approve_user(
     return {"message": f"已核准使用者「{user.username}」"}
 
 
+@router.post("/{user_id}/reject")
+def reject_pending_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """拒絕尚未核准的帳號。不是刪除，也不走閒置停用那條重新申請。"""
+    if is_admin_tier(current_user) or is_deputy(current_user):
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        if is_deputy(current_user) and user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+    else:
+        scope = get_unit_admin_scope_ids(db, current_user)
+        user = db.query(User).filter(User.id == user_id).first()
+        if (
+            not user
+            or scope is None
+            or user.department_id is None
+            or user.department_id not in scope
+        ):
+            raise HTTPException(status_code=404, detail="使用者不存在")
+        if user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+    if user.is_approved:
+        raise HTTPException(status_code=400, detail="此帳號已核准，請改用停用")
+    user.is_active = False
+    user.disabled_reason = None
+    user.token_version = (user.token_version or 0) + 1
+    log_audit_event_or_raise(
+        db,
+        actor=current_user,
+        action="reject",
+        resource_type="user",
+        resource_id=user.id,
+        detail=f"拒絕待審使用者「{user.username}」",
+        commit=False,
+    )
+    commit_token_revocation(db, user)
+    return {"message": f"已拒絕使用者「{user.username}」"}
+
+
 @router.delete("/{user_id}")
 def deactivate_user(
     user_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if is_deputy(current_user):
+        raise HTTPException(status_code=403, detail="代理管理員不能刪除或停用資料")
     actor_is_unit_admin = False
     if is_admin_tier(current_user):
         user = db.query(User).filter(User.id == user_id).first()
@@ -628,6 +740,7 @@ def deactivate_user(
         actor_is_unit_admin = True
 
     user.is_active = False
+    user.disabled_reason = None
     user.token_version = (user.token_version or 0) + 1
     detail = f"停用使用者「{user.username}」"
     if actor_is_unit_admin:
@@ -661,11 +774,14 @@ def reactivate_user(
     lived only inside the admin-only PUT.
     """
     actor_is_unit_admin = False
-    if is_admin_tier(current_user):
+    if is_admin_tier(current_user) or is_deputy(current_user):
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
-        _ensure_owner_for_elevated(user.role, current_user)
+        if is_deputy(current_user) and user.role in _ELEVATED_ROLES:
+            raise HTTPException(status_code=403, detail="需要管理員權限")
+        if is_admin_tier(current_user):
+            _ensure_owner_for_elevated(user.role, current_user)
     else:
         # Non-admin: missing and out-of-scope must be indistinguishable (404).
         scope = get_unit_admin_scope_ids(db, current_user)
@@ -683,8 +799,12 @@ def reactivate_user(
 
     if user.is_active:
         raise HTTPException(status_code=400, detail="使用者已是啟用狀態")
+    # 角色已是代理就已佔名額，恢復不會多佔。尚未核准的代理也同一套。
+    if user.role == DEPUTY_ROLE:
+        ensure_deputy_capacity(db, exclude_user_id=user.id)
 
     user.is_active = True
+    user.disabled_reason = None
     detail = f"恢復使用者「{user.username}」"
     if actor_is_unit_admin:
         detail += "（單位管理員恢復）"

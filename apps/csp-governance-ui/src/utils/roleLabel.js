@@ -2,6 +2,7 @@
 export const ROLE_LABELS = {
   owner: '擁有者',
   admin: '管理員',
+  deputy: '代理管理員',
   developer: '開發者',
   user: '使用者',
   system: '系統',

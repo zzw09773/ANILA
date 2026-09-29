@@ -93,8 +93,8 @@ test('藍色通知掛在每一頁、只給管理員，而且跟警報橫幅共�
   const noticeAt = layout.indexOf('<UnreadFeedbackBanner')
   assert.ok(alertAt >= 0)
   assert.ok(noticeAt > alertAt)
-  assert.match(layout.slice(alertAt, alertAt + 80), /v-if="isAdmin"/)
-  assert.match(layout.slice(noticeAt, noticeAt + 90), /v-if="isAdmin"/)
+  assert.match(layout.slice(alertAt, alertAt + 80), /v-if="isSteward"/)
+  assert.match(layout.slice(noticeAt, noticeAt + 90), /v-if="isSteward"/)
 
   assert.match(alert, /getAlertSummary/)
   assert.match(alert, /OPEN_ALERT_BANNER_POLL_MS/)

@@ -21,6 +21,7 @@ from app.schemas.auth_provider import PublicAuthProvidersResponse
 from app.services.api_key_service import create_api_key
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import TOKEN_LIFETIMES_KEY, create_tokens
+from app.services.inactivity_service import resume_after_inactivity
 from app.services.external_auth_service import (
     authenticate_oidc_code,
     build_oidc_authorization_url,
@@ -181,8 +182,28 @@ async def oidc_callback(
         # state 內有 PKCE verifier 與 nonce，必須完整傳給 authenticate_oidc_code
         # 才能驗 id_token；任何缺漏由該函式 raise ValueError。
         user = await authenticate_oidc_code(db, provider, code, state_payload)
-        tokens = create_tokens(user, db, include_lifetimes=True)
+        paused = resume_after_inactivity(db, user)
+        if paused is not None:
+            return HTMLResponse(
+                (
+                    "<html><body><h3>等待核准</h3>"
+                    f"<p>{escape(paused)}</p>"
+                    "<a href='/login'>返回登入頁</a></body></html>"
+                ),
+                status_code=403,
+            )
+        user = db.get(User, user.id, populate_existing=True) or user
+        if not user.is_approved:
+            return HTMLResponse(
+                (
+                    "<html><body><h3>等待核准</h3>"
+                    "<p>等待核准中，請通知 admin</p>"
+                    "<a href='/login'>返回登入頁</a></body></html>"
+                ),
+                status_code=403,
+            )
         _stamp_last_login(db, user)
+        tokens = create_tokens(user, db, include_lifetimes=True)
         log_audit_event(
             db,
             actor=user,

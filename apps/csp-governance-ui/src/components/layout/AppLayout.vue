@@ -9,8 +9,9 @@
       />
       <AppSidebar />
       <main id="gov-main" class="shell__main" tabindex="-1">
-        <OpenAlertBanner v-if="isAdmin" />
-        <UnreadFeedbackBanner v-if="isAdmin" />
+        <OpenAlertBanner v-if="isSteward" />
+        <UnreadFeedbackBanner v-if="isSteward" />
+        <InactivityNoticeBanner v-if="isSteward" />
         <router-view v-slot="{ Component }">
           <transition name="shell-page" mode="out-in">
             <!-- 面板層錯誤網子：view 在 render/setup 期炸了，這裡出現可讀錯誤區塊，不是空白。 -->
@@ -33,12 +34,13 @@ import AppSidebar from './AppSidebar.vue'
 import AppStatusBar from './AppStatusBar.vue'
 import OpenAlertBanner from './OpenAlertBanner.vue'
 import UnreadFeedbackBanner from './UnreadFeedbackBanner.vue'
+import InactivityNoticeBanner from './InactivityNoticeBanner.vue'
 import { ErrorPanel } from '../errorPanel.js'
 import { provideShellNav } from '../../composables/useShellNav.js'
 import { useAuthStore } from '../../stores/auth'
 
 const auth = useAuthStore()
-const isAdmin = computed(() => auth.isAdmin)
+const isSteward = computed(() => auth.isSteward)
 const { open, narrow, close } = provideShellNav()
 const route = useRoute()
 watch(() => route.fullPath, () => close())

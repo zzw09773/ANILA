@@ -9,7 +9,7 @@ from app.schemas.base import ApiResponseModel
 # 由 admin 介面手動指派。
 # owner 是 0032 加的最高層 — 由 require_owner 把關 admin 帳號變更、auth
 # provider 編輯、purge、audit log 敏感欄位、model endpoint URL。
-UserRole = Literal["owner", "admin", "developer", "user", "system"]
+UserRole = Literal["owner", "admin", "deputy", "developer", "user", "system"]
 
 
 class UserBase(BaseModel):

@@ -25,7 +25,7 @@ from app.database import get_db
 from app.models.banner import Banner
 from app.models.user import User
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, is_admin_tier
+from app.services.auth_service import get_current_user, is_admin_tier, is_steward
 from app.schemas.base import ApiResponseModel
 from app.utils.client_ip import client_ip as _client_ip
 
@@ -93,6 +93,12 @@ def _require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def _require_steward(user: User = Depends(get_current_user)) -> User:
+    if not is_steward(user):
+        raise HTTPException(status_code=403, detail="需要管理員權限")
+    return user
+
+
 def _validate_level(level: str) -> None:
     if level not in _LEVELS:
         raise HTTPException(status_code=400, detail=f"level 必須是 {', '.join(sorted(_LEVELS))}")
@@ -131,7 +137,7 @@ def list_active_banners(
 
 @router.get("", response_model=list[BannerResponse])
 def list_banners(
-    current_user: User = Depends(_require_admin),
+    current_user: User = Depends(_require_steward),
     db: Session = Depends(get_db),
 ):
     return db.query(Banner).order_by(Banner.sort_order, Banner.id).all()
@@ -141,7 +147,7 @@ def list_banners(
 def create_banner(
     payload: BannerCreate,
     http_request: Request,
-    current_user: User = Depends(_require_admin),
+    current_user: User = Depends(_require_steward),
     db: Session = Depends(get_db),
 ):
     _validate_level(payload.level)
@@ -176,7 +182,7 @@ def create_banner(
 def update_banner(
     banner_id: int,
     payload: BannerUpdate,
-    current_user: User = Depends(_require_admin),
+    current_user: User = Depends(_require_steward),
     db: Session = Depends(get_db),
 ):
     banner = db.query(Banner).filter(Banner.id == banner_id).first()

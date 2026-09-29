@@ -55,6 +55,22 @@ test('wizard 建庫也送 caption_enabled，不得只改快速建立那條', () 
   assert.ok(source.includes('listModels'), 'wizard 模型下拉也沿用 GET /api/models')
 })
 
+test('管理員預設清單是自己的與已調離的，勾選才列出全部', () => {
+  const source = stripComments(readSource('views/KnowledgeCollectionsView.vue'))
+  assert.match(source, /顯示全部知識庫（管理員）/)
+  assert.match(source, /原擁有者已調離/)
+  assert.doesNotMatch(source, /顯示其他單位的知識庫（管理員）/)
+  assert.doesNotMatch(source, /同單位（含下級）的知識庫本來就列在這份清單裡/)
+})
+
+test('管理員建庫可以選全院或不限單位，並說明這代表什麼', () => {
+  const source = stripComments(readSource('views/KnowledgeCollectionsView.vue'))
+  assert.match(source, /全院／不限單位/)
+  assert.match(source, /isAdmin/)
+  assert.match(source, /department_id/)
+  assert.match(source, /不能同時標成全院可檢索|不能同時/)
+})
+
 test('建庫失敗訊息走 extractError，不放裸 detail（F-9 同族清掃）', () => {
   const source = stripComments(readSource('views/KnowledgeCollectionsView.vue'))
 

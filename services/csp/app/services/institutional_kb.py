@@ -136,10 +136,14 @@ async def retrieve_institutional(
     標記那一刻；文件是之後才加進來的，DB CHECK 也只鎖 collection 那一列。
     所以這裡的過濾必須存在，即使「照理說」標記過的庫裡不會有機密文件。
     """
+    # anila_searchable 是管理員把「沒有單位」的知識庫公開給全院。
+    # 單位庫即使旗標被寫上也不進這份清單；department_id 為 NULL 的既有院級庫照舊。
+    # 與 _guard_anila_searchable 的已標記集用同一個定義：department_id IS NULL。
     collections = (
         db.query(IngestionCollection)
         .filter(
             IngestionCollection.anila_searchable.is_(True),
+            IngestionCollection.department_id.is_(None),
             IngestionCollection.status == "active",
         )
         .order_by(IngestionCollection.id)
