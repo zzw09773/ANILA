@@ -311,7 +311,7 @@ POST /api/agents/{id}/credentials/{credential_id}/rotate
 DELETE /api/agents/{id}/credentials/{credential_id}
 ```
 
-`docs/runbooks/legacy-agent-bootstrap.md` 已把整合分為：
+當時的 `docs/runbooks/legacy-agent-bootstrap.md`（已退役，見 git 歷史）把整合分為：
 
 - Tier 0：owner/admin 直接 issue static `csk-`，貼到 agent `.env`。
 - Tier 1：agent 以 `bsk-` bootstrap 換 `csk-`。

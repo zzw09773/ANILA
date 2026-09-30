@@ -150,8 +150,7 @@
 | 既有 runbook | 用途 |
 |---|---|
 | [`runbooks/rotate-tls-cert.md`](../runbooks/rotate-tls-cert.md) | TLS 私鑰外洩時的緊急輪換 |
-| [`runbooks/service-token-cutover.md`](../runbooks/service-token-cutover.md) | Service token 洩漏的緊急切換 |
-| [`runbooks/legacy-agent-bootstrap.md`](../runbooks/legacy-agent-bootstrap.md) | Legacy agent 異常的處理 |
+| 治理中心「服務客戶端」頁 | 某個服務權杖外洩時，在該服務那一列輪替權杖；服務會自己重讀權杖檔 |
 | [`runbooks/intranet-deployment-runbook.md`](../runbooks/intranet-deployment-runbook.md) | 內網部署回滾 |
 
 ---

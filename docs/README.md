@@ -47,9 +47,7 @@ docs/
 │
 ├── runbooks/                   <-- 操作手冊
 │   ├── intranet-deployment-runbook.md   <-- 中科院內網部署手冊
-│   ├── rotate-tls-cert.md
-│   ├── service-token-cutover.md
-│   └── legacy-agent-bootstrap.md
+│   └── rotate-tls-cert.md
 │
 ├── ingestion/                  <-- ingestion 平台設計 / parent-child RAG (2 份)
 ├── platform/                   <-- 多服務整合 / SSO migration (2 份)
@@ -71,8 +69,6 @@ docs/
 | **內網部署怎麼跑** | [`runbooks/intranet-deployment-runbook.md`](./runbooks/intranet-deployment-runbook.md) + `infra/deployment/scripts/deploy-prod.sh` |
 | **（已失效）舊七分支同步策略** | [`branch-sync-backlog.md`](./archive/branch-sync-backlog.md) |
 | **TLS 私鑰怎麼輪換** | [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) |
-| **Service token 怎麼 cutover** | [`runbooks/service-token-cutover.md`](./runbooks/service-token-cutover.md) |
-| **legacy agent bootstrap 流程** | [`runbooks/legacy-agent-bootstrap.md`](./runbooks/legacy-agent-bootstrap.md) |
 
 ### AI 治理(prod-only,中科院內網部署必看)
 
@@ -97,7 +93,6 @@ docs/
 | **`anila-agent` template 怎麼設計** | [`agent-framework/anila-agent-framework-architecture.md`](./archive/agent-framework/anila-agent-framework-architecture.md) |
 | **agent runtime 移植決策** | [`agent-framework/anila-agent-framework-porting-decisions.md`](./archive/agent-framework/anila-agent-framework-porting-decisions.md) |
 | **openai-agents runtime 深入** | [`agent-framework/runtime-logic-openai-agents-deep-dive.md`](./archive/agent-framework/runtime-logic-openai-agents-deep-dive.md) |
-| **CSP ↔ Agent bootstrap 協定** | [`agent-framework/csp-agent-bootstrap-protocol.md`](./archive/agent-framework/csp-agent-bootstrap-protocol.md) |
 | **Ingestion pipeline 設計** | [`ingestion/ingestion-platform-design.md`](./ingestion/ingestion-platform-design.md) |
 | **Parent-child RAG 設計** | [`ingestion/parent-child-rag-design.md`](./ingestion/parent-child-rag-design.md) |
 
@@ -105,11 +100,8 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **目前 sprint 在做什麼** | [`planning/sprint-7x-plan.md`](./archive/planning/sprint-7x-plan.md) |
 | **SSO 切換進度** | [`platform/sso-migration.md`](./platform/sso-migration.md) |
 | **n8n / ANILA LM 整合**（GitLab 已於 2026-09-26 撤下，該計畫裡的 `/gitlab` 步驟不要照做） | [`platform/multi-service-integration-plan.md`](./platform/multi-service-integration-plan.md) |
-| **AgenticRAG 解耦 / Phase 1 計畫** | [`agenticrag/agenticrag-decouple-from-anila-core.md`](./archive/agenticrag/agenticrag-decouple-from-anila-core.md) + [`agenticrag/agenticrag-phase1-plan.md`](./archive/agenticrag/agenticrag-phase1-plan.md) |
-| **AgenticRAG 後續增強** | [`agenticrag/agenticrag-enhancement-plan.md`](./archive/agenticrag/agenticrag-enhancement-plan.md) |
 
 ### Studio / FLUX
 
@@ -123,9 +115,7 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **Memory 層怎麼設計(route 3)** | [`briefing/anila-memory-layer-rfc.md`](./archive/briefing/anila-memory-layer-rfc.md) |
 | **新進開發者要看什麼** | [`guides/`](./guides/) 或根 `docs/developer-guide.md` |
-| **Onyx 為什麼從 monorepo 移出** | [`changelog/2026-04-27-onyx-handover.md`](./archive/changelog/2026-04-27-onyx-handover.md) |
 
 ---
 
