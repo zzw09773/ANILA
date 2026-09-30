@@ -1498,7 +1498,7 @@ test_secrets_scan_rejects_env_keys_and_private_key_blocks() {
   root="$tmp/secrets-key"
   src="$tmp/secrets-key-src"
   mkdir -p "$root" "$src"
-  printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'abc' > "$src/note.txt"
+  printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC' > "$src/note.txt"
   tar -C "$src" -czf "$root/source.tar.gz" note.txt
   if release_assert_no_secrets "$root"; then
     echo "封存裡的 PRIVATE KEY 沒被拒絕" >&2

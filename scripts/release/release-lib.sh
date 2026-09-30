@@ -636,7 +636,8 @@ _secret_name_rejected() {
 }
 
 release_assert_no_secrets() {
-  local root="$1" hit f name
+  local root="$1" scan="${2:-$RELEASE_LIB_DIR/../../infra/deployment/scripts/scan-image-artifacts.sh}"
+  local hit f name tree rc
   hit=""
   while IFS= read -r f; do
     if _secret_name_rejected "$f"; then
@@ -658,9 +659,15 @@ release_assert_no_secrets() {
         return 1
       fi
     done < <(tar -tzf "$root/source.tar.gz")
-    # grep -q 會讓 tar 收到 SIGPIPE。關 pipefail 才看得到「有找到」。
-    if ( set +o pipefail
-         tar -xOzf "$root/source.tar.gz" 2>/dev/null | grep -q 'PRIVATE KEY' ); then
+    # 用映像掃描同一套規則判私鑰：標頭之後要有金鑰內容。只看字串會擋下
+    # 私鑰掃描器與檢查私鑰的程式本身。
+    [[ -f "$scan" ]] || { printf '找不到私鑰掃描器：%s\n' "$scan" >&2; return 1; }
+    tree="$(mktemp -d "${HOME}/.anila-source-check.XXXXXX")"
+    tar -xzf "$root/source.tar.gz" -C "$tree"
+    rc=0
+    bash "$scan" --content-dir "$tree" >&2 || rc=$?
+    rm -rf "$tree"
+    if (( rc != 0 )); then
       printf '原始碼封存含有 PRIVATE KEY，拒絕打包。\n' >&2
       return 1
     fi

@@ -764,18 +764,20 @@ self_test() {
             failures=$((failures + 1))
         fi
     done
+    # @B@ 在執行時換成 BEGIN：這支腳本自己不能留完整的私鑰標頭字面值，
+    # 否則出貨前對原始碼的私鑰檢查會抓到它。
     # 仍要抓：縮排加 CRLF、加密 PEM、JSON 跳脫、前面有 NUL 的二進位檔。
     local key_case
     for key_case in \
-        "  -----BEGIN RSA PRIVATE KEY-----\r\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\n" \
-        "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n" \
-        "{\"private_key\": \"-----BEGIN PRIVATE KEY-----\\\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\\\n\"}\n" \
-        "\0\0bin\n-----BEGIN EC PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n" \
-        "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF9aabcdefghijklmnopqrst\n" \
-        "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"x\"\nP2/56wAAAaabcdefghijklmnop\n" \
-        "KEY=\"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAabcdefghijklmn\n" \
-        "KEY=-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqhkiG9w0BAQEFAASC -----END PRIVATE KEY-----\n"; do
-        printf -- "$key_case" > "$probe_file"
+        "  -----@B@ RSA PRIVATE KEY-----\r\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\n" \
+        "-----@B@ RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n" \
+        "{\"private_key\": \"-----@B@ PRIVATE KEY-----\\\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\\\n\"}\n" \
+        "\0\0bin\n-----@B@ EC PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n" \
+        "-----@B@ PGP PRIVATE KEY BLOCK-----\n\nlQOYBF9aabcdefghijklmnopqrst\n" \
+        "---- @B@ SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"x\"\nP2/56wAAAaabcdefghijklmnop\n" \
+        "KEY=\"-----@B@ RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAabcdefghijklmn\n" \
+        "KEY=-----@B@ PRIVATE KEY----- MIIEvQIBADANBgkqhkiG9w0BAQEFAASC -----END PRIVATE KEY-----\n"; do
+        printf -- "${key_case//@B@/BEGIN}" > "$probe_file"
         if ! content_has_private_key "$probe_file"; then
             echo "  ✗ self-test: 私鑰變體沒被抓到：$(printf '%q' "$key_case")" >&2
             failures=$((failures + 1))
@@ -783,10 +785,10 @@ self_test() {
     done
     # 不該抓：程式碼裡只有標頭字面值、測試裡的短假內容。
     for key_case in \
-        "_SK_START = b\"-----BEGIN OPENSSH PRIVATE KEY-----\"\n" \
-        "    -----BEGIN RSA PRIVATE KEY-----\n    %s\n" \
-        "secret.write_bytes(b\"-----BEGIN PRIVATE KEY-----\\\\nAA==\\\\n\")\n"; do
-        printf -- "$key_case" > "$probe_file"
+        "_SK_START = b\"-----@B@ OPENSSH PRIVATE KEY-----\"\n" \
+        "    -----@B@ RSA PRIVATE KEY-----\n    %s\n" \
+        "secret.write_bytes(b\"-----@B@ PRIVATE KEY-----\\\\nAA==\\\\n\")\n"; do
+        printf -- "${key_case//@B@/BEGIN}" > "$probe_file"
         if content_has_private_key "$probe_file"; then
             echo "  ✗ self-test: 標頭字面值被誤判成私鑰：$(printf '%q' "$key_case")" >&2
             failures=$((failures + 1))
@@ -1014,9 +1016,32 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
-# ── 主迴圈 ──────────────────────────────────────────────────────────────────
+# 自我測試的 tar 模式會累加這兩個，目錄模式也先跑自我測試，所以放在兩種模式之前。
 TOTAL_VIOLATIONS=0
 DIRTY_IMAGES=()
+
+# ── 目錄模式：只做私鑰內容檢查，給出貨前的原始碼封存用 ─────────────────────
+# 與映像掃描同一套規則(標頭之後要有金鑰內容)。只看字串 "PRIVATE KEY" 會把
+# 私鑰掃描器、檢查私鑰的程式與測試都擋下(2026-09-30 實撞)。
+if [ "$1" = "--content-dir" ]; then
+    content_dir="${2:-}"
+    [ -n "$content_dir" ] && [ -d "$content_dir" ] || die "--content-dir 需要一個存在的目錄"
+    self_test
+    dir_hits=()
+    while IFS= read -r -d '' hit; do
+        [ -L "$hit" ] && continue
+        content_has_private_key "$hit" && dir_hits+=("${hit#"$content_dir"/}")
+    done < <(LC_ALL=C grep -rlaZE -e "$PRIVATE_KEY_RE" -- "$content_dir" 2>/dev/null || true)
+    if [ "${#dir_hits[@]}" -gt 0 ]; then
+        echo "✗ 有私鑰內容:"
+        printf '    %s\n' "${dir_hits[@]}"
+        exit 1
+    fi
+    echo "✓ 沒有私鑰內容"
+    exit 0
+fi
+
+# ── 主迴圈 ──────────────────────────────────────────────────────────────────
 
 echo "============================================================"
 echo "ANILA — post-build image artifact scan"
