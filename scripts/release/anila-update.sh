@@ -1542,6 +1542,7 @@ cmd_update() {
   command -v openssl >/dev/null || die "找不到 openssl"
   command -v curl >/dev/null || die "找不到 curl"
   docker info >/dev/null 2>&1 || die "docker 沒在跑，或這個帳號沒有權限"
+  require_compose_version
   bundle="$(open_bundle "$spec")" || exit 1
   release_verify_bundle "$bundle" || exit 1
   release_verify_image_catalog "$bundle" || exit 1

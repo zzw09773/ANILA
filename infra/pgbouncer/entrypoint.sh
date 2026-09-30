@@ -32,8 +32,10 @@ server_reset_query =
 ignore_startup_parameters = extra_float_digits,options
 admin_users = ${user}
 stats_users = ${user}
-pidfile = /tmp/pgbouncer.pid
 EOF
 
 chown -R pgbouncer:pgbouncer /etc/pgbouncer
+# 不寫 pidfile：前景跑、容器裡只有這一個程序。舊版寫在 /tmp，容器 restart 後
+# 檔案還在，pgbouncer 以為另一份在跑而拒絕啟動，只能 recreate 才救得回來。
+rm -f /tmp/pgbouncer.pid
 exec su-exec pgbouncer pgbouncer /etc/pgbouncer/pgbouncer.ini

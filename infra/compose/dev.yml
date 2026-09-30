@@ -74,6 +74,9 @@ services:
     depends_on:
       csp-db:
         condition: service_healthy
+        # csp-db 被 compose 重啟或重建時跟著重啟，否則池裡的舊連線第一次用會斷，
+        # CSP 啟動檢查就會失敗一次。需要 Compose 2.17 以上。
+        restart: true
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 5432"]
       interval: 5s

@@ -6,6 +6,20 @@
 set -euo pipefail
 
 die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
+
+# compose 檔的 depends_on 用到 restart: true，舊版 compose 會整份拒讀。
+compose_version_ok() {
+  local v="$1"
+  v="${v#v}"
+  [[ "$v" =~ ^([0-9]+)\.([0-9]+) ]] || return 1
+  (( BASH_REMATCH[1] > 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] >= 17) ))
+}
+
+require_compose_version() {
+  local v
+  v="$(docker compose version --short 2>/dev/null || true)"
+  compose_version_ok "$v" || die "docker compose 版本 ${v:-讀不到}，需要 2.17 以上"
+}
 warn() { printf '⚠ %s\n' "$*" >&2; }
 info() { printf '▶ %s\n' "$*" >&2; }
 ok()   { printf '✓ %s\n' "$*" >&2; }

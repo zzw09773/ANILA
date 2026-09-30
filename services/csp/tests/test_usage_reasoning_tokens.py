@@ -88,6 +88,20 @@ class _ConfigurableUpstream:
         )
 
 
+@pytest.fixture(autouse=True)
+def _idle_app_usage_writer(monkeypatch):
+    """這支測試自己清佇列（``_flush_usage``）。app 啟動時的寫入迴圈若也在跑，
+    會跟測試搶同一筆用量，排程順序不同時測試就找不到那列。
+
+    autouse 先於 ``client`` 建立，所以 lifespan 起的是這個不做事的迴圈。
+    """
+
+    async def _idle():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(usage_writer, "_usage_writer_loop", _idle)
+
+
 def _wire_usage_proxy(monkeypatch, db_engine, *, payload=None, stream_lines=None):
     monkeypatch.setattr(
         "app.database.SessionLocal",

@@ -20,6 +20,10 @@ install_release_stubs() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
 joined="$*"
+if [[ "$joined" == 'compose version --short' ]]; then
+  printf '%s\n' "${STUB_COMPOSE_VERSION:-2.36.2}"
+  exit 0
+fi
 if [[ "$joined" == *' ps -a '* ]]; then
   if [[ "${STUB_HEALTH_FAIL:-0}" == 1 ]]; then
     printf 'csp Up (unhealthy)\n'
@@ -2570,6 +2574,14 @@ EOF
   grep -q 'shared_buffers=3968MB' "$tmp/pg-exec.log"
 }
 
+test_compose_version_gate() {
+  (
+    source "$ROOT/scripts/release/release-lib.sh"
+    compose_version_ok 2.36.2 && compose_version_ok v2.17.0 && compose_version_ok 3.0.0 \
+      && ! compose_version_ok 2.16.9 && ! compose_version_ok 1.29.2 && ! compose_version_ok ""
+  )
+}
+
 test_postgres_memconf_unreadable_uses_defaults() {
   local bin="$tmp/pg-bin-bad" script="$ROOT/infra/docker/postgres-memconf.sh"
   mkdir -p "$bin"
@@ -2600,6 +2612,7 @@ check "安裝腳本寫入 UID GID DOCKER_GID" test_host_account_written_from_sud
 check "空白的主機帳號會就地補上" test_host_account_fills_blank_keys
 check "已設的主機帳號不被覆寫" test_host_account_keeps_existing_values
 check "沒有 sudo 時用安裝根目錄的擁有者" test_host_account_without_sudo_uses_install_root_owner
+check "compose 版本低於 2.17 就停" test_compose_version_gate
 check "Postgres 記憶體計算 62GB 與 755GB" test_postgres_memconf_62_and_755
 check "Postgres 啟動時記下算出的參數" test_postgres_memconf_logs_chosen_values
 check "讀不到記憶體時用 Postgres 內建預設" test_postgres_memconf_unreadable_uses_defaults
