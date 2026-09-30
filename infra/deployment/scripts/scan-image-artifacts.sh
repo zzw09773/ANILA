@@ -403,7 +403,7 @@ scan_tar_image() {
     local normalized member kind value blob config image_label tags_display metadata
     local layer_index layer_label layer_member decoded listing raw_path path
     local deletion_target is_dir i content_paths img_violations
-    local candidates_total landed candidate_index occurrence_dir landed_path extracted member_type
+    local candidates_total landed candidate_index landed_path layer_root layer_first_candidate
     local -a missing_samples=()
 
     [ -f "$bundle" ] || die "tar 不存在或不是 regular file:$bundle"
@@ -517,6 +517,8 @@ scan_tar_image() {
         allow_sample[$i]=""
     done
 
+    landed=0
+    missing_samples=()
     for layer_index in "${!layer_blobs[@]}"; do
         blob="${layer_blobs[$layer_index]}"
         layer_label="layer-$((layer_index + 1)) blob=$blob"
@@ -530,10 +532,13 @@ scan_tar_image() {
             die "$bundle 的 $layer_label 解碼後不是可列舉的 tar"
         fi
 
+        layer_first_candidate="${#candidate_paths[@]}"
         while IFS= read -r raw_path; do
             [ -n "$raw_path" ] || continue
             total_entries=$(( total_entries + 1 ))
-            path="$(normalize_layer_path "$raw_path")"
+            # 與 normalize_layer_path 相同，但不開子 shell(每條 entry 一次，n8n 十幾萬條)。
+            path="$raw_path"
+            while [[ "$path" == ./* ]]; do path="${path#./}"; done
             [ -n "$path" ] || continue
             unique_paths["$path"]=1
 
@@ -566,6 +571,39 @@ scan_tar_image() {
                 candidate_layer_files+=("$decoded")
             fi
         done < "$listing"
+
+        # 這一層的候選檔一次抽完再逐一讀。逐檔各跑一次 tar -x 會把整層重讀一遍，
+        # n8n 十四萬個候選檔要跑好幾個小時(2026-09-30 實測)。整層抽出來，
+        # 硬連結也會跟目標一起落地。抽不出來的照樣算沒做完。
+        layer_root="$decoded_dir/layer-$((layer_index + 1)).root"
+        mkdir -p "$layer_root"
+        tar -xf "$decoded" -C "$layer_root" --no-same-owner --no-same-permissions \
+            >/dev/null 2>&1 || true
+        # 權限 000 的檔讀不到時 grep 會安靜地回「沒有私鑰」。先補讀取權限。
+        chmod -R u+rwX "$layer_root" 2>/dev/null || true
+        # 先用一次 grep -r 找出有私鑰標頭的檔，只有這些才逐檔細看。
+        # grep -r 不跟 symlink，與 content_has_private_key 不判 symlink 一致。
+        declare -A layer_hits=()
+        while IFS= read -r -d '' hit; do
+            layer_hits["${hit#"$layer_root"/}"]=1
+        done < <(LC_ALL=C grep -rlaZE -e "$PRIVATE_KEY_RE" -- "$layer_root" 2>/dev/null || true)
+        for ((candidate_index = layer_first_candidate; candidate_index < ${#candidate_paths[@]}; candidate_index++)); do
+            landed_path="${candidate_paths[$candidate_index]}"
+            if [ -e "$layer_root/$landed_path" ] || [ -L "$layer_root/$landed_path" ]; then
+                landed=$(( landed + 1 ))
+                [ -n "${layer_hits[$landed_path]+x}" ] || continue
+                if private_key_content_violation "${candidate_paths[$candidate_index]}" \
+                    "$layer_root/$landed_path"; then
+                    content_violation_paths+=("${candidate_paths[$candidate_index]}")
+                    content_violation_verdicts+=("${candidate_verdicts[$candidate_index]}")
+                    content_violation_layers+=("${candidate_layers[$candidate_index]}")
+                fi
+            elif [ "${#missing_samples[@]}" -lt 3 ]; then
+                missing_samples+=("${candidate_paths[$candidate_index]}@${candidate_layers[$candidate_index]}")
+            fi
+        done
+        unset layer_hits
+        rm -rf "$layer_root" "$decoded"
     done
 
     [ "$layer_count" -gt 0 ] || die "$bundle 沒有 layer"
@@ -573,47 +611,6 @@ scan_tar_image() {
     content_paths="${#unique_paths[@]}"
 
     candidates_total="${#candidate_paths[@]}"
-    landed=0
-    missing_samples=()
-    for candidate_index in "${!candidate_paths[@]}"; do
-        occurrence_dir="$decoded_dir/occurrence-$candidate_index"
-        mkdir -p "$occurrence_dir"
-        landed_path="$(normalize_layer_path "${candidate_raw_members[$candidate_index]}")"
-        extracted=0
-        if tar -xf "${candidate_layer_files[$candidate_index]}" \
-            -C "$occurrence_dir" --no-same-owner --no-same-permissions --no-unquote -- \
-            "${candidate_raw_members[$candidate_index]}" >/dev/null 2>&1; then
-            if [ -e "$occurrence_dir/$landed_path" ] || [ -L "$occurrence_dir/$landed_path" ]; then
-                extracted=1
-            fi
-        fi
-        # 硬連結單獨抽不出來(目標沒一起抽)。它的位元組就是同一層裡目標檔的
-        # 位元組，目標是一般檔，本身也在候選清單裡被讀過，所以算已處理。
-        # 2026-09-30 studio 映像的 usr/bin/perl5.38.2、uncompress 實撞。
-        member_type=""
-        if [ "$extracted" -eq 0 ]; then
-            member_type="$(tar --quoting-style=literal -tvf "${candidate_layer_files[$candidate_index]}" \
-                --no-unquote -- "${candidate_raw_members[$candidate_index]}" 2>/dev/null || true)"
-            member_type="${member_type:0:1}"
-        fi
-        if [ "$member_type" = "h" ]; then
-            landed=$(( landed + 1 ))
-            rm -rf "$occurrence_dir"
-            continue
-        fi
-        if [ "$extracted" -eq 1 ]; then
-            landed=$(( landed + 1 ))
-            if private_key_content_violation "${candidate_paths[$candidate_index]}" \
-                "$occurrence_dir/$landed_path"; then
-                content_violation_paths+=("${candidate_paths[$candidate_index]}")
-                content_violation_verdicts+=("${candidate_verdicts[$candidate_index]}")
-                content_violation_layers+=("${candidate_layers[$candidate_index]}")
-            fi
-        elif [ "${#missing_samples[@]}" -lt 3 ]; then
-            missing_samples+=("${candidate_paths[$candidate_index]}@${candidate_layers[$candidate_index]}")
-        fi
-        rm -rf "$occurrence_dir"
-    done
     if [ "$landed" -lt "$candidates_total" ]; then
         die "$bundle 的內容檢查沒做完:點名 $candidates_total 個候選檔,只落地 $landed 個(例:${missing_samples[*]:-?})——抽檔失敗當掃描失敗,不會給乾淨"
     fi
