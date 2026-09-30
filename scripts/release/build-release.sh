@@ -20,13 +20,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RELEASE_BUILDER="${ANILA_RELEASE_BUILDER:-anila-pkg}"
 
 release_ensure_builder() {
-  local driver
+  local driver inspect_out
   if ! docker buildx inspect "$RELEASE_BUILDER" >/dev/null 2>&1; then
     info "建立 buildx builder ${RELEASE_BUILDER}（docker-container）"
     docker buildx create --name "$RELEASE_BUILDER" --driver docker-container >/dev/null \
       || die "無法建立 buildx builder ${RELEASE_BUILDER}"
   fi
-  driver="$(docker buildx inspect "$RELEASE_BUILDER" 2>/dev/null | awk -F': *' '/^Driver:/ { print $2; exit }')"
+  # 先存下來再解析。awk 找到就 exit，pipefail 下 docker 會吃到 SIGPIPE 回 255。
+  inspect_out="$(docker buildx inspect "$RELEASE_BUILDER" 2>/dev/null)" || die "讀不到 builder ${RELEASE_BUILDER}"
+  driver="$(awk -F': *' '/^Driver:/ { print $2; exit }' <<< "$inspect_out")"
   [[ "$driver" == "docker-container" ]] \
     || die "builder ${RELEASE_BUILDER} 不是 docker-container（${driver:-未知}），拒絕用它打包"
   docker buildx inspect --bootstrap "$RELEASE_BUILDER" >/dev/null \
