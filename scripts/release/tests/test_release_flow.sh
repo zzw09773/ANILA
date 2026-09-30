@@ -1795,7 +1795,7 @@ test_scan_reads_plain_files_and_redis() {
   layer="$fixture/layer"
   bundle="$fixture/bundle.tar"
   mkdir -p "$layer/opt/app" "$fixture/save/blobs/sha256"
-  printf '%s\n' '-----BEGIN RSA PRIVATE KEY-----' 'abc' > "$layer/opt/app/notes.txt"
+  printf '%s\n' '-----BEGIN RSA PRIVATE KEY-----' 'MIIEowIBAAKCAQEAabcdefghijklmn' > "$layer/opt/app/notes.txt"
   printf '%s\n' '-----BEGIN CERTIFICATE-----' 'MIIB' > "$layer/etc-not-used"
   tar -cf "$fixture/layer.tar" -C "$layer" .
   gzip -c "$fixture/layer.tar" > "$fixture/save/blobs/sha256/layer1"
@@ -2093,7 +2093,7 @@ test_deleted_layer_key_still_fails_scan() {
   l2="$fixture/layer2"
   bundle="$fixture/bundle.tar"
   mkdir -p "$l1/opt" "$l2/opt" "$fixture/save/blobs/sha256"
-  printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'hidden' > "$l1/opt/secret.txt"
+  printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'MIIEvQIBADANBgkqhkiGhiddenAAA' > "$l1/opt/secret.txt"
   : > "$l2/opt/.wh.secret.txt"
   tar -cf "$fixture/layer1.tar" -C "$l1" .
   tar -cf "$fixture/layer2.tar" -C "$l2" .
@@ -2114,7 +2114,7 @@ test_deleted_layer_key_still_fails_scan() {
   grep -q 'opt/secret.txt' "$out" || { echo "沒有點名被後層刪掉的私鑰"; cat "$out" >&2; return 1; }
   mkdir -p "$fixture/wrong/usr/lib/code-server/node_modules/httpolyglot/test/fixtures" \
     "$fixture/wrong-save/blobs/sha256"
-  printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'not-the-fixture' \
+  printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'notTheFixtureCCCCCCCCCCCCCCCC' \
     > "$fixture/wrong/usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key"
   tar -cf "$fixture/wrong.tar" -C "$fixture/wrong" .
   gzip -c "$fixture/wrong.tar" > "$fixture/wrong-save/blobs/sha256/layer1"

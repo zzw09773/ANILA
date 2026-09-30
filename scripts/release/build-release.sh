@@ -30,7 +30,7 @@ EOF
   # 乾淨檢出沒有 .env，compose 在 build 也會先代換變數，必填變數缺值就停。
   # 給一份只有佔位值的 env 檔。這些值只在執行期用，不會進映像。
   build_env="$(mktemp)"
-  grep -ohE '\$\{[A-Z0-9_]+:\?' "$src/compose.yaml" "$src"/infra/compose/*.yml \
+  { grep -ohE '\$\{[A-Z0-9_]+:\?' "$src/compose.yaml" "$src"/infra/compose/*.yml 2>/dev/null || true; } \
     | sed -E 's/^\$\{//; s/:\?$//' | sort -u \
     | while read -r key; do printf '%s=build-placeholder-not-a-secret\n' "$key"; done > "$build_env"
   info "建置平台映像（含 codeserver、n8n、asr-gateway；內網預設不起 codeserver 與 n8n）"
