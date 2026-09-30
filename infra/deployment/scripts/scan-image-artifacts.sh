@@ -92,6 +92,13 @@ CONTENT_RULE_NAME='private-key-content'
 # "ANY PRIVATE KEY" 存成兩個以 NUL 隔開的字串，`.*` 會把它們接起來誤判
 # (2026-09-30 alpine 3.24 的 libcrypto.so.3 / loader_attic.so 實撞)。
 PRIVATE_KEY_RE='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'
+# 光有標頭還不算私鑰。rsa、cryptography、glib 的原始碼與程式庫都把標頭當字面值
+# 用來解析 PEM(2026-09-30 csp 映像實撞 8 筆)。真的私鑰一定帶內容，兩種長相：
+#   1. 標頭獨佔一行(可縮排、可 CRLF)，下一行是 base64 或加密 PEM 的 Proc-Type:
+#   2. 跳脫寫在同一行，例如 JSON 服務帳號金鑰 "-----BEGIN PRIVATE KEY-----\nMIIE…"
+PRIVATE_KEY_LINE_RE='^[[:space:]]*-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[[:space:]]*$'
+PRIVATE_KEY_BODY_RE='^[[:space:]]*(Proc-Type:|[A-Za-z0-9+/=]{16,}[[:space:]]*$)'
+PRIVATE_KEY_ESCAPED_RE='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(\\r)?\\n[A-Za-z0-9+/]{16,}'
 
 # 私鑰標頭不限副檔名。這個 regex 只留著給註解與舊測試對照;
 # needs_content_check 對每一個一般檔都回傳要讀。
@@ -249,7 +256,14 @@ content_has_private_key() {
     local f="$1"
     [ -L "$f" ] && return 1          # symlink 不判定(指向的東西不在映像裡也常見)
     [ -f "$f" ] || return 1          # 目錄 / 抽不出來 → 不判定
-    LC_ALL=C grep -qaE -e "$PRIVATE_KEY_RE" -- "$f" 2>/dev/null
+    # 先用連續標頭過濾，絕大多數檔在這裡就結束。
+    LC_ALL=C grep -qaE -e "$PRIVATE_KEY_RE" -- "$f" 2>/dev/null || return 1
+    LC_ALL=C grep -qaE -e "$PRIVATE_KEY_ESCAPED_RE" -- "$f" 2>/dev/null && return 0
+    # 最後一個 grep 不用 -q：讀完整條輸入，前面的 grep 才不會吃到 SIGPIPE 而在
+    # pipefail 下把「找到」變成失敗。
+    LC_ALL=C grep -aA1 -E -e "$PRIVATE_KEY_LINE_RE" -- "$f" 2>/dev/null \
+        | tr -d '\000' \
+        | LC_ALL=C grep -aE -e "$PRIVATE_KEY_BODY_RE" >/dev/null
 }
 
 # 回傳 0 = private-key-content 違規;回傳 1 = 沒有私鑰內容或已被內容例外放行。
@@ -673,7 +687,7 @@ self_test() {
     probe_dir="$(mktemp -d)"
     TMP_PATHS+=("$probe_dir")
     probe_file="$probe_dir/cacert.pem"
-    printf -- '-----%s %s-----\nnot-a-real-key\n' "BEGIN" "PRIVATE KEY" > "$probe_file"
+    printf -- '-----%s %s-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n' "BEGIN" "PRIVATE KEY" > "$probe_file"
     classify_path "$certifi_path"
     if [ "$VERDICT" != "ALLOWED" ]; then
         echo "  ✗ self-test: certifi/cacert.pem 應該先被白名單放行(才輪得到內容規則接手)" >&2
@@ -699,9 +713,33 @@ self_test() {
         failures=$((failures + 1))
     fi
     for key_kind in "RSA PRIVATE KEY" "EC PRIVATE KEY" "OPENSSH PRIVATE KEY" "ENCRYPTED PRIVATE KEY"; do
-        printf -- '-----%s %s-----\nAAAA\n' "BEGIN" "$key_kind" > "$probe_file"
+        printf -- '-----%s %s-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n' "BEGIN" "$key_kind" > "$probe_file"
         if ! content_has_private_key "$probe_file"; then
-            echo "  ✗ self-test: 沒認出 ${key_kind} 標頭" >&2
+            echo "  ✗ self-test: 沒認出 ${key_kind} 私鑰" >&2
+            failures=$((failures + 1))
+        fi
+    done
+    # 仍要抓：縮排加 CRLF、加密 PEM、JSON 跳脫、前面有 NUL 的二進位檔。
+    local key_case
+    for key_case in \
+        "  -----BEGIN RSA PRIVATE KEY-----\r\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\n" \
+        "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n" \
+        "{\"private_key\": \"-----BEGIN PRIVATE KEY-----\\\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\\\n\"}\n" \
+        "\0\0bin\n-----BEGIN EC PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"; do
+        printf -- "$key_case" > "$probe_file"
+        if ! content_has_private_key "$probe_file"; then
+            echo "  ✗ self-test: 私鑰變體沒被抓到：$(printf '%q' "$key_case")" >&2
+            failures=$((failures + 1))
+        fi
+    done
+    # 不該抓：程式碼裡只有標頭字面值、測試裡的短假內容。
+    for key_case in \
+        "_SK_START = b\"-----BEGIN OPENSSH PRIVATE KEY-----\"\n" \
+        "    -----BEGIN RSA PRIVATE KEY-----\n    %s\n" \
+        "secret.write_bytes(b\"-----BEGIN PRIVATE KEY-----\\\\nAA==\\\\n\")\n"; do
+        printf -- "$key_case" > "$probe_file"
+        if content_has_private_key "$probe_file"; then
+            echo "  ✗ self-test: 標頭字面值被誤判成私鑰：$(printf '%q' "$key_case")" >&2
             failures=$((failures + 1))
         fi
     done
@@ -714,8 +752,8 @@ self_test() {
     content_only_path='opt/x/content-only.key'
     content_probe_file="$probe_dir/matching-private-key"
     wrong_probe_file="$probe_dir/wrong-private-key"
-    printf -- '-----%s %s-----\nmatching fixture\n' "BEGIN" "PRIVATE KEY" > "$content_probe_file"
-    printf -- '-----%s %s-----\nwrong fixture\n' "BEGIN" "PRIVATE KEY" > "$wrong_probe_file"
+    printf -- '-----%s %s-----\nmatchingFixtureAAAAAAAAAAAAAAAA\n' "BEGIN" "PRIVATE KEY" > "$content_probe_file"
+    printf -- '-----%s %s-----\nwrongFixtureBBBBBBBBBBBBBBBBBBBB\n' "BEGIN" "PRIVATE KEY" > "$wrong_probe_file"
     content_hash="$(sha256sum "$content_probe_file")"
     content_hash="${content_hash%% *}"
     CONTENT_ALLOWLIST=("$content_exception_path|$content_hash|self-test exact occurrence hash")
@@ -819,12 +857,12 @@ self_test() {
         "$tar_layer_root/etc/ssl/certs" "$tar_fixture/bundle/blobs/sha256"
     printf 'safe fixture\n' > "$tar_layer_root/safe.txt"
     printf 'fixture violation\n' > "$tar_layer_root/foo/real.key"
-    printf '%s\n' '-----BEGIN PRIVATE KEY-----' > "$tar_layer_root/opt/redis/notes.txt"
+    printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC' > "$tar_layer_root/opt/redis/notes.txt"
     printf '%s\n' '-----BEGIN CERTIFICATE-----' > "$tar_layer_root/etc/ssl/certs/ca.pem"
     : > "$tar_layer_root/foo/.wh.secret.key"
     tar -cf "$tar_fixture/layer.tar" -C "$tar_layer_root" .
     gzip -c "$tar_fixture/layer.tar" > "$tar_fixture/bundle/blobs/sha256/self-test-layer"
-    printf '%s\n' '-----BEGIN PRIVATE KEY-----' > \
+    printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC' > \
         "$tar_fixture/bundle/blobs/sha256/self-test-config"
     printf '%s\n' \
         '[{"Config":"blobs/sha256/self-test-config","RepoTags":["scan-self-test:fixture"],"Layers":["blobs/sha256/self-test-layer"]}]' \

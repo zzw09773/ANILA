@@ -47,3 +47,7 @@ packages/anila-agent/offline/wheelhouse
 # 這一行是縱深:哪天某個 COPY 放寬到 context 根,掃描報告不會被一起烤進出貨映像
 # (內含尚未修補的弱點位置,屆時等於把弱點地圖發出去)。
 CLAUDE-SECURITY-*
+
+# csp 測試在主機上跑，不進映像。COPY services/csp/ ./ 會把 tests/ 一起搬進去，
+# 裡面有假私鑰之類的測試資料（2026-09-30 演練的映像掃描實撞）。
+services/csp/tests/
