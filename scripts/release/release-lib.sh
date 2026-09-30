@@ -650,6 +650,9 @@ release_assert_no_secrets() {
   if [[ -f "$root/source.tar.gz" ]]; then
     while IFS= read -r name; do
       [[ -n "$name" ]] || continue
+      # 目錄項本身沒有位元組。secrets/ 底下只有佔位 .gitignore 時，git archive
+      # 仍會列出 services/csp/secrets/ 這個目錄項；裡面的檔各自照規則判。
+      [[ "$name" == */ ]] && continue
       if _secret_name_rejected "$name"; then
         printf '原始碼封存含有 .env、密鑰、憑證或備份，拒絕打包。\n' >&2
         return 1

@@ -1518,13 +1518,13 @@ test_secrets_scan_rejects_env_keys_and_private_key_blocks() {
   fi
   printf '*\n!.gitignore\n' > "$src/services/csp/secrets/.gitignore"
   mkdir -p "$tmp/secrets-tar-ok"
-  tar -C "$src" -czf "$tmp/secrets-tar-ok/source.tar.gz" services/csp/secrets/.gitignore
+  tar -C "$src" -czf "$tmp/secrets-tar-ok/source.tar.gz" services/csp/secrets
   release_assert_no_secrets "$tmp/secrets-tar-ok" || {
     echo "封存裡的 services/csp/secrets/.gitignore 不該被拒絕" >&2
     return 1
   }
   printf 't\n' > "$src/services/csp/secrets/token"
-  tar -C "$src" -czf "$tmp/secrets-tar-ok/source.tar.gz" services/csp/secrets/.gitignore services/csp/secrets/token
+  tar -C "$src" -czf "$tmp/secrets-tar-ok/source.tar.gz" services/csp/secrets
   if release_assert_no_secrets "$tmp/secrets-tar-ok"; then
     echo "封存裡的 services/csp/secrets/token 沒被拒絕" >&2
     return 1
