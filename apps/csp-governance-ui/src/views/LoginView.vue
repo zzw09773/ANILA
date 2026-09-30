@@ -388,14 +388,11 @@ const showSelfRegistration = computed(() =>
 //   2. 同 hostname 的 absolute URL — 例：https://172.16.120.35:4443/app/...
 //      （4443 port 的 anila-ui 跨 port 跳回時必要）
 // 拒絕跨 hostname、javascript:、//evil.com 等 open-redirect 攻擊向量。
-// 沒帶 next 時的落點看身分：一般同仁是來用 ANILA 的，送去產品（/anila/）；
-// 管理員／開發者才留在治理中心。08-22 OOBE F-4：員工登入後落在後台儀表板，
-// 看到的是「建立 API 金鑰」——那不是三千人要去的地方。
+// 沒帶 next 時一律進 ANILA（/anila/）。管理員、開發者也先進產品，要管理時點
+// 治理中心頂端的入口回來（2026-09-30 負責人決定；原本管理員留在治理中心，
+// 但治理中心沒有進 ANILA 的入口，只能手打網址）。
 function defaultDestination() {
-  const user = authStore.user
-  if (!user) return '/'
-  const staysHere = authStore.isAdmin || authStore.isDeveloper || authStore.isUnitAdmin
-  return staysHere ? '/' : '/anila/'
+  return '/anila/'
 }
 
 function resolveNextDestination() {

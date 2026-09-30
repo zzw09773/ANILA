@@ -20,6 +20,8 @@
     </div>
 
     <div class="topbar__right">
+      <!-- ANILA 是另一個前端，整頁跳轉，不走本 SPA 的路由。 -->
+      <a class="topbar__action topbar__go" href="/anila/">前往 ANILA</a>
       <span class="topbar__user">
         <span class="topbar__user-name">{{ authStore.user?.username || '訪客' }}</span>
         <span class="topbar__user-role">{{ roleLabel(authStore.user?.role) }}</span>
@@ -346,6 +348,11 @@ function handleLogout() {
   flex-shrink: 0;
   white-space: nowrap;
   transition: background-color var(--motion-fast), border-color var(--motion-fast);
+}
+.topbar__go {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
 }
 .topbar__theme:hover,
 .topbar__action:hover {

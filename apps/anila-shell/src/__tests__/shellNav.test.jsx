@@ -33,6 +33,12 @@ describe("canSeeGovernance", () => {
   it("hides for a plain user or a system account", () => {
     expect(canSeeGovernance({ role: "user" })).toBe(false);
     expect(canSeeGovernance({ role: "system" })).toBe(false);
+    expect(canSeeGovernance({ role: "user", is_unit_admin: false })).toBe(false);
+  });
+
+  it("shows for a unit admin whose role is a plain user", () => {
+    // 所有人登入後先進 ANILA；單位管理員要從這裡回治理中心核准同仁。
+    expect(canSeeGovernance({ role: "user", is_unit_admin: true })).toBe(true);
   });
 
   it("defensively hides when the role is unknown or the user is null", () => {

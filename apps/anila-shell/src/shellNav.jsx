@@ -34,10 +34,13 @@ const GOVERNANCE_ROLES = new Set(["owner", "admin", "developer"]);
 
 /**
  * 是否顯示治理中心入口。角色未知（欄位缺漏 / 尚未載入）時採防禦式隱藏。
- * @param {{ role?: string } | null | undefined} user
+ * 單位管理員（is_unit_admin）也看得到：2026-09-30 起所有人登入後先進 ANILA，
+ * 單位管理員要從這裡回治理中心核准同仁。
+ * @param {{ role?: string, is_unit_admin?: boolean } | null | undefined} user
  * @returns {boolean}
  */
 export function canSeeGovernance(user) {
+  if (user?.is_unit_admin === true) return true;
   const role = user?.role;
   if (typeof role !== "string") return false;
   return GOVERNANCE_ROLES.has(role);
