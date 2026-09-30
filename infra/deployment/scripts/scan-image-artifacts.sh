@@ -86,10 +86,12 @@ RULES=(
 
 # 內容規則的類別名(這一條**壓過白名單**,不放在 RULES 裡,因為它要讀檔不是比路徑)
 CONTENT_RULE_NAME='private-key-content'
-# 私鑰區塊標頭(grep 逐行比對,`.` 本來就跨不過換行)。
-# 這樣寫吃得到 RSA / EC / OPENSSH / ENCRYPTED 各種變體,腳本檔案本身也不留
-# 一整串長得像真金鑰的字面值。
-PRIVATE_KEY_RE='BEGIN.*PRIVATE KEY'
+# 私鑰區塊標頭。PEM 標頭是連續的一行，這樣寫吃得到 RSA / EC / OPENSSH /
+# ENCRYPTED / DSA 各種變體，腳本檔案本身也不留一整串長得像真金鑰的字面值。
+# 不要放寬回 `BEGIN.*PRIVATE KEY`：OpenSSL 的 libcrypto 把 "-----BEGIN " 與
+# "ANY PRIVATE KEY" 存成兩個以 NUL 隔開的字串，`.*` 會把它們接起來誤判
+# (2026-09-30 alpine 3.24 的 libcrypto.so.3 / loader_attic.so 實撞)。
+PRIVATE_KEY_RE='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'
 
 # 私鑰標頭不限副檔名。這個 regex 只留著給註解與舊測試對照;
 # needs_content_check 對每一個一般檔都回傳要讀。
@@ -247,7 +249,7 @@ content_has_private_key() {
     local f="$1"
     [ -L "$f" ] && return 1          # symlink 不判定(指向的東西不在映像裡也常見)
     [ -f "$f" ] || return 1          # 目錄 / 抽不出來 → 不判定
-    LC_ALL=C grep -qaE "$PRIVATE_KEY_RE" "$f" 2>/dev/null
+    LC_ALL=C grep -qaE -e "$PRIVATE_KEY_RE" -- "$f" 2>/dev/null
 }
 
 # 回傳 0 = private-key-content 違規;回傳 1 = 沒有私鑰內容或已被內容例外放行。
@@ -690,6 +692,19 @@ self_test() {
         echo "  ✗ self-test: 純憑證檔被誤判成私鑰" >&2
         failures=$((failures + 1))
     fi
+    # OpenSSL libcrypto 的字串表：標頭前綴與 "ANY PRIVATE KEY" 以 NUL 隔開，不是私鑰。
+    printf -- '-----%s \0-----END \0ANY %s\0' "BEGIN" "PRIVATE KEY" > "$probe_file"
+    if content_has_private_key "$probe_file"; then
+        echo "  ✗ self-test: libcrypto 字串表被誤判成私鑰(規則被放寬回 BEGIN.*PRIVATE KEY?)" >&2
+        failures=$((failures + 1))
+    fi
+    for key_kind in "RSA PRIVATE KEY" "EC PRIVATE KEY" "OPENSSH PRIVATE KEY" "ENCRYPTED PRIVATE KEY"; do
+        printf -- '-----%s %s-----\nAAAA\n' "BEGIN" "$key_kind" > "$probe_file"
+        if ! content_has_private_key "$probe_file"; then
+            echo "  ✗ self-test: 沒認出 ${key_kind} 標頭" >&2
+            failures=$((failures + 1))
+        fi
+    done
 
     # 內容例外的反向 mutation:非例外路徑與錯誤 bytes 都必須仍然是紅燈,
     # 只有精確路徑加上精確 occurrence hash 才能讓 private-key-content 變乾淨。
