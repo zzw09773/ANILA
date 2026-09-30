@@ -1279,12 +1279,15 @@ start_platform() {
 }
 
 entry_ready() {
-  local tree="$1" line status code
+  local tree="$1" line status code port
   line="$(dc "$tree" ps -a --format '{{.Service}} {{.Status}}' 2>/dev/null | awk '$1=="nginx" { print; exit }' || true)"
   [[ -n "$line" ]] || return 1
   status="${line#* }"
   service_is_ready nginx "$status" || return 1
-  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 https://127.0.0.1/login || true)"
+  # 443 被別的服務佔用時，.env 設 NGINX_HTTPS_PORT，入口檢查跟著走同一個埠。
+  port="$(cd "$tree" && get_env NGINX_HTTPS_PORT)"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || port=443
+  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "https://127.0.0.1:${port}/login" || true)"
   [[ "$code" == "200" ]]
 }
 
