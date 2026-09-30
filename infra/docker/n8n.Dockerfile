@@ -4,14 +4,20 @@ FROM n8nio/n8n:2.38.1@sha256:9f21fbf422982bbdddc31085c180bef82d59cc608ba16dfec4f
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS patches
 RUN apk add --no-cache npm  && mkdir -p /tmp/n8n-cve  && cd /tmp/n8n-cve  && npm pack multer@2.3.0 @xmldom/xmldom@0.8.15 js-yaml@4.3.2 @tiptap/core@3.30.5 nodemailer@9.1.0 toml@4.2.0  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
+# 在中間階段整理 /usr/local：套 CVE 修補、刪上游測試資料（ssh2/test 帶私鑰）與建置日誌。
+# 正式映像只 COPY 整理後的結果。若在正式映像先 COPY 再刪，出貨封存仍含 COPY 那一層的
+# 位元組，逐層掃描照算違規，舊版漏洞套件也還在層裡（2026-09-30 實撞）。
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS tree
+COPY --from=upstream /usr/local /usr/local
+COPY --from=patches /tmp/n8n-cve /tmp/n8n-cve
+RUN set -eu;     PNPM=/usr/local/lib/node_modules/n8n/node_modules/.pnpm;     tar -xzf /tmp/n8n-cve/multer-2.3.0.tgz -C "$PNPM/multer@2.2.0/node_modules/multer" --strip-components=1;     tar -xzf /tmp/n8n-cve/xmldom-xmldom-0.8.15.tgz -C "$PNPM/@xmldom+xmldom@0.8.14/node_modules/@xmldom/xmldom" --strip-components=1;     tar -xzf /tmp/n8n-cve/js-yaml-4.3.2.tgz -C "$PNPM/js-yaml@4.3.1/node_modules/js-yaml" --strip-components=1;     tar -xzf /tmp/n8n-cve/tiptap-core-3.30.5.tgz -C "$PNPM/@tiptap+core@3.27.0_@tiptap+pm@3.27.0/node_modules/@tiptap/core" --strip-components=1;     tar -xzf /tmp/n8n-cve/nodemailer-9.1.0.tgz -C "$PNPM/nodemailer@8.0.10/node_modules/nodemailer" --strip-components=1;     tar -xzf /tmp/n8n-cve/toml-4.2.0.tgz -C "$PNPM/toml@3.0.0/node_modules/toml" --strip-components=1;     rm -rf /tmp/n8n-cve;     find "$PNPM" -type d -path '*/node_modules/ssh2/test' -prune -exec rm -rf {} +;     find "$PNPM" -type f -name '*.log' -delete;     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
+
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 USER root
 RUN apk upgrade --no-cache  && apk add --no-cache libstdc++ git openssl openssh-client tini  && adduser -D -u 1000 node  && mkdir -p /home/node  && chown node:node /home/node  && rm -rf /var/cache/apk/*  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 COPY --from=upstream /usr/bin/node /usr/bin/node
-COPY --from=upstream /usr/local /usr/local
+COPY --from=tree /usr/local /usr/local
 COPY --from=upstream /docker-entrypoint.sh /docker-entrypoint.sh
-COPY --from=patches /tmp/n8n-cve /tmp/n8n-cve
-RUN set -eu;     PNPM=/usr/local/lib/node_modules/n8n/node_modules/.pnpm;     tar -xzf /tmp/n8n-cve/multer-2.3.0.tgz -C "$PNPM/multer@2.2.0/node_modules/multer" --strip-components=1;     tar -xzf /tmp/n8n-cve/xmldom-xmldom-0.8.15.tgz -C "$PNPM/@xmldom+xmldom@0.8.14/node_modules/@xmldom/xmldom" --strip-components=1;     tar -xzf /tmp/n8n-cve/js-yaml-4.3.2.tgz -C "$PNPM/js-yaml@4.3.1/node_modules/js-yaml" --strip-components=1;     tar -xzf /tmp/n8n-cve/tiptap-core-3.30.5.tgz -C "$PNPM/@tiptap+core@3.27.0_@tiptap+pm@3.27.0/node_modules/@tiptap/core" --strip-components=1;     tar -xzf /tmp/n8n-cve/nodemailer-9.1.0.tgz -C "$PNPM/nodemailer@8.0.10/node_modules/nodemailer" --strip-components=1;     tar -xzf /tmp/n8n-cve/toml-4.2.0.tgz -C "$PNPM/toml@3.0.0/node_modules/toml" --strip-components=1;     rm -rf /tmp/n8n-cve;     find "$PNPM" -type d -path '*/node_modules/ssh2/test' -prune -exec rm -rf {} +;     find "$PNPM" -type f -name '*.log' -delete;     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 USER node
 WORKDIR /home/node
 EXPOSE 5678

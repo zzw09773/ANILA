@@ -64,6 +64,8 @@ COPY app/ ./app/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip --break-system-packages && \
     pip install --break-system-packages . && \
+    ecdsa_dir="$(python3 -c 'import ecdsa, os; print(os.path.dirname(ecdsa.__file__))')" && \
+    find "$ecdsa_dir" -name 'test_*' -delete && \
     rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Run as non-root for defence-in-depth.

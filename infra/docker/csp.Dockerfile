@@ -58,8 +58,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Install Python dependencies (CSP-specific)
 COPY services/csp/requirements.txt ./
+# ecdsa 的測試檔帶私鑰。末端雖然 pip uninstall ecdsa，出貨封存仍含這一層的
+# 位元組，逐層掃描照算違規，所以在安裝的同一層刪掉（2026-09-30 實撞）。
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt \
+    && ecdsa_dir="$(python -c 'import ecdsa, os; print(os.path.dirname(ecdsa.__file__))')" \
+    && find "$ecdsa_dir" -name 'test_*' -delete \
     && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # Copy backend code (scripts/ such as generate-jwt-keypair.py land in
