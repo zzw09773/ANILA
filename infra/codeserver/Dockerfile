@@ -14,6 +14,7 @@ COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 RUN npm install -g --allow-scripts=code-server,argon2 code-server@${CODE_SERVER_VERSION} \
  && apk del --no-cache make g++ python3 krb5-dev linux-headers \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
+ && find /usr/local/lib/node_modules/code-server -type d -path '*/node_modules/ssh2/test' -prune -exec rm -rf {} + \
  && rm -rf /var/cache/apk/* /var/lib/sdcssagent /run/sisidsdaemon.pid
 RUN su coder -c "code-server --install-extension ms-azuretools.vscode-docker && code-server --install-extension ms-azuretools.vscode-containers && code-server --list-extensions && rm -rf /home/coder/.config /home/coder/.local/share/code-server/logs /home/coder/.local/share/code-server/coder-logs" \
  && chmod -R a+rwX /home/coder \

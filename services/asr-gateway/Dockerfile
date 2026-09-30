@@ -27,6 +27,8 @@ WORKDIR /app
 COPY services/asr-gateway/pyproject.toml ./
 COPY services/asr-gateway/app/ ./app/
 RUN pip install --upgrade pip && pip install --no-cache-dir . \
+ && ecdsa_dir="$(python -c 'import ecdsa, os; print(os.path.dirname(ecdsa.__file__))')" \
+ && find "$ecdsa_dir" -name 'test_*' -delete \
  && rm -rf /var/lib/sdcssagent /run/sisidsdaemon.pid
 
 # ── SSRF guard(anila_core.security)────────────────────────────────────────

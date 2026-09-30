@@ -150,15 +150,29 @@ ALLOWLIST=(
     '*.env.template|同上。'
     'usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key|httpolyglot npm 套件公開測試 fixture,全球同位元組,code-server 基底層自帶、後層已刪、僅存於層位元組'
     'var/log/bootstrap.log|ubuntu24.04 CUDA 基底自帶開機引導日誌,基底層自帶、後層已刪'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@opentelemetry+otlp-transformer@*/node_modules/@opentelemetry/otlp-transformer/build/*/logs/*.js|n8n 依賴套件的「日誌功能」原始碼,資料夾叫 logs 但內容是程式,不是日誌檔(2026-09-30 n8n 映像實撞,出貨掃描第一次實跑)。只放行這幾種副檔名。'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@posthog+core@*/node_modules/@posthog/core/*/logs/*.js|同上(@posthog/core)。'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@posthog+core@*/node_modules/@posthog/core/*/logs/*.mjs|同上。'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@posthog+core@*/node_modules/@posthog/core/*/logs/*.ts|同上。'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@sentry+core@*/node_modules/@sentry/core/build/*/logs/*.js|同上(@sentry/core)。'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@sentry+node-core@*/node_modules/@sentry/node-core/build/*/logs/*.js|同上(@sentry/node-core)。'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/@google-cloud+secret-manager@*/node_modules/@google-cloud/secret-manager/build/protos/google/cloud/secrets/*.proto|同上。'
+    '*/dist-packages/certifi/cacert.pem|同 site-packages 那條,Debian/Ubuntu 系統 python 把套件裝在 dist-packages(2026-09-30 studio 映像實撞)。只放行檔名,內容規則照跑。'
 )
 
 # ── 內容例外白名單 ───────────────────────────────────────────────────────────
 # 格式:<exact-path>|<sha256>|<理由>。path 是 image rootfs 的相對路徑,不准用 glob。
 # 每一筆例外都是一次閘門收窄;雜湊與理由是它的代價;新增條目必須寫明上游公開來源與為何零機密價值 — 給第八筆條目製造摩擦力正是這段註解的目的。
-# 內容例外只允許已知的公開憑證（.pem / .crt），以及下面這一筆已釘雜湊的
-# httpolyglot 公開測試 fixture。其他私鑰，含同一路徑但雜湊不同的檔，仍然違規。
+# 內容例外只允許已知的公開憑證（.pem / .crt），以及下面已釘雜湊的上游公開測試金鑰。
+# 其他私鑰，含同一路徑但雜湊不同的檔，仍然違規。
 CONTENT_ALLOWLIST=(
     'usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key|6bf80cc4376ae97a69b2eb95fd3e17df4614bea2fe224e5e707806ed9bf0f2c8|httpolyglot npm 套件公開測試 fixture,全球同位元組,code-server 基底層自帶、後層已刪、僅存於層位元組'
+    'usr/lib/libgnutls.so.30.42.0|125e23c2b0070d677dab168029aa47be5745a6e9ec4ab1faa01db4b49a46b9e1|alpine 套件 gnutls-3.8.13-r0(pptx-renderer 經 node:22-alpine 裝入,apk audit 無修改)。內嵌的 5 把 PEM 私鑰是上游 lib/crypto-selftests-pk.c 的啟動自我測試金鑰(eddsa_ed25519_privkey 等),每份 gnutls 同位元組,零機密價值。2026-09-30 對過上游原始碼。套件升級雜湊會變,要重查再改'
+    'usr/local/lib/node_modules/code-server/lib/vscode/node_modules/ssh2/lib/protocol/constants.js|a3894fdd8e294109b55f06fbda69e467741f15a250801b744b6b0487bbf32529|ssh2 套件 lib/protocol/constants.js 內建一把固定 Ed25519 金鑰,執行時用來偵測 Ed25519 支援,全球同位元組(三份雜湊相同)。刪了 ssh2 會壞,所以釘雜湊。2026-09-30'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/ssh2@1.15.0/node_modules/ssh2/lib/protocol/constants.js|a3894fdd8e294109b55f06fbda69e467741f15a250801b744b6b0487bbf32529|ssh2 套件 lib/protocol/constants.js 內建一把固定 Ed25519 金鑰,執行時用來偵測 Ed25519 支援,全球同位元組(三份雜湊相同)。刪了 ssh2 會壞,所以釘雜湊。2026-09-30'
+    'usr/local/lib/node_modules/n8n/node_modules/.pnpm/ssh2@1.16.0/node_modules/ssh2/lib/protocol/constants.js|a3894fdd8e294109b55f06fbda69e467741f15a250801b744b6b0487bbf32529|ssh2 套件 lib/protocol/constants.js 內建一把固定 Ed25519 金鑰,執行時用來偵測 Ed25519 支援,全球同位元組(三份雜湊相同)。刪了 ssh2 會壞,所以釘雜湊。2026-09-30'
+    'usr/lib/x86_64-linux-gnu/libgnutls.so.30.40.3|4b14edde42e7cbeefd8a6d88d035e096f2e6412a535388bb1d073a1c196e2822|Debian libgnutls30t64 3.8.9-3+deb13u4(asr-gateway,python:3.13-slim)。內嵌私鑰同 alpine gnutls 那條,上游 crypto-selftests-pk.c 自我測試金鑰。dpkg -V 無修改。2026-09-30'
+    'usr/lib/x86_64-linux-gnu/libgnutls.so.30.37.1|ddbae2995750875c07bc218d12a062d73f8250678f54dedda7e9be5068781c98|Ubuntu libgnutls30t64 3.8.3-1.1ubuntu3.6(anila-studio,playwright noble 基底)。同上,上游自我測試金鑰。dpkg -V 無修改。2026-09-30'
 )
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -238,6 +252,17 @@ classify_path() {
     if ! match_rule "$path"; then
         VERDICT="IGNORED"; MATCHED_RULE=""; ALLOW_IDX=-1
         return 0
+    fi
+    # 目錄項本身沒有位元組。secrets/、logs/ 底下真的有檔，那些檔會各自被判；
+    # 只判目錄項，n8n 依賴套件裡叫 logs/ 的程式碼資料夾就得用目錄白名單放行，
+    # 而目錄白名單正是自我測試禁止的形狀(2026-09-30 n8n 映像實撞)。
+    if [ "${path: -1}" = "/" ]; then
+        case "$MATCHED_RULE" in
+            secrets-dir|logs-dir-with-content)
+                VERDICT="IGNORED"; MATCHED_RULE=""; ALLOW_IDX=-1
+                return 0
+                ;;
+        esac
     fi
     if is_allowlisted "$path"; then
         VERDICT="ALLOWED"
@@ -501,7 +526,7 @@ scan_tar_image() {
             die "$bundle 的 $layer_label 無法以 gzip、raw tar 或 zstd 解碼"
         fi
         listing="$decoded_dir/layer-$((layer_index + 1)).list"
-        if ! tar -tf "$decoded" > "$listing" 2>/dev/null; then
+        if ! tar --quoting-style=literal -tf "$decoded" > "$listing" 2>/dev/null; then
             die "$bundle 的 $layer_label 解碼後不是可列舉的 tar"
         fi
 
@@ -556,7 +581,7 @@ scan_tar_image() {
         landed_path="$(normalize_layer_path "${candidate_raw_members[$candidate_index]}")"
         extracted=0
         if tar -xf "${candidate_layer_files[$candidate_index]}" \
-            -C "$occurrence_dir" --no-same-owner --no-same-permissions -- \
+            -C "$occurrence_dir" --no-same-owner --no-same-permissions --no-unquote -- \
             "${candidate_raw_members[$candidate_index]}" >/dev/null 2>&1; then
             if [ -e "$occurrence_dir/$landed_path" ] || [ -L "$occurrence_dir/$landed_path" ]; then
                 extracted=1
@@ -655,6 +680,9 @@ SELF_TEST_CASES=(
     'app/main.py|IGNORED|-'
     'app/__pycache__/main.cpython-311.pyc|IGNORED|-'
     'usr/share/doc/logs/|IGNORED|-'
+    # 目錄項只看裡面的檔：目錄本身不算違規，裡面的檔照樣抓
+    'var/lib/app/secrets/v1/token.txt|VIOLATION|secrets-dir'
+    'opt/x/logs/json/app.txt|VIOLATION|logs-dir-with-content'
 )
 
 self_test() {
@@ -846,8 +874,14 @@ self_test() {
         case "$content_path" in
             *.pem|*.crt) ;;
             usr/lib/code-server/node_modules/httpolyglot/test/fixtures/server.key) ;;
+            usr/lib/libgnutls.so.30.42.0) ;;
+            usr/lib/x86_64-linux-gnu/libgnutls.so.30.40.3) ;;
+            usr/lib/x86_64-linux-gnu/libgnutls.so.30.37.1) ;;
+            usr/local/lib/node_modules/code-server/lib/vscode/node_modules/ssh2/lib/protocol/constants.js) ;;
+            usr/local/lib/node_modules/n8n/node_modules/.pnpm/ssh2@1.15.0/node_modules/ssh2/lib/protocol/constants.js) ;;
+            usr/local/lib/node_modules/n8n/node_modules/.pnpm/ssh2@1.16.0/node_modules/ssh2/lib/protocol/constants.js) ;;
             *)
-                echo "  ✗ self-test: 內容例外只允許已知公開憑證（.pem/.crt），或已釘雜湊的 httpolyglot 測試 fixture:$content_path" >&2
+                echo "  ✗ self-test: 內容例外只允許已知公開憑證（.pem/.crt），或已釘雜湊的上游公開測試金鑰(httpolyglot、gnutls 自我測試、ssh2 內建偵測金鑰):$content_path" >&2
                 failures=$((failures + 1))
                 ;;
         esac
@@ -1009,7 +1043,10 @@ for img in "$@"; do
 
     listing="$(mktemp)"
     TMP_PATHS+=("$listing")
-    if ! docker export "$cname" | tar -tf - > "$listing" 2>/dev/null; then
+    # 清單與抽檔都照字面處理檔名。GNU tar 預設把 \ 列成 \\、抽檔時再還原，
+    # 清單上的名字就對不上落地的檔(2026-09-30 studio 映像的 systemd
+    # "system-systemd\x2dcryptsetup.slice" 實撞，少落地兩個)。
+    if ! docker export "$cname" | tar --quoting-style=literal -tf - > "$listing" 2>/dev/null; then
         die "docker export 失敗:$img"
     fi
     total_paths="$(wc -l < "$listing")"
@@ -1071,6 +1108,7 @@ for img in "$@"; do
         # 靠「點名數落地的檔案」。
         docker export "$cname" \
             | tar -xf - -C "$exdir" --no-same-owner --no-same-permissions \
+                  --verbatim-files-from --no-unquote \
                   --files-from "$candidates" >/dev/null 2>&1 || true
         missing_samples=()
         while IFS= read -r path; do
