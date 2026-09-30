@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 _release_build_images_impl() {
   local repo="$1" stage="$2" ver="$3" lines="$4" src="$5"
-  local override archive svc image start id one have seen scan plain
+  local override build_env archive svc image start id one have seen scan plain
   local -a args=()
   override="$(mktemp)"
   : > "$lines"
@@ -27,12 +27,18 @@ services:
       args:
         ANILA_RELEASE_VERSION: "${ver}"
 EOF
+  # 乾淨檢出沒有 .env，compose 在 build 也會先代換變數，必填變數缺值就停。
+  # 給一份只有佔位值的 env 檔。這些值只在執行期用，不會進映像。
+  build_env="$(mktemp)"
+  grep -ohE '\$\{[A-Z0-9_]+:\?' "$src/compose.yaml" "$src"/infra/compose/*.yml \
+    | sed -E 's/^\$\{//; s/:\?$//' | sort -u \
+    | while read -r key; do printf '%s=build-placeholder-not-a-secret\n' "$key"; done > "$build_env"
   info "建置平台映像（含 codeserver、n8n、asr-gateway；內網預設不起 codeserver 與 n8n）"
   # 建置上下文是 HEAD 的乾淨檢出，不是工作目錄。被忽略的檔進不了映像。
-  docker compose -f "$src/compose.yaml" -f "$override" build \
+  docker compose --env-file "$build_env" -f "$src/compose.yaml" -f "$override" build \
     csp-db pgbouncer csp-credential-dirs csp ingestion-worker router nginx \
     pptx-renderer anila-studio anilalm anila-ui codeserver n8n asr-gateway
-  rm -f "$override"
+  rm -f "$override" "$build_env"
   info "取得 redis 映像，一併放進出貨包"
   # redis:7-alpine manifest list，2026-09-29。pull 與 images.tsv 釘這筆 digest。
   # 封存只存 anila-bundle 標籤。load 之後 RepoDigest 不一定還在，主機改用映像 ID 核對。
