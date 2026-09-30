@@ -14,80 +14,135 @@ source "$SCRIPT_DIR/release-lib.sh"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# 映像用隔離的 docker-container buildx builder 直接輸出 tar，不經本機 daemon。
+# 這台開發機的賽門鐵克 IDS（sisidsdaemon）會弄壞 daemon 的 overlay 層，
+# 對建好的映像 docker save 會失敗，停棧也沒用（2026-08-02 實測、08-13 定案）。
+RELEASE_BUILDER="${ANILA_RELEASE_BUILDER:-anila-pkg}"
+
+release_ensure_builder() {
+  local driver
+  if ! docker buildx inspect "$RELEASE_BUILDER" >/dev/null 2>&1; then
+    info "建立 buildx builder ${RELEASE_BUILDER}（docker-container）"
+    docker buildx create --name "$RELEASE_BUILDER" --driver docker-container >/dev/null \
+      || die "無法建立 buildx builder ${RELEASE_BUILDER}"
+  fi
+  driver="$(docker buildx inspect "$RELEASE_BUILDER" 2>/dev/null | awk -F': *' '/^Driver:/ { print $2; exit }')"
+  [[ "$driver" == "docker-container" ]] \
+    || die "builder ${RELEASE_BUILDER} 不是 docker-container（${driver:-未知}），拒絕用它打包"
+  docker buildx inspect --bootstrap "$RELEASE_BUILDER" >/dev/null \
+    || die "builder ${RELEASE_BUILDER} 啟動失敗"
+}
+
+# 印出「設定檔雜湊 manifest 雜湊」。傳統儲存（overlay2）載入後的映像 ID 是前者，
+# containerd 儲存（Docker 29 新裝的預設）是後者。兩個都記，主機對上其一即可。
+release_archive_digests() {
+  python3 - "$1" <<'PY'
+import gzip, json, sys, tarfile
+with gzip.open(sys.argv[1], "rb") as gz, tarfile.open(fileobj=gz, mode="r:") as tf:
+    names = {m.name.lstrip("./"): m for m in tf.getmembers()}
+    def load(name):
+        m = names.get(name)
+        if m is None:
+            raise SystemExit(f"封存缺少 {name}：{sys.argv[1]}")
+        return json.load(tf.extractfile(m))
+    configs = {e["Config"].rsplit("/", 1)[-1] for e in load("manifest.json")}
+    manifests = {m["digest"] for m in load("index.json").get("manifests", [])}
+if len(configs) != 1 or len(manifests) != 1:
+    raise SystemExit(f"封存裡不是剛好一張映像：{sys.argv[1]}")
+cfg = configs.pop()
+cfg = cfg if cfg.startswith("sha256:") else "sha256:" + cfg
+print(cfg, manifests.pop())
+PY
+}
+
 _release_build_images_impl() {
   local repo="$1" stage="$2" ver="$3" lines="$4" src="$5"
-  local override build_env archive svc image start id one have seen scan plain
-  local -a args=()
+  local override build_env bake_json map scan svc image archive start plain target out raw
+  local cfg man got tag
   override="$(mktemp)"
   : > "$lines"
-  cat > "$override" <<EOF
-services:
-  csp:
-    build:
-      args:
-        ANILA_RELEASE_VERSION: "${ver}"
-EOF
+  printf 'services:\n  csp:\n    build:\n      args:\n        ANILA_RELEASE_VERSION: "%s"\n' "$ver" > "$override"
   # 乾淨檢出沒有 .env，compose 在 build 也會先代換變數，必填變數缺值就停。
   # 給一份只有佔位值的 env 檔。這些值只在執行期用，不會進映像。
   build_env="$(mktemp)"
   { grep -ohE '\$\{[A-Z0-9_]+:\?' "$src/compose.yaml" "$src"/infra/compose/*.yml 2>/dev/null || true; } \
     | sed -E 's/^\$\{//; s/:\?$//' | sort -u \
     | while read -r key; do printf '%s=build-placeholder-not-a-secret\n' "$key"; done > "$build_env"
-  info "建置平台映像（含 codeserver、n8n、asr-gateway；內網預設不起 codeserver 與 n8n）"
+  bake_json="$(mktemp)"
   # 建置上下文是 HEAD 的乾淨檢出，不是工作目錄。被忽略的檔進不了映像。
-  docker compose --env-file "$build_env" -f "$src/compose.yaml" -f "$override" build \
+  docker compose --env-file "$build_env" -f "$src/compose.yaml" -f "$override" build --print \
     csp-db pgbouncer csp-credential-dirs csp ingestion-worker router nginx \
-    pptx-renderer anila-studio anilalm anila-ui codeserver n8n asr-gateway
+    pptx-renderer anila-studio anilalm anila-ui codeserver n8n asr-gateway > "$bake_json" \
+    || die "無法產生建置定義（compose build --print）"
   rm -f "$override" "$build_env"
+  map="$(python3 - "$bake_json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+for name, target in (doc.get("target") or {}).items():
+    tags = target.get("tags") or []
+    if len(tags) != 1:
+        raise SystemExit(f"建置目標 {name} 必須剛好一個標籤")
+    tag = tags[0]
+    if ":" not in tag.rsplit("/", 1)[-1]:
+        tag += ":latest"
+    print(f"{tag}\t{name}")
+PY
+)" || die "建置定義無法解析"
+  declare -A target_of=()
+  while IFS=$'\t' read -r tag target; do
+    [[ -n "$tag" ]] && target_of["$tag"]="$target"
+  done <<< "$map"
+  release_ensure_builder
   info "取得 redis 映像，一併放進出貨包"
   # redis:7-alpine manifest list，2026-09-29。pull 與 images.tsv 釘這筆 digest。
-  # 封存只存 anila-bundle 標籤。load 之後 RepoDigest 不一定還在，主機改用映像 ID 核對。
+  # 上游映像不是本機建的，照舊 pull 再 save。
   docker pull redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-  declare -A save_args=()
+  declare -A built=()
   while read -r svc image archive start; do
+    [[ -n "${built[$archive]:-}" ]] && continue
+    built["$archive"]=1
     plain="${image%@sha256:*}"
-    docker image inspect "$plain" >/dev/null 2>&1 \
-      || die "找不到映像 ${plain}。開發機需先建置成功。"
-    docker tag "$plain" "anila-bundle/${svc}:${ver}"
-    id="$(docker image inspect --format '{{.Id}}' "$plain")"
-    printf 'image %s %s %s images/%s.tar.gz\n' "$svc" "$image" "$id" "$archive" >> "$lines"
-    save_args["$archive"]+="anila-bundle/${svc}:${ver}"$'\n'
+    out="$stage/images/${archive}.tar.gz"
+    tag="anila-bundle/${archive}:${ver}"
+    target="${target_of[$plain]:-}"
+    if [[ -n "$target" ]]; then
+      info "建置 ${plain}（buildx 直接輸出 tar）"
+      raw="$stage/images/.${archive}.tar"
+      docker buildx bake --builder "$RELEASE_BUILDER" --file "$bake_json" --progress plain \
+        --set "${target}.output=type=docker,dest=${raw}" \
+        --set "${target}.tags=${tag}" \
+        "$target" || die "建置失敗：${plain}"
+      [[ -s "$raw" && "$(stat -c %s "$raw")" -ge 1024 ]] || die "建置產出的 tar 不完整：${plain}"
+      gzip -c "$raw" > "$out"
+      rm -f "$raw"
+    else
+      [[ "$image" == *@sha256:* ]] || die "${image} 沒有建置定義，也沒有釘 digest"
+      docker tag "$image" "$tag"
+      docker save "$tag" | gzip -c > "$out"
+    fi
   done < <(release_catalog)
+  rm -f "$bake_json"
   scan="$src/infra/deployment/scripts/scan-image-artifacts.sh"
   if [[ ! -f "$scan" ]]; then
     scan="$repo/infra/deployment/scripts/scan-image-artifacts.sh"
   fi
   [[ -f "$scan" ]] || die "找不到映像掃描腳本"
-  # 每一張映像都掃，含上游 redis。私鑰標頭不因「不是我們建的」而略過。
-  local -A scanned=()
+  declare -A checked=()
   while read -r svc image archive start; do
-    [[ -n "${scanned[$image]:-}" ]] && continue
-    scanned["$image"]=1
-    info "掃描映像 ${image}（私鑰或執行期雜物會中止打包）"
-    plain="${image%@sha256:*}"
-    bash "$scan" "$plain"
+    out="$stage/images/${archive}.tar.gz"
+    read -r cfg man < <(release_archive_digests "$out") || die "讀不到映像雜湊：${archive}"
+    [[ "$cfg" =~ ^sha256:[0-9a-f]+$ && "$man" =~ ^sha256:[0-9a-f]+$ ]] || die "映像雜湊格式不對：${archive}"
+    printf 'image %s %s %s images/%s.tar.gz %s\n' "$svc" "$image" "$cfg" "$archive" "$man" >> "$lines"
+    [[ -n "${checked[$archive]:-}" ]] && continue
+    checked["$archive"]=1
+    # 每一張都逐層掃，含上游 redis。後層刪掉的私鑰仍算違規。
+    info "逐層掃描封存 images/${archive}.tar.gz"
+    bash "$scan" "$out"
+    # 真的載入一次，確認載得起來、ID 對得上清單。
+    gzip -dc "$out" | docker load >/dev/null || die "封存載不進來：${archive}"
+    got="$(docker image inspect --format '{{.Id}}' "anila-bundle/${archive}:${ver}" 2>/dev/null || true)"
+    [[ "$got" == "$cfg" || "$got" == "$man" ]] || die "載入後的映像 ID 對不上清單：${archive}"
   done < <(release_catalog)
-  declare -A scanned_archives=()
-  for archive in "${!save_args[@]}"; do
-    args=()
-    while IFS= read -r one; do
-      [[ -n "$one" ]] || continue
-      seen=0
-      for have in "${args[@]+"${args[@]}"}"; do
-        [[ "$have" == "$one" ]] && seen=1 && break
-      done
-      if (( seen == 0 )); then
-        args+=("$one")
-      fi
-    done < <(printf '%s\n' "${save_args[$archive]}")
-    docker save "${args[@]}" | gzip -c > "$stage/images/${archive}.tar.gz"
-    # 掃的是 save 出來的封存，一層一層看。後層刪掉的私鑰仍算違規。
-    if [[ -z "${scanned_archives[$archive]:-}" ]]; then
-      scanned_archives["$archive"]=1
-      info "逐層掃描封存 images/${archive}.tar.gz"
-      bash "$scan" "$stage/images/${archive}.tar.gz"
-    fi
-  done
 }
 
 release_build_images() {

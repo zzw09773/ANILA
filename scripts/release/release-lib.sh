@@ -492,7 +492,7 @@ release_verify_bundle() {
 # 出貨包自己的 images.tsv（清單裡的 SHA256 已核對）與每一條 image 行逐欄比對。
 # 服務、映像名、封存路徑、digest 都要對上。停寫入之前就要過；缺一條或重複都拒絕。
 release_verify_image_catalog() {
-  local root="$1" manifest tsv listed got line kind svc image digest archive extra
+  local root="$1" manifest tsv listed got line kind svc image digest archive alt extra
   local -A want_image=() want_archive=() seen=()
   manifest="$root/manifest.txt"
   tsv="$root/images.tsv"
@@ -523,14 +523,20 @@ release_verify_image_catalog() {
   )
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == image\ * ]] || continue
+    alt=""
     extra=""
-    read -r kind svc image digest archive extra <<<"$line"
+    # 第六欄選填：manifest 雜湊。containerd 儲存載入後的映像 ID 是它。
+    read -r kind svc image digest archive alt extra <<<"$line"
     if [[ -n "${extra:-}" || -z "$svc" || -z "$image" || -z "$digest" || -z "$archive" ]]; then
       printf '映像清單欄位不完整，拒絕更新。\n' >&2
       return 1
     fi
     if [[ ! "$digest" =~ ^sha256:[0-9A-Fa-f]+$ ]]; then
       printf '映像 %s 沒有 digest，拒絕更新。\n' "$svc" >&2
+      return 1
+    fi
+    if [[ -n "$alt" && ! "$alt" =~ ^sha256:[0-9A-Fa-f]+$ ]]; then
+      printf '映像 %s 的 manifest 雜湊格式不對，拒絕更新。\n' "$svc" >&2
       return 1
     fi
     if manifest_path_rejected "$archive"; then

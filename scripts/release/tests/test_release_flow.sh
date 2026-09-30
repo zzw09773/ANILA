@@ -24,6 +24,46 @@ if [[ "$joined" == 'compose version --short' ]]; then
   printf '%s\n' "${STUB_COMPOSE_VERSION:-2.36.2}"
   exit 0
 fi
+# 假的映像封存：docker save 與 buildx type=docker 都帶 manifest.json 與 index.json。
+stub_image_tar() {
+  local d
+  d="$(mktemp -d "${HOME}/.anila-stub-img.XXXXXX")"
+  printf '[{"Config":"blobs/sha256/%s","RepoTags":["stub:1"],"Layers":[]}]' \
+    "${STUB_CONFIG_HEX:-deadbeef}" > "$d/manifest.json"
+  printf '{"schemaVersion":2,"manifests":[{"digest":"sha256:%s"}]}' \
+    "${STUB_MANIFEST_HEX:-cafe0001}" > "$d/index.json"
+  head -c 2048 /dev/zero > "$d/pad"
+  tar -cf - -C "$d" manifest.json index.json pad
+  rm -rf "$d"
+}
+if [[ "$joined" == *' build --print '* ]]; then
+  if [[ -n "${STUB_BAKE_JSON:-}" && -f "$STUB_BAKE_JSON" ]]; then
+    cat "$STUB_BAKE_JSON"
+  else
+    printf '{"target":{}}\n'
+  fi
+  exit 0
+fi
+if [[ "$joined" == 'buildx inspect'* ]]; then
+  printf 'Name: stub\nDriver: docker-container\n'
+  exit 0
+fi
+if [[ "$joined" == 'buildx bake'* ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      *.output=type=docker,dest=*) stub_image_tar > "${arg#*,dest=}" ;;
+    esac
+  done
+  exit 0
+fi
+if [[ "${1:-}" == save ]]; then
+  stub_image_tar
+  exit 0
+fi
+if [[ "${1:-}" == load ]]; then
+  cat >/dev/null
+  exit 0
+fi
 if [[ "$joined" == *' ps -a '* ]]; then
   if [[ "${STUB_HEALTH_FAIL:-0}" == 1 ]]; then
     printf 'csp Up (unhealthy)\n'
@@ -103,6 +143,11 @@ if [[ "$joined" == *'--entrypoint'* && "$joined" == *' tar '* ]]; then
 fi
 if [[ "$joined" == *'image inspect'* ]]; then
   ref="${*: -1}"
+  # 模擬 containerd 儲存：設定檔雜湊查不到。
+  if [[ -n "${STUB_MISSING_IDS:-}" && " $STUB_MISSING_IDS " == *" $ref "* ]]; then
+    printf 'Error: No such image: %s\n' "$ref" >&2
+    exit 1
+  fi
   if [[ "$ref" == *@sha256:* ]]; then
     printf 'Error: No such image: %s\n' "$ref" >&2
     exit 1
@@ -806,6 +851,15 @@ test_build_release_builds_asr_gateway() {
   export DOCKER_LOG="$log"
   assert_release_stubs "$STUB_BIN"
   export STUB_LIVE_ALEMBIC=sha256:abc
+  export STUB_BAKE_JSON="$tmp/build-bake.json"
+  release_catalog | awk '$2 !~ /@sha256:/ { print $1, $2 }' | python3 -c '
+import json, sys
+targets = {}
+for line in sys.stdin:
+    svc, image = line.split()
+    targets.setdefault(image, {"tags": [image]})
+print(json.dumps({"target": {f"t{i}": t for i, t in enumerate(targets.values())}}))
+' > "$STUB_BAKE_JSON"
   release_build_images "$repo" "$stage" "2026.09.29-1" "$lines" || {
     echo "release_build_images 失敗" >&2
     return 1
@@ -827,8 +881,24 @@ test_build_release_builds_asr_gateway() {
     return 1
   }
   grep -q '\.tar\.gz' "$log" || {
-    echo "沒有逐層掃描 docker save 封存" >&2
+    echo "沒有逐層掃描封存" >&2
     cat "$log" >&2
+    return 1
+  }
+  # 自建映像走 buildx 直出 tar，不對 daemon 裡的映像 docker save（賽門鐵克 IDS）。
+  grep -q '^buildx bake --builder anila-pkg ' "$log" || {
+    echo "自建映像沒有用 buildx 直出 tar" >&2
+    cat "$log" >&2
+    return 1
+  }
+  if grep -E '^save ' "$log" | grep -v 'anila-bundle/redis:' | grep -q .; then
+    echo "自建映像仍用 docker save" >&2
+    grep -E '^save ' "$log" >&2
+    return 1
+  fi
+  awk '$1 == "image" && NF == 6 && $4 == "sha256:deadbeef" && $6 == "sha256:cafe0001" { n++ } END { exit n ? 0 : 1 }' "$lines" || {
+    echo "映像行沒有同時記設定檔與 manifest 雜湊" >&2
+    cat "$lines" >&2
     return 1
   }
   awk '$1=="asr-gateway" { print $4 }' "$ROOT/scripts/release/images.tsv" | grep -qx yes || return 1
@@ -993,6 +1063,50 @@ make_min_bundle() {
   cp "$ROOT/scripts/release/images.tsv" "$dest/images.tsv"
   release_seal_manifest "$dest" "$ver" "abc123" "$lines"
   rm -f "$lines"
+}
+
+# Docker 29 新裝預設 containerd 儲存：載入後的映像 ID 是 manifest 雜湊，不是設定檔雜湊。
+# 2026-09-30 演練機 .35 實測。第四欄對不上時要改用第六欄；兩個都對不上就停。
+test_load_accepts_containerd_manifest_digest() {
+  local root bundle log svc image archive start cfg man missing="" want
+  root="$tmp/ctrd-root"
+  bundle="$tmp/ctrd-bundle"
+  log="$tmp/ctrd.log"
+  arm_test_install "$root"
+  use_version_tree "$root" >/dev/null
+  mkdir -p "$bundle/images"
+  : > "$bundle/manifest.txt"
+  while read -r svc image archive start; do
+    printf 'img\n' | gzip -c > "$bundle/images/${archive}.tar.gz"
+    cfg="sha256:$(printf 'cfg-%s' "$svc" | sha256sum | awk '{print $1}')"
+    man="sha256:$(printf 'man-%s' "$svc" | sha256sum | awk '{print $1}')"
+    missing+=" $cfg"
+    printf 'image %s %s %s images/%s.tar.gz %s\n' "$svc" "$image" "$cfg" "$archive" "$man" \
+      >> "$bundle/manifest.txt"
+  done < <(release_catalog)
+  : > "$log"
+  export DOCKER_LOG="$log"
+  export STUB_MISSING_IDS="$missing"
+  if ! ( load_bundle_images "$bundle" 2026.09.30-1 ) >/dev/null 2>&1; then
+    unset STUB_MISSING_IDS
+    echo "containerd 儲存下 manifest 雜湊沒被接受" >&2
+    return 1
+  fi
+  want="sha256:$(printf 'man-csp' | sha256sum | awk '{print $1}')"
+  grep -q "^tag $want " "$log" || {
+    unset STUB_MISSING_IDS
+    echo "沒有用 manifest 雜湊上標籤" >&2
+    cat "$log" >&2
+    return 1
+  }
+  sed -i 's/ sha256:[0-9a-f]*$/ sha256:0000/' "$bundle/manifest.txt"
+  export STUB_MISSING_IDS="$missing sha256:0000"
+  if ( load_bundle_images "$bundle" 2026.09.30-1 ) >/dev/null 2>&1; then
+    unset STUB_MISSING_IDS
+    echo "兩個雜湊都對不上仍然載入" >&2
+    return 1
+  fi
+  unset STUB_MISSING_IDS
 }
 
 # 已有上一版、資料庫沒起來：不能當成第一次安裝，也不能先改目錄或載入映像。
@@ -2158,6 +2272,7 @@ check "清單成對取同一目錄" test_manifest_pair_is_the_same_directory
 check "後層刪掉的私鑰仍讓掃描失敗" test_deleted_layer_key_still_fails_scan
 check "文件寫的是 alembic 不同才還原" test_update_doc_states_alembic_restore_rule
 check "映像清單缺漏或重複就停" test_image_catalog_rejects_missing_and_duplicate_before_stop
+check "containerd 儲存用 manifest 雜湊核對" test_load_accepts_containerd_manifest_digest
 check "打錯版本且稽核失敗會標待寫" test_cancel_marks_pending_when_db_audit_fails
 check "studio volume 跟檔案一起快照" test_studio_volume_is_snapshotted_with_share_dirs
 check "一般檔與 redis 都掃私鑰" test_scan_reads_plain_files_and_redis

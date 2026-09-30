@@ -403,7 +403,7 @@ scan_tar_image() {
     local normalized member kind value blob config image_label tags_display metadata
     local layer_index layer_label layer_member decoded listing raw_path path
     local deletion_target is_dir i content_paths img_violations
-    local candidates_total landed candidate_index occurrence_dir landed_path extracted
+    local candidates_total landed candidate_index occurrence_dir landed_path extracted member_type
     local -a missing_samples=()
 
     [ -f "$bundle" ] || die "tar 不存在或不是 regular file:$bundle"
@@ -586,6 +586,20 @@ scan_tar_image() {
             if [ -e "$occurrence_dir/$landed_path" ] || [ -L "$occurrence_dir/$landed_path" ]; then
                 extracted=1
             fi
+        fi
+        # 硬連結單獨抽不出來(目標沒一起抽)。它的位元組就是同一層裡目標檔的
+        # 位元組，目標是一般檔，本身也在候選清單裡被讀過，所以算已處理。
+        # 2026-09-30 studio 映像的 usr/bin/perl5.38.2、uncompress 實撞。
+        member_type=""
+        if [ "$extracted" -eq 0 ]; then
+            member_type="$(tar --quoting-style=literal -tvf "${candidate_layer_files[$candidate_index]}" \
+                --no-unquote -- "${candidate_raw_members[$candidate_index]}" 2>/dev/null || true)"
+            member_type="${member_type:0:1}"
+        fi
+        if [ "$member_type" = "h" ]; then
+            landed=$(( landed + 1 ))
+            rm -rf "$occurrence_dir"
+            continue
         fi
         if [ "$extracted" -eq 1 ]; then
             landed=$(( landed + 1 ))
@@ -900,6 +914,8 @@ self_test() {
     mkdir -p "$tar_layer_root/foo" "$tar_layer_root/opt/redis" \
         "$tar_layer_root/etc/ssl/certs" "$tar_fixture/bundle/blobs/sha256"
     printf 'safe fixture\n' > "$tar_layer_root/safe.txt"
+    # 硬連結：tar 記成指向 safe.txt 的連結，單獨抽會失敗，掃描不能因此判未完成。
+    ln "$tar_layer_root/safe.txt" "$tar_layer_root/safe-hardlink.txt"
     printf 'fixture violation\n' > "$tar_layer_root/foo/real.key"
     printf '%s\n' '-----BEGIN PRIVATE KEY-----' 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC' > "$tar_layer_root/opt/redis/notes.txt"
     printf '%s\n' '-----BEGIN CERTIFICATE-----' > "$tar_layer_root/etc/ssl/certs/ca.pem"

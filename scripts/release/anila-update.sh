@@ -759,24 +759,34 @@ retag_compose_from_version() {
 }
 
 load_bundle_images() {
-  local bundle="$1" ver="${2:-}" line kind svc image digest archive got
+  local bundle="$1" ver="${2:-}" line kind svc image digest archive alt got id
   assert_destructive_allowed
   declare -A loaded=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == image\ * ]] || continue
-    read -r kind svc image digest archive <<<"$line"
+    alt=""
+    read -r kind svc image digest archive alt <<<"$line"
     [[ -f "$bundle/$archive" ]] || die "出貨包缺少映像檔：$archive"
     if [[ -z "${loaded[$archive]:-}" ]]; then
       gzip -dc "$bundle/$archive" | docker load || die "載入映像失敗：$archive"
       loaded["$archive"]=1
     fi
     # 用清單裡的映像 ID 核對。docker load 不會還原 manifest-list 的 RepoDigest。
+    # 傳統儲存的 ID 是設定檔雜湊（第四欄），containerd 儲存是 manifest 雜湊
+    # （第六欄，2026-09-30 起記）。兩個都出自已核過 SHA256 的同一個封存。
+    id=""
     got="$(docker image inspect --format '{{.Id}}' "$digest" 2>/dev/null || true)"
-    [[ "$got" == "$digest" ]] || die "映像 ${svc} 的內容與清單不符，拒絕繼續"
-    if [[ -n "$ver" ]]; then
-      docker_tag_project "$digest" "$(image_project_ref "$svc" "$ver")"
+    if [[ "$got" == "$digest" ]]; then
+      id="$digest"
+    elif [[ -n "$alt" ]]; then
+      got="$(docker image inspect --format '{{.Id}}' "$alt" 2>/dev/null || true)"
+      [[ "$got" == "$alt" ]] && id="$alt"
     fi
-    docker_tag_project "$digest" "$(image_project_ref "$svc" running)"
+    [[ -n "$id" ]] || die "映像 ${svc} 的內容與清單不符，拒絕繼續"
+    if [[ -n "$ver" ]]; then
+      docker_tag_project "$id" "$(image_project_ref "$svc" "$ver")"
+    fi
+    docker_tag_project "$id" "$(image_project_ref "$svc" running)"
   done < "$bundle/manifest.txt"
 }
 
