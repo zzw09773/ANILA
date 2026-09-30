@@ -1,5 +1,8 @@
 # 第 8 段演練 — 初裝章
 
+> **2026-09-30 起已被取代。** 第一次安裝照 [`docs/deploy/INSTALL.md`](../deploy/INSTALL.md)。
+> 本章寫的是已退役的 `intranet-deploy.sh` 流程，只留作歷史紀錄。
+
 > **這一章不是新的部署程序。** 權威程序是 `docs/runbooks/intranet-deployment-runbook.md`
 > （以下簡稱 **runbook**）。這一章只做三件事：
 > ① 規定**清除範圍與作答方式**（不做，初裝步驟根本沒被行使）；

@@ -21,6 +21,8 @@ bash scripts/release/build-release.sh
 
 ## 內網主機（沒有網路）
 
+第一次安裝（含主機準備、`preflight.sh` 預檢、443 被佔用時換埠、登入與初始設定）照 [`INSTALL.md`](INSTALL.md)。這一節是腳本本身的行為說明。
+
 沒有安裝記錄時，第一次安裝的預設位置是 `/opt/anila`。解在別的地方，腳本會停並印出下面這兩行。記錄寫在安裝包外面的 `/var/lib/anila/install-anchor`（權限 600，root 執行時擁有者是 root）。這份記錄一旦存在，就是唯一依據：停服務、還原、回復、第一次安裝、認領，都要目前的安裝根目錄與 compose 專案跟記錄相同。不會把既有記錄改寫成另一個根目錄，另外指定安裝根目錄也不能繞過。版本目錄裡的 `state/release.state` 不能拿來冒充。從 git 工作樹對專案 `anila` 會直接拒絕。第一次、而且還沒有記錄時：
 
 ```bash

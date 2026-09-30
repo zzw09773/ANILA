@@ -66,7 +66,8 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **內網部署怎麼跑** | [`runbooks/intranet-deployment-runbook.md`](./runbooks/intranet-deployment-runbook.md) + `infra/deployment/scripts/deploy-prod.sh` |
+| **第一次安裝** | [`deploy/INSTALL.md`](./deploy/INSTALL.md)（2026-09-30 演練實裝過） |
+| **出貨、更新、回復** | [`deploy/UPDATE.md`](./deploy/UPDATE.md) |
 | **（已失效）舊七分支同步策略** | [`branch-sync-backlog.md`](./archive/branch-sync-backlog.md) |
 | **TLS 私鑰怎麼輪換** | [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) |
 

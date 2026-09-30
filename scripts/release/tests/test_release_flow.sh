@@ -1065,6 +1065,14 @@ make_min_bundle() {
   rm -f "$lines"
 }
 
+test_bundle_ships_preflight() {
+  bash -n "$ROOT/scripts/release/preflight.sh" || return 1
+  grep -q 'cp "$SCRIPT_DIR/preflight.sh" "$stage/preflight.sh"' "$ROOT/scripts/release/build-release.sh" || {
+    echo "build-release.sh 沒有把 preflight.sh 放進出貨包" >&2
+    return 1
+  }
+}
+
 # 主機上沒有 compose 的原始映像名（anila-csp:latest 只在開發機），只有載入時標的
 # <專案>/<服務>:<版本|running>。2026-09-30 .35 演練第一次安裝停在 JWT 那一步。
 test_host_steps_use_project_image_tags() {
@@ -2287,6 +2295,7 @@ check "文件寫的是 alembic 不同才還原" test_update_doc_states_alembic_r
 check "映像清單缺漏或重複就停" test_image_catalog_rejects_missing_and_duplicate_before_stop
 check "containerd 儲存用 manifest 雜湊核對" test_load_accepts_containerd_manifest_digest
 check "主機只用載入時標的專案標籤" test_host_steps_use_project_image_tags
+check "出貨包帶預檢腳本" test_bundle_ships_preflight
 check "打錯版本且稽核失敗會標待寫" test_cancel_marks_pending_when_db_audit_fails
 check "studio volume 跟檔案一起快照" test_studio_volume_is_snapshotted_with_share_dirs
 check "一般檔與 redis 都掃私鑰" test_scan_reads_plain_files_and_redis
