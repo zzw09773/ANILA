@@ -91,14 +91,19 @@ CONTENT_RULE_NAME='private-key-content'
 # 不要放寬回 `BEGIN.*PRIVATE KEY`：OpenSSL 的 libcrypto 把 "-----BEGIN " 與
 # "ANY PRIVATE KEY" 存成兩個以 NUL 隔開的字串，`.*` 會把它們接起來誤判
 # (2026-09-30 alpine 3.24 的 libcrypto.so.3 / loader_attic.so 實撞)。
-PRIVATE_KEY_RE='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'
+# 四或五個破折號：SSH2/PuTTY 匯出是 "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----"；
+# PGP 是 "PRIVATE KEY BLOCK"。
+PRIVATE_KEY_HEAD_RE='-{4,5}[[:space:]]*BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?[[:space:]]*-{4,5}'
+PRIVATE_KEY_RE="$PRIVATE_KEY_HEAD_RE"
 # 光有標頭還不算私鑰。rsa、cryptography、glib 的原始碼與程式庫都把標頭當字面值
-# 用來解析 PEM(2026-09-30 csp 映像實撞 8 筆)。真的私鑰一定帶內容，兩種長相：
-#   1. 標頭獨佔一行(可縮排、可 CRLF)，下一行是 base64 或加密 PEM 的 Proc-Type:
+# 用來解析 PEM(2026-09-30 csp 映像實撞 8 筆)。真的私鑰一定帶內容，三種長相：
+#   1. 標頭在行尾(前面可有 KEY=" 之類)，之後兩行內有 base64、Proc-Type: 或 PGP/SSH2 的欄位行
 #   2. 跳脫寫在同一行，例如 JSON 服務帳號金鑰 "-----BEGIN PRIVATE KEY-----\nMIIE…"
-PRIVATE_KEY_LINE_RE='^[[:space:]]*-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[[:space:]]*$'
-PRIVATE_KEY_BODY_RE='^[[:space:]]*(Proc-Type:|[A-Za-z0-9+/=]{16,}[[:space:]]*$)'
-PRIVATE_KEY_ESCAPED_RE='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(\\r)?\\n[A-Za-z0-9+/]{16,}'
+#   3. 整把擠成一行，標頭後以空白接 base64
+PRIVATE_KEY_LINE_RE="${PRIVATE_KEY_HEAD_RE}[[:space:]]*\$"
+PRIVATE_KEY_BODY_RE='^[[:space:]]*(Proc-Type:|Version:|Comment:|[A-Za-z0-9+/=]{16,}[[:space:]]*$)'
+PRIVATE_KEY_ESCAPED_RE="${PRIVATE_KEY_HEAD_RE}(\\\\r)?\\\\n[[:space:]]*[A-Za-z0-9+/=]{16,}"
+PRIVATE_KEY_SAMELINE_RE="${PRIVATE_KEY_HEAD_RE}[[:space:]]+[A-Za-z0-9+/=]{16,}"
 
 # 私鑰標頭不限副檔名。這個 regex 只留著給註解與舊測試對照;
 # needs_content_check 對每一個一般檔都回傳要讀。
@@ -259,9 +264,10 @@ content_has_private_key() {
     # 先用連續標頭過濾，絕大多數檔在這裡就結束。
     LC_ALL=C grep -qaE -e "$PRIVATE_KEY_RE" -- "$f" 2>/dev/null || return 1
     LC_ALL=C grep -qaE -e "$PRIVATE_KEY_ESCAPED_RE" -- "$f" 2>/dev/null && return 0
+    LC_ALL=C grep -qaE -e "$PRIVATE_KEY_SAMELINE_RE" -- "$f" 2>/dev/null && return 0
     # 最後一個 grep 不用 -q：讀完整條輸入，前面的 grep 才不會吃到 SIGPIPE 而在
     # pipefail 下把「找到」變成失敗。
-    LC_ALL=C grep -aA1 -E -e "$PRIVATE_KEY_LINE_RE" -- "$f" 2>/dev/null \
+    LC_ALL=C grep -aA2 -E -e "$PRIVATE_KEY_LINE_RE" -- "$f" 2>/dev/null \
         | tr -d '\000' \
         | LC_ALL=C grep -aE -e "$PRIVATE_KEY_BODY_RE" >/dev/null
 }
@@ -725,7 +731,11 @@ self_test() {
         "  -----BEGIN RSA PRIVATE KEY-----\r\n  MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\r\n" \
         "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n" \
         "{\"private_key\": \"-----BEGIN PRIVATE KEY-----\\\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\\\n\"}\n" \
-        "\0\0bin\n-----BEGIN EC PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"; do
+        "\0\0bin\n-----BEGIN EC PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n" \
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF9aabcdefghijklmnopqrst\n" \
+        "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"x\"\nP2/56wAAAaabcdefghijklmnop\n" \
+        "KEY=\"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAabcdefghijklmn\n" \
+        "KEY=-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqhkiG9w0BAQEFAASC -----END PRIVATE KEY-----\n"; do
         printf -- "$key_case" > "$probe_file"
         if ! content_has_private_key "$probe_file"; then
             echo "  ✗ self-test: 私鑰變體沒被抓到：$(printf '%q' "$key_case")" >&2
