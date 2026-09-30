@@ -201,3 +201,6 @@ docs/audits/*airgap*
 
 # 平台離線 wheelhouse 與 freeze manifest：隨交付包產生，不進 PUBLIC repo。
 infra/deployment/offline/dist/
+
+# 個人編輯器工作區
+*.code-workspace

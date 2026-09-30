@@ -244,14 +244,14 @@ bash anila-YYYY.MM.DD-N/anila-update.sh anila-YYYY.MM.DD-N
 
 🔴 **`main` 作為 SSOT 的 7 分支部署模型已不存在。** 該模型（`main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military` / `trial-military`）已於 2026-07-28 重啟時進 attic；描述它的 舊 `AGENTS.md`（已刪除，工作守則移到 [`docs/CURRENT-STATUS.md`](docs/CURRENT-STATUS.md)） §2–3 （現行單一 `main`；舊七分支模型已失效，見根目錄 README） **同樣已失效**，兩份皆已標示。在 PLAN 排到之前**不要**重建部署分支。
 
-現行狀態與執行順序見 [`PLAN.md`](./PLAN.md)（專案權威），重啟脈絡與 attic 取回方式見 [`RESTART-FROM-REDESIGN.md`](./RESTART-FROM-REDESIGN.md)。歷史上依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本線與舊 `main` 的 cherry-pick 互通已**刻意中斷**——這是一條全新基線，不是又一條 delta 分支。
+現行狀態與執行順序見 [`PLAN.md`](./PLAN.md)（專案權威）；2026-07 重新出發前的紀錄在 git 歷史。歷史上依 [ADR-0006](./docs/anila-redesign-docs/adr/ADR-0006-layout-migration-deviations.md)，本線與舊 `main` 的 cherry-pick 互通已**刻意中斷**——這是一條全新基線，不是又一條 delta 分支。
 
 ---
 
 ## 權威文件與治理
 
 - **專案權威**：[`PLAN.md`](./PLAN.md)（現況與執行順序，2026-08-17 擁有者裁定）；**規格**：[`SYSTEM-MAP.md`](./SYSTEM-MAP.md)（系統應該長什麼樣）。PR 准入檢查對照這兩份，見 [`.github/pull_request_template.md`](./.github/pull_request_template.md)。
-- **設計沿革／收斂紀錄**：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) — 12 份 redesign 系統設計文件（版本狀態 `architecture-baseline-v0.2`）＋ ADR。**已於 2026-08-17 列為歷史紀錄，不再是准入依據**；保留是因為它記載了各項決策「為什麼這樣定」，程式碼註解亦多處回指。重啟脈絡見 [`RESTART-FROM-REDESIGN.md`](./RESTART-FROM-REDESIGN.md)。
+- **設計沿革／收斂紀錄**：[`docs/anila-redesign-docs/`](./docs/anila-redesign-docs/) — 12 份 redesign 系統設計文件（版本狀態 `architecture-baseline-v0.2`）＋ ADR。**已於 2026-08-17 列為歷史紀錄，不再是准入依據**；保留是因為它記載了各項決策「為什麼這樣定」，程式碼註解亦多處回指。
 - **繁中語言政策**：唯一介面語言為繁體中文（台灣用語），identifiers 不譯；由 CI `infra/ci/lint-zh-tw.sh` 把關（此為現行約束），規範沿革見 [doc 11](./docs/anila-redesign-docs/11-frontend-zh-tw-language-policy.md)。
 - **AI 治理（ISO/IEC 42001:2023）**：治理文件集中於 [`docs/governance/`](./docs/governance/)，主索引 [`iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md)（Clause 4–10 ＋ Annex A：AI 政策、RACI、風險登錄、AIIA、model card、資料治理、事件回應、第三方登錄）。
 
