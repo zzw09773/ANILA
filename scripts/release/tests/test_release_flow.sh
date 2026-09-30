@@ -1065,6 +1065,19 @@ make_min_bundle() {
   rm -f "$lines"
 }
 
+# 主機上沒有 compose 的原始映像名（anila-csp:latest 只在開發機），只有載入時標的
+# <專案>/<服務>:<版本|running>。2026-09-30 .35 演練第一次安裝停在 JWT 那一步。
+test_host_steps_use_project_image_tags() {
+  if grep -nE -- '-csp:latest|:local"' "$ROOT/scripts/release/anila-update.sh" | grep -v '^[0-9]*:[[:space:]]*#'; then
+    echo "anila-update.sh 仍用 compose 的原始映像名" >&2
+    return 1
+  fi
+  grep -q 'image="$(image_project_ref csp running)"' "$ROOT/scripts/release/anila-update.sh" || {
+    echo "JWT 金鑰沒有用專案標籤的 csp 映像" >&2
+    return 1
+  }
+}
+
 # Docker 29 新裝預設 containerd 儲存：載入後的映像 ID 是 manifest 雜湊，不是設定檔雜湊。
 # 2026-09-30 演練機 .35 實測。第四欄對不上時要改用第六欄；兩個都對不上就停。
 test_load_accepts_containerd_manifest_digest() {
@@ -2273,6 +2286,7 @@ check "後層刪掉的私鑰仍讓掃描失敗" test_deleted_layer_key_still_fai
 check "文件寫的是 alembic 不同才還原" test_update_doc_states_alembic_restore_rule
 check "映像清單缺漏或重複就停" test_image_catalog_rejects_missing_and_duplicate_before_stop
 check "containerd 儲存用 manifest 雜湊核對" test_load_accepts_containerd_manifest_digest
+check "主機只用載入時標的專案標籤" test_host_steps_use_project_image_tags
 check "打錯版本且稽核失敗會標待寫" test_cancel_marks_pending_when_db_audit_fails
 check "studio volume 跟檔案一起快照" test_studio_volume_is_snapshotted_with_share_dirs
 check "一般檔與 redis 都掃私鑰" test_scan_reads_plain_files_and_redis

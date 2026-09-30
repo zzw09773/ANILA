@@ -982,7 +982,9 @@ ensure_model_ca() {
 
 ensure_jwt() {
   local tree="$1" image
-  image="${COMPOSE_PROJECT_NAME:-anila}-csp:latest"
+  # 主機上只有載入時標的專案標籤。compose 裡的 anila-csp:latest 只存在開發機
+  # (2026-09-30 .35 演練：第一次安裝停在這一步)。
+  image="$(image_project_ref csp running)"
   if [[ -s "$tree/secrets/jwt-private.pem" && -s "$tree/secrets/jwt-public.pem" ]]; then
     ok "沿用現有的 JWT 簽章金鑰"
     return 0
@@ -998,7 +1000,7 @@ ensure_jwt() {
 fix_ownership() {
   local tree="$1"
   bash "$tree/infra/deployment/scripts/fix-runtime-ownership.sh" \
-    "${COMPOSE_PROJECT_NAME:-anila}-csp:latest"
+    "$(image_project_ref csp running)"
 }
 
 service_is_ready() {
