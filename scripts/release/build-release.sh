@@ -110,7 +110,9 @@ PY
     if [[ -n "$target" ]]; then
       info "建置 ${plain}（buildx 直接輸出 tar）"
       raw="$stage/images/.${archive}.tar"
+      # 建置來源與輸出在 bake 檔以外的目錄，buildx 要明確授權讀寫。
       docker buildx bake --builder "$RELEASE_BUILDER" --file "$bake_json" --progress plain \
+        --allow "fs.read=${src}" --allow "fs.write=${stage}/images" \
         --set "${target}.output=type=docker,dest=${raw}" \
         --set "${target}.tags=${tag}" \
         "$target" || die "建置失敗：${plain}"

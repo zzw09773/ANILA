@@ -886,7 +886,7 @@ print(json.dumps({"target": {f"t{i}": t for i, t in enumerate(targets.values())}
     return 1
   }
   # 自建映像走 buildx 直出 tar，不對 daemon 裡的映像 docker save（賽門鐵克 IDS）。
-  grep -q '^buildx bake --builder anila-pkg ' "$log" || {
+  grep -q '^buildx bake --builder anila-pkg .*--allow fs.read=' "$log" || {
     echo "自建映像沒有用 buildx 直出 tar" >&2
     cat "$log" >&2
     return 1
