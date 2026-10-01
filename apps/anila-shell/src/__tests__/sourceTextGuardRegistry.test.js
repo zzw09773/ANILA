@@ -47,6 +47,7 @@ const KNOWN_SOURCE_TEXT_GUARDS = [
   "guards/composerNarrowHint.test.js",
   "guards/headerLinesPresent.test.js",
   "guards/noProjectEntryButton.test.js",
+  "guards/quotaExceeded.test.js",
   "mermaidVersionGuard.test.js",
   "uxCopy.test.jsx",
 ];

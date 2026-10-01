@@ -13,6 +13,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
@@ -51,7 +52,11 @@ from app.services.proxy.usage import (
     enqueue_usage_task_linked,
     resolve_reasoning_tokens,
 )
-from app.services.usage_writer import enqueue_usage
+from app.services.usage_writer import (
+    bind_usage_timestamp,
+    enqueue_usage,
+    reset_usage_timestamp,
+)
 
 # Keep the pre-split logger channel ("app.services.proxy_service") so log
 # routing / filtering / capture behavior is identical after the package split.
@@ -948,6 +953,7 @@ async def _proxy_request_impl(
             task_id=task_id,
             trace_id=task_trace_id,
             conversation_id=conversation_id,
+            api_key_id=api_key_id,
         )
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
@@ -1264,6 +1270,7 @@ async def proxy_request(
     request_type_override: Optional[str] = None,
     max_response_bytes: Optional[int] = None,
     deadline: float | None = None,
+    request_timestamp: datetime | None = None,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -1283,6 +1290,9 @@ async def proxy_request(
 
     admission = ModelAdmission.maybe(model, user_id)
     pulse_task: asyncio.Task | None = None
+    stamp_token = bind_usage_timestamp(
+        request_timestamp or datetime.now(timezone.utc)
+    )
     try:
         try:
             if admission is not None:
@@ -1337,6 +1347,7 @@ async def proxy_request(
             )
         raise
     finally:
+        reset_usage_timestamp(stamp_token)
         if pulse_task is not None:
             pulse_task.cancel()
         if admission is not None:
@@ -1427,6 +1438,7 @@ async def _proxy_stream_impl(
             task_id=task_id,
             trace_id=task_trace_id,
             conversation_id=conversation_id,
+            api_key_id=api_key_id,
         )
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
@@ -1878,6 +1890,7 @@ async def proxy_stream(
     model_name_snapshot: Optional[str] = None,
     record_usage: bool = True,
     request_type: str = "chat",
+    request_timestamp: datetime | None = None,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1894,6 +1907,9 @@ async def proxy_stream(
     model_type = "agent" if target_agent_id is not None else "llm"
     admission = ModelAdmission.maybe(model, user_id)
     pulse_task: asyncio.Task | None = None
+    stamp_token = bind_usage_timestamp(
+        request_timestamp or datetime.now(timezone.utc)
+    )
     try:
         if admission is not None:
             async for position in admission.wait_positions():
@@ -2002,6 +2018,7 @@ async def proxy_stream(
             stream_failure_user_message(exc, model_name=model_name)
         )
     finally:
+        reset_usage_timestamp(stamp_token)
         if pulse_task is not None:
             pulse_task.cancel()
         if admission is not None:

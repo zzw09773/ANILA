@@ -1,19 +1,20 @@
 """Cookie-auth thinking-summary endpoint.
 
 殼層不再呼叫這支。非特權呼叫者仍回 200，但 summary 為 null，也不打模型。
-擁有者、管理員、開發者失敗時同樣回 200、summary 為 null。
+擁有者、管理員、開發者一般失敗時同樣回 200、summary 為 null；額度擋下要原樣回 429 與重置說明。
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import get_current_user
+from app.services.internal_llm import InternalCompletionError
 from app.services.reasoning_gate import may_see_raw_reasoning
 from app.services.thinking_summary import MAX_HISTORY, summarize_reasoning_batch
 
@@ -53,6 +54,13 @@ async def summarize_thinking(
             user_id=_user.id,
             department_id=getattr(_user, "department_id", None),
         )
+    except InternalCompletionError as exc:
+        if exc.status_code == 429 and exc.quota_code == "quota_exceeded" and exc.quota_message:
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "quota_exceeded", "message": exc.quota_message},
+            ) from exc
+        text = None
     except Exception:
         text = None
     return ThinkingSummaryOut(summary=text)

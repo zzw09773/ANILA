@@ -50,6 +50,7 @@ def build_dispatch_claims(
     expires_at: datetime | None = None,
     task_id: int | None = None,
     conversation_id: int | None = None,
+    api_key_id: int | None = None,
 ) -> dict:
     """Build the dispatch-token claims (spec minimalism).
 
@@ -84,6 +85,9 @@ def build_dispatch_claims(
     signed_conversation = _positive_int(conversation_id)
     if signed_conversation is not None:
         claims["conversation_id"] = signed_conversation
+    signed_key = _positive_int(api_key_id)
+    if signed_key is not None:
+        claims["api_key_id"] = signed_key
     return claims
 
 
@@ -94,6 +98,7 @@ def issue_dispatch_token(
     agent_id: int,
     task_id: int | None = None,
     conversation_id: int | None = None,
+    api_key_id: int | None = None,
     db=None,
 ) -> str:
     """Sign a 5-minute dispatch identity token with CSP's RS256 key + kid.
@@ -106,6 +111,7 @@ def issue_dispatch_token(
         agent_id=agent_id,
         task_id=task_id,
         conversation_id=conversation_id,
+        api_key_id=api_key_id,
     )
     from app.services.jwt_keyring import active_signing_material
 

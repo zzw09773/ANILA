@@ -7,7 +7,7 @@ variant (``enqueue_usage_task_linked``).
 import json
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 async def enqueue_usage_task_linked(
@@ -32,6 +32,7 @@ async def enqueue_usage_task_linked(
     outcome: str = "success",
     model_name_snapshot: str | None = None,
     reasoning_tokens: int | None = None,
+    request_timestamp: datetime | None = None,
 ):
     """Task-aware variant of ``usage_writer.enqueue_usage`` (Slice 2b-C).
 
@@ -47,7 +48,7 @@ async def enqueue_usage_task_linked(
     Kept beside the proxy (not in ``usage_writer``) so the legacy enqueue
     path — and every non-proxy caller of it — stays byte-identical.
     """
-    from app.services.usage_writer import get_usage_queue
+    from app.services.usage_writer import get_usage_queue, resolve_usage_timestamp
 
     await get_usage_queue().put({
         "api_key_id": api_key_id,
@@ -57,7 +58,7 @@ async def enqueue_usage_task_linked(
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
-        "request_timestamp": datetime.now(timezone.utc),
+        "request_timestamp": resolve_usage_timestamp(request_timestamp),
         "request_duration_ms": request_duration_ms,
         "conversation_id": conversation_id,
         "trace_id": trace_id,

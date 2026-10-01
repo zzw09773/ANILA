@@ -7,6 +7,14 @@
       </div>
       <div class="page-head__actions">
         <TimeRangeSelector v-model="selectedRange" @update:model-value="refreshUsage" />
+        <template v-if="!authStore.isDeputy">
+          <select v-model="exportPreset" class="term-select" data-testid="export-preset" aria-label="匯出快捷">
+            <option value="">依上方區間</option>
+            <option v-for="item in EXPORT_PRESETS" :key="item.value" :value="item.value">{{ item.label }}</option>
+          </select>
+          <input v-model="exportStart" type="date" class="term-input" aria-label="匯出開始日期" />
+          <input v-model="exportEnd" type="date" class="term-input" aria-label="匯出結束日期" />
+        </template>
         <TermButton v-if="!authStore.isDeputy" size="md" variant="default" @click="handleExport" label="匯出 CSV" />
       </div>
     </header>
@@ -66,7 +74,11 @@
           </template>
         </TermStat>
         <TermStat :label="`${rangeLabel} · 區間內有呼叫的金鑰`" :value="usageStore.summary?.active_api_keys || 0" />
+        <TermStat v-if="costLabel" :label="`${rangeLabel} · 成本`" :value="costLabel.text" format="raw">
+          <template v-if="costLabel.note" #foot>{{ costLabel.note }}</template>
+        </TermStat>
       </div>
+      <p v-if="exportError" class="cell-meta cell-meta--danger">{{ exportError }}</p>
       <div class="chart-wrap">
         <UsageLineChart :chart-data="usageStore.chartData" :height="380" />
       </div>
@@ -182,6 +194,71 @@
           </tbody>
         </table>
       </TermBox>
+
+      <TermBox title="依 API 金鑰" pad="none" flush hint="沒有金鑰的網頁呼叫單獨列出">
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>金鑰</th>
+              <th class="num">Token</th>
+              <th class="num">請求數</th>
+              <th v-if="showApiKeyCost" class="num">成本</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in byApiKey" :key="row.label">
+              <td>{{ row.label }}</td>
+              <td class="num tnum">{{ formatNum(row.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(row.total_requests) }}</td>
+              <td v-if="showApiKeyCost" class="num tnum">{{ costCell(row) }}</td>
+            </tr>
+            <tr v-if="byApiKey.length === 0">
+              <td :colspan="showApiKeyCost ? 4 : 3"><TermEmpty message="尚無 API 金鑰用量" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
+
+      <TermBox title="依單位（含下層）" pad="none" flush hint="每一列已含下層，列與列不能相加">
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>單位</th>
+              <th class="num">Token</th>
+              <th class="num">請求數</th>
+              <th v-if="showUnitCost" class="num">成本</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in byUnit" :key="row.department_id">
+              <td>{{ row.label }}</td>
+              <td class="num tnum">{{ formatNum(row.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(row.total_requests) }}</td>
+              <td v-if="showUnitCost" class="num tnum">{{ costCell(row) }}</td>
+            </tr>
+            <tr v-if="byUnit.length === 0">
+              <td :colspan="showUnitCost ? 4 : 3"><TermEmpty message="尚無單位用量" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
+
+      <TermBox v-if="!authStore.isDeputy" title="被擋下的呼叫" pad="none" flush>
+        <table class="term-table">
+          <thead>
+            <tr><th>使用者</th><th>說明</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in quotaBlocks" :key="row.id">
+              <td>{{ row.username || '—' }}</td>
+              <td>{{ row.message }}</td>
+            </tr>
+            <tr v-if="quotaBlocks.length === 0">
+              <td colspan="2"><TermEmpty message="這段期間沒有被額度擋下的呼叫" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
     </div>
   </div>
 </template>
@@ -195,7 +272,10 @@ import { listModels } from '../api/models'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import TimeRangeSelector from '../components/charts/TimeRangeSelector.vue'
 import client from '../api/client'
+import { getQuotaBlocks, getUsageByApiKey, getUsageByUnit } from '../api/usage'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermStat } from '../components/cli'
+import { costCell, summaryCostLabel } from '../utils/pricingDisplay'
+import { EXPORT_PRESETS, exportQuery } from '../utils/usageExportRange'
 import {
   LOAD_FAILED,
   LOAD_READY,
@@ -207,6 +287,21 @@ import { isPlatformChatEntry } from '../utils/platformChatEntry.js'
 
 const usageStore = useUsageStore()
 const authStore = useAuthStore()
+const byApiKey = ref([])
+const byUnit = ref([])
+
+function groupHasCost(rows) {
+  return rows.some((row) => row && row.cost_state && row.cost_state !== 'unpriced')
+}
+
+const showApiKeyCost = computed(() => groupHasCost(byApiKey.value))
+const showUnitCost = computed(() => groupHasCost(byUnit.value))
+const quotaBlocks = ref([])
+const exportPreset = ref('')
+const exportStart = ref('')
+const exportEnd = ref('')
+const exportError = ref('')
+const costLabel = computed(() => summaryCostLabel(usageStore.summary))
 
 // Sprint 8 X / Phase G — Phase G stores its rollups inline rather
 // than in usageStore because they're admin-only and don't share
@@ -329,7 +424,41 @@ async function refreshUsage() {
     usageStore.fetchSummary(summaryParams),
     refreshRankings(),
     fetchPhaseGRollups(),
+    refreshCostCuts(summaryParams),
   ])
+}
+
+async function refreshCostCuts(summaryParams) {
+  const params = {
+    range: summaryParams.range,
+    model_id: summaryParams.model_id,
+    model_type: summaryParams.model_type,
+    department_id: summaryParams.department_id,
+  }
+  try {
+    const [{ data: keys }, { data: units }] = await Promise.all([
+      getUsageByApiKey(params),
+      getUsageByUnit(params),
+    ])
+    byApiKey.value = keys
+    byUnit.value = units
+  } catch {
+    byApiKey.value = []
+    byUnit.value = []
+  }
+  if (authStore.isDeputy) {
+    quotaBlocks.value = []
+    return
+  }
+  try {
+    const { data } = await getQuotaBlocks({
+      range: summaryParams.range,
+      department_id: summaryParams.department_id,
+    })
+    quotaBlocks.value = data
+  } catch {
+    quotaBlocks.value = []
+  }
 }
 
 onMounted(async () => {
@@ -358,8 +487,19 @@ function onDepartmentChange() {
   refreshUsage()
 }
 function handleExport() {
-  usageStore.exportCsv({
+  const built = exportQuery({
+    preset: exportPreset.value,
+    start: exportStart.value,
+    end: exportEnd.value,
     range: selectedRange.value,
+  })
+  if (built.error) {
+    exportError.value = built.error
+    return
+  }
+  exportError.value = ''
+  usageStore.exportCsv({
+    ...built.params,
     model_id: selectedModel.value || undefined,
     user_id: selectedUser.value || undefined,
     department_id: authStore.isAdmin ? (selectedDepartment.value || undefined) : undefined,

@@ -38,6 +38,8 @@ import app.models.department      # noqa: F401
 import app.models.dev_db_credential  # noqa: F401
 import app.models.model_registry  # noqa: F401
 import app.models.model_role  # noqa: F401
+import app.models.model_price  # noqa: F401
+import app.models.usage_quota  # noqa: F401
 import app.models.attachment       # noqa: F401
 import app.models.conversation     # noqa: F401
 import app.models.handoff          # noqa: F401

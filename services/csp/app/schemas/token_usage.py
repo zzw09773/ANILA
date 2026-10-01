@@ -15,6 +15,9 @@ class UsageSummary(BaseModel):
     # Studio (簡報／報告等產出) — tagged request_type='studio', kept out of web_ui.
     studio_requests: int = 0
     studio_tokens: int = 0
+    cost: str | None = None
+    cost_currency: str | None = None
+    cost_state: str = "unpriced"
 
 
 class ChartDataSeries(BaseModel):

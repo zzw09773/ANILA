@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -50,11 +51,33 @@ _SNAPSHOT_FIELDS = (
 
 
 class InternalCompletionError(Exception):
-    """模型呼叫失敗或沒有可用內文。不帶上游網址。"""
+    """模型呼叫失敗或沒有可用內文。不帶上游網址。
 
-    def __init__(self, status_code: int | None = None):
+    額度擋下時保留 ``quota_code`` 與原始中文訊息，讓互動端點原樣回傳。
+    """
+
+    def __init__(
+        self,
+        status_code: int | None = None,
+        *,
+        code: str | None = None,
+        message: str | None = None,
+    ):
         self.status_code = status_code
-        super().__init__("內部模型呼叫失敗")
+        self.quota_code = code
+        self.quota_message = message
+        super().__init__(message or "內部模型呼叫失敗")
+
+
+def _quota_fields(exc: HTTPException) -> tuple[str | None, str | None]:
+    """只有額度 429 要往外帶原文。其他失敗維持內部錯誤。"""
+    if exc.status_code != 429 or not isinstance(exc.detail, dict):
+        return None, None
+    code = exc.detail.get("code")
+    message = exc.detail.get("message")
+    if code != "quota_exceeded" or not isinstance(message, str) or not message:
+        return None, None
+    return code, message
 
 
 def _snapshot(model) -> SimpleNamespace:
@@ -104,6 +127,25 @@ async def complete_chat(
     snapshot = _snapshot(model)
     tuning = resolve_proxy_tuning(db)
     # 逾時在還握著連線時解析；commit 之後不再查 platform_settings。
+    # 替使用者做的補全才占額度。平台自己的背景推理（usage_kind=platform）不占。
+    # 預檢與用量用同一個呼叫開始時間。
+    started = datetime.now(timezone.utc)
+    if on_behalf_of_user and user_id is not None:
+        from app.services.quota_service import enforce_call_quota
+
+        try:
+            enforce_call_quota(
+                db,
+                user_id=user_id,
+                department_id=department_id,
+                api_key_id=None,
+                usage_kind="inference",
+                now=started,
+            )
+        except HTTPException as exc:
+            db.commit()
+            code, message = _quota_fields(exc)
+            raise InternalCompletionError(exc.status_code, code=code, message=message) from exc
     db.commit()
     payload = dict(body)
     payload["model"] = snapshot.name
@@ -121,9 +163,11 @@ async def complete_chat(
             request_type_override=None if on_behalf_of_user else "internal",
             tuning=tuning,
             deadline=sync_model_deadline(),
+            request_timestamp=started,
         )
     except HTTPException as exc:
-        raise InternalCompletionError(exc.status_code) from exc
+        code, message = _quota_fields(exc)
+        raise InternalCompletionError(exc.status_code, code=code, message=message) from exc
     text = _assistant_text(result).strip()
     if not text:
         raise InternalCompletionError(None)

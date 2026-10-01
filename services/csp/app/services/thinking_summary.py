@@ -143,6 +143,8 @@ async def summarize_reasoning_batch(
             on_behalf_of_user=True,
         )
     except InternalCompletionError as exc:
+        if exc.status_code == 429 and exc.quota_code == "quota_exceeded":
+            raise
         logger.warning("thinking_summary: LLM call failed status=%s", exc.status_code)
         return None
     except Exception:

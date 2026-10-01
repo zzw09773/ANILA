@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.user import User
 from app.schemas.token_usage import (
     UsageSummary,
@@ -15,8 +15,9 @@ from app.services.unit_admin_service import (
     get_unit_admin_scope_ids,
     is_unit_admin,
 )
+from app.services.quota_service import list_quota_blocks
 from app.services.usage_service import (
-    export_usage_csv,
+    ExportRangeError,
     get_agent_usage,
     get_caller_usage,
     get_chart_data,
@@ -24,10 +25,18 @@ from app.services.usage_service import (
     get_top_departments,
     get_top_models,
     get_top_users,
+    get_usage_by_api_key,
     get_usage_by_base_model,
     get_usage_by_client,
+    get_usage_by_unit,
     get_usage_summary,
+    iter_usage_csv,
+    resolve_export_window,
 )
+
+# 測試會替換這個名字。預設走逐批產生器；若被換成回傳字串的替身，路由仍可送出。
+def export_usage_csv(*args, **kwargs):
+    return iter_usage_csv(*args, **kwargs)
 
 router = APIRouter(prefix="/api/usage", tags=["用量統計"])
 
@@ -363,6 +372,82 @@ def usage_for_agent(
     return get_agent_usage(db, agent_id=agent_id, days=days)
 
 
+def _usage_window_filters(db, current_user, department_id):
+    if _deputy_platform_aggregate(current_user):
+        return None, None, None
+    return _resolve_usage_caller_filters(db, current_user, department_id)
+
+
+@router.get("/by-api-key")
+def usage_by_api_key(
+    range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),
+    model_id: int | None = None,
+    department_id: int | None = None,
+    model_type: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id, department_id, scope_ids = _usage_window_filters(
+        db, current_user, department_id
+    )
+    return get_usage_by_api_key(
+        db,
+        range_key=range,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        department_id=department_id,
+        scope_ids=scope_ids,
+    )
+
+
+@router.get("/by-unit")
+def usage_by_unit(
+    range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),
+    model_id: int | None = None,
+    department_id: int | None = None,
+    model_type: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user_id, department_id, scope_ids = _usage_window_filters(
+        db, current_user, department_id
+    )
+    return get_usage_by_unit(
+        db,
+        range_key=range,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        department_id=department_id,
+        scope_ids=scope_ids,
+    )
+
+
+@router.get("/quota-blocks")
+def usage_quota_blocks(
+    range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),
+    department_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if is_deputy(current_user) and not is_admin_tier(current_user):
+        raise HTTPException(status_code=403, detail=_DEPUTY_AGGREGATE_ONLY)
+    from app.utils.time_helpers import get_time_range
+
+    start_time, _bucket = get_time_range(range)
+    user_id, department_id, scope_ids = _usage_window_filters(
+        db, current_user, department_id
+    )
+    return list_quota_blocks(
+        db,
+        start_time=start_time,
+        user_id=user_id,
+        department_id=department_id,
+        scope_ids=scope_ids,
+    )
+
+
 @router.get("/export")
 def export_csv(
     range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),
@@ -370,6 +455,9 @@ def export_csv(
     user_id: int | None = None,
     department_id: int | None = None,
     model_type: str | None = None,
+    preset: str | None = Query(None, regex="^(this_month|last_month|this_quarter)$"),
+    start: str | None = None,
+    end: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -391,18 +479,35 @@ def export_csv(
         department_id = None
         scope_ids = None
 
-    csv_content = export_usage_csv(
-        db,
-        range,
+    try:
+        resolve_export_window(range, preset=preset, start=start, end=end)
+    except ExportRangeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filters = dict(
         model_id=model_id,
         user_id=user_id,
         model_type=model_type,
         department_id=department_id,
         scope_ids=scope_ids,
+        preset=preset,
+        start=start,
+        end=end,
     )
 
+    def _stream():
+        owned = SessionLocal()
+        try:
+            result = export_usage_csv(owned, range, **filters)
+            if isinstance(result, str):
+                yield result
+                return
+            yield from result
+        finally:
+            owned.close()
+
     return StreamingResponse(
-        iter([csv_content]),
+        _stream(),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=usage_{range}.csv"},
     )

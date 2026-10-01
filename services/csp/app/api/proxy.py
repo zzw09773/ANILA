@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import AsyncIterator
 
@@ -120,6 +121,34 @@ def pause_request_session(db: Session) -> None:
     for that query only.
     """
     db.commit()
+
+
+def _enforce_metered_quota(
+    db: Session,
+    *,
+    user_id: int | None,
+    department_id: int | None,
+    api_key_id: int | None,
+    usage_kind: str | None = "inference",
+    now: datetime | None = None,
+) -> None:
+    """額度只在上游呼叫前檢查。擋下時先把連線還回池子，再回 429。"""
+    if not user_id or usage_kind in ("platform", "router_transport"):
+        return
+    from app.services.quota_service import enforce_call_quota
+
+    try:
+        enforce_call_quota(
+            db,
+            user_id=user_id,
+            department_id=department_id,
+            api_key_id=api_key_id,
+            usage_kind=usage_kind,
+            now=now,
+        )
+    except HTTPException:
+        release_request_session(db)
+        raise
 
 
 def release_request_session(db: Session) -> None:
@@ -1892,11 +1921,19 @@ async def _complete_dispatched_model(
             release_request_session(db)
             return streamed
         raise
+    started = datetime.now(timezone.utc)
+    _enforce_metered_quota(
+        db,
+        user_id=user_id,
+        department_id=department_id,
+        api_key_id=call.api_key_id,
+        now=started,
+    )
     release_request_session(db)
     if stream:
         upstream = proxy_stream(
             target_url=target_url,
-            api_key_id=None,
+            api_key_id=call.api_key_id,
             user_id=user_id,
             department_id=department_id,
             usage_model_id=base_snap.id,
@@ -1909,6 +1946,7 @@ async def _complete_dispatched_model(
             model_name_snapshot=base_snap.name,
             tuning=tuning,
             model=base_snap,
+            request_timestamp=started,
         )
         gated = gate_sse_stream(
             upstream,
@@ -1927,7 +1965,7 @@ async def _complete_dispatched_model(
         )
     payload = await proxy_request(
         model=base_snap,
-        api_key_id=None,
+        api_key_id=call.api_key_id,
         user_id=user_id,
         department_id=department_id,
         request_body=body,
@@ -1937,6 +1975,7 @@ async def _complete_dispatched_model(
         legacy_runtime_call=True,
         tuning=tuning,
         model_name_snapshot=base_snap.name,
+        request_timestamp=started,
     )
     payload = await gate_completion_payload(
         payload,
@@ -2299,6 +2338,7 @@ async def chat_completions(
             task_id=task_ctx.task_id if task_ctx else None,
             trace_id=task_ctx.trace_id if task_ctx else None,
             conversation_id=conversation_id,
+            api_key_id=caller.api_key_id,
         )
         agent_name = agent.name
         endpoint_display = _endpoint_display_for(db, user, agent.endpoint_url)
@@ -2493,6 +2533,15 @@ async def chat_completions(
     # 用量桶只跟已驗證的 Studio 工作權杖走，不讀呼叫端自填的來源標頭。
     usage_source = "studio" if side.artifact_turn else None
     request_type = "studio" if side.artifact_turn else "chat"
+    started = datetime.now(timezone.utc)
+    _enforce_metered_quota(
+        db,
+        user_id=user_id,
+        department_id=department_id,
+        api_key_id=api_key_id,
+        usage_kind=usage_kind,
+        now=started,
+    )
     release_request_session(db)
     if stream:
         chat_path = (
@@ -2527,6 +2576,7 @@ async def chat_completions(
             tuning=tuning,
             model=model_snap,
             request_type=request_type,
+            request_timestamp=started,
         )
         gated = gate_sse_stream(
             upstream,
@@ -2582,6 +2632,7 @@ async def chat_completions(
         extra_headers=router_extra_headers,
         usage_kind=usage_kind,
         model_name_snapshot=model_snap.name,
+        request_timestamp=started,
     )
     payload = await gate_completion_payload(
         payload,
@@ -2656,26 +2707,36 @@ async def resume_agent_session(
     )
 
     user = caller.user
-    target = (
-        f"{agent.endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
+    user_id = user.id
+    department_id = user.department_id
+    api_key_id = caller.api_key_id
+    agent_id = agent.id
+    endpoint_url = agent.endpoint_url
+    # 串流在 handler 回傳之後才抽乾，逾時要在還連線前讀完。
+    llm_timeout = float(get_setting(db, "proxy.llm_timeout"))
+    reveal, reveal_user_id, reveal_dept, reveal_hdrs = _reasoning_viewer(user)
+    _enforce_metered_quota(
+        db,
+        user_id=user_id,
+        department_id=department_id,
+        api_key_id=api_key_id,
+        now=datetime.now(timezone.utc),
     )
+    release_request_session(db)
+    target = f"{endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
     from anila_core.security import ENDPOINT_KIND_AGENT
     from app.services.proxy_service import build_agent_headers, _guard_outbound
     _guard_outbound(
         target, endpoint_kind=ENDPOINT_KIND_AGENT
     )  # call-time SSRF re-validation (TOCTOU defense)
     headers = build_agent_headers(
-        user_id=user.id,
-        department=user.department_id,
-        agent_id=agent.id,
+        user_id=user_id,
+        department=department_id,
+        agent_id=agent_id,
+        api_key_id=api_key_id,
     )
 
     import httpx
-
-    # ⚠ 在 closure **外面**解析：``_passthrough_stream`` 是 StreamingResponse 的
-    # generator，執行時 handler 已經回傳，session 不保證還活著。
-    llm_timeout = float(get_setting(db, "proxy.llm_timeout"))
-    reveal, reveal_user_id, reveal_dept, reveal_hdrs = _reasoning_viewer(user)
 
     async def _passthrough_stream():
         try:
@@ -2707,7 +2768,6 @@ async def resume_agent_session(
                 f"{type(exc).__name__}\"}}\n\n"
             )
 
-    db.close()
     return StreamingResponse(
         gate_sse_stream(
             _passthrough_stream(),
@@ -2778,6 +2838,14 @@ async def embeddings_v1(
     identity = downstream_identity(user)
     department_id = user.department_id
     api_key_id = caller.api_key_id
+    started = datetime.now(timezone.utc)
+    _enforce_metered_quota(
+        db,
+        user_id=user_id,
+        department_id=department_id,
+        api_key_id=api_key_id,
+        now=started,
+    )
     release_request_session(db)
     return await proxy_request(
         model=model,
@@ -2792,6 +2860,7 @@ async def embeddings_v1(
         # documents; ``input_type: "query"`` opts a caller onto the query side.
         embedding_input_role=input_type,
         tuning=tuning,
+        request_timestamp=started,
     )
 
 
@@ -2822,6 +2891,14 @@ async def embeddings_v2(
     identity = downstream_identity(user)
     department_id = user.department_id
     api_key_id = caller.api_key_id
+    started = datetime.now(timezone.utc)
+    _enforce_metered_quota(
+        db,
+        user_id=user_id,
+        department_id=department_id,
+        api_key_id=api_key_id,
+        now=started,
+    )
     release_request_session(db)
     return await proxy_request(
         model=model,
@@ -2834,6 +2911,7 @@ async def embeddings_v2(
         endpoint_display=endpoint_display,
         embedding_input_role=input_type,
         tuning=tuning,
+        request_timestamp=started,
     )
 
 
@@ -2958,6 +3036,14 @@ async def images_generations(
         "size": size,
         "response_format": "b64_json",
     }
+    started = datetime.now(timezone.utc)
+    _enforce_metered_quota(
+        db,
+        user_id=user_id,
+        department_id=department_id,
+        api_key_id=api_key_id,
+        now=started,
+    )
     release_request_session(db)
     return await proxy_request(
         model=model_snap,
@@ -2976,4 +3062,5 @@ async def images_generations(
         task_run_id=task_ctx.task_run_id if task_ctx else None,
         legacy_runtime_call=task_ctx is None,
         max_response_bytes=IMAGE_UPSTREAM_MAX_BYTES,
+        request_timestamp=started,
     )

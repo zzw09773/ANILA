@@ -1,7 +1,7 @@
 """單位管理員指派服務（P1.3）。
 
-綁定表 ``unit_admin_assignments``；``users.role`` 不動。額度分配遞延至
-credit-ledger epic（見 model / migration docstring）。
+綁定表 ``unit_admin_assignments``；``users.role`` 不動。用量額度由管理員
+設定，單位管理員只能查看自己範圍內的額度。
 
 每節點最多 3 名 active 管理員、以及重複指派檢查，一律在
 ``acquire_dept_tree_lock`` 下執行。

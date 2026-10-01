@@ -585,6 +585,7 @@
         />
         <router-link v-else :to="privateEndpointBlock.linkTo">{{ privateEndpointBlock.linkLabel }}</router-link>
       </div>
+      <ModelPriceEditor v-if="editingId && authStore.isAdmin" :model-id="editingId" />
       <template #footer>
         <TermButton variant="ghost" @click="closeModelForm" label="取消" />
         <TermButton
@@ -738,6 +739,7 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSt
 import ThinkingLevelsDisplay from '../components/ThinkingLevelsDisplay.vue'
 import ModelRolesPanel from '../components/ModelRolesPanel.vue'
 import EmbeddingRebuildPanel from '../components/EmbeddingRebuildPanel.vue'
+import ModelPriceEditor from '../components/ModelPriceEditor.vue'
 import { useDialog } from '../composables/useDialog'
 import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 import { designationConfirm, designationToast } from '../utils/platformEmbedding'

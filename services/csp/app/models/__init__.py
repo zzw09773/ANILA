@@ -54,6 +54,7 @@ from app.models.message import Message
 from app.models.message_action import MessageAction, MessageActionBinding
 from app.models.model_access_group import ModelAccessGroup, ModelAccessGroupMember
 from app.models.model_registry import ModelRegistry
+from app.models.model_price import ModelPrice
 from app.models.model_role import ModelRole
 from app.models.router_model_grant import RouterModelGrant
 from app.models.platform_link import PlatformLink
@@ -82,6 +83,7 @@ from app.models.user_memory import (
     MemoryTombstone,
     UserFact,
 )
+from app.models.usage_quota import QuotaEvent, UsageQuota
 from app.models.user_skill import UserSkill
 
 __all__ = [
@@ -133,11 +135,13 @@ __all__ = [
     "MessageActionBinding",
     "ModelAccessGroup",
     "ModelAccessGroupMember",
+    "ModelPrice",
     "ModelRegistry",
     "ModelRole",
     "PlatformLink",
     "PlatformSetting",
     "PolicyDecision",
+    "QuotaEvent",
     "RegisteredService",
     "RouterModelGrant",
     "ServiceAccessGrant",
@@ -157,4 +161,5 @@ __all__ = [
     "UserLlmCredential",
     "UserModelPermission",
     "UserSkill",
+    "UsageQuota",
 ]

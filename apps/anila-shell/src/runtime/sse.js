@@ -1,4 +1,5 @@
 import { modelUnavailableFromPayload } from "./modelUnavailable.js";
+import { quotaNotice } from "./quotaNotice.js";
 
 export function parseSseBlocks(buffer) {
   const normalized = buffer.replace(/\r\n/g, "\n");
@@ -54,6 +55,14 @@ function errorFromHttpBody(body, status, fallback) {
   let detail = fallback;
   if (typeof payload?.detail === "string" && payload.detail.trim()) {
     detail = payload.detail;
+  } else if (payload?.detail && typeof payload.detail === "object") {
+    const message = typeof payload.detail.message === "string" ? payload.detail.message.trim() : "";
+    const notice = quotaNotice(message);
+    if (notice) {
+      detail = notice.message;
+    } else if (message) {
+      detail = message;
+    }
   }
   const error = new Error(detail || fallback);
   error.status = status;

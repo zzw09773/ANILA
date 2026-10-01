@@ -17,3 +17,12 @@ export const getTopDepartments = (params) =>
 
 export const exportUsageCsv = (params) =>
   client.get('/api/usage/export', { params, responseType: 'blob' })
+
+export const getUsageByApiKey = (params) =>
+  client.get('/api/usage/by-api-key', { params })
+
+export const getUsageByUnit = (params) =>
+  client.get('/api/usage/by-unit', { params })
+
+export const getQuotaBlocks = (params) =>
+  client.get('/api/usage/quota-blocks', { params })

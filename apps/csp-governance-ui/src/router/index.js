@@ -41,6 +41,12 @@ const routes = [
         component: () => import('../views/UsageView.vue'),
       },
       {
+        path: 'quotas',
+        name: 'Quotas',
+        component: () => import('../views/QuotasView.vue'),
+        meta: { requiresQuotaRead: true },
+      },
+      {
         path: 'users',
         name: 'Users',
         component: () => import('../views/UsersView.vue'),
@@ -218,6 +224,12 @@ router.beforeEach(async (to, from, next) => {
   ) {
     next('/')
   } else if (to.meta.requiresSteward && !authStore.isSteward) {
+    next('/')
+  } else if (
+    to.meta.requiresQuotaRead
+    && !authStore.isAdmin
+    && !authStore.isUnitAdmin
+  ) {
     next('/')
   } else if (
     to.meta.requiresSkillReview

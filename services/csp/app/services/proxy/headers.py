@@ -124,6 +124,7 @@ def build_agent_headers(
     task_id: Optional[str | int] = None,
     trace_id: Optional[str] = None,
     conversation_id: Optional[str | int] = None,
+    api_key_id: Optional[int] = None,
 ) -> dict:
     """Build signed-identity headers for downstream AGENTS (P2.1).
 
@@ -143,6 +144,7 @@ def build_agent_headers(
         agent_id=agent_id,
         task_id=_claim_int(task_id),
         conversation_id=_claim_int(conversation_id),
+        api_key_id=api_key_id,
     )
     headers["Authorization"] = f"Bearer {token}"
     if task_id:

@@ -125,6 +125,13 @@ async def generate_system_prompt(
             on_behalf_of_user=True,
         )
     except InternalCompletionError as exc:
+        if exc.status_code == 429 and exc.quota_code == "quota_exceeded" and exc.quota_message:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=429,
+                detail={"code": exc.quota_code, "message": exc.quota_message},
+            ) from exc
         logger.warning("prompt_gen: LLM 呼叫失敗 status=%s", exc.status_code)
         raise RuntimeError("呼叫 LLM 失敗") from exc
 

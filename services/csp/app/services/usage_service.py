@@ -1,14 +1,16 @@
 import csv
 import io
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, literal_column, text
 from sqlalchemy.orm import Session
+from app.models.api_key import ApiKey
 from app.models.department import Department
 from app.models.token_usage import TokenUsage
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.auto_seed import PLATFORM_ROUTER_NAME
 from app.services.department_tree import get_descendant_ids
+from app.services.pricing import PriceBook, cost_rollup, format_micros, get_billing_currency, row_cost_micros
 from app.utils.csv_formula import csv_formula_safe
 from app.utils.time_helpers import get_time_range
 
@@ -117,11 +119,14 @@ def _apply_usage_filters(
     model_type: str | None = None,
     department_id: int | None = None,
     scope_ids: list[int] | None = None,
+    api_key_ids: list[int] | None = None,
 ):
     if model_id:
         query = query.filter(TokenUsage.model_id == model_id)
     if user_id:
         query = query.filter(TokenUsage.user_id == user_id)
+    if api_key_ids is not None:
+        query = query.filter(TokenUsage.api_key_id.in_(api_key_ids))
     resolved = _resolve_scope_ids(
         db, department_id=department_id, scope_ids=scope_ids
     )
@@ -131,6 +136,123 @@ def _apply_usage_filters(
         model_ids = _get_model_ids_by_type(db, model_type)
         query = query.filter(TokenUsage.model_id.in_(model_ids))
     return _exclude_unbilled(query)
+
+
+class ExportRangeError(ValueError):
+    """匯出區間不合法。訊息直接給使用者。"""
+
+
+def _parse_export_day(text: str) -> date:
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except (TypeError, ValueError) as exc:
+        raise ExportRangeError("日期格式須為 YYYY-MM-DD") from exc
+
+
+def _plus_one_year(day: date) -> date:
+    try:
+        return day.replace(year=day.year + 1)
+    except ValueError:
+        return day.replace(year=day.year + 1, day=28)
+
+
+def _tpe_midnight(day: date) -> datetime:
+    return datetime(day.year, day.month, day.day, tzinfo=_TPE_TZ)
+
+
+def _next_month(day: date) -> date:
+    if day.month == 12:
+        return date(day.year + 1, 1, 1)
+    return date(day.year, day.month + 1, 1)
+
+
+def resolve_export_window(
+    range_key: str,
+    *,
+    preset: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime | None]:
+    """回傳 [start, end)。沒有自訂區間時 end 是 None，沿用原本的 range。"""
+    if preset and (start or end):
+        raise ExportRangeError("快捷鍵與自訂日期請擇一")
+    if preset:
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        today = moment.astimezone(_TPE_TZ).date()
+        if preset == "this_month":
+            start_day = today.replace(day=1)
+            end_day = _next_month(start_day)
+        elif preset == "last_month":
+            this_start = today.replace(day=1)
+            end_day = this_start
+            if this_start.month == 1:
+                start_day = date(this_start.year - 1, 12, 1)
+            else:
+                start_day = date(this_start.year, this_start.month - 1, 1)
+        elif preset == "this_quarter":
+            start_month = ((today.month - 1) // 3) * 3 + 1
+            start_day = date(today.year, start_month, 1)
+            end_month = start_month + 3
+            end_year = today.year
+            if end_month > 12:
+                end_month -= 12
+                end_year += 1
+            end_day = date(end_year, end_month, 1)
+        else:
+            raise ExportRangeError("不認識的匯出快捷鍵")
+        return _tpe_midnight(start_day), _tpe_midnight(end_day)
+    if start or end:
+        if not start or not end:
+            raise ExportRangeError("請同時提供開始與結束日期")
+        start_day = _parse_export_day(start)
+        end_day = _parse_export_day(end)
+        if end_day < start_day:
+            raise ExportRangeError("結束日期不可早於開始日期")
+        # 結束日含當天，所以用隔天的排除邊界跟「開始日加一年」比。
+        exclusive = end_day + timedelta(days=1)
+        if exclusive > _plus_one_year(start_day):
+            raise ExportRangeError("單次匯出最長一年")
+        return _tpe_midnight(start_day), _tpe_midnight(exclusive)
+    start_time, _bucket = get_time_range(range_key)
+    return start_time, None
+
+
+def _filtered_usage_rows(
+    db: Session,
+    *,
+    start_time: datetime,
+    end_time: datetime | None,
+    model_id: int | None = None,
+    user_id: int | None = None,
+    model_type: str | None = None,
+    scope_ids: list[int] | None = None,
+    api_key_ids: list[int] | None = None,
+    columns: tuple = (),
+):
+    selected = (
+        TokenUsage.model_id,
+        TokenUsage.request_timestamp,
+        TokenUsage.prompt_tokens,
+        TokenUsage.completion_tokens,
+        TokenUsage.reasoning_tokens,
+        TokenUsage.total_tokens,
+        *columns,
+    )
+    query = db.query(*selected).filter(TokenUsage.request_timestamp >= start_time)
+    if end_time is not None:
+        query = query.filter(TokenUsage.request_timestamp < end_time)
+    return _apply_usage_filters(
+        query,
+        db,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        scope_ids=scope_ids,
+        api_key_ids=api_key_ids,
+    ).all()
 
 
 def get_usage_summary(
@@ -232,6 +354,18 @@ def get_usage_summary(
         scope_ids=resolved_scope,
     )
     web_ui_requests = web_ui_req_q.scalar() or 0
+    cost = cost_rollup(
+        db,
+        _filtered_usage_rows(
+            db,
+            start_time=start_time,
+            end_time=None,
+            model_id=model_id,
+            user_id=user_id,
+            model_type=model_type,
+            scope_ids=resolved_scope,
+        ),
+    )
 
     return {
         "total_requests": result.total_requests or 0,
@@ -243,6 +377,9 @@ def get_usage_summary(
         "web_ui_requests": int(web_ui_requests),
         "studio_requests": int(studio_row.n or 0) if studio_row else 0,
         "studio_tokens": int(studio_row.tokens or 0) if studio_row else 0,
+        "cost": cost["cost"],
+        "cost_currency": cost["cost_currency"],
+        "cost_state": cost["cost_state"],
     }
 
 
@@ -483,7 +620,7 @@ def get_top_departments(
     ]
 
 
-def export_usage_csv(
+def iter_usage_csv(
     db: Session,
     range_key: str,
     model_id: int | None = None,
@@ -491,9 +628,15 @@ def export_usage_csv(
     model_type: str | None = None,
     department_id: int | None = None,
     scope_ids: list[int] | None = None,
-) -> str:
-    """Export usage data as CSV string."""
-    start_time, _ = get_time_range(range_key)
+    preset: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    now: datetime | None = None,
+):
+    """一筆一筆寫 CSV。價格表只載一次；列用 yield_per，不把一年資料一次放進記憶體。"""
+    start_time, end_time = resolve_export_window(
+        range_key, preset=preset, start=start, end=end, now=now
+    )
 
     query = (
         db.query(
@@ -506,12 +649,16 @@ def export_usage_csv(
             TokenUsage.completion_tokens,
             TokenUsage.total_tokens,
             TokenUsage.request_duration_ms,
+            TokenUsage.model_id,
+            TokenUsage.reasoning_tokens,
         )
         .join(User, TokenUsage.user_id == User.id)
         .outerjoin(Department, TokenUsage.department_id == Department.id)
         .join(ModelRegistry, TokenUsage.model_id == ModelRegistry.id)
         .filter(TokenUsage.request_timestamp >= start_time)
     )
+    if end_time is not None:
+        query = query.filter(TokenUsage.request_timestamp < end_time)
     query = _apply_usage_filters(
         query,
         db,
@@ -521,12 +668,10 @@ def export_usage_csv(
         department_id=department_id,
         scope_ids=scope_ids,
     )
+    book = PriceBook.load(db)
 
-    rows = query.order_by(TokenUsage.request_timestamp.desc()).all()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
+    header = io.StringIO()
+    csv.writer(header).writerow(
         [
             "時間",
             "使用者",
@@ -537,10 +682,16 @@ def export_usage_csv(
             "輸出 Tokens",
             "總計 Tokens",
             "延遲 (ms)",
+            "成本",
         ]
     )
-    for row in rows:
-        writer.writerow(
+    # UTF-8 BOM:Excel 開 CSV 預設用系統編碼(台灣 Windows = Big5/CP950),
+    # 沒 BOM 中文表頭/內容會亂碼。前置 U+FEFF 讓 Excel 辨識成 UTF-8。
+    yield chr(0xFEFF) + header.getvalue()
+    for row in query.order_by(TokenUsage.request_timestamp.desc()).yield_per(500):
+        cost = row_cost_micros(row, book)
+        line = io.StringIO()
+        csv.writer(line).writerow(
             [
                 _to_tpe_iso(row.request_timestamp),
                 csv_formula_safe(row.username),
@@ -551,12 +702,218 @@ def export_usage_csv(
                 row.completion_tokens,
                 row.total_tokens,
                 row.request_duration_ms or "",
+                format_micros(cost) if cost is not None else "未計價",
             ]
         )
+        yield line.getvalue()
 
-    # UTF-8 BOM:Excel 開 CSV 預設用系統編碼(台灣 Windows = Big5/CP950),
-    # 沒 BOM 中文表頭/內容會亂碼。前置 U+FEFF 讓 Excel 辨識成 UTF-8。
-    return chr(0xFEFF) + output.getvalue()
+
+def export_usage_csv(
+    db: Session,
+    range_key: str,
+    model_id: int | None = None,
+    user_id: int | None = None,
+    model_type: str | None = None,
+    department_id: int | None = None,
+    scope_ids: list[int] | None = None,
+    preset: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Export usage data as CSV string."""
+    return "".join(
+        iter_usage_csv(
+            db,
+            range_key,
+            model_id=model_id,
+            user_id=user_id,
+            model_type=model_type,
+            department_id=department_id,
+            scope_ids=scope_ids,
+            preset=preset,
+            start=start,
+            end=end,
+            now=now,
+        )
+    )
+
+
+def _bucket_cost(db: Session, rows, *, book=None, currency=None) -> dict:
+    return cost_rollup(db, rows, book=book, currency=currency)
+
+
+def get_usage_by_api_key(
+    db: Session,
+    range_key: str = "24h",
+    model_id: int | None = None,
+    user_id: int | None = None,
+    model_type: str | None = None,
+    department_id: int | None = None,
+    scope_ids: list[int] | None = None,
+) -> list[dict]:
+    """依 API 金鑰。沒有金鑰的網頁呼叫單獨一列；簡報製作也不併進網頁。"""
+    start_time, _bucket = get_time_range(range_key)
+    resolved = _resolve_scope_ids(db, department_id=department_id, scope_ids=scope_ids)
+    book = PriceBook.load(db)
+    currency = get_billing_currency(db)
+    rows = _filtered_usage_rows(
+        db,
+        start_time=start_time,
+        end_time=None,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        scope_ids=resolved,
+        columns=(TokenUsage.api_key_id, TokenUsage.request_type),
+    )
+    names = {key.id: key.name for key in db.query(ApiKey).all()}
+    groups: dict[tuple, list] = {}
+    for row in rows:
+        if row.api_key_id is not None:
+            slot = ("key", row.api_key_id)
+        elif row.request_type == "studio":
+            slot = ("studio", None)
+        else:
+            slot = ("web", None)
+        groups.setdefault(slot, []).append(row)
+    out = []
+    for (kind, key_id), grouped in groups.items():
+        if kind == "key":
+            label = names.get(key_id) or f"金鑰 #{key_id}"
+        elif kind == "studio":
+            label = "簡報／報告"
+        else:
+            label = "網頁"
+        tokens = sum(int(item.total_tokens or 0) for item in grouped)
+        cost = _bucket_cost(db, grouped, book=book, currency=currency)
+        out.append(
+            {
+                "api_key_id": key_id,
+                "label": label,
+                "total_tokens": tokens,
+                "total_requests": len(grouped),
+                **cost,
+            }
+        )
+    out.sort(key=lambda item: item["total_tokens"], reverse=True)
+    return out
+
+
+def get_usage_by_unit(
+    db: Session,
+    range_key: str = "24h",
+    model_id: int | None = None,
+    user_id: int | None = None,
+    model_type: str | None = None,
+    department_id: int | None = None,
+    scope_ids: list[int] | None = None,
+) -> list[dict]:
+    """每一列是該單位加上所有下層，所以列與列不能相加。"""
+    start_time, _bucket = get_time_range(range_key)
+    resolved = _resolve_scope_ids(db, department_id=department_id, scope_ids=scope_ids)
+    book = PriceBook.load(db)
+    currency = get_billing_currency(db)
+    rows = _filtered_usage_rows(
+        db,
+        start_time=start_time,
+        end_time=None,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        scope_ids=resolved,
+        columns=(TokenUsage.department_id,),
+    )
+    by_dept: dict[int | None, list] = {}
+    for row in rows:
+        by_dept.setdefault(row.department_id, []).append(row)
+    departments = db.query(Department).all()
+    children: dict[int | None, list[int]] = {}
+    for dept in departments:
+        children.setdefault(dept.parent_id, []).append(dept.id)
+
+    def descendants(root: int) -> set[int]:
+        out = {root}
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            for child in children.get(current, []):
+                if child not in out:
+                    out.add(child)
+                    stack.append(child)
+        return out
+
+    result = []
+    for dept in departments:
+        if resolved is not None and dept.id not in resolved:
+            continue
+        grouped = []
+        for dept_id in descendants(dept.id):
+            grouped.extend(by_dept.get(dept_id, []))
+        if not grouped:
+            continue
+        cost = _bucket_cost(db, grouped, book=book, currency=currency)
+        result.append(
+            {
+                "department_id": dept.id,
+                "department_name": dept.name,
+                "label": f"{dept.name}（含下層）",
+                "total_tokens": sum(int(item.total_tokens or 0) for item in grouped),
+                "total_requests": len(grouped),
+                **cost,
+            }
+        )
+    result.sort(key=lambda item: item["total_tokens"], reverse=True)
+    return result
+
+
+def month_usage_for_api_keys(
+    db: Session,
+    key_ids: list[int],
+    now: datetime | None = None,
+) -> dict[int, dict]:
+    """每把金鑰本月用量。沒有列就是 0 token、未計價。"""
+    currency = get_billing_currency(db)
+    empty = {
+        "month_tokens": 0,
+        "month_cost": None,
+        "month_cost_state": "unpriced",
+        "month_cost_currency": currency,
+    }
+    if not key_ids:
+        return {}
+    book = PriceBook.load(db)
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    local = moment.astimezone(_TPE_TZ)
+    start_local = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start_local.month == 12:
+        end_local = start_local.replace(year=start_local.year + 1, month=1)
+    else:
+        end_local = start_local.replace(month=start_local.month + 1)
+    rows = _filtered_usage_rows(
+        db,
+        start_time=start_local.astimezone(timezone.utc),
+        end_time=end_local.astimezone(timezone.utc),
+        api_key_ids=list(key_ids),
+        columns=(TokenUsage.api_key_id,),
+    )
+    grouped: dict[int, list] = {}
+    wanted = set(key_ids)
+    for row in rows:
+        if row.api_key_id in wanted:
+            grouped.setdefault(row.api_key_id, []).append(row)
+    out = {key_id: dict(empty) for key_id in key_ids}
+    for key_id, grouped_rows in grouped.items():
+        cost = _bucket_cost(db, grouped_rows, book=book, currency=currency)
+        out[key_id] = {
+            "month_tokens": sum(int(item.total_tokens or 0) for item in grouped_rows),
+            "month_cost": cost["cost"],
+            "month_cost_state": cost["cost_state"],
+            "month_cost_currency": cost["cost_currency"],
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------

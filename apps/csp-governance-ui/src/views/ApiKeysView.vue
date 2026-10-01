@@ -19,6 +19,7 @@
             <th>允許的模型</th>
             <th style="width: 14%">建立時間</th>
             <th style="width: 14%">最後使用</th>
+            <th style="width: 16%">本月用量</th>
             <th style="width: 8%">狀態</th>
             <th style="width: 14%">操作</th>
           </tr>
@@ -40,6 +41,7 @@
             </td>
             <td class="cell-meta tnum">{{ formatDate(key.created_at) }}</td>
             <td class="cell-meta tnum">{{ key.last_used_at ? formatDate(key.last_used_at) : '從未' }}</td>
+            <td class="cell-meta tnum">{{ formatMonthUsage(key) }}</td>
             <td>
               <TermBadge :variant="key.is_active ? 'ok' : 'danger'" dot>
                 {{ key.is_active ? '使用中' : '已撤銷' }}
@@ -54,7 +56,7 @@
             </td>
           </tr>
           <tr v-if="keysStore.keys.length === 0">
-            <td colspan="7"><TermEmpty v-if="keysStore.loading" message="載入金鑰中…" /><TermEmpty v-else message="尚未建立金鑰。下一步：建立第一把金鑰。" /></td>
+            <td colspan="8"><TermEmpty v-if="keysStore.loading" message="載入金鑰中…" /><TermEmpty v-else message="尚未建立金鑰。下一步：建立第一把金鑰。" /></td>
           </tr>
         </tbody>
       </table>
@@ -157,6 +159,7 @@ import { getMyAllowedModels } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermConfirm } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import { formatDate } from '../utils/formatDate'
+import { formatMonthUsage } from '../utils/pricingDisplay'
 import { extractError } from '../api/errors'
 import {
   ALLOW_LIST_UNREAD,

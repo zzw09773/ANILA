@@ -110,6 +110,7 @@ import {
 } from "./runtime/thinkingSummary.js";
 import { THINKING_STAGE_MARK } from "./runtime/thinkingStages.js";
 import { visibleAskParts } from "./runtime/askTranscript.js";
+import { isQuotaExceededMessage } from "./runtime/quotaNotice.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -1563,26 +1564,29 @@ export const MessageBubble = ({
           );
         };
 
+        const errorNoticeStyle = {
+          marginTop: displayBody ? 10 : 0,
+          padding: "10px 12px",
+          borderRadius: "var(--radius)",
+          border: "1px solid var(--danger)",
+          background: "color-mix(in oklch, var(--danger) 12%, var(--bg))",
+          color: "var(--danger)",
+          fontSize: 14,
+          lineHeight: 1.55,
+        };
+        const quotaExceeded = Boolean(msg.error) && isQuotaExceededMessage(msg.error);
         const messageNotices = (
           <>
-            {!msg.streaming && msg.error && (
-              <div
-                role="alert"
-                data-testid="message-stream-error"
-                style={{
-                  marginTop: displayBody ? 10 : 0,
-                  padding: "10px 12px",
-                  borderRadius: "var(--radius)",
-                  border: "1px solid var(--danger)",
-                  background: "color-mix(in oklch, var(--danger) 12%, var(--bg))",
-                  color: "var(--danger)",
-                  fontSize: 14,
-                  lineHeight: 1.55,
-                }}
-              >
+            {!msg.streaming && msg.error && quotaExceeded ? (
+              <div role="alert" data-testid="quota-exceeded" style={errorNoticeStyle}>
+                <div style={{ fontWeight: 650, marginBottom: 4 }}>用量已達上限</div>
+                <div data-testid="message-stream-error">{msg.error}</div>
+              </div>
+            ) : !msg.streaming && msg.error ? (
+              <div role="alert" data-testid="message-stream-error" style={errorNoticeStyle}>
                 {msg.error}
               </div>
-            )}
+            ) : null}
             {/* The answer streamed fine but never reached the conversation
                 record. Saying nothing here is how a reply gets silently lost:
                 it looks saved right up until the page reloads. */}

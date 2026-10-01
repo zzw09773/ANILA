@@ -152,7 +152,11 @@ def db_engine():
         poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
+    from app.services.quota_service import clear_active_quota_cache
+
+    clear_active_quota_cache()
     yield engine
+    clear_active_quota_cache()
     Base.metadata.drop_all(bind=engine)
 
 

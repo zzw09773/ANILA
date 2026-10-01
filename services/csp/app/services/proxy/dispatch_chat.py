@@ -31,6 +31,7 @@ class DispatchModelCall:
     # 只來自驗過的派工 claims。請求標頭與 body 不能改這兩個值。
     task_id: int | None = None
     conversation_id: int | None = None
+    api_key_id: int | None = None
 
 
 def _dispatch_audience(token: str) -> bool:
@@ -79,6 +80,7 @@ def dispatch_model_call(db: Session, claims: dict) -> DispatchModelCall:
         department_id=_department_id(claims, user),
         task_id=_claim_positive_int(claims, "task_id"),
         conversation_id=_claim_positive_int(claims, "conversation_id"),
+        api_key_id=_claim_positive_int(claims, "api_key_id"),
     )
 
 

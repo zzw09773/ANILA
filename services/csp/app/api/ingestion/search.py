@@ -405,6 +405,19 @@ async def _embed_query(
         db=db,
         caller=user,
     )
+    from app.services.quota_service import enforce_call_quota
+
+    try:
+        enforce_call_quota(
+            db,
+            user_id=user_id,
+            department_id=department_id,
+            api_key_id=None,
+            usage_kind="inference",
+        )
+    except HTTPException:
+        db.commit()
+        raise
     db.commit()
 
     body = {"model": model_name, "input": query}

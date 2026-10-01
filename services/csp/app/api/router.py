@@ -11,6 +11,8 @@ from app.api.models import router as models_router
 from app.api.model_roles import router as model_roles_router
 from app.api.router_models import router as router_models_router
 from app.api.usage import router as usage_router
+from app.api.pricing import router as pricing_router
+from app.api.quotas import router as quotas_router
 from app.api.users import router as users_router
 from app.api.unit_admins import router as unit_admins_router
 from app.api.endpoint_authors import router as endpoint_authors_router
@@ -67,6 +69,8 @@ api_router.include_router(model_roles_router)
 api_router.include_router(models_router)
 api_router.include_router(router_models_router)
 api_router.include_router(usage_router)
+api_router.include_router(pricing_router)
+api_router.include_router(quotas_router)
 api_router.include_router(users_router)
 api_router.include_router(unit_admins_router)
 api_router.include_router(endpoint_authors_router)

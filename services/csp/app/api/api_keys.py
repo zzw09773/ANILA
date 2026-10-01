@@ -17,6 +17,7 @@ from app.services.auth_service import (
     require_interactive_user,
 )
 from app.services.api_key_service import create_api_key
+from app.services.usage_service import month_usage_for_api_keys
 
 router = APIRouter(prefix="/api/keys", tags=["API Key 管理"])
 
@@ -26,7 +27,8 @@ def _reject_deputy_key_change(user: User) -> None:
         raise HTTPException(status_code=403, detail="代理管理員不能變更 API 金鑰")
 
 
-def _build_response(api_key: ApiKey) -> dict:
+def _build_response(api_key: ApiKey, month: dict | None = None) -> dict:
+    month = month or {}
     return {
         "id": api_key.id,
         "user_id": api_key.user_id,
@@ -39,6 +41,10 @@ def _build_response(api_key: ApiKey) -> dict:
         "last_used_at": api_key.last_used_at,
         "allowed_model_ids": [m.id for m in api_key.allowed_models],
         "allowed_model_names": [m.display_name for m in api_key.allowed_models],
+        "month_tokens": int(month.get("month_tokens") or 0),
+        "month_cost": month.get("month_cost"),
+        "month_cost_state": month.get("month_cost_state") or "unpriced",
+        "month_cost_currency": month.get("month_cost_currency"),
     }
 
 
@@ -56,7 +62,8 @@ def list_api_keys(
             .order_by(ApiKey.created_at.desc())
             .all()
         )
-    return [_build_response(k) for k in keys]
+    months = month_usage_for_api_keys(db, [k.id for k in keys])
+    return [_build_response(k, months.get(k.id)) for k in keys]
 
 
 @router.post("", response_model=ApiKeyCreatedResponse)

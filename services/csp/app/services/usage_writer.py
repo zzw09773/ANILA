@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
@@ -9,6 +10,11 @@ from app.database import SessionLocal
 from app.models.token_usage import TokenUsage
 
 logger = logging.getLogger(__name__)
+
+# 呼叫開始的 UTC 時間。排入用量時若沒有明確時間，就用這個，而不是佇列當下。
+_bound_timestamp: ContextVar[datetime | None] = ContextVar(
+    "usage_request_timestamp", default=None
+)
 
 _usage_queue: asyncio.Queue | None = None
 USAGE_BATCH_SIZE = 100
@@ -25,6 +31,35 @@ def get_usage_queue() -> asyncio.Queue:
     if _usage_queue is None:
         _usage_queue = asyncio.Queue()
     return _usage_queue
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def bind_usage_timestamp(value: datetime) -> Token:
+    """把這次上游呼叫的開始時間綁在目前工作上。結束時要 reset。"""
+    return _bound_timestamp.set(_aware_utc(value))
+
+
+def reset_usage_timestamp(token: Token) -> None:
+    try:
+        _bound_timestamp.reset(token)
+    except ValueError:
+        # 取消發生在另一個 context 時，這個 token 不屬於當下這一層。
+        return
+
+
+def resolve_usage_timestamp(explicit: datetime | None = None) -> datetime:
+    """明確時間優先，其次是呼叫開始時綁定的時間，最後才是現在。"""
+    if explicit is not None:
+        return _aware_utc(explicit)
+    bound = _bound_timestamp.get()
+    if bound is not None:
+        return _aware_utc(bound)
+    return datetime.now(timezone.utc)
 
 
 async def enqueue_usage(
@@ -47,6 +82,7 @@ async def enqueue_usage(
     outcome: str = "success",
     model_name_snapshot: str | None = None,
     reasoning_tokens: int | None = None,
+    request_timestamp: datetime | None = None,
 ):
     """Push usage data into the async queue (non-blocking).
 
@@ -74,7 +110,7 @@ async def enqueue_usage(
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
-        "request_timestamp": datetime.now(timezone.utc),
+        "request_timestamp": resolve_usage_timestamp(request_timestamp),
         "request_duration_ms": request_duration_ms,
         "conversation_id": conversation_id,
         "trace_id": trace_id,
@@ -98,7 +134,8 @@ def _is_invocation_conflict(exc: BaseException) -> bool:
 def queue_usage_nowait(item: dict) -> None:
     """Queue one usage row without awaiting. Safe while a stream is closing."""
     payload = dict(item)
-    payload.setdefault("request_timestamp", datetime.now(timezone.utc))
+    if payload.get("request_timestamp") is None:
+        payload["request_timestamp"] = resolve_usage_timestamp()
     get_usage_queue().put_nowait(payload)
 
 
@@ -170,6 +207,18 @@ def _limit_checkout(db, deadline: float) -> None:
             event.remove(bind, "do_connect", listener)
 
 
+def _bump_after_commit(db, rows: list[dict]) -> None:
+    """計數失敗不能把已經 commit 的用量列退回佇列。"""
+    if not rows:
+        return
+    try:
+        from app.services.quota_service import bump_committed_usage
+
+        bump_committed_usage(db, rows)
+    except Exception:
+        logger.warning("用量計數累加失敗", exc_info=True)
+
+
 def _apply_statement_timeout(db, deadline: float | None) -> None:
     """Keep the next statement inside the time still left on ``deadline``."""
     if deadline is None:
@@ -209,6 +258,7 @@ async def _flush_batch(batch: list[dict], *, deadline: float | None = None) -> l
             _apply_statement_timeout(db, deadline)
         db.bulk_insert_mappings(TokenUsage, batch)
         db.commit()
+        _bump_after_commit(db, batch)
         logger.info(f"已寫入 {len(batch)} 筆用量記錄")
         _remember_uncommitted(0)
         return []
@@ -220,6 +270,7 @@ async def _flush_batch(batch: list[dict], *, deadline: float | None = None) -> l
             return list(batch)
         written = 0
         skipped = 0
+        written_rows: list[dict] = []
         pending: list[dict] = []
         for index, item in enumerate(batch):
             if deadline is not None and time.monotonic() >= deadline:
@@ -230,6 +281,7 @@ async def _flush_batch(batch: list[dict], *, deadline: float | None = None) -> l
                 db.add(TokenUsage(**{k: v for k, v in item.items() if hasattr(TokenUsage, k)}))
                 db.commit()
                 written += 1
+                written_rows.append(item)
             except IntegrityError as row_exc:
                 db.rollback()
                 if _is_invocation_conflict(row_exc):
@@ -244,6 +296,7 @@ async def _flush_batch(batch: list[dict], *, deadline: float | None = None) -> l
                 pending.extend(batch[index:])
                 break
         logger.info(f"用量批次含重複 invocation_id：寫入 {written} 筆、略過 {skipped} 筆")
+        _bump_after_commit(db, written_rows)
         _remember_uncommitted(len(pending))
         return pending
     finally:

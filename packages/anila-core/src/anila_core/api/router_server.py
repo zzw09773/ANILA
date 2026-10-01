@@ -5601,6 +5601,9 @@ def _visible_llm_fallback(err: object) -> str:
         return _EMPTY_LENGTH_FALLBACK
     if _is_empty_reply_error(err):
         return _EMPTY_REPLY_FALLBACK
+    # 額度 429 的中文句子要原樣出現。其他上游內文仍然換成固定的無法回應。
+    if isinstance(err, str) and err.startswith("已達"):
+        return err
     return _OUTAGE_FALLBACK
 
 
@@ -6122,7 +6125,12 @@ async def _call_llm_non_stream(
                 _auto_continue_left=_auto_continue_left,
                 _compact_retry=stage + 1,
             )
-        err = f"LLM upstream HTTP {exc.response.status_code}"
+        from anila_core.api.quota_passthrough import quota_exceeded_message
+
+        quota_message = quota_exceeded_message(
+            exc.response.status_code, exc.response.text or ""
+        )
+        err = quota_message or f"LLM upstream HTTP {exc.response.status_code}"
         body_text = exc.response.text[:300] if exc.response.text else ""
         logger.error("%s — body=%s", err, _scrub_diagnostic_value(body_text))
         failure: dict[str, Any] = {
@@ -6349,10 +6357,13 @@ async def _stream_llm_sse(
                     ):
                         yield ev
                     return
+                from anila_core.api.quota_passthrough import quota_exceeded_message
+
+                quota_message = quota_exceeded_message(resp.status_code, detail)
                 http_error: dict[str, Any] = {
                     "type": "error",
-                    "error": f"LLM HTTP {resp.status_code}",
-                    "detail": detail[:300],
+                    "error": quota_message or f"LLM HTTP {resp.status_code}",
+                    "detail": quota_message or detail[:300],
                 }
                 if _reasoning_effort_rejected(resp.status_code, detail):
                     http_error["effort_rejected"] = True
@@ -7664,16 +7675,22 @@ async def _stream_agent_sse(
             _note_reveal_header(resp)
             if resp.status_code >= 400:
                 body = await resp.aread()
+                decoded = body.decode("utf-8", errors="replace")
+                from anila_core.api.quota_passthrough import quota_exceeded_message
+
+                quota_message = quota_exceeded_message(resp.status_code, decoded)
                 # Status only in the user-facing string. The body is
                 # untrusted upstream text (traces, internal URLs) and
                 # belongs in ``detail``, same as an in-band error frame.
+                # 額度 429 例外：那句中文就是要給使用者看的。
                 yield {
                     "type": "error",
-                    "error": (
+                    "error": quota_message
+                    or (
                         f"{_user_agent_noun(agent_id)}暫時無法使用"
                         f"（HTTP {resp.status_code}），請稍後再試。"
                     ),
-                    "detail": body.decode("utf-8", errors="replace")[:300],
+                    "detail": (quota_message or decoded)[:300],
                 }
                 return
 
@@ -8214,6 +8231,10 @@ async def _router_streaming_body(
             continue
         if kind == "error":
             err = ev.get("error", "LLM error")
+            if isinstance(err, str) and err.startswith("已達"):
+                for frame in _router_llm_outage_frames(err):
+                    yield frame
+                return
             length_budget = _is_length_budget_error(err)
             empty_reply = _is_empty_reply_error(err)
             reason_tail, content_tail, stage_events = live_stages.flush()

@@ -1,8 +1,8 @@
 """單位管理員指派綁定（P1.3）。
 
 綁在部門樹節點；權限涵蓋該節點整棵子樹。``users.role`` 與全域角色系統
-不動——本表是獨立 binding。額度分配（SYSTEM-MAP「調整自己單位內的額度
-分配」）刻意遞延至 credit-ledger epic，不在本包。
+不動——本表是獨立 binding。用量額度由管理員設定，單位管理員只能查看
+自己範圍內的額度。
 
 撤銷採 soft revoke（``revoked_at``），與 ``ServiceAccessGrant`` 同風格；
 active pair 用 partial unique index，撤銷後可再指派。每節點最多 3 名

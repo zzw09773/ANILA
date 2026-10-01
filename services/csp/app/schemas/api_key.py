@@ -50,6 +50,10 @@ class ApiKeyResponse(ApiResponseModel):
     last_used_at: datetime | None
     allowed_model_ids: list[int] = []
     allowed_model_names: list[str] = []
+    month_tokens: int = 0
+    month_cost: str | None = None
+    month_cost_state: str = "unpriced"
+    month_cost_currency: str | None = None
 
     model_config = {"from_attributes": True}
 
