@@ -3046,7 +3046,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   async function sendMessage(text, attachments = [], meta = {}) {
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
-      return;
+      return false;
     }
     const { explicitAgents = [] } = meta;
     if (explicitAgents.length > 1) {
@@ -3061,10 +3061,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // ⚠ 但標題會。這一行有自己的釘子:redactionChokePoint 的「Task 標題」
     // (走建議追問,不經過 composer 閘門)+ 突變 `redaction-gate-skipped-before-title`。
     // 走 composer 的測試釘不住它 —— chat.jsx 的閘門會先擋,拿掉這一行照樣全綠。
-    if (!passesRedactionGate(text)) return;
+    if (!passesRedactionGate(text)) return false;
 
     const effectiveTarget = explicitAgents[0] || selectedAgentId;
     const convId = await ensureConversation(text, effectiveTarget);
+    const failSend = () => ({ ok: false, conversationId: convId });
     updateConversationAgent(convId, effectiveTarget);
 
     const bindIds = attachmentBindIds(attachments);
@@ -3073,7 +3074,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         const msg = "附件無法綁定到對話，請重新上傳後再送出";
         setRuntimeError(msg);
         toast(msg, { tone: "error" });
-        return;
+        return failSend();
       }
       try {
         await apiBindAttachments(authRequest, {
@@ -3084,7 +3085,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         const msg = err.message || "附件無法綁定到對話";
         setRuntimeError(msg);
         toast(msg, { tone: "error" });
-        return;
+        return failSend();
       }
     }
 
@@ -3103,11 +3104,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     }
 
-    const oneShotDeep = consumeOneShotDeep();
     const turnModel = effectiveTarget === ROUTER_AGENT.id
       ? (selectedRouterModelName || selectedConv?.routerModelName || null)
       : null;
-    const admittedAttachments = await admissionForTurn(authRequest, attachments, turnModel);
+    let admittedAttachments;
+    try {
+      admittedAttachments = await admissionForTurn(authRequest, attachments, turnModel);
+    } catch (err) {
+      const msg = err?.message || "附件無法確認，這一輪沒有送出";
+      setRuntimeError(msg);
+      toast(msg, { tone: "error" });
+      return failSend();
+    }
+    const oneShotDeep = consumeOneShotDeep();
     const attachmentAdmitted = attachmentAdmissionMap(admittedAttachments);
     const userMsg = {
       id: makeId("u"),
@@ -3276,6 +3285,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     // 排隊登記:在鏈上等著跑的這一輪,「停止產生」按下去時要停得掉。
     const queueRecord = { convId, cancelled: false };
     queuedTurnsRef.current.set(assistantId, queueRecord);
+    // 氣泡已經畫上、但這一輪在開串流前就失敗。回 false 讓輸入框把原文放回來。
+    // 使用者按停止、或敏感資訊扼流，不算這一種。
+    let preDispatchFailed = false;
 
     // 第二段:串流。排隊感在這裡 —— 第二輪要等第一輪跑完才開始,
     // 因為它需要第一輪的答案當上下文。等待期間使用者的文字已經在
@@ -3315,6 +3327,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         }
         if (!reservedHead?.ok) {
           queuedTurnsRef.current.delete(assistantId);
+          if (!reservedHead?.blockedByRedaction) preDispatchFailed = true;
           return;
         }
       } else if (queueRecord.cancelled) {
@@ -3509,6 +3522,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         generateConversationTitle(convId, text, finalText, effectiveTarget);
       }
     });
+    if (preDispatchFailed) return failSend();
   }
 
   // ---- regenerate a single assistant message ----
@@ -4134,7 +4148,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   async function sendCompare(text, attachments = [], meta = {}) {
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
-      return;
+      return false;
     }
     const explicit = (meta.explicitAgents || []).filter(
       (id) => id !== ROUTER_AGENT.id,

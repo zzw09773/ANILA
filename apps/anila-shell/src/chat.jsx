@@ -2354,6 +2354,23 @@ function revokeAttachmentPreview(att) {
   }
 }
 
+// onSend 回 false，或回 { ok: false, conversationId }。後者把這次送出建立的
+// 對話標出來，換到那個對話不算使用者切走。
+function rejectedSend(result) {
+  if (result === false) {
+    return { failed: true, tagged: false, conversationId: undefined };
+  }
+  if (
+    result
+    && typeof result === "object"
+    && result.ok === false
+    && Object.prototype.hasOwnProperty.call(result, "conversationId")
+  ) {
+    return { failed: true, tagged: true, conversationId: result.conversationId };
+  }
+  return { failed: false, tagged: false, conversationId: undefined };
+}
+
 function composerSizeLabel(size) {
   const n = Number(size);
   if (!Number.isFinite(n) || n < 0) return "";
@@ -2430,6 +2447,12 @@ export const Composer = ({
     }
     return initialValue;
   });
+  // 送出的 Promise 可能在下一次 render 前回來。失敗要放回原文時，不能讀到
+  // 已經清掉、但 state 還沒刷上的那一版。
+  const textRef = useRef(text);
+  textRef.current = text;
+  const conversationRef = useRef(conversationId);
+  conversationRef.current = conversationId;
   // 語音輸入。定稿 append 進草稿讓使用者改完再送 —— ASR 不自動送出。
   // setText 用 updater 形式:定稿可能在使用者邊打字時抵達,讀舊 closure 會
   // 蓋掉他剛打的字。disabled(LLM 串流中)對應 anilalm 的 busy。
@@ -2438,6 +2461,8 @@ export const Composer = ({
     busy: !!disabled,
   });
   const [atts, setAtts] = useState([]);
+  const attsRef = useRef(atts);
+  attsRef.current = atts;
   const [uploadError, setUploadError] = useState("");
   const [caret, setCaret] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
@@ -2447,6 +2472,140 @@ export const Composer = ({
   // React may defer the updater, leaving an outer flag stale (N1).
   const liveRefs = useRef(new Set());
   const liveUploadIds = useRef(new Set());
+  const composerAlive = useRef(true);
+  const recoverableSeq = useRef(0);
+  const appliedRestoreToken = useRef(null);
+  const [recoverableDrafts, setRecoverableDrafts] = useState([]);
+  const recoverableRef = useRef(recoverableDrafts);
+  recoverableRef.current = recoverableDrafts;
+  // 還原列跟著對話走。切換時收起，回來還在；只有捨棄或還原掉那一筆才清。
+  const recoverableByConvRef = useRef(new Map());
+  // 送出後先清掉輸入框，失敗才決定放回或收進還原列。這些陣列還握著預覽，
+  // 完成、失敗、換對話、卸載都要找得到，不能等 React 把 state 刷上來。
+  const heldDraftsRef = useRef(new Set());
+  const writeDraftNow = (value) => {
+    const id = conversationRef.current;
+    const key = id != null ? `anila-draft:${id}` : null;
+    if (!key || typeof sessionStorage === "undefined") return;
+    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
+  };
+  const heldMatches = (predicate) => {
+    for (const held of heldDraftsRef.current) {
+      if (held.some(predicate)) return true;
+    }
+    return false;
+  };
+  const patchHeld = (predicate, mapper) => {
+    let changed = false;
+    for (const held of heldDraftsRef.current) {
+      const index = held.findIndex(predicate);
+      if (index < 0) continue;
+      held[index] = mapper(held[index]);
+      changed = true;
+    }
+    if (changed && recoverableRef.current.length > 0) {
+      publishRecoverable(recoverableRef.current.slice());
+    }
+    return changed;
+  };
+  const dropHeld = (predicate) => {
+    const dropped = [];
+    for (const held of heldDraftsRef.current) {
+      for (let index = held.length - 1; index >= 0; index -= 1) {
+        if (!predicate(held[index])) continue;
+        dropped.push(held[index]);
+        held.splice(index, 1);
+      }
+    }
+    dropped.forEach(revokeAttachmentPreview);
+    if (dropped.length && recoverableRef.current.length > 0) {
+      publishRecoverable(recoverableRef.current.slice());
+    }
+    return dropped;
+  };
+  const armAttachments = (items) => {
+    for (const att of items || []) {
+      if (att.uploading && att.uploadId) liveUploadIds.current.add(att.uploadId);
+      if (att.referenceId) liveRefs.current.add(att.referenceId);
+    }
+  };
+  const publishRecoverable = (drafts) => {
+    recoverableRef.current = drafts;
+    recoverableByConvRef.current.set(String(conversationRef.current ?? ""), drafts);
+    setRecoverableDrafts(drafts);
+  };
+  const retainRecoverable = (snapshot) => {
+    const parkedAtts = snapshot.atts || [];
+    if (parkedAtts.length) heldDraftsRef.current.add(parkedAtts);
+    const entry = {
+      id: `recover-${++recoverableSeq.current}`,
+      text: snapshot.text || "",
+      atts: parkedAtts,
+    };
+    publishRecoverable([...recoverableRef.current, entry]);
+  };
+  const discardRecoverable = (id) => {
+    const chosen = recoverableRef.current.find((item) => item.id === id);
+    if (!chosen) return;
+    if (chosen.atts) {
+      heldDraftsRef.current.delete(chosen.atts);
+      for (const att of chosen.atts) {
+        if (att.uploadId) liveUploadIds.current.delete(att.uploadId);
+        if (att.referenceId) liveRefs.current.delete(att.referenceId);
+        revokeAttachmentPreview(att);
+      }
+    }
+    publishRecoverable(recoverableRef.current.filter((item) => item.id !== id));
+  };
+  const restoreRecoverable = (id) => {
+    const chosen = recoverableRef.current.find((item) => item.id === id);
+    if (!chosen) return;
+    const currentText = textRef.current || "";
+    const currentAtts = attsRef.current || [];
+    const hasCurrent = Boolean(currentText.trim()) || currentAtts.length > 0;
+    const remaining = recoverableRef.current.filter((item) => item.id !== id);
+    let next = remaining;
+    if (hasCurrent) {
+      const parkedAtts = currentAtts.map((att) => ({ ...att }));
+      if (parkedAtts.length) heldDraftsRef.current.add(parkedAtts);
+      next = [...remaining, {
+        id: `recover-${++recoverableSeq.current}`,
+        text: currentText,
+        atts: parkedAtts,
+      }];
+    }
+    if (chosen.atts) heldDraftsRef.current.delete(chosen.atts);
+    armAttachments(chosen.atts);
+    const restoredAtts = chosen.atts?.length ? chosen.atts : [];
+    attsRef.current = restoredAtts;
+    setAtts(restoredAtts);
+    const restoredText = chosen.text || "";
+    textRef.current = restoredText;
+    setText(restoredText);
+    writeDraftNow(restoredText);
+    publishRecoverable(next);
+  };
+  useEffect(() => {
+    composerAlive.current = true;
+    return () => {
+      composerAlive.current = false;
+      for (const held of heldDraftsRef.current) {
+        held.forEach(revokeAttachmentPreview);
+      }
+      heldDraftsRef.current.clear();
+    };
+  }, []);
+  const seenConversation = useRef(conversationId);
+  useEffect(() => {
+    if (seenConversation.current === conversationId) return;
+    const previousId = seenConversation.current;
+    seenConversation.current = conversationId;
+    recoverableByConvRef.current.set(String(previousId ?? ""), recoverableRef.current);
+    const next = recoverableByConvRef.current.get(String(conversationId ?? "")) || [];
+    recoverableRef.current = next;
+    setRecoverableDrafts(next);
+  }, [conversationId]);
   useEffect(() => {
     const ref = queuedAttachment?.referenceId || queuedAttachment?.reference_id;
     if (!ref) return;
@@ -2510,9 +2669,20 @@ export const Composer = ({
   }, [mentionQuery, mentionCandidates.length]);
 
   // Per-chat draft:切換對話時載入該對話的草稿(打到一半的長報告不會遺失)。
+  const draftKeyWas = useRef(draftKey);
   useEffect(() => {
+    const previous = draftKeyWas.current;
+    draftKeyWas.current = draftKey;
     if (!draftKey || typeof sessionStorage === "undefined") return;
-    setText(sessionStorage.getItem(draftKey) || "");
+    const stored = sessionStorage.getItem(draftKey);
+    // 新對話是上傳當下才建出來的。這個鍵還是空的，不能把正在打的字清成空白。
+    if (previous == null && !stored && (textRef.current || "").length > 0) {
+      sessionStorage.setItem(draftKey, textRef.current);
+      return;
+    }
+    const next = stored || "";
+    textRef.current = next;
+    setText(next);
     // 切換對話只在 conversationId 變動時觸發,故僅依賴 draftKey。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
@@ -2526,10 +2696,24 @@ export const Composer = ({
     ) {
       return;
     }
-    setText(restoredDraft.text);
-    if (draftKey && typeof sessionStorage !== "undefined" && restoredDraft.text) {
-      sessionStorage.setItem(draftKey, restoredDraft.text);
+    // 同一個 token 只處理一次。StrictMode 會把 effect 跑兩次，第二次不能
+    // 把剛剛放回的原文又收成一筆還原。
+    const token = restoredDraft.token
+      || `${restoredDraft.conversationId ?? ""}:${restoredDraft.text}`;
+    if (appliedRestoreToken.current === token) return;
+    appliedRestoreToken.current = token;
+    const incoming = restoredDraft.text;
+    const current = textRef.current || "";
+    const hasAtts = attsRef.current.length > 0;
+    if (!current.trim() && !hasAtts) {
+      textRef.current = incoming;
+      setText(incoming);
+      if (incoming) writeDraftNow(incoming);
+      return;
     }
+    // 串流期間已經打了新草稿。不要蓋掉，也不要把兩份接在一起。
+    if (current === incoming && !hasAtts) return;
+    retainRecoverable({ text: incoming, atts: [] });
   }, [restoredDraft, conversationId, draftKey]);
 
   // 草稿存檔:text 變動時 debounce 寫回 sessionStorage(空字串則清掉)。
@@ -2640,17 +2824,80 @@ export const Composer = ({
     return true;
   };
 
+  // 檔案還在上傳就沒有 referenceId。這時送出只會交出土塊，綁定與組內容都拿不到檔。
+  // 抽取輪詢已經有 reference，不在這裡擋。
+  const uploadBlocksSend = atts.some((att) => att.uploading);
+  const UPLOAD_BLOCKED_LABEL = "附件上傳中，完成後才能送出";
+
   const submit = () => {
-    const v = text.trim();
-    if (!v && atts.length === 0) return;
-    if (!passesRedactionGate(piiHits)) return;
-    onSend(v, atts, { explicitAgents: mentionParse.explicitAgents });
+    const raw = textRef.current || "";
+    const v = raw.trim();
+    const currentAtts = attsRef.current;
+    if (!v && currentAtts.length === 0) return;
+    if (currentAtts.some((att) => att.uploading)) return;
+    if (!passesRedactionGate(detectPII(raw))) return;
+    // 跟送出去的是同一批物件的複本。晚到的上傳完成只更新複本，不會把
+    // referenceId 補進已經交出去的那一次。
+    const snapshotAtts = currentAtts.map((att) => ({ ...att }));
+    let outcome;
+    try {
+      outcome = onSend(v, snapshotAtts, { explicitAgents: mentionParse.explicitAgents });
+    } catch {
+      return;
+    }
+    // 同步的 false（或帶著對話 id 的失敗）代表根本沒送成，輸入框維持原樣。
+    const immediate = rejectedSend(outcome);
+    const pending = outcome && typeof outcome.then === "function";
+    if (immediate.failed && !pending) return;
+    const sendConversation = conversationId;
+    for (const att of snapshotAtts) {
+      if (att.uploadId) liveUploadIds.current.delete(att.uploadId);
+      if (att.referenceId) liveRefs.current.delete(att.referenceId);
+    }
+    heldDraftsRef.current.add(snapshotAtts);
+    textRef.current = "";
+    attsRef.current = [];
     setText("");
-    liveRefs.current.clear();
-    liveUploadIds.current.clear();
     setAtts([]);
     if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
-    atts.forEach(revokeAttachmentPreview);
+    // onSend 回 false（或拒絕）代表這一輪沒送成。框是空的就放回原文與附件；
+    // 使用者已經打了新內容就整份收起來，用「還原未送出的訊息」換，不把兩份接在一起。
+    // 失敗若帶著這次送出建立的對話 id，選到那個對話不算使用者換走。
+    const finish = (result) => {
+      if (!composerAlive.current) return;
+      const failure = rejectedSend(result);
+      const current = String(conversationRef.current ?? "");
+      const started = String(sendConversation ?? "");
+      const owned = failure.tagged ? String(failure.conversationId ?? "") : null;
+      const sameConversation = current === started || (owned != null && current === owned);
+      if (!sameConversation) {
+        heldDraftsRef.current.delete(snapshotAtts);
+        snapshotAtts.forEach(revokeAttachmentPreview);
+        return;
+      }
+      if (!failure.failed) {
+        heldDraftsRef.current.delete(snapshotAtts);
+        snapshotAtts.forEach(revokeAttachmentPreview);
+        return;
+      }
+      const hasNewer = Boolean((textRef.current || "").trim()) || attsRef.current.length > 0;
+      if (!hasNewer) {
+        heldDraftsRef.current.delete(snapshotAtts);
+        textRef.current = v;
+        setText(v);
+        writeDraftNow(v);
+        armAttachments(snapshotAtts);
+        attsRef.current = snapshotAtts;
+        setAtts(snapshotAtts);
+        return;
+      }
+      retainRecoverable({ text: v, atts: snapshotAtts });
+    };
+    if (outcome && typeof outcome.then === "function") {
+      outcome.then(finish, () => finish(false));
+      return;
+    }
+    finish(outcome);
     // 清空後縮回一行由 text 的 layout effect 負責,不需要再補一次。
   };
 
@@ -2735,6 +2982,7 @@ export const Composer = ({
     // Upload every file without waiting on any extraction poll. Each file's
     // poll runs independently and lands on its chip by referenceId.
     await Promise.all(batch.map(async ({ uploadId, file }) => {
+      const uploadPred = (item) => item.uploadId === uploadId;
       try {
         // Read image bytes as data URL so the LLM can be given the image
         // inline (OpenAI vision format). Skipped for non-images to keep
@@ -2749,35 +2997,41 @@ export const Composer = ({
           });
         }
         const result = await onUpload(file);
-        if (!liveUploadIds.current.has(uploadId)) return;
+        // 送出後 live id 會拿掉。失敗的那一份還握在手上時，完成結果要補進去，
+        // 還原才不會停在「上傳中」。
+        const inLive = liveUploadIds.current.has(uploadId);
+        if (!inLive && !heldMatches(uploadPred)) return;
         const referenceId = result.reference_id;
-        if (referenceId) liveRefs.current.add(referenceId);
-        liveUploadIds.current.delete(uploadId);
-        setAtts((list) =>
-          list.map((a) => {
-            if (a.uploadId !== uploadId) return a;
-            if (dataUrl && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-            return {
-              uploadId,
-              name: result.filename || file.name,
-              kind: (result.content_type || file.type || "").startsWith("image/") ? "image" : "file",
-              size: result.size_bytes || file.size,
-              referenceId,
-              contentType: result.content_type,
-              dataUrl,
-              previewUrl: dataUrl ? null : a.previewUrl,
-              uploading: false,
-              // Upload returns pending; poll below for the real outcome.
-              extractStatus: result.extract_status || "pending",
-              extractPolling: Boolean(onFetchAttachmentMeta && referenceId),
-              extractUncertain: false,
-              extractReason: null,
-              budgetAdmitted: typeof result.budget_admitted === "boolean"
-                ? result.budget_admitted
-                : null,
-            };
-          }),
-        );
+        if (inLive) {
+          if (referenceId) liveRefs.current.add(referenceId);
+          liveUploadIds.current.delete(uploadId);
+        }
+        const toReady = (item) => {
+          if (dataUrl && item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+          return {
+            uploadId,
+            name: result.filename || file.name,
+            kind: (result.content_type || file.type || "").startsWith("image/") ? "image" : "file",
+            size: result.size_bytes || file.size,
+            referenceId,
+            contentType: result.content_type,
+            dataUrl,
+            previewUrl: dataUrl ? null : item.previewUrl,
+            uploading: false,
+            // Upload returns pending; poll below for the real outcome.
+            extractStatus: result.extract_status || "pending",
+            extractPolling: Boolean(onFetchAttachmentMeta && referenceId),
+            extractUncertain: false,
+            extractReason: null,
+            budgetAdmitted: typeof result.budget_admitted === "boolean"
+              ? result.budget_admitted
+              : null,
+          };
+        };
+        if (inLive) {
+          setAtts((list) => list.map((item) => (uploadPred(item) ? toReady(item) : item)));
+        }
+        patchHeld(uploadPred, toReady);
 
         if (!onFetchAttachmentMeta || !referenceId) return;
 
@@ -2788,20 +3042,20 @@ export const Composer = ({
         );
         // Timeout / unresolved: stay quiet — never invent a failure.
         // Chip must remain visibly uncertain (not look like confirmed ok).
+        const refPred = (item) => item.referenceId === referenceId;
         if (outcome.timedOut) {
-          if (!liveRefs.current.has(referenceId)) return;
-          setAtts((list) =>
-            list.map((a) =>
-              a.referenceId === referenceId
-                ? {
-                    ...a,
-                    extractPolling: false,
-                    extractUncertain: true,
-                    extractStatus: a.extractStatus || "pending",
-                  }
-                : a,
-            ),
-          );
+          const stillLive = liveRefs.current.has(referenceId);
+          if (!stillLive && !heldMatches(refPred)) return;
+          const markUncertain = (item) => ({
+            ...item,
+            extractPolling: false,
+            extractUncertain: true,
+            extractStatus: item.extractStatus || "pending",
+          });
+          if (stillLive) {
+            setAtts((list) => list.map((item) => (refPred(item) ? markUncertain(item) : item)));
+          }
+          patchHeld(refPred, markUncertain);
           return;
         }
 
@@ -2815,21 +3069,21 @@ export const Composer = ({
           dataUrl,
         });
         // Gate on the sync Set — never read liveness out of a setAtts updater.
-        if (!liveRefs.current.has(referenceId)) return;
-        setAtts((list) =>
-          list.map((a) =>
-            a.referenceId === referenceId
-              ? {
-                  ...a,
-                  extractStatus: outcome.status,
-                  extractPolling: false,
-                  extractUncertain: false,
-                  extractReason: reason,
-                  budgetAdmitted: outcome.budgetAdmitted,
-                }
-              : a,
-          ),
-        );
+        // 收在還原列裡的那一份也要更新，否則換回來仍是送出當下的狀態。
+        const stillLive = liveRefs.current.has(referenceId);
+        if (!stillLive && !heldMatches(refPred)) return;
+        const markOutcome = (item) => ({
+          ...item,
+          extractStatus: outcome.status,
+          extractPolling: false,
+          extractUncertain: false,
+          extractReason: reason,
+          budgetAdmitted: outcome.budgetAdmitted,
+        });
+        if (stillLive) {
+          setAtts((list) => list.map((item) => (refPred(item) ? markOutcome(item) : item)));
+        }
+        patchHeld(refPred, markOutcome);
         // Banner only if this attachment is still live (not removed / sent).
         // Inline image path (dataUrl) delivers the file to the model regardless
         // of extract_status — never accuse those of failure.
@@ -2847,10 +3101,11 @@ export const Composer = ({
       } catch (error) {
         liveUploadIds.current.delete(uploadId);
         setUploadError(error?.message || `${file.name} 上傳失敗`);
+        const dropped = dropHeld(uploadPred);
         setAtts((list) => {
-          const doomed = list.find((a) => a.uploadId === uploadId);
-          revokeAttachmentPreview(doomed);
-          return list.filter((a) => a.uploadId !== uploadId);
+          const doomed = list.find(uploadPred);
+          if (doomed && !dropped.includes(doomed)) revokeAttachmentPreview(doomed);
+          return list.filter((item) => !uploadPred(item));
         });
       }
     }));
@@ -2895,6 +3150,79 @@ export const Composer = ({
         </div>
       )}
       <RedactionHint hits={piiHits} mode={mode} onChangeMode={setMode} />
+
+      {recoverableDrafts.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 12px 0" }}>
+          <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.4 }}>
+            目前的草稿會留著。還原後會先把它收起來，還可以再換回來。
+          </div>
+          {recoverableDrafts.map((draft) => (
+            <div
+              key={draft.id}
+              data-testid="recoverable-draft"
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 6px 4px 8px",
+                background: "var(--bg-subtle)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                fontSize: 11,
+                color: "var(--fg)",
+              }}
+            >
+              <span style={{
+                flex: "1 1 140px",
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              >
+                {draft.text || "（沒有文字）"}
+              </span>
+              {draft.atts.map((att, index) => (
+                <span
+                  key={att.uploadId || att.referenceId || `${draft.id}-${index}`}
+                  style={{ fontFamily: "var(--font-mono)", color: "var(--fg-subtle)" }}
+                >
+                  {att.name}
+                </span>
+              ))}
+              <button
+                type="button"
+                onClick={() => restoreRecoverable(draft.id)}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  color: "var(--fg)",
+                  borderRadius: 999,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+              >
+                還原未送出的訊息
+              </button>
+              <button
+                type="button"
+                onClick={() => discardRecoverable(draft.id)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--fg-subtle)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+              >
+                捨棄
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {mentionParse.explicitAgents.length > 0 && (
         <div style={{
@@ -3211,26 +3539,18 @@ export const Composer = ({
                     type="button"
                     onClick={() => {
                       setPromptsOpen(false);
-                      // autosend:直接送出;否則填入輸入框讓使用者編輯。
+                      // autosend 走 submit：上傳中不送、附件一起帶、失敗才決定
+                      // 清掉還是放回。被閘門擋下時範本要留在輸入框，提示列才出得來。
                       if (p.config?.autosend && body.trim()) {
-                        const bodyHits = detectPII(body);
-                        // ⚠ 被閘門擋下來時,把範本內容**放進輸入框**,不要什麼都
-                        // 不留。原本只跳一個 toast:輸入框是空的、提示列不存在
-                        // (它要草稿裡有個資才出現)、模式按鈕自然也不在,而 toast
-                        // 卻叫使用者「去提示列切換」或「清掉再送」—— 兩條路當下
-                        // 都不存在,等於把人鎖在門外還給他一把假鑰匙。放進輸入框
-                        // 之後提示列連同模式按鈕會立刻出現,「清掉再送」也才成立。
-                        if (!passesRedactionGate(bodyHits)) {
-                          setText(body);
-                          setTimeout(() => { taRef.current?.focus(); }, 0);
-                          return;
-                        }
-                        onSend(body, [], { explicitAgents: mentionParse.explicitAgents });
-                        setText("");
-                      } else {
+                        if (attsRef.current.some((att) => att.uploading)) return;
+                        textRef.current = body;
                         setText(body);
-                        setTimeout(() => { taRef.current?.focus(); }, 0);
+                        submit();
+                        return;
                       }
+                      textRef.current = body;
+                      setText(body);
+                      setTimeout(() => { taRef.current?.focus(); }, 0);
                     }}
                     style={{
                       display: "block", width: "100%", textAlign: "left",
@@ -3260,7 +3580,11 @@ export const Composer = ({
             ref={taRef}
             aria-label="傳訊息給 ANILA"
             value={text}
-            onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
+            onChange={(e) => {
+              textRef.current = e.target.value;
+              setText(e.target.value);
+              setCaret(e.target.selectionStart || 0);
+            }}
             onKeyUp={updateCaret}
             onClick={updateCaret}
             onSelect={updateCaret}
@@ -3369,7 +3693,11 @@ export const Composer = ({
             <IconStop size={15} />
           </button>
         ) : (
-          <span ref={sendWrapRef} style={{ position: "relative", display: "inline-flex" }}>
+          <span
+            ref={sendWrapRef}
+            title={uploadBlocksSend ? UPLOAD_BLOCKED_LABEL : undefined}
+            style={{ position: "relative", display: "inline-flex" }}
+          >
           <button
             onClick={(event) => {
               if (longPressFiredRef.current) {
@@ -3397,15 +3725,16 @@ export const Composer = ({
             onPointerUp={() => window.clearTimeout(longPressTimerRef.current)}
             onPointerCancel={() => window.clearTimeout(longPressTimerRef.current)}
             onPointerLeave={() => window.clearTimeout(longPressTimerRef.current)}
-            aria-label="送出"
-            disabled={disabled || (!text.trim() && atts.length === 0)}
+            aria-label={uploadBlocksSend ? UPLOAD_BLOCKED_LABEL : "送出"}
+            title={uploadBlocksSend ? UPLOAD_BLOCKED_LABEL : undefined}
+            disabled={disabled || uploadBlocksSend || (!text.trim() && atts.length === 0)}
             style={{
               display: "inline-flex", alignItems: "center", justifyContent: "center",
               width: 32, height: 32,
-              background: (text.trim() || atts.length) ? "var(--accent)" : "var(--bg-subtle)",
-              color: (text.trim() || atts.length) ? "var(--accent-fg)" : "var(--fg-subtle)",
+              background: (!uploadBlocksSend && (text.trim() || atts.length)) ? "var(--accent)" : "var(--bg-subtle)",
+              color: (!uploadBlocksSend && (text.trim() || atts.length)) ? "var(--accent-fg)" : "var(--fg-subtle)",
               border: "none", borderRadius: "var(--radius)",
-              cursor: (text.trim() || atts.length) ? "pointer" : "not-allowed",
+              cursor: (!uploadBlocksSend && (text.trim() || atts.length)) ? "pointer" : "not-allowed",
               marginLeft: 4,
             }}
           >
