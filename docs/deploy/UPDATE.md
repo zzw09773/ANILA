@@ -30,11 +30,14 @@ sudo tar -xzf anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
 sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 ```
 
-之後同一支腳本已複製到 `/opt/anila/anila-update.sh`，傳目錄或壓縮檔都可以：
+之後每次更新，一樣先解開新包，**執行新包裡附的腳本**：
 
 ```bash
-sudo bash /opt/anila/anila-update.sh anila-YYYY.MM.DD-N.tar.gz
+sudo tar -xzf anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 ```
+
+不要用 `/opt/anila/anila-update.sh`（上一版留下的那支）來跑：整個更新會由舊腳本執行，新包對更新流程本身的修正要到下一次才生效（2026-10-01 演練：照舊腳本跑會重撞已修好的問題）。更新前先在治理中心貼公告；同仁登入後會看到。
 
 腳本依序做這些事：
 
