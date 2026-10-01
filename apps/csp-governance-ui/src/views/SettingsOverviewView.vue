@@ -23,6 +23,52 @@
       </div>
     </TermBox>
 
+    <TermBox title="搬到另一套環境" hint="金鑰不會寫進檔案。匯入先試算，確認後才套用。">
+      <div class="settings-transfer">
+        <p class="cell-meta">
+          信任主機、模型、角色、全院授權、外部服務、部門與生效中的公告可以存成檔案。
+          還沒有金鑰的項目會先建立，並標成要另外填入金鑰。
+          平台嵌入模型要在端點可連線時於「模型角色」指定，這裡不會代替連線量測。
+        </p>
+        <div class="setting-editor__actions">
+          <TermButton
+            variant="primary"
+            :loading="exportBusy"
+            label="匯出設定"
+            @click="handleExport"
+          />
+          <TermButton
+            variant="ghost"
+            label="匯入設定"
+            @click="pickImportFile"
+          />
+          <TermButton
+            variant="primary"
+            :disabled="!importPlan || importBusy"
+            :loading="importBusy"
+            label="套用"
+            @click="handleApply"
+          />
+          <input
+            ref="importInput"
+            type="file"
+            accept="application/json,.json"
+            class="settings-transfer__file"
+            aria-label="選擇設定檔"
+            @change="onImportFile"
+          />
+        </div>
+        <p v-if="importError" class="setting-error" role="alert">{{ importError }}</p>
+        <p v-if="importNotice" class="setting-notice setting-notice--ok" role="status">{{ importNotice }}</p>
+        <ul v-if="importPlan" class="settings-transfer__plan">
+          <li v-for="(item, index) in importPlan.items" :key="`${item.entity}-${item.key}-${index}`">
+            {{ formatPlanItem(item) }}
+          </li>
+          <li v-if="!importPlan.items.length">這份設定沒有可匯入的項目。</li>
+        </ul>
+      </div>
+    </TermBox>
+
     <PageState
       :loading="state === 'loading'"
       :error="state === 'failed' ? (loadError || overviewStateMessage('failed')) : ''"
@@ -158,6 +204,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { getPlatformSettingsOverview, updatePlatformSetting } from '../api/platformSettings'
+import { exportSettings, importSettings } from '../api/settingsTransfer'
+import { downloadSettingsFile, formatPlanItem } from '../utils/settingsTransfer'
 import { emergencyRotateJwtSigningKey, JWT_EMERGENCY_CONFIRM } from '../api/jwtKeyring'
 import { useDialog } from '../composables/useDialog'
 import { TermBox, TermButton, TermEmpty, PageHead, PageState } from '../components/cli'
@@ -191,6 +239,13 @@ const saving = ref({})
 const emergencyBusy = ref(false)
 const emergencyNotice = ref('')
 const emergencyError = ref('')
+const exportBusy = ref(false)
+const importBusy = ref(false)
+const importError = ref('')
+const importNotice = ref('')
+const importPlan = ref(null)
+const importDocument = ref(null)
+const importInput = ref(null)
 const { confirm } = useDialog()
 
 const state = computed(() => overviewState({ loaded: loaded.value, error: loadError.value, items: items.value }))
@@ -236,6 +291,67 @@ async function load() {
 }
 
 onMounted(load)
+
+function pickImportFile() {
+  importInput.value?.click()
+}
+
+async function handleExport() {
+  exportBusy.value = true
+  importError.value = ''
+  try {
+    const { data } = await exportSettings()
+    downloadSettingsFile(data)
+    importNotice.value = '已下載設定檔。金鑰不在檔案裡。'
+  } catch (error) {
+    importError.value = extractDetail(error, '匯出設定失敗')
+  } finally {
+    exportBusy.value = false
+  }
+}
+
+async function onImportFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  importNotice.value = ''
+  importError.value = ''
+  importPlan.value = null
+  importDocument.value = null
+  if (!file) return
+  let parsed
+  try {
+    parsed = JSON.parse(await file.text())
+  } catch {
+    importError.value = '檔案不是 JSON'
+    return
+  }
+  importBusy.value = true
+  try {
+    const { data } = await importSettings(parsed, { dryRun: true })
+    importDocument.value = parsed
+    importPlan.value = data
+  } catch (error) {
+    importError.value = extractDetail(error, '試算失敗')
+  } finally {
+    importBusy.value = false
+  }
+}
+
+async function handleApply() {
+  if (!importDocument.value) return
+  importBusy.value = true
+  importError.value = ''
+  importNotice.value = ''
+  try {
+    const { data } = await importSettings(importDocument.value, { dryRun: false })
+    importPlan.value = data
+    importNotice.value = '已套用。需要金鑰的項目請到對應頁面另外填入。'
+  } catch (error) {
+    importError.value = extractDetail(error, '套用失敗')
+  } finally {
+    importBusy.value = false
+  }
+}
 
 async function handleEmergencyRotate() {
   const ok = await confirm({
@@ -288,6 +404,20 @@ async function handleSave(item) {
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .settings-region { display: flex; flex-direction: column; gap: var(--gap-4); min-width: 0; }
 .settings-emergency { display: flex; flex-direction: column; gap: var(--gap-2); padding: var(--gap-3); }
+.settings-transfer { display: flex; flex-direction: column; gap: var(--gap-2); padding: var(--gap-3); }
+.settings-transfer__file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.settings-transfer__plan { margin: 0; padding-left: 1.2rem; font-size: var(--t-sm); }
+.settings-transfer__plan li { margin: 2px 0; }
 .cell-strong { color: var(--c-fg-1); font-weight: 600; font-size: var(--t-sm); line-height: var(--lh-tight); overflow-wrap: anywhere; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); overflow-wrap: anywhere; }
 .cell-meta--key { font-family: var(--font-mono); margin-top: 2px; }

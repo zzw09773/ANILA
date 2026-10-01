@@ -49,6 +49,7 @@ from app.api.admin import (
     feedback_router,
     health_overview_router,
     platform_release_router,
+    settings_transfer_router,
 )
 from app.modules.policy import router as policy_decisions_router
 from app.modules.tasks import router as tasks_router
@@ -110,3 +111,4 @@ api_router.include_router(feedback_router)
 api_router.include_router(backup_status_router)
 api_router.include_router(capacity_router)
 api_router.include_router(platform_release_router)
+api_router.include_router(settings_transfer_router)

@@ -388,6 +388,7 @@ def update_service(
     openai_model: str | None,
     actor: User,
     ip_address: str | None,
+    commit: bool = True,
 ) -> ExternalService:
     if service_key not in SERVICE_KEYS:
         raise KeyError(service_key)
@@ -437,10 +438,13 @@ def update_service(
         ),
         ip_address=ip_address,
     )
-    db.commit()
-    db.refresh(row)
-    if service_key == DOCUMENT_PARSER:
-        invalidate_docling_source_cache()
+    if commit:
+        db.commit()
+        db.refresh(row)
+        if service_key == DOCUMENT_PARSER:
+            invalidate_docling_source_cache()
+    else:
+        db.flush()
     return row
 
 

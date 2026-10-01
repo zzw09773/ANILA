@@ -10,6 +10,7 @@ from app.api.admin.capacity import router as capacity_router
 from app.api.admin.health_overview import router as health_overview_router
 from app.api.admin.feedback import router as feedback_router
 from app.api.admin.platform_release import router as platform_release_router
+from app.api.admin.settings_transfer import router as settings_transfer_router
 
 __all__ = [
     "backup_status_router",
@@ -17,4 +18,5 @@ __all__ = [
     "health_overview_router",
     "feedback_router",
     "platform_release_router",
+    "settings_transfer_router",
 ]

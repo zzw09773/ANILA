@@ -53,6 +53,7 @@ import ipaddress
 import logging
 import os
 import socket
+from contextvars import ContextVar, Token
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -189,6 +190,25 @@ def _env_trusted_hosts() -> set[str]:
 # trusted-host set is the union of env + every provider.
 _trusted_host_providers: list[Callable[[], set[str]]] = []
 
+# Hosts trusted only for the current request (settings import previews a
+# file before those rows exist). Context-local so two concurrent imports
+# never see each other's hosts. Distinct from the process-global providers.
+_request_trusted_hosts: ContextVar[frozenset[str]] = ContextVar(
+    "anila_request_trusted_hosts",
+    default=frozenset(),
+)
+
+
+def push_request_trusted_hosts(hosts: set[str]) -> Token[frozenset[str]]:
+    """Add hosts for this context only. Caller must reset the returned token."""
+    extra = {host.strip().lower() for host in hosts if host and str(host).strip()}
+    merged = frozenset(set(_request_trusted_hosts.get()) | extra)
+    return _request_trusted_hosts.set(merged)
+
+
+def reset_request_trusted_hosts(token: Token[frozenset[str]]) -> None:
+    _request_trusted_hosts.reset(token)
+
 
 def register_trusted_host_provider(fn: Callable[[], set[str]]) -> None:
     """Register a callable that returns extra trusted hostnames at call time.
@@ -226,7 +246,7 @@ def _host_is_trusted(host: str) -> bool:
 
 
 def _trusted_hosts() -> set[str]:
-    result = _env_trusted_hosts()
+    result = _env_trusted_hosts() | set(_request_trusted_hosts.get())
     for provider in _trusted_host_providers:
         try:
             extra = provider()

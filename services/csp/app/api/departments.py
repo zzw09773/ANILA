@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +24,11 @@ from app.services.department_tree import (
 )
 
 router = APIRouter(prefix="/api/departments", tags=["部門管理"])
+
+
+def _commit_by_default() -> bool:
+    """HTTP 呼叫一律提交。同一行程直接呼叫時可傳 commit=False。"""
+    return True
 
 
 # 院內編制的層級稱呼，用來把「超過 N 層」翻成操作者看得懂的話。
@@ -237,6 +244,7 @@ def create_department(
     request: DepartmentCreate,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
+    commit: Annotated[bool, Depends(_commit_by_default)] = True,
 ):
     if request.parent_id is not None:
         acquire_dept_tree_lock(db)
@@ -245,7 +253,10 @@ def create_department(
     _ensure_unique_name(db, request.name, request.parent_id)
     dept = Department(**request.model_dump())
     db.add(dept)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     log_audit_event(
         db,
         actor=admin,
@@ -253,7 +264,7 @@ def create_department(
         resource_type="department",
         resource_id=dept.id,
         detail=f"建立部門「{dept.name}」",
-        commit=True,
+        commit=commit,
     )
     return _get_serialized_department(db, dept.id)
 
@@ -264,6 +275,7 @@ def update_department(
     request: DepartmentUpdate,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
+    commit: Annotated[bool, Depends(_commit_by_default)] = True,
 ):
     dept = db.query(Department).filter(Department.id == department_id).first()
     if not dept:
@@ -304,7 +316,10 @@ def update_department(
     if update_data.get("is_active") is False:
         _deactivate_department(db, dept)
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     audit_detail = f"更新部門「{dept.name}」"
     if "parent_id" in update_data:
         audit_detail += (
@@ -318,7 +333,7 @@ def update_department(
         resource_type="department",
         resource_id=dept.id,
         detail=audit_detail,
-        commit=True,
+        commit=commit,
     )
     return _get_serialized_department(db, dept.id)
 

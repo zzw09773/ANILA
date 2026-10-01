@@ -120,6 +120,7 @@ def add_host(
     host: str,
     note: str | None,
     actor: User,
+    commit: bool = True,
 ) -> TrustedHost:
     """Insert a host. Idempotent on the unique ``host`` column —
     duplicates return the existing row (200-like UX) so backfill from
@@ -139,8 +140,20 @@ def add_host(
         # Update note if the caller supplied one; idempotent-with-refresh.
         if note is not None and note != existing.note:
             existing.note = note
-            db.commit()
-            db.refresh(existing)
+            if commit:
+                db.commit()
+                db.refresh(existing)
+            else:
+                db.flush()
+            log_audit_event(
+                db,
+                actor=actor,
+                action="trusted_host.update",
+                resource_type="trusted_host",
+                resource_id=existing.id,
+                detail=f"更新受信任 host「{normalized}」的備註",
+                commit=commit,
+            )
         return existing
 
     row = TrustedHost(
@@ -149,8 +162,11 @@ def add_host(
         created_by_user_id=actor.id,
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
     log_audit_event(
         db,
         actor=actor,
@@ -158,9 +174,10 @@ def add_host(
         resource_type="trusted_host",
         resource_id=row.id,
         detail=f"加入受信任 host「{normalized}」",
-        commit=True,
+        commit=commit,
     )
-    _invalidate_cache()
+    if commit:
+        _invalidate_cache()
     return row
 
 

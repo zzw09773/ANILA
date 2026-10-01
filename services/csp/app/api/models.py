@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import asyncio
 import json
 import logging
+from typing import Annotated
 from urllib.parse import urlparse
 
 import httpx
@@ -170,8 +171,16 @@ def _enforce_protocol_endpoint(protocol: str, endpoint_url: str) -> None:
             )
 
 
+def _commit_by_default() -> bool:
+    """HTTP 呼叫一律提交。同一行程直接呼叫時可傳 commit=False。"""
+    return True
+
+
 def _enforce_endpoint_url(url: str) -> None:
     """SSRF guard parity with agents.py / ingestion credentials.
+
+    帳密不能掛在網址上（與外部服務 enforce_base_url 同一道）。拒絕訊息
+    不含網址，避免把 userinfo 帶回回應。
 
     Mirrors agents.py _enforce_endpoint_url. Same env-driven overrides
     apply (ANILA_ALLOW_PRIVATE_ENDPOINT for RFC1918, ANILA_ALLOW_HTTP_ENDPOINT
@@ -197,6 +206,12 @@ def _enforce_endpoint_url(url: str) -> None:
     """
     from app.services.endpoint_rejection import unsafe_endpoint_http_detail
 
+    parsed = urlparse((url or "").strip())
+    if parsed.username is not None or parsed.password is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="位址不能帶帳號或密碼，請把憑證填在憑證欄",
+        )
     try:
         validate_outbound_url(url, endpoint_kind="model")
     except UnsafeEndpointError as exc:
@@ -1296,6 +1311,7 @@ def set_router_primary(
     model_id: int,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
+    commit: Annotated[bool, Depends(_commit_by_default)] = True,
 ):
     """Mark a model as ANILA Router's primary LLM (clearing any previous one)."""
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
@@ -1314,8 +1330,11 @@ def set_router_primary(
         .update({"is_router_primary": False}, synchronize_session=False)
     )
     model.is_router_primary = True
-    db.commit()
-    db.refresh(model)
+    if commit:
+        db.commit()
+        db.refresh(model)
+    else:
+        db.flush()
     log_audit_event(
         db,
         actor=admin,
@@ -1323,7 +1342,7 @@ def set_router_primary(
         resource_type="model",
         resource_id=model.id,
         detail=f"設為 ANILA 主路由模型: {model.display_name}",
-        commit=True,
+        commit=commit,
     )
     return _build_response(model, caller=admin, db=db)
 
@@ -1418,6 +1437,7 @@ def set_slides_primary(
     model_id: int,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
+    commit: Annotated[bool, Depends(_commit_by_default)] = True,
 ):
     """Mark an LLM as the slide-deck (Studio) model, clearing any previous one."""
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
@@ -1433,8 +1453,11 @@ def set_slides_primary(
         .update({"is_slides_primary": False}, synchronize_session=False)
     )
     model.is_slides_primary = True
-    db.commit()
-    db.refresh(model)
+    if commit:
+        db.commit()
+        db.refresh(model)
+    else:
+        db.flush()
     log_audit_event(
         db,
         actor=admin,
@@ -1442,7 +1465,7 @@ def set_slides_primary(
         resource_type="model",
         resource_id=model.id,
         detail=f"設為主簡報模型: {model.display_name}",
-        commit=True,
+        commit=commit,
     )
     return _build_response(model, caller=admin, db=db)
 
