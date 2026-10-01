@@ -160,6 +160,16 @@ export function buildPersistMeta(finalMeta, messageState) {
   if (state.finishReason === "length" || state.finishReason === "stop") {
     base.finish_reason = state.finishReason;
   }
+  if (state.appliedSkill && typeof state.appliedSkill === "object" && state.appliedSkill.name) {
+    base.applied_skill = {
+      id: state.appliedSkill.id,
+      version_id: state.appliedSkill.version_id ?? state.appliedSkill.versionId ?? null,
+      version: state.appliedSkill.version ?? null,
+      name: state.appliedSkill.name,
+      body: typeof state.appliedSkill.body === "string" ? state.appliedSkill.body : "",
+      mode: state.appliedSkill.mode === "auto" ? "auto" : "manual",
+    };
+  }
 
   const document = normalizeDocument(base.document) || normalizeDocument(state.document);
   if (document) base.document = document;

@@ -82,6 +82,7 @@ from app.models.user_memory import (
     MemoryTombstone,
     UserFact,
 )
+from app.models.user_skill import UserSkill
 
 __all__ = [
     "Agent",
@@ -155,4 +156,5 @@ __all__ = [
     "UserFact",
     "UserLlmCredential",
     "UserModelPermission",
+    "UserSkill",
 ]

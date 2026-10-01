@@ -46,6 +46,8 @@ import { resolveRoleModel } from "./runtime/modelRole.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { relativeLabel } from "./runtime/time.js";
 import { MemoryTab } from "./memory.jsx";
+import { SkillManager } from "./skills.jsx";
+import { listSkills } from "./runtime/skills.js";
 import {
   listConversations as apiListConversations,
   listRouterModels as apiListRouterModels,
@@ -718,14 +720,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
   // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
   const uiSettingsHydratedRef = useRef(false);
-  const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false });
+  const [skillAutoApply, setSkillAutoApply] = useState(true);
+  const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false, skillAutoApply: false });
   const uiSettingsSaveErrorRef = useRef(false);
   const foldersRef = useRef(folders);
   const redactionModeRef = useRef(redactionMode);
+  const skillAutoApplyRef = useRef(skillAutoApply);
   const [uiSettingsLoadError, setUiSettingsLoadError] = useState(false);
   const [uiSettingsUnsaved, setUiSettingsUnsaved] = useState(false);
   foldersRef.current = folders;
   redactionModeRef.current = redactionMode;
+  skillAutoApplyRef.current = skillAutoApply;
 
   const markUiSettingsUserEdited = useCallback((field) => {
     uiSettingsDirtyRef.current[field] = true;
@@ -737,10 +742,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setRedactionMode(mode);
   }, [markUiSettingsUserEdited]);
 
-  const persistUiSettings = useCallback((nextFolders, nextRedaction) => {
-    return putUiSettings(authRequest, { folders: nextFolders, redactionMode: nextRedaction })
+  const persistUiSettings = useCallback((nextFolders, nextRedaction, nextSkillAutoApply = skillAutoApplyRef.current) => {
+    return putUiSettings(authRequest, {
+      folders: nextFolders,
+      redactionMode: nextRedaction,
+      skillAutoApply: nextSkillAutoApply !== false,
+    })
       .then(() => {
-        uiSettingsDirtyRef.current = { folders: false, redactionMode: false };
+        uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false };
         uiSettingsSaveErrorRef.current = false;
         setUiSettingsUnsaved(false);
         setUiSettingsLoadError(false);
@@ -759,12 +768,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const nextRedaction = dirty.redactionMode
       ? redactionModeRef.current
       : (REDACTION_MODES.includes(s.redactionMode) ? s.redactionMode : REDACTION_MODE_DEFAULT);
+    const nextSkillAutoApply = dirty.skillAutoApply
+      ? skillAutoApplyRef.current
+      : s.skillAutoApply !== false;
     setFolders(nextFolders);
     setRedactionMode(nextRedaction);
+    setSkillAutoApply(nextSkillAutoApply);
     uiSettingsHydratedRef.current = true;
     setUiSettingsLoadError(false);
-    if (dirty.folders || dirty.redactionMode) {
-      persistUiSettings(nextFolders, nextRedaction);
+    if (dirty.folders || dirty.redactionMode || dirty.skillAutoApply) {
+      persistUiSettings(nextFolders, nextRedaction, nextSkillAutoApply);
     } else {
       uiSettingsSaveErrorRef.current = false;
       setUiSettingsUnsaved(false);
@@ -774,10 +787,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   useEffect(() => {
     if (!isAuthenticated) {
       uiSettingsHydratedRef.current = false;
-      uiSettingsDirtyRef.current = { folders: false, redactionMode: false };
+      uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false };
       uiSettingsSaveErrorRef.current = false;
       setFolders(DEFAULT_FOLDERS);
       setRedactionMode(REDACTION_MODE_DEFAULT);
+      setSkillAutoApply(true);
       setUiSettingsLoadError(false);
       setUiSettingsUnsaved(false);
       return undefined;
@@ -819,10 +833,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     writeFoldersCache(window.localStorage, user?.id, folders);
     if (!uiSettingsHydratedRef.current) return undefined;
     const t = setTimeout(() => {
-      persistUiSettings(folders, redactionMode);
+      persistUiSettings(folders, redactionMode, skillAutoApply);
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, redactionMode, isAuthenticated, authRequest, user?.id, persistUiSettings]);
+  }, [folders, redactionMode, skillAutoApply, isAuthenticated, authRequest, user?.id, persistUiSettings]);
+
+  const [usableSkills, setUsableSkills] = useState([]);
+  const reloadUsableSkills = useCallback(() => {
+    if (!isAuthenticated) {
+      setUsableSkills([]);
+      return;
+    }
+    listSkills(authRequest, "usable")
+      .then((rows) => setUsableSkills(rows))
+      .catch(() => setUsableSkills([]));
+  }, [isAuthenticated, authRequest]);
+  useEffect(() => {
+    reloadUsableSkills();
+  }, [reloadUsableSkills]);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -1029,6 +1057,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updateMsg(convId, assistantId, applyDocumentToMessage(row, payload));
           }
           streamOpts.onDocument?.(payload);
+        },
+        onSkill: (payload) => {
+          if (assistantId && payload && typeof payload === "object") {
+            updateMsg(convId, assistantId, { appliedSkill: payload });
+          }
+          streamOpts.onSkill?.(payload);
         },
         onSessionId: (sessionId) => {
           if (assistantId) {
@@ -1469,6 +1503,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingElapsedMs: typeof meta.thinking_elapsed_ms === "number" ? meta.thinking_elapsed_ms : null,
       document: messageDocument(meta),
       thinkingLocked: meta.thinking_locked === true,
+      appliedSkill: meta.applied_skill && typeof meta.applied_skill === "object" ? meta.applied_skill : null,
       usage: meta.usage || null,
       thinkingApplied: meta.thinking_applied || null,
       finishReason:
@@ -2315,6 +2350,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
           document: drafted?.document,
+          appliedSkill: drafted?.appliedSkill,
           ...thinkingSnap,
         },
       );
@@ -2941,6 +2977,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ? { document, ...(document.preview ? { text: document.preview } : {}) }
         : {}),
       ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
+      ...(meta.applied_skill && typeof meta.applied_skill === "object"
+        ? { appliedSkill: meta.applied_skill }
+        : {}),
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
       // router path, so `.at(-1)` never named the agent that answered.
@@ -3049,8 +3088,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return false;
     }
     const { explicitAgents = [] } = meta;
+    const skillId = Number.isInteger(meta.skillId) && meta.skillId > 0 ? meta.skillId : null;
     if (explicitAgents.length > 1) {
-      return sendCompare(text, attachments, { explicitAgents });
+      return sendCompare(text, attachments, { explicitAgents, skillId });
     }
     // ⚠ 這裡要**早於** ensureConversation / createTaskForConversation:那兩個會
     // 拿這段草稿當標題送到伺服器上。等到落庫扼流點才擋,訊息本身是保住了,
@@ -3375,6 +3415,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           conversationId: persistable ? convId : undefined,
           taskId,
           attachmentRefs: bindIds,
+          skillId,
           assistantId,
           onText: (acc) => {
             finalText = acc;
@@ -3479,6 +3520,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
           document: drafted?.document,
+          appliedSkill: drafted?.appliedSkill,
           ...thinkingSnap,
         },
       );
@@ -3980,6 +4022,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interrupt: interruptFromMessage(convId, placeholderId),
           thinkingStages: stageRow?.thinkingStages,
           document: stageRow?.document,
+          appliedSkill: stageRow?.appliedSkill,
           finishReason: stageRow?.finishReason,
           ...thinkingPump.snapshot({
             hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
@@ -4150,6 +4193,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       setRuntimeError("尚未登入，請重新登入後再試。");
       return false;
     }
+    const skillId = Number.isInteger(meta.skillId) && meta.skillId > 0 ? meta.skillId : null;
     const explicit = (meta.explicitAgents || []).filter(
       (id) => id !== ROUTER_AGENT.id,
     );
@@ -4200,6 +4244,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             payload: {
               model: col.agentId,
               messages: [{ role: "user", content: buildUserContent(text, attachments) }],
+            },
+            skillId,
+            onSkill: (payload) => {
+              if (!payload || typeof payload !== "object") return;
+              setCompareMsgs((prev) => ({
+                ...prev,
+                [col.id]: (prev[col.id] || []).map((m) =>
+                  m.id === aId ? { ...m, appliedSkill: payload } : m,
+                ),
+              }));
             },
             conversationId: typeof col.id === "number" ? col.id : undefined,
             attachmentRefs: attachmentBindIds(attachments),
@@ -4785,6 +4839,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 Composer={Composer}
                 MessageBubble={MessageBubble}
                 showRawReasoning={canSeeRawReasoning(user)}
+                skills={usableSkills}
               />
             ) : (
               <>
@@ -4946,6 +5001,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                     <Composer
                       onSend={sendMessage}
                       restoredDraft={draftRestore}
+                      skills={usableSkills}
                       agents={agents}
                       redactionMode={redactionMode}
                       onChangeRedactionMode={changeRedactionMode}
@@ -5050,6 +5106,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         settingsLoadError={uiSettingsLoadError}
         settingsUnsaved={uiSettingsUnsaved}
         onRetrySettingsLoad={retryUiSettings}
+        skillAutoApply={skillAutoApply}
+        onSkillAutoApplyChange={(on) => {
+          markUiSettingsUserEdited("skillAutoApply");
+          setSkillAutoApply(on);
+        }}
+        onSkillsChanged={reloadUsableSkills}
         onOpenConversation={(id) => {
           if (id == null) return;
           setSettingsOpen(false);
@@ -5178,6 +5240,7 @@ function SettingsModal({
   open, tab, setTab, onClose,
   user, agents, authRequest,
   redactionMode, onChangeRedactionMode,
+  skillAutoApply, onSkillAutoApplyChange, onSkillsChanged,
   onOpenConversation,
   settingsLoadError, settingsUnsaved, onRetrySettingsLoad,
 }) {
@@ -5189,6 +5252,7 @@ function SettingsModal({
             { id: "general", label: "一般",       icon: <IconSettings size={13} /> },
             { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
             { id: "memory",  label: "記憶",        icon: <IconHistory  size={13} /> },
+            { id: "skills",  label: "我的 skill",  icon: <IconNodes    size={13} /> },
             { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
             { id: "about",   label: "關於",        icon: <AnilaLogoImg variant="mark" height={13} /> },
           ].map((t) => (
@@ -5303,6 +5367,16 @@ function SettingsModal({
 
           {tab === "memory" && (
             <MemoryTab authRequest={authRequest} onOpenConversation={onOpenConversation} />
+          )}
+
+          {tab === "skills" && (
+            <SkillManager
+              authRequest={authRequest}
+              user={user}
+              autoApply={skillAutoApply}
+              onAutoApplyChange={onSkillAutoApplyChange}
+              onChanged={onSkillsChanged}
+            />
           )}
 
           {tab === "account" && (

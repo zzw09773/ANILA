@@ -96,7 +96,7 @@ ROLE_SPECS: dict[str, RoleSpec] = {
     "summary": RoleSpec(
         role="summary",
         label="摘要模型",
-        description="記憶抽取、對話壓縮、思考過程摘要與對話標題使用的語言模型。",
+        description="記憶抽取、對話壓縮、思考過程摘要、對話標題與 skill 自動選用使用的語言模型。",
         accepted_types=frozenset({"llm"}),
         storage="table",
         end_user_credential=True,

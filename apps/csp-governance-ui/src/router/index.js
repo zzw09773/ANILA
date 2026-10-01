@@ -71,6 +71,12 @@ const routes = [
         component: () => import('../views/BannersView.vue'),
         meta: { requiresSteward: true },
       },
+      {
+        path: 'skill-review',
+        name: 'SkillReview',
+        component: () => import('../views/SkillReviewView.vue'),
+        meta: { requiresSkillReview: true },
+      },
       // 平台設定總覽 —— 96 顆設定四區三態。讀寫同一道 admin 門
       // (後端 router 級 Depends(require_admin))，所以這裡照 /users 的形狀。
       {
@@ -212,6 +218,12 @@ router.beforeEach(async (to, from, next) => {
   ) {
     next('/')
   } else if (to.meta.requiresSteward && !authStore.isSteward) {
+    next('/')
+  } else if (
+    to.meta.requiresSkillReview
+    && !authStore.isAdmin
+    && !authStore.isUnitAdmin
+  ) {
     next('/')
   } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
     // ``isAdmin`` is admin-OR-owner (tier check). Don't compare role

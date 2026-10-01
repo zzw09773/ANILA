@@ -1893,6 +1893,30 @@ async def _complete_dispatched_model(
     )
 
 
+def _attach_applied_skill(payload, applied):
+    """非串流出口：把實際套用的 skill（資料庫內容）放進 anila_meta。"""
+    if applied is None or not isinstance(payload, dict):
+        return payload
+    meta = payload.get("anila_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        payload["anila_meta"] = meta
+    meta["applied_skill"] = applied.as_event()
+    return payload
+
+
+async def _sse_with_applied_skill(
+    upstream: AsyncIterator[str],
+    applied,
+) -> AsyncIterator[str]:
+    """串流出口：先送 anila.skill，再接上游。沒套用就不加事件。"""
+    if applied is not None:
+        data = json.dumps(applied.as_event(), ensure_ascii=False)
+        yield f"event: anila.skill\ndata: {data}\n\n"
+    async for chunk in upstream:
+        yield chunk
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
@@ -1977,6 +2001,29 @@ async def chat_completions(
         # last user message which is unchanged across that path.
         body
     )
+    # skill 與記憶同一段、在平台規則與規章區塊之前注入。內容只依 id 從資料庫讀。
+    from app.services.user_skill_service import (
+        SkillAccessError,
+        apply_skill_to_chat,
+        auto_apply_enabled,
+        drop_untrusted_skill_fields,
+    )
+
+    drop_untrusted_skill_fields(body)
+    applied_skill = None
+    if not side.artifact_turn:
+        try:
+            applied_skill = await apply_skill_to_chat(
+                db,
+                user,
+                body,
+                explicit_raw=request.headers.get("X-ANILA-Skill-Id"),
+                conversation_id=conv_id_int,
+                user_text=captured_user_text,
+                auto_allowed=bool(side.chat_turn) and auto_apply_enabled(user),
+            )
+        except SkillAccessError:
+            raise HTTPException(status_code=403, detail="無法套用這個 skill")
     # 院內規章檢索（Q39）：header 在就檢索並注入；不在就一次都不查。狀態在下面
     # 四個出口上明帶。詳見 ``_route_marked`` 上方那一段。
     pause_request_session(db)
@@ -2153,6 +2200,7 @@ async def chat_completions(
             # 出口 1/4（agent SSE）：kb 包在最外層，狀態是最後一個寫入者。
             traced = _sse_with_kb_meta(traced, kb_meta)
             traced = _sse_with_injection_notice(traced, side)
+            traced = _sse_with_applied_skill(traced, applied_skill)
             release_request_session(db)
             return StreamingResponse(
                 traced,
@@ -2233,8 +2281,11 @@ async def chat_completions(
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
                 # 出口 2/4（agent 非串流）。
-                return _merge_kb_meta(
-                    _merge_attachment_trace(payload, attach_inject), kb_meta,
+                return _attach_applied_skill(
+                    _merge_kb_meta(
+                        _merge_attachment_trace(payload, attach_inject), kb_meta,
+                    ),
+                    applied_skill,
                 )
         except httpx.HTTPStatusError as e:
             logger.error(
@@ -2413,6 +2464,7 @@ async def chat_completions(
         # 出口 3/4（model SSE）——使用者實際踩到的那一條。
         traced = _sse_with_kb_meta(traced, kb_meta)
         traced = _sse_with_injection_notice(traced, side)
+        traced = _sse_with_applied_skill(traced, applied_skill)
         return StreamingResponse(
             traced,
             media_type="text/event-stream",
@@ -2454,8 +2506,11 @@ async def chat_completions(
         is_encrypted=inherited_encryption,
     )
     # 出口 4/4（model 非串流）。
-    return _merge_kb_meta(
-        _merge_attachment_trace(payload, attach_inject), kb_meta,
+    return _attach_applied_skill(
+        _merge_kb_meta(
+            _merge_attachment_trace(payload, attach_inject), kb_meta,
+        ),
+        applied_skill,
     )
 
 

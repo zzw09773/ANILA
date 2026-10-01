@@ -74,6 +74,8 @@ import {
   IconMic,
 } from "./icons.jsx";
 import { useAsrInput, appendTranscript } from "./asr/useAsrInput.js";
+import { AppliedSkillIndicator, SkillChip } from "./skills.jsx";
+import { filterSkills, removeSlashToken, skillChipLabel, slashQuery } from "./runtime/skills.js";
 import {
   extractStatusReason,
   pollAttachmentExtractStatus,
@@ -1043,6 +1045,7 @@ export const MessageBubble = ({
   questionAttachmentBasis = "none",
   onCiteDocument,
   showRawReasoning = false,
+  includeManualSkill = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1652,6 +1655,7 @@ export const MessageBubble = ({
               {renderBody(displayBody, false)}
               {settled.map((item) => renderSummary(item))}
               {interrupt?.status === "answered" ? renderActiveCard() : null}
+              <AppliedSkillIndicator skill={msg.appliedSkill} includeManual={includeManualSkill} />
               {thinkingSummary}
               {queueStatus}
               {rescueStatus}
@@ -1664,6 +1668,7 @@ export const MessageBubble = ({
 
         return (
           <>
+            <AppliedSkillIndicator skill={msg.appliedSkill} includeManual={includeManualSkill} />
             {thinkingSummary}
             {queueStatus}
             {rescueStatus}
@@ -2409,6 +2414,8 @@ export const Composer = ({
   onDeepThinkNextChange,
   // 模型不能用時，把剛剛送出的原文放回輸入框。
   restoredDraft = null,
+  // 這位同仁現在用得到的 skill。只把選中的 id 交給 onSend。
+  skills = [],
 }) => {
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
@@ -2465,6 +2472,20 @@ export const Composer = ({
   attsRef.current = atts;
   const [uploadError, setUploadError] = useState("");
   const [caret, setCaret] = useState(0);
+  const [selectedSkill, setSelectedSkill] = useState(null);
+  // 送出的 Promise 可能在下一次 render 前回來。失敗要放回 skill 時，不能讀到
+  // 已經清掉、但 state 還沒刷上的那一版。
+  const skillRef = useRef(selectedSkill);
+  skillRef.current = selectedSkill;
+  const applySkill = (skill) => {
+    const next = skill && Number.isInteger(skill.id)
+      ? { id: skill.id, name: skill.name }
+      : null;
+    skillRef.current = next;
+    setSelectedSkill(next);
+  };
+  const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  const [skillIdx, setSkillIdx] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
   const taRef = useRef(null);
   // Sync membership of composer attachments. Banner/chip finalization must
@@ -2542,6 +2563,7 @@ export const Composer = ({
       id: `recover-${++recoverableSeq.current}`,
       text: snapshot.text || "",
       atts: parkedAtts,
+      skill: snapshot.skill || null,
     };
     publishRecoverable([...recoverableRef.current, entry]);
   };
@@ -2563,16 +2585,21 @@ export const Composer = ({
     if (!chosen) return;
     const currentText = textRef.current || "";
     const currentAtts = attsRef.current || [];
-    const hasCurrent = Boolean(currentText.trim()) || currentAtts.length > 0;
+    const currentSkill = skillRef.current;
+    const hasCurrent = Boolean(currentText.trim()) || currentAtts.length > 0 || currentSkill != null;
     const remaining = recoverableRef.current.filter((item) => item.id !== id);
     let next = remaining;
     if (hasCurrent) {
       const parkedAtts = currentAtts.map((att) => ({ ...att }));
       if (parkedAtts.length) heldDraftsRef.current.add(parkedAtts);
+      const parkedSkill = currentSkill && Number.isInteger(currentSkill.id)
+        ? { id: currentSkill.id, name: currentSkill.name }
+        : null;
       next = [...remaining, {
         id: `recover-${++recoverableSeq.current}`,
         text: currentText,
         atts: parkedAtts,
+        skill: parkedSkill,
       }];
     }
     if (chosen.atts) heldDraftsRef.current.delete(chosen.atts);
@@ -2584,6 +2611,7 @@ export const Composer = ({
     textRef.current = restoredText;
     setText(restoredText);
     writeDraftNow(restoredText);
+    applySkill(chosen.skill || null);
     publishRecoverable(next);
   };
   useEffect(() => {
@@ -2824,6 +2852,37 @@ export const Composer = ({
     return true;
   };
 
+  const slash = useMemo(() => slashQuery(text, caret), [text, caret]);
+  const skillChoices = useMemo(() => {
+    if (skillMenuOpen) return filterSkills(skills, "");
+    if (slash === null) return [];
+    return filterSkills(skills, slash);
+  }, [skillMenuOpen, skills, slash]);
+  const skillMenuVisible = (skillMenuOpen || slash !== null) && skillChoices.length > 0;
+
+  useEffect(() => {
+    setSkillIdx(0);
+  }, [slash, skillMenuOpen, skillChoices.length]);
+
+  const pickSkill = (skill) => {
+    if (!skill || typeof skill.id !== "number") return;
+    applySkill(skill);
+    if (slash !== null) {
+      const next = removeSlashToken(text, caret);
+      textRef.current = next;
+      setText(next);
+    }
+    setSkillMenuOpen(false);
+    setTimeout(() => { taRef.current?.focus(); }, 0);
+  };
+
+  const sendMeta = () => {
+    const meta = { explicitAgents: mentionParse.explicitAgents };
+    const skill = skillRef.current;
+    if (skill && Number.isInteger(skill.id)) meta.skillId = skill.id;
+    return meta;
+  };
+
   // 檔案還在上傳就沒有 referenceId。這時送出只會交出土塊，綁定與組內容都拿不到檔。
   // 抽取輪詢已經有 reference，不在這裡擋。
   const uploadBlocksSend = atts.some((att) => att.uploading);
@@ -2839,9 +2898,14 @@ export const Composer = ({
     // 跟送出去的是同一批物件的複本。晚到的上傳完成只更新複本，不會把
     // referenceId 補進已經交出去的那一次。
     const snapshotAtts = currentAtts.map((att) => ({ ...att }));
+    // skill 跟文字、附件同一份草稿：送成才清，失敗放回，被新草稿擠掉時留在還原列。
+    const currentSkill = skillRef.current;
+    const snapshotSkill = currentSkill && Number.isInteger(currentSkill.id)
+      ? { id: currentSkill.id, name: currentSkill.name }
+      : null;
     let outcome;
     try {
-      outcome = onSend(v, snapshotAtts, { explicitAgents: mentionParse.explicitAgents });
+      outcome = onSend(v, snapshotAtts, sendMeta());
     } catch {
       return;
     }
@@ -2857,11 +2921,13 @@ export const Composer = ({
     heldDraftsRef.current.add(snapshotAtts);
     textRef.current = "";
     attsRef.current = [];
+    applySkill(null);
+    setSkillMenuOpen(false);
     setText("");
     setAtts([]);
     if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
-    // onSend 回 false（或拒絕）代表這一輪沒送成。框是空的就放回原文與附件；
-    // 使用者已經打了新內容就整份收起來，用「還原未送出的訊息」換，不把兩份接在一起。
+    // onSend 回 false（或拒絕）代表這一輪沒送成。框是空的就放回原文、附件與 skill；
+    // 使用者已經打了新內容，或另外選了 skill，就整份收起來，用「還原未送出的訊息」換。
     // 失敗若帶著這次送出建立的對話 id，選到那個對話不算使用者換走。
     const finish = (result) => {
       if (!composerAlive.current) return;
@@ -2880,7 +2946,9 @@ export const Composer = ({
         snapshotAtts.forEach(revokeAttachmentPreview);
         return;
       }
-      const hasNewer = Boolean((textRef.current || "").trim()) || attsRef.current.length > 0;
+      const hasNewer = Boolean((textRef.current || "").trim())
+        || attsRef.current.length > 0
+        || skillRef.current != null;
       if (!hasNewer) {
         heldDraftsRef.current.delete(snapshotAtts);
         textRef.current = v;
@@ -2889,9 +2957,10 @@ export const Composer = ({
         armAttachments(snapshotAtts);
         attsRef.current = snapshotAtts;
         setAtts(snapshotAtts);
+        applySkill(snapshotSkill);
         return;
       }
-      retainRecoverable({ text: v, atts: snapshotAtts });
+      retainRecoverable({ text: v, atts: snapshotAtts, skill: snapshotSkill });
     };
     if (outcome && typeof outcome.then === "function") {
       outcome.then(finish, () => finish(false));
@@ -2934,6 +3003,29 @@ export const Composer = ({
         e.preventDefault();
         // Collapse the menu by moving the caret past the current token.
         setCaret(text.length + 1);
+        return;
+      }
+    }
+    if (skillMenuVisible) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSkillIdx((i) => (i + 1) % skillChoices.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSkillIdx((i) => (i - 1 + skillChoices.length) % skillChoices.length);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !composing) {
+        e.preventDefault();
+        pickSkill(skillChoices[skillIdx]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSkillMenuOpen(false);
+        if (slash !== null) setCaret(text.length + 1);
         return;
       }
     }
@@ -3151,6 +3243,7 @@ export const Composer = ({
       )}
       <RedactionHint hits={piiHits} mode={mode} onChangeMode={setMode} />
 
+      <SkillChip skill={selectedSkill} onRemove={() => applySkill(null)} />
       {recoverableDrafts.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 12px 0" }}>
           <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.4 }}>
@@ -3183,7 +3276,10 @@ export const Composer = ({
               >
                 {draft.text || "（沒有文字）"}
               </span>
-              {draft.atts.map((att, index) => (
+              {draft.skill?.name ? (
+                <span style={{ color: "var(--fg-muted)" }}>{skillChipLabel(draft.skill.name)}</span>
+              ) : null}
+              {(draft.atts || []).map((att, index) => (
                 <span
                   key={att.uploadId || att.referenceId || `${draft.id}-${index}`}
                   style={{ fontFamily: "var(--font-mono)", color: "var(--fg-subtle)" }}
@@ -3506,6 +3602,67 @@ export const Composer = ({
 
         {/* Per-agent preset prompts(開發者在 CSP 設計):點開清單,選一個填入輸入框。
             只有當前 agent 有設定預設提示詞時才顯示。 */}
+        <span style={{ position: "relative", display: "inline-flex" }}>
+          <button
+            type="button"
+            aria-label="skill"
+            onClick={(e) => { e.stopPropagation(); setSkillMenuOpen((open) => !open); }}
+            style={{
+              padding: "4px 8px",
+              fontSize: 12,
+              background: skillMenuOpen ? "var(--bg-subtle)" : "transparent",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              cursor: "pointer",
+              color: "var(--fg)",
+            }}
+          >
+            skill
+          </button>
+          {skillMenuVisible && (
+            <div
+              role="listbox"
+              data-testid="skill-picker"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                bottom: "calc(100% + 6px)",
+                left: 0,
+                zIndex: 80,
+                width: 280,
+                maxHeight: 240,
+                overflowY: "auto",
+                background: "var(--bg-elev)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 4,
+              }}
+            >
+              {skillChoices.map((skill, index) => (
+                <button
+                  key={skill.id}
+                  type="button"
+                  role="option"
+                  aria-selected={index === skillIdx}
+                  onClick={() => pickSkill(skill)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "6px 8px",
+                    background: index === skillIdx ? "var(--bg-subtle)" : "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--fg)",
+                  }}
+                >
+                  <div style={{ fontSize: 13 }}>{skill.name}</div>
+                  <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>{skill.description}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
         {Array.isArray(presetPrompts) && presetPrompts.length > 0 && (
           <span style={{ position: "relative", display: "inline-flex" }}>
             <IconButton

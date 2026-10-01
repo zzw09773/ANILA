@@ -102,6 +102,7 @@ const menuGroups = computed(() => {
       label: '人員與單位',
       items: [
         { path: '/users', label: '使用者' },
+        { path: '/skill-review', label: 'skill 審核' },
       ],
     })
   }
@@ -116,6 +117,7 @@ const menuGroups = computed(() => {
       ],
     })
     const adminItems = [
+      { path: '/skill-review', label: 'skill 審核' },
       { path: '/alerts', label: '警報' },
       { path: '/feedback', label: '使用者回饋' },
       { path: '/banners', label: '公告橫幅' },

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.database import get_db
 from app.models.department import Department
 from app.models.user import User
+from app.models.user_skill import UserSkill
 from app.schemas.department import (
     DepartmentCreate,
     DepartmentUpdate,
@@ -189,6 +190,31 @@ def _ensure_no_active_children(db: Session, dept: Department) -> None:
         )
 
 
+def _ensure_no_live_unit_skills(db: Session, dept: Department) -> None:
+    """已發布或待審的單位 skill 還掛在這個部門時，不准停用。
+
+    外鍵若改成 SET NULL，這些 skill 會失去部門，審核清單也篩不到。
+    跟子部門一樣：先處理依附的東西，再停用。
+    """
+    count = (
+        db.query(func.count(func.distinct(UserSkill.lineage_id)))
+        .filter(
+            UserSkill.scope == "unit",
+            UserSkill.department_id == dept.id,
+            UserSkill.status.in_(("published", "pending")),
+        )
+        .scalar()
+    ) or 0
+    if count:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"此部門還有 {count} 個已發布或待審的單位 skill，"
+                "請先到「skill 審核」下架或退回後再刪除"
+            ),
+        )
+
+
 def _ensure_parent_active_for_reactivation(db: Session, dept: Department) -> None:
     if dept.parent_id is None:
         return
@@ -304,6 +330,7 @@ def update_department(
 
     if update_data.get("is_active") is False:
         _ensure_no_active_children(db, dept)
+        _ensure_no_live_unit_skills(db, dept)
 
     if update_data.get("is_active") is True and not dept.is_active:
         # 改掛已由 _validate_parent_assignment 驗過；僅在沿用現有 parent 時檢查
@@ -354,6 +381,7 @@ def deactivate_department(
         return {"message": "部門已停用"}
 
     _ensure_no_active_children(db, dept)
+    _ensure_no_live_unit_skills(db, dept)
     _deactivate_department(db, dept)
     db.commit()
     log_audit_event(

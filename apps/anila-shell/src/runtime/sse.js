@@ -139,6 +139,8 @@ export async function streamChatCompletion({
   forceKbSearch = false,
   // 這一輪選進 composer 的附件。平台產出的長文只有被點名才進上下文。
   attachmentRefs,
+  // 這一則要套用的 skill。只送 id，內容由 CSP 讀資料庫。
+  skillId,
   onText,
   onTrace,
   onMeta,
@@ -165,6 +167,8 @@ export async function streamChatCompletion({
   // 階段標題。{index, title, status}，同一則訊息上一條清單。
   onThinkingStage,
   onDocument,
+  // 這一則實際套用的 skill（手動或自動）。
+  onSkill,
   // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
   // 已累積文字保留(onText 已即時寫入),中止不視為錯誤(回傳累積值)。
   signal,
@@ -200,6 +204,9 @@ export async function streamChatCompletion({
   if (Array.isArray(attachmentRefs) && attachmentRefs.length > 0) {
     const refs = attachmentRefs.map((id) => String(id).trim()).filter(Boolean);
     if (refs.length > 0) headers["X-ANILA-Attachment-Refs"] = refs.join(",");
+  }
+  if (typeof skillId === "number" && Number.isInteger(skillId) && skillId > 0) {
+    headers["X-ANILA-Skill-Id"] = String(skillId);
   }
   const response = await fetch(url, {
     method: "POST",
@@ -269,6 +276,7 @@ export async function streamChatCompletion({
         onQueue,
         onThinkingStage,
         onDocument,
+        onSkill,
         onError: (payload) => {
           terminalError = payload;
           onError?.(payload);
@@ -352,6 +360,10 @@ export function dispatchSseEvent(event, callbacks) {
   }
   if (event.event === "anila.meta") {
     safeJsonInvoke(event.data, callbacks.onMeta, "anila.meta");
+    return;
+  }
+  if (event.event === "anila.skill") {
+    safeJsonInvoke(event.data, callbacks.onSkill, "anila.skill");
     return;
   }
   if (event.event === "anila.document") {

@@ -36,6 +36,7 @@ from app.services.auth_service import (
 from app.services.department_tree import get_descendant_ids
 from app.services.token_revocation import commit_token_revocation
 from app.services.unit_admin_service import get_unit_admin_scope_ids
+from app.services.user_skill_service import release_name_claims_for_owner
 from app.utils.security import hash_password
 
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
@@ -848,6 +849,8 @@ def hard_delete_user(
     Manual cleanup（FK 未設 ondelete 的 table）：
     - ``api_keys`` + ``api_key_model_permissions``：一起刪（user 沒了 key 無意義）
     - ``alerts.acknowledged_by_user_id``：SET NULL（保留歷史紀錄）
+    - ``user_skill_name_claims``：skill 列隨 owner 級聯刪除，名冊沒有外鍵。
+      同一交易先清掉這位使用者佔著的名稱，否則單位／全院名稱會一直被佔住。
 
     ⚠ P2.7：``audit_logs.actor_user_id`` **不再**被清成 NULL。稽核歸屬原地
     保留（``r1_0027`` 已拿掉那條 FK），否則「刪掉帳號」就成了洗掉自己稽核
@@ -933,6 +936,7 @@ def hard_delete_user(
         commit=False,
     )
 
+    release_name_claims_for_owner(db, user.id)
     db.delete(user)
     db.commit()
 

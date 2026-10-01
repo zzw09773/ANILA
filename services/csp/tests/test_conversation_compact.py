@@ -325,7 +325,7 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0065():
+def test_alembic_heads_single_r1_0066():
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -367,17 +367,22 @@ def test_alembic_heads_single_r1_0065():
     ).read_text(encoding="utf-8")
     assert 'revision: str = "r1_0064"' in previous
     assert 'down_revision: Union[str, None] = "r1_0063"' in previous
-    head = (
+    previous = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0065_drop_compose_internal_trusted_host_backfill.py"
     ).read_text(encoding="utf-8")
-    assert 'revision: str = "r1_0065"' in head
-    assert 'down_revision: Union[str, None] = "r1_0064"' in head
+    assert 'revision: str = "r1_0065"' in previous
+    assert 'down_revision: Union[str, None] = "r1_0064"' in previous
+    head = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0066_user_skills.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision: str = "r1_0066"' in head
+    assert 'down_revision: Union[str, None] = "r1_0065"' in head
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0065"], f"alembic head 應為 r1_0065，實得 {heads}"
+    assert heads == ["r1_0066"], f"alembic head 應為 r1_0066，實得 {heads}"
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -394,7 +399,7 @@ def test_alembic_heads_single_r1_0065():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0065" in cli.stdout
+    assert "r1_0066" in cli.stdout
     nullable = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0055_collection_embedding_model_nullable.py"

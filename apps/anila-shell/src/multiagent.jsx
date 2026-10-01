@@ -78,6 +78,7 @@ export const ParallelCompareView = ({
   redactionMode, onChangeRedactionMode,
   AgentSelector, Composer, MessageBubble,
   showRawReasoning = false,
+  skills = [],
 }) => {
   const setColAgent = (idx, id) => {
     setColumns(cs => cs.map((c, i) => i === idx ? { ...c, agentId: id } : c));
@@ -153,6 +154,7 @@ export const ParallelCompareView = ({
                     agents={agents}
                     isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
                     showRawReasoning={showRawReasoning}
+                    includeManualSkill
                   />
                 ))}
               </div>
@@ -169,6 +171,7 @@ export const ParallelCompareView = ({
         <Composer
           onSend={onSend}
           agents={agents}
+          skills={skills}
           redactionMode={redactionMode}
           onChangeRedactionMode={onChangeRedactionMode}
         />
