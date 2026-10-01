@@ -1,3 +1,5 @@
+import { privateEndpointAction } from '../utils/privateEndpointRejection.js'
+
 // 統一把後端錯誤收成可顯示字串。
 //
 // 本樹沒有 W2-12 錯誤信封(`error.message`);治理 UI 既有慣例是讀
@@ -64,5 +66,13 @@ export function extractError(err, fallback = '操作失敗') {
  */
 export function getRawDetail(err) {
   return err?.response?.data?.detail
+}
+
+/**
+ * 私有 IP、缺的是信任主機時，表單要的那一列動作。
+ * 形狀讀取留在這個模組；呼叫端只拿已經判斷好的動作或 null。
+ */
+export function privateEndpointFromError(err, opts) {
+  return privateEndpointAction(getRawDetail(err), opts)
 }
 

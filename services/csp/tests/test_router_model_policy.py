@@ -127,6 +127,49 @@ def test_resolve_requires_default_when_unspecified(db: Session):
     assert exc.value.status_code == 409
 
 
+def test_campus_default_without_grant_permission_says_where_to_grant(db: Session):
+    from app.services.router_model_policy import require_campus_default_eligible
+
+    model = _enable_router(make_model(db, name="needs-where"), db)
+    user = make_user(db, username="not-grant-admin", role="user")
+    deputy = make_user(db, username="not-grant-deputy", role="deputy")
+    where = "到模型的授權設定加入「全院」"
+    for actor in (user, deputy, None):
+        with pytest.raises(RouterModelPolicyError) as exc:
+            require_campus_default_eligible(db, model, actor=actor)
+        assert exc.value.status_code == 400
+        assert exc.value.detail == where
+        assert "全院預設必須具有有效的全院授權" not in str(exc.value.detail)
+    assert (
+        db.query(RouterModelGrant).filter(RouterModelGrant.model_id == model.id).count()
+        == 0
+    )
+
+
+def test_ineligible_campus_default_does_not_create_a_grant(db: Session):
+    from app.services.router_model_policy import require_campus_default_eligible
+
+    admin = make_user(db, username="grant-too-early", role="admin")
+    inactive = _enable_router(make_model(db, name="grant-inactive"), db)
+    inactive.is_active = False
+    plain = make_model(db, name="grant-not-enabled")
+    embed = _enable_router(make_model(db, name="grant-embed"), db)
+    embed.model_type = "embedding"
+    platform = make_model(db, name="anila-router")
+    platform.router_enabled = True
+    platform.model_type = "llm"
+    db.commit()
+    for model in (inactive, plain, embed, platform):
+        with pytest.raises(RouterModelPolicyError):
+            require_campus_default_eligible(db, model, actor=admin)
+        assert (
+            db.query(RouterModelGrant)
+            .filter(RouterModelGrant.model_id == model.id)
+            .count()
+            == 0
+        )
+
+
 def test_platform_entry_cannot_be_requested_as_base(db: Session):
     user = make_user(db, username="entry-user")
     with pytest.raises(RouterModelPolicyError) as exc:

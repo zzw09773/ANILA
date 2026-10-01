@@ -40,11 +40,18 @@ def test_foreign_anila_core_fails_before_any_revision():
 
 
 def test_repo_root_is_this_tree():
+    """Root is the checkout that contains this module.
+
+    services/csp/app/alembic_path_guard.py is four levels down. One parent
+    too far does not hold that file directly. The directory name is not
+    part of the contract — a worktree checkout is a source tree too.
+    """
     root = repo_root_from_csp_app()
     assert root is not None
-    assert (root / "packages" / "anila-core" / "src").is_dir()
-    assert root.name == "ANILA"
-    assert "anila-restart-20260729" in str(root)
+    here = Path(repo_root_from_csp_app.__code__.co_filename).resolve()
+    assert root == here.parents[3]
+    assert (root / "packages" / "anila-core" / "src" / "anila_core").is_dir()
+    assert (root / "services" / "csp" / "app" / "alembic_path_guard.py").is_file()
 
 
 def test_image_layout_skips_without_indexerror(tmp_path, caplog):

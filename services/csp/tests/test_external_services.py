@@ -87,6 +87,40 @@ def test_admin_sets_parser_without_returning_the_credential(client, db):
     assert SECRET not in (audit.detail or "")
 
 
+def test_private_endpoint_names_only_the_missing_gate(client, db, monkeypatch):
+    """開關沒開只講開關；開關開了、主機不在清單才回 host_not_trusted。"""
+    from app.services.trusted_host_service import _invalidate_cache
+
+    _invalidate_cache()
+    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    headers = _admin(client, db, username="ext-private-gate")
+    url = "https://172.16.120.35:9100"
+    off = client.put(
+        "/api/admin/external-services/document_parser",
+        headers=headers,
+        json={"enabled": True, "base_url": url},
+    )
+    assert off.status_code == 400, off.text
+    assert off.json()["detail"] == (
+        "這台平台未允許私有 IP 端點（ANILA_ALLOW_PRIVATE_ENDPOINT）"
+        "。開啟後還需要把這台主機加入信任主機"
+    )
+
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    on = client.put(
+        "/api/admin/external-services/document_parser",
+        headers=headers,
+        json={"enabled": True, "base_url": url},
+    )
+    assert on.status_code == 400, on.text
+    assert on.json()["detail"] == {
+        "code": "host_not_trusted",
+        "host": "172.16.120.35",
+        "message": "主機 172.16.120.35 還不在信任主機清單",
+    }
+
+
 def test_omitted_credential_is_kept_and_blank_clears_it(client, db):
     headers = _admin(client, db)
     first = client.put(

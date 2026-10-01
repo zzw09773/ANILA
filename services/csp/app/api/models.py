@@ -185,33 +185,32 @@ def _enforce_endpoint_url(url: str) -> None:
     suffix — i.e. admin could legitimately want this host trusted), we
     surface a *structured* detail dict instead of a plain message string,
     so the frontend can render an actionable confirm modal ("Add
-    'foobar' to trusted hosts?") instead of just an opaque alert. Other
-    failure reasons (loopback / metadata / private IP) keep the plain
-    string detail — those aren't safe to bypass via the UI.
+    'foobar' to trusted hosts?") instead of just an opaque alert.
+    A private IP whose env switch is already on, but whose host is not
+    trusted, is ``host_not_trusted`` — the console can add that host.
+    The switch being off, and loopback / metadata, stay plain strings.
 
     Slice 6a: validated with ``endpoint_kind="model"`` — http:// model
     endpoints are rejected unless ``ANILA_ALLOW_HTTP_ENDPOINT=1`` is set
     (PLAN.md P0.2, 2026-07-29: flag-gated uniformly, production included;
     default posture still rejects http).
     """
+    from app.services.endpoint_rejection import unsafe_endpoint_http_detail
+
     try:
         validate_outbound_url(url, endpoint_kind="model")
     except UnsafeEndpointError as exc:
+        hint = None
         if exc.fixable_by_trust_host:
-            detail = {
-                "code": "untrusted_host",
-                "host": exc.host,
-                "reason": exc.reason,
-                "message": str(exc),
-                "hint": (
-                    f"hostname {exc.host!r} 不在受信任清單。"
-                    f"若該主機在內部 docker network 上(例如 anila-models-net "
-                    f"內的推論服務),管理員可在 /trusted-hosts 加入後再試。"
-                ),
-            }
-        else:
-            detail = str(exc)
-        raise HTTPException(status_code=400, detail=detail) from exc
+            hint = (
+                f"hostname {exc.host!r} 不在受信任清單。"
+                f"若該主機在內部 docker network 上(例如 anila-models-net "
+                f"內的推論服務),管理員可在 /trusted-hosts 加入後再試。"
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=unsafe_endpoint_http_detail(exc, hint=hint),
+        ) from exc
 
 
 def _router_conversation_counts(db: Session) -> dict[int, int]:
@@ -1304,7 +1303,7 @@ def set_router_primary(
         raise HTTPException(status_code=404, detail="模型不存在")
     from app.services.router_model_policy import RouterModelPolicyError, require_campus_default_eligible
     try:
-        require_campus_default_eligible(db, model)
+        require_campus_default_eligible(db, model, actor=admin)
     except RouterModelPolicyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

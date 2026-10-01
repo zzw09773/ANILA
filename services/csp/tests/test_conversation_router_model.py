@@ -119,3 +119,9 @@ def test_ineligible_set_primary_keeps_default(client, db):
     assert resp.status_code == 400, resp.text
     db.refresh(glm)
     assert glm.is_router_primary is True
+    assert (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == other.id)
+        .count()
+        == 0
+    )

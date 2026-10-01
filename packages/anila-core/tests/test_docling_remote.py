@@ -71,6 +71,20 @@ def test_guard_rejects_loopback_url(tmp_path):
     assert excinfo.value.retryable is False
 
 
+def test_guard_hints_trust_host_when_private_host_is_not_trusted(tmp_path, monkeypatch):
+    """開關已開、主機不在清單：hint 仍要告訴管理員加進信任主機。"""
+    _allow_http(monkeypatch)
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    path = _write_pdf(tmp_path)
+    parser = RemoteDoclingParser(base_url="http://10.1.2.3:9100", token=TOKEN)
+    with pytest.raises(ParseError) as excinfo:
+        parser.parse(str(path))
+    assert excinfo.value.code == "E_PARSE_BAD_CONFIG"
+    assert "ANILA_TRUSTED_HOSTS" in excinfo.value.details["hint"]
+    assert "10.1.2.3" in excinfo.value.details["hint"]
+
+
 def test_guard_rejects_single_label_host_without_trust(tmp_path, monkeypatch):
     # 單標籤 docker 服務名(docling)在被 ANILA_TRUSTED_HOSTS 點名前,guard 該擋。
     # M1:設定錯 → bad_config;維運線索(含 hint)進 details。

@@ -297,6 +297,14 @@ def test_router_primary_keeps_eligibility_check(client, db):
     assert resp.status_code == 400
     db.refresh(model)
     assert model.is_router_primary is False
+    from app.models.router_model_grant import RouterModelGrant
+
+    assert (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id)
+        .count()
+        == 0
+    )
 
 
 def test_platform_embedding_role_probes(client, db, monkeypatch):
@@ -575,6 +583,221 @@ def test_grant_all_users_audit_failure_does_not_persist(client, db, monkeypatch)
             RouterModelGrant.model_id == model.id,
             RouterModelGrant.scope_type == "all",
         )
+        .count()
+        == 0
+    )
+
+
+def _router_ready(db, name, *, display_name=None):
+    row = _llm(db, name)
+    row.router_enabled = True
+    if display_name:
+        row.display_name = display_name
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def test_router_primary_creates_all_users_grant_and_audits_why(client, db):
+    """沒有全院授權時，指定主路由要在同一筆交易裡建授權並寫明原因。"""
+    import json
+
+    from app.models.router_model_grant import RouterModelGrant
+
+    admin = make_user(db, username="primary-grant-admin", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, admin.username)}"}
+    model = _router_ready(db, "primary-needs-grant", display_name="院內對話")
+
+    resp = client.put(
+        "/api/models/roles/router_primary",
+        json={"model_id": model.id},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    db.expire_all()
+    row = db.get(ModelRegistry, model.id)
+    assert row.is_router_primary is True
+    grants = (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
+        .all()
+    )
+    assert len(grants) == 1
+    assert grants[0].created_by == admin.id
+    assert grants[0].expires_at is None
+    audit = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "create_all_users_grant_for_router_primary")
+        .one()
+    )
+    assert audit.resource_type == "model"
+    assert audit.resource_id == str(model.id)
+    assert "主路由" in (audit.detail or "")
+    assert "全院授權" in (audit.detail or "")
+    assert "建立" in (audit.detail or "")
+    meta = json.loads(audit.metadata_json)
+    assert meta["scope_type"] == "all"
+    assert meta["reason"] == "router_primary"
+    assert "全院預設必須具有有效的全院授權" not in (audit.detail or "")
+
+    again = client.put(
+        "/api/models/roles/router_primary",
+        json={"model_id": model.id},
+        headers=headers,
+    )
+    assert again.status_code == 200, again.text
+    db.expire_all()
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "create_all_users_grant_for_router_primary")
+        .count()
+        == 1
+    )
+    assert (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
+        .count()
+        == 1
+    )
+
+
+def _same_instant(left, right) -> bool:
+    from datetime import timezone
+
+    if left.tzinfo is None:
+        left = left.replace(tzinfo=timezone.utc)
+    if right.tzinfo is None:
+        right = right.replace(tzinfo=timezone.utc)
+    return abs((left - right).total_seconds()) < 1
+
+
+def test_router_primary_reactivates_expired_all_users_grant(client, db):
+    """過期的全院授權重新啟用時留下原建立者，並另寫一筆重新啟用稽核。"""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.router_model_grant import RouterModelGrant
+
+    admin = make_user(db, username="primary-reactivate-admin", role="admin")
+    other = make_user(db, username="primary-old-grantor", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, admin.username)}"}
+    model = _router_ready(db, "primary-expired-grant")
+    previous_expiry = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired = RouterModelGrant(
+        model_id=model.id,
+        scope_type="all",
+        created_by=other.id,
+        expires_at=previous_expiry,
+    )
+    db.add(expired)
+    db.commit()
+    db.refresh(expired)
+    previous_expiry = expired.expires_at
+
+    resp = client.put(
+        "/api/models/roles/router_primary",
+        json={"model_id": model.id},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    grants = (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
+        .all()
+    )
+    assert len(grants) == 1
+    assert grants[0].expires_at is None
+    assert grants[0].created_by == other.id
+    assert db.get(ModelRegistry, model.id).is_router_primary is True
+    assert (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "create_all_users_grant_for_router_primary")
+        .count()
+        == 0
+    )
+    audit = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "reactivate_all_users_grant_for_router_primary")
+        .one()
+    )
+    assert audit.actor_user_id == admin.id
+    assert audit.resource_type == "model"
+    assert audit.resource_id == str(model.id)
+    meta = json.loads(audit.metadata_json)
+    assert meta["actor_user_id"] == admin.id
+    assert meta["reason"] == "router_primary"
+    assert meta["scope_type"] == "all"
+    recorded = datetime.fromisoformat(meta["previous_expires_at"])
+    assert _same_instant(recorded, previous_expiry)
+
+
+def test_set_router_primary_endpoint_also_creates_the_grant(client, db):
+    from app.models.router_model_grant import RouterModelGrant
+
+    admin = make_user(db, username="primary-post-admin", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, admin.username)}"}
+    model = _router_ready(db, "primary-via-post")
+    resp = client.post(
+        f"/api/models/{model.id}/set-router-primary",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert db.get(ModelRegistry, model.id).is_router_primary is True
+    assert (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
+        .count()
+        == 1
+    )
+
+
+def test_campus_default_endpoint_also_creates_the_grant(client, db):
+    from app.models.router_model_grant import RouterModelGrant
+
+    admin = make_user(db, username="primary-default-admin", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, admin.username)}"}
+    model = _router_ready(db, "primary-via-default")
+    resp = client.put(
+        "/api/router-models/default",
+        json={"model_id": model.id},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert db.get(ModelRegistry, model.id).is_router_primary is True
+    assert (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
+        .count()
+        == 1
+    )
+
+
+def test_router_primary_grant_audit_failure_rolls_back_grant_and_assignment(
+    client, db, monkeypatch
+):
+    from app.models.router_model_grant import RouterModelGrant
+
+    admin = make_user(db, username="primary-audit-fail", role="admin")
+    headers = {"Authorization": f"Bearer {login(client, admin.username)}"}
+    model = _router_ready(db, "primary-audit-rollback")
+    _fail_role_audit(monkeypatch)
+
+    failed = client.put(
+        "/api/models/roles/router_primary",
+        json={"model_id": model.id},
+        headers=headers,
+    )
+    assert failed.status_code == 500, failed.text
+    assert "稽核紀錄寫入失敗" in failed.json()["detail"]
+    db.expire_all()
+    assert db.get(ModelRegistry, model.id).is_router_primary is False
+    assert (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id)
         .count()
         == 0
     )

@@ -55,9 +55,15 @@ def test_unknown_scheme_always_blocked(monkeypatch):
 def test_rfc1918_blocked_by_default(monkeypatch, addr):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
     with pytest.raises(UnsafeEndpointError) as exc:
         validate_outbound_url(addr)
-    assert "ANILA_ALLOW_PRIVATE_ENDPOINT" in str(exc.value)
+    assert str(exc.value) == (
+        "這台平台未允許私有 IP 端點（ANILA_ALLOW_PRIVATE_ENDPOINT）"
+        "。開啟後還需要把這台主機加入信任主機"
+    )
+    assert exc.value.reason == "private_ip"
+    assert exc.value.fixable_by_trust_host is False
 
 
 @pytest.mark.parametrize("addr", [
@@ -70,10 +76,12 @@ def test_rfc1918_needs_the_flag_and_the_trusted_list(monkeypatch, addr):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
     monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    host = addr.split("//", 1)[1].split("/", 1)[0].split(":", 1)[0]
     with pytest.raises(UnsafeEndpointError) as exc:
         validate_outbound_url(addr)
-    assert "trusted" in str(exc.value)
-    host = addr.split("//", 1)[1].split("/", 1)[0].split(":", 1)[0]
+    assert exc.value.reason == "host_not_trusted"
+    assert str(exc.value) == f"主機 {host} 還不在信任主機清單"
+    assert "ANILA_ALLOW_PRIVATE_ENDPOINT" not in str(exc.value)
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", host)
     validate_outbound_url(addr)
 

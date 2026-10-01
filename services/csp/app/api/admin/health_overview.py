@@ -43,6 +43,7 @@ from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.auth_service import require_steward
+from app.services.auto_seed import PLATFORM_ROUTER_NAME
 from app.services.health_checker import (
     BASE_SERVICE_SPECS,
     HEALTH_HEALTHY,
@@ -118,9 +119,13 @@ def _reject_caller_supplied_targets(request: Request) -> None:
 
 
 def _registry_counts(db: Session) -> tuple[RegistryHealthCounts, RegistryHealthCounts]:
-    model_rows = db.query(
-        ModelRegistry.health_status, ModelRegistry.is_active
-    ).all()
+    # 平台自己的 anila-router 入口不是登錄的模型。算進去會讓儀表板
+    # 在「尚未註冊模型」時仍顯示 1/1 健康。
+    model_rows = (
+        db.query(ModelRegistry.health_status, ModelRegistry.is_active)
+        .filter(ModelRegistry.name != PLATFORM_ROUTER_NAME)
+        .all()
+    )
     agent_rows = db.query(Agent.health_status, Agent.approval_status).all()
     return (
         RegistryHealthCounts(**summarize_five_state(model_rows)),

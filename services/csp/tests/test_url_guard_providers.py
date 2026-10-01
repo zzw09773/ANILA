@@ -27,6 +27,7 @@ from anila_core.security.url_guard import (
     FIXABLE_BY_TRUST_HOST,
     REASON_DENY_HOST,
     REASON_INTERNAL_ZONE,
+    REASON_HOST_NOT_TRUSTED,
     REASON_PRIVATE_IP,
     REASON_SCHEME,
     REASON_SINGLE_LABEL,
@@ -198,12 +199,16 @@ def test_trusted_fqdn_may_resolve_to_private_address(monkeypatch):
     with pytest.raises(UnsafeEndpointError) as missing_flag:
         validate_outbound_url(url)
     assert missing_flag.value.reason == REASON_PRIVATE_IP
+    assert str(missing_flag.value) == "這台平台未允許私有 IP 端點（ANILA_ALLOW_PRIVATE_ENDPOINT）"
+    assert "信任主機" not in str(missing_flag.value)
 
     monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
     monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
     with pytest.raises(UnsafeEndpointError) as missing_host:
         validate_outbound_url(url)
-    assert missing_host.value.reason == REASON_PRIVATE_IP
+    assert missing_host.value.reason == REASON_HOST_NOT_TRUSTED
+    assert missing_host.value.host == "aiagent2.ai.ncsist.org.tw"
+    assert str(missing_host.value) == "主機 aiagent2.ai.ncsist.org.tw 還不在信任主機清單"
 
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "aiagent2.ai.ncsist.org.tw")
     validate_outbound_url(url)
@@ -219,10 +224,15 @@ def test_scheme_failure_not_fixable(monkeypatch):
 
 
 def test_fixable_set_contract():
-    """Sanity: only the two genuinely fixable reasons are in FIXABLE_BY_TRUST_HOST."""
+    """Name-shape failures and host_not_trusted are fixable; structural ones are not.
+
+    host_not_trusted means the private-endpoint switch is already on and
+    only the trusted-host entry is missing. private_ip (switch off) is not
+    in the set: a trusted-host entry alone cannot admit that URL.
+    """
     assert REASON_SINGLE_LABEL in FIXABLE_BY_TRUST_HOST
     assert REASON_INTERNAL_ZONE in FIXABLE_BY_TRUST_HOST
-    # Negative cases (the dangerous ones should NEVER be in here)
+    assert REASON_HOST_NOT_TRUSTED in FIXABLE_BY_TRUST_HOST
     assert REASON_UNSAFE_IP not in FIXABLE_BY_TRUST_HOST
     assert REASON_DENY_HOST not in FIXABLE_BY_TRUST_HOST
     assert REASON_PRIVATE_IP not in FIXABLE_BY_TRUST_HOST

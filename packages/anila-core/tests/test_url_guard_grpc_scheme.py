@@ -207,7 +207,8 @@ def test_grpc_private_ip_still_needs_the_private_flag(monkeypatch, scheme):
         validate_outbound_url(
             f"{scheme}://172.16.0.9:9001", endpoint_kind=ENDPOINT_KIND_MODEL
         )
-    assert still.value.reason == "private_ip"
+    assert still.value.reason == "host_not_trusted"
+    assert str(still.value) == "主機 172.16.0.9 還不在信任主機清單"
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "172.16.0.9")
     validate_outbound_url(
         f"{scheme}://172.16.0.9:9001", endpoint_kind=ENDPOINT_KIND_MODEL

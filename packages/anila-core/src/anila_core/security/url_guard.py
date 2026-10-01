@@ -269,10 +269,11 @@ _DENY_HOST_SUFFIXES: tuple[str, ...] = (
 )
 
 
-# Reason codes for typed error propagation. Frontend / API responses use
-# these to decide whether the failure is "admin can fix by adding to
-# trusted_hosts" (single-label / internal-zone) vs structural rejections
-# that should never be bypassed (loopback / metadata / link-local).
+# Reason codes for typed error propagation. Callers use these for operator
+# hints. single-label, internal-zone, and host_not_trusted (private target,
+# switch already on, host absent from the list) can be fixed by adding the
+# host to trusted_hosts. Structural rejections (loopback / metadata /
+# link-local) and private_ip (switch off) cannot.
 REASON_EMPTY = "empty"
 REASON_NO_HOSTNAME = "no_hostname"
 REASON_SCHEME = "scheme"
@@ -280,12 +281,26 @@ REASON_DENY_HOST = "deny_host"
 REASON_INTERNAL_ZONE = "internal_zone"
 REASON_UNSAFE_IP = "unsafe_ip"
 REASON_PRIVATE_IP = "private_ip"
+REASON_HOST_NOT_TRUSTED = "host_not_trusted"
 REASON_SINGLE_LABEL = "single_label"
 
-# Failure reasons that an admin can legitimately fix by adding the
-# hostname to the trusted-hosts allow-list. Loopback / metadata /
-# link-local are NEVER in here — they're outright dangerous.
-FIXABLE_BY_TRUST_HOST = frozenset({REASON_SINGLE_LABEL, REASON_INTERNAL_ZONE})
+# Shown when the private-endpoint switch is off. A trusted-host entry
+# cannot admit the URL until this switch is on. If the host is also
+# absent from the list, say so in the same message.
+_PRIVATE_ENDPOINT_SWITCH_OFF = (
+    "這台平台未允許私有 IP 端點（ANILA_ALLOW_PRIVATE_ENDPOINT）"
+)
+_PRIVATE_ENDPOINT_ALSO_NEEDS_TRUST = "開啟後還需要把這台主機加入信任主機"
+
+# Failure reasons an operator can fix by adding the hostname to the
+# trusted-hosts allow-list. Loopback / metadata / link-local, and
+# private_ip while the private-endpoint switch is off, are NEVER in
+# here — a trusted-host entry alone does not make those safe.
+FIXABLE_BY_TRUST_HOST = frozenset({
+    REASON_SINGLE_LABEL,
+    REASON_INTERNAL_ZONE,
+    REASON_HOST_NOT_TRUSTED,
+})
 
 
 class UnsafeEndpointError(ValueError):
@@ -314,6 +329,31 @@ class UnsafeEndpointError(ValueError):
         ``trusted_hosts``. False for any structurally-unsafe URL (loopback,
         metadata, etc.)."""
         return self.reason in FIXABLE_BY_TRUST_HOST and bool(self.host)
+
+
+def _reject_private_target(host: str, *, allow_private: bool, trusted: bool) -> None:
+    """Private targets need the env switch and a trusted-host entry.
+
+    Name only the gate that is actually missing. When the switch is off
+    and the host is also absent from the list, name both so the operator
+    does not discover the second gate only after flipping the first.
+    ``host`` is the URL hostname (what an operator adds to the
+    trusted-host list), not a resolved address.
+    """
+    if not allow_private:
+        message = _PRIVATE_ENDPOINT_SWITCH_OFF
+        if not trusted:
+            message = f"{message}。{_PRIVATE_ENDPOINT_ALSO_NEEDS_TRUST}"
+        raise UnsafeEndpointError(
+            message,
+            host=host,
+            reason=REASON_PRIVATE_IP,
+        )
+    raise UnsafeEndpointError(
+        f"主機 {host} 還不在信任主機清單",
+        host=host,
+        reason=REASON_HOST_NOT_TRUSTED,
+    )
 
 
 def _is_ip_literal(addr: str) -> bool:
@@ -462,13 +502,7 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
             reason=REASON_UNSAFE_IP,
         )
     if _is_private_ip(host) and not (allow_private and trusted):
-        raise UnsafeEndpointError(
-            f"endpoint_url host {host!r} is a private (RFC 1918) IP. "
-            f"ANILA_ALLOW_PRIVATE_ENDPOINT must be on, and the host must be "
-            f"listed in the console trusted hosts.",
-            host=host,
-            reason=REASON_PRIVATE_IP,
-        )
+        _reject_private_target(host, allow_private=allow_private, trusted=trusted)
 
     # Single-label hostnames (no dot, e.g. "csp-db", "redis", "router")
     # are docker-compose / k8s service names — never legitimate public
@@ -508,11 +542,4 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
                 reason=REASON_UNSAFE_IP,
             )
         if _is_private_ip(addr) and not (allow_private and trusted):
-            raise UnsafeEndpointError(
-                f"endpoint_url host {host!r} resolves to private "
-                f"(RFC 1918) address {addr!r}. "
-                f"ANILA_ALLOW_PRIVATE_ENDPOINT must be on, and the host must be "
-                f"listed in the console trusted hosts.",
-                host=host,
-                reason=REASON_PRIVATE_IP,
-            )
+            _reject_private_target(host, allow_private=allow_private, trusted=trusted)

@@ -130,6 +130,30 @@ export function summarizeHealthOverview(payload) {
   }
 }
 
+/**
+ * 儀表板模型／Agent 計數那一行。
+ *
+ * 模型總數 0 跟模型頁的空狀態同一句話。null（DB 探測失敗）不補「尚未註冊」，
+ * 以免把讀不到跟真的沒有模型說成同一件事。
+ *
+ * @param {{total:number,healthy:number}|null} models
+ * @param {{total:number,healthy:number}|null} agents
+ */
+export function registryHealthLine(models, agents) {
+  const parts = []
+  if (models) {
+    parts.push(
+      models.total === 0
+        ? '尚未註冊模型'
+        : `模型 ${models.healthy}/${models.total} 健康`,
+    )
+  }
+  if (agents) {
+    parts.push(`Agent ${agents.healthy}/${agents.total} 健康`)
+  }
+  return parts.join(' · ')
+}
+
 /** 五態計數（後端 DB 掛掉時回 null，這裡忠實傳遞 null，不補 0）。 */
 function normalizeCounts(raw) {
   if (!raw) return null

@@ -100,6 +100,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _audit_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
 def _grant_active(grant: RouterModelGrant, now: datetime) -> bool:
     if grant.expires_at is None:
         return True
@@ -198,7 +206,101 @@ def list_router_models_for_user(db: Session, user: User, *, now: datetime | None
 
 
 
-def require_campus_default_eligible(db: Session, model: ModelRegistry, *, now: datetime | None = None) -> None:
+_GRANT_WHERE = "到模型的授權設定加入「全院」"
+_CREATE_ALL_USERS_GRANT = "create_all_users_grant_for_router_primary"
+_REACTIVATE_ALL_USERS_GRANT = "reactivate_all_users_grant_for_router_primary"
+
+
+def _actor_may_manage_model_grants(actor: User | None, model: ModelRegistry) -> bool:
+    if actor is None or getattr(actor, "id", None) is None:
+        return False
+    if model.name == PLATFORM_ROUTER_NAME:
+        return False
+    from app.services.auth_service import is_admin_tier
+
+    return is_admin_tier(actor)
+
+
+def _ensure_all_users_grant_for_router_primary(
+    db: Session,
+    model: ModelRegistry,
+    actor: User | None,
+    *,
+    now: datetime,
+) -> None:
+    """Create or re-activate an all-users grant when this model becomes primary.
+
+    The grant, its audit row, and the caller's primary-flag update share
+    the caller's transaction (audit is written with commit=False). A valid
+    grant is left untouched and does not get another audit row. Re-activating
+    an expired grant keeps the original ``created_by`` and writes
+    ``reactivate_all_users_grant_for_router_primary`` (actor + previous
+    expiry). Only a grant that did not exist uses the create action.
+    """
+    grant = (
+        db.query(RouterModelGrant)
+        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
+        .first()
+    )
+    if grant is not None and _grant_active(grant, now):
+        return
+    if not _actor_may_manage_model_grants(actor, model):
+        raise RouterModelPolicyError(400, _GRANT_WHERE)
+    previous_expires_at = None
+    reactivated = grant is not None
+    if grant is None:
+        grant = RouterModelGrant(
+            model_id=model.id,
+            scope_type="all",
+            created_by=actor.id,
+        )
+        db.add(grant)
+    else:
+        previous_expires_at = grant.expires_at
+        grant.expires_at = None
+    db.flush()
+    label = (model.display_name or model.name or "").strip()
+    from app.services.audit_service import log_audit_event_or_raise
+
+    if reactivated:
+        action = _REACTIVATE_ALL_USERS_GRANT
+        detail = f"因模型成為主路由而重新啟用已過期的全院授權：{label}"
+        metadata = {
+            "model_id": model.id,
+            "model_name": model.name,
+            "scope_type": "all",
+            "reason": "router_primary",
+            "actor_user_id": actor.id,
+            "previous_expires_at": _audit_timestamp(previous_expires_at),
+        }
+    else:
+        action = _CREATE_ALL_USERS_GRANT
+        detail = f"因模型成為主路由而建立全院授權：{label}"
+        metadata = {
+            "model_id": model.id,
+            "model_name": model.name,
+            "scope_type": "all",
+            "reason": "router_primary",
+        }
+    log_audit_event_or_raise(
+        db,
+        actor=actor,
+        action=action,
+        resource_type="model",
+        resource_id=model.id,
+        detail=detail,
+        metadata=metadata,
+        commit=False,
+    )
+
+
+def require_campus_default_eligible(
+    db: Session,
+    model: ModelRegistry,
+    *,
+    actor: User | None = None,
+    now: datetime | None = None,
+) -> None:
     """Raise RouterModelPolicyError if model cannot be the unique campus default."""
     now = now or _now()
     if model is None:
@@ -211,13 +313,7 @@ def require_campus_default_eligible(db: Session, model: ModelRegistry, *, now: d
         raise RouterModelPolicyError(400, "此模型不能設為全院預設")
     if not bool(getattr(model, "router_enabled", False)):
         raise RouterModelPolicyError(400, "請先開放此模型給 Router")
-    grant = (
-        db.query(RouterModelGrant)
-        .filter(RouterModelGrant.model_id == model.id, RouterModelGrant.scope_type == "all")
-        .first()
-    )
-    if grant is None or not _grant_active(grant, now):
-        raise RouterModelPolicyError(400, "全院預設必須具有有效的全院授權")
+    _ensure_all_users_grant_for_router_primary(db, model, actor, now=now)
 
 def campus_default_model(db: Session) -> ModelRegistry | None:
     return (

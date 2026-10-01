@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from anila_core.security.url_guard import UnsafeEndpointError
 
 from app.database import get_db
+from app.services.endpoint_rejection import unsafe_endpoint_http_detail
 from app.models.external_service import SERVICE_KEYS
 from app.models.user import User
 from app.services import external_services as svc
@@ -75,16 +76,9 @@ def update_external_service(
     except svc.ExternalServiceUrlError as exc:
         raise HTTPException(status_code=400, detail=exc.public_message) from exc
     except UnsafeEndpointError as exc:
-        if exc.fixable_by_trust_host:
-            detail = {
-                "code": "untrusted_host",
-                "host": exc.host,
-                "reason": exc.reason,
-                "message": str(exc),
-            }
-        else:
-            detail = str(exc)
-        raise HTTPException(status_code=400, detail=detail) from exc
+        raise HTTPException(
+            status_code=400, detail=unsafe_endpoint_http_detail(exc)
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="語音協定或模型名稱不正確") from exc
     return svc.public_view(row)

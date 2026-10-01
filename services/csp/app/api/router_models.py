@@ -149,7 +149,7 @@ def set_campus_default(
         raise HTTPException(status_code=404, detail="模型不存在")
     from app.services.router_model_policy import RouterModelPolicyError, require_campus_default_eligible
     try:
-        require_campus_default_eligible(db, model)
+        require_campus_default_eligible(db, model, actor=admin)
     except RouterModelPolicyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     (

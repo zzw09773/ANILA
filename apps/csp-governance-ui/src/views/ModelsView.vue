@@ -298,7 +298,7 @@
       </table>
     </TermBox>
 
-    <TermModal :visible="showModal" :title="editingId ? '編輯 · 模型' : '註冊 · 模型'" width="600px" @close="showModal = false">
+    <TermModal :visible="showModal" :title="editingId ? '編輯 · 模型' : '註冊 · 模型'" width="600px" @close="closeModelForm">
       <div class="form-grid">
         <TermField label="模型 ID" hint="不可變更 · 用於 API 請求 · 例：llama3-70b">
           <input v-model="form.name" :disabled="!!editingId" class="term-input" placeholder="llama3-70b" />
@@ -573,11 +573,23 @@
           </TermField>
         </div>
       </div>
+      <div v-if="privateEndpointBlock" class="trust-prompt" data-testid="private-endpoint-action">
+        <p class="trust-prompt__hint">{{ privateEndpointBlock.message }}</p>
+        <TermButton
+          v-if="privateEndpointBlock.canManage"
+          variant="primary"
+          type="button"
+          :disabled="modelSubmitting"
+          :label="privateEndpointBlock.buttonLabel"
+          @click="confirmPrivateEndpointAndRetry"
+        />
+        <router-link v-else :to="privateEndpointBlock.linkTo">{{ privateEndpointBlock.linkLabel }}</router-link>
+      </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showModal = false" label="取消" />
+        <TermButton variant="ghost" @click="closeModelForm" label="取消" />
         <TermButton
           variant="primary"
-          :disabled="!form.name || !form.display_name || (!endpointFieldLocked && !form.endpoint_url)"
+          :disabled="modelSubmitting || !form.name || !form.display_name || (!endpointFieldLocked && !form.endpoint_url)"
           :label="editingId ? '更新' : '註冊'"
           @click="handleSubmit"
         />
@@ -720,6 +732,7 @@ import { listUsers } from '../api/users'
 import { listDepartments } from '../api/departments'
 import { departmentOptions } from '../utils/departmentTree'
 import { extractError, getRawDetail } from '../api/errors'
+import { privateEndpointAction } from '../utils/privateEndpointRejection'
 import { grantsLoadResult, canReplaceRouterGrants } from '../utils/routerGrantsLoad.js'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, PageHead, RowActions, UserSearchField } from '../components/cli'
 import ThinkingLevelsDisplay from '../components/ThinkingLevelsDisplay.vue'
@@ -746,6 +759,9 @@ const authStore = useAuthStore()
 const registeredModels = computed(() => ordinaryModels(modelsStore.models))
 const platformEntry = computed(() => platformChatEntryCard(modelsStore.models))
 const showModal = ref(false)
+const privateEndpointBlock = ref(null)
+// 註冊／更新與「加入信任主機並重試」共用。任一條在飛時送出鈕停用。
+const modelSubmitting = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
@@ -999,7 +1015,18 @@ onUnmounted(() => {
   }
 })
 
-function openCreateModal() { editingId.value = null; form.value = defaultForm(); routerGrants.value = []; grantsLoadState.value = "ready"; showModal.value = true }
+function closeModelForm() {
+  privateEndpointBlock.value = null
+  showModal.value = false
+}
+function openCreateModal() {
+  editingId.value = null
+  form.value = defaultForm()
+  routerGrants.value = []
+  grantsLoadState.value = "ready"
+  privateEndpointBlock.value = null
+  showModal.value = true
+}
 function openImportModal() {
   importSourceId.value = null
   importResult.value = null
@@ -1123,6 +1150,7 @@ async function openEditModal(model, opts = {}) {
     grantsLoadState.value = loaded.state
     toast(extractError(e, '授權清單載入失敗，儲存時不會覆蓋授權'), { tone: 'error' })
   }
+  privateEndpointBlock.value = null
   showModal.value = true
   if (opts.focusGrants) {
     await nextTick()
@@ -1170,6 +1198,8 @@ const endpointUrlPlaceholder = computed(() => {
 // hostname 加進 trusted_hosts 後重試 — 不必離開「register model」流程
 // 去切到另一個分頁手動操作。
 const untrustedHostPrompt = ref(null)   // { host, message, hint, retryPayload, retryMode }
+// privateEndpointBlock：私有 IP、環境開關已開、主機還不在信任清單。
+// 跟 untrusted_host（單標籤／內部域名）分開，這一條在表單裡重試。
 
 // 由 form 組出送出 payload — register / update / trust-retry 三處共用，
 // 避免治理欄位（api_key write-only、base_model_id、locked endpoint）漏處理。
@@ -1248,6 +1278,9 @@ async function syncRouterGrants(modelId, row) {
 }
 
 async function handleSubmit() {
+  if (modelSubmitting.value) return
+  modelSubmitting.value = true
+  privateEndpointBlock.value = null
   try {
     const payload = buildModelPayload()
     if (editingId.value) {
@@ -1261,7 +1294,7 @@ async function handleSubmit() {
       // 靜默丟掉,payload 說 true 但列上是 false,授權會寫給一個沒開放的模型。
       await syncRouterGrants(created?.id, created)
     }
-    showModal.value = false
+    closeModelForm()
   } catch (e) {
     const detail = getRawDetail(e)
     // Typed 400 with code "untrusted_host" → show confirm modal so the
@@ -1287,10 +1320,50 @@ async function handleSubmit() {
       }
       return
     }
+    const privateAction = privateEndpointAction(detail, {
+      canManageTrustedHosts: authStore.isOwner,
+    })
+    if (privateAction) {
+      privateEndpointBlock.value = {
+        ...privateAction,
+        retryPayload: buildModelPayload(),
+        retryMode: editingId.value ? 'update' : 'create',
+        retryId: editingId.value,
+      }
+      return
+    }
     const msg = typeof detail === 'string'
       ? detail
       : (detail?.message || '操作失敗')
     toast(msg, { tone: 'error' })
+  } finally {
+    modelSubmitting.value = false
+  }
+}
+
+async function confirmPrivateEndpointAndRetry() {
+  const block = privateEndpointBlock.value
+  if (!block?.canManage || modelSubmitting.value) return
+  modelSubmitting.value = true
+  try {
+    const { createTrustedHost } = await import('../api/trustedHosts')
+    await createTrustedHost({ host: block.host, note: block.note })
+    const { retryPayload, retryMode, retryId } = block
+    if (retryMode === 'update') {
+      const { name, ...updateData } = retryPayload
+      const saved = await modelsStore.update(retryId, updateData)
+      noticeThinkingProbe(saved)
+      await syncRouterGrants(retryId, saved)
+    } else {
+      const created = await modelsStore.create(retryPayload)
+      noticeThinkingProbe(created)
+      await syncRouterGrants(created?.id, created)
+    }
+    closeModelForm()
+  } catch (e) {
+    toast(extractError(e, '重試失敗'), { tone: 'error' })
+  } finally {
+    modelSubmitting.value = false
   }
 }
 
@@ -1323,7 +1396,7 @@ async function confirmTrustAndRetry() {
       await syncRouterGrants(created?.id, created)
     }
     untrustedHostPrompt.value = null
-    showModal.value = false
+    closeModelForm()
   } catch (e) {
     toast(extractError(e, '重試失敗'), { tone: 'error' })
   }

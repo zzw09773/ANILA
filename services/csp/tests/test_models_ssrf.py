@@ -75,7 +75,28 @@ def test_register_blocks_rfc1918_without_allow_private(monkeypatch):
     monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
     with pytest.raises(HTTPException) as exc:
         _enforce_endpoint_url("http://172.16.120.35:7000/v1")
-    assert "ANILA_ALLOW_PRIVATE_ENDPOINT" in str(exc.value.detail)
+    assert exc.value.detail == (
+        "這台平台未允許私有 IP 端點（ANILA_ALLOW_PRIVATE_ENDPOINT）"
+        "。開啟後還需要把這台主機加入信任主機"
+    )
+    assert not isinstance(exc.value.detail, dict)
+
+
+def test_private_ip_without_trusted_host_returns_host_not_trusted(monkeypatch):
+    """開關已開、主機未信任：只講信任清單，並給主控台可重試的 code。"""
+    from app.services.trusted_host_service import _invalidate_cache
+
+    _invalidate_cache()
+    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("https://172.16.120.35:9100/v1")
+    assert exc.value.status_code == 400
+    assert exc.value.detail == {
+        "code": "host_not_trusted",
+        "host": "172.16.120.35",
+        "message": "主機 172.16.120.35 還不在信任主機清單",
+    }
 
 
 def test_register_allows_rfc1918_when_flag_and_trusted_host(monkeypatch):

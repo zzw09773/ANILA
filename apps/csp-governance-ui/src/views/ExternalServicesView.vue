@@ -28,6 +28,24 @@
             placeholder="https://host:9100"
           />
         </TermField>
+        <div
+          v-if="privateEndpointByKey[item.service_key]"
+          class="private-endpoint"
+          data-testid="private-endpoint-action"
+        >
+          <p>{{ privateEndpointByKey[item.service_key].message }}</p>
+          <TermButton
+            v-if="privateEndpointByKey[item.service_key].canManage"
+            type="button"
+            variant="primary"
+            :disabled="busy"
+            :label="privateEndpointByKey[item.service_key].buttonLabel"
+            @click="addTrustedHostAndRetry(item)"
+          />
+          <router-link v-else :to="privateEndpointByKey[item.service_key].linkTo">
+            {{ privateEndpointByKey[item.service_key].linkLabel }}
+          </router-link>
+        </div>
         <TermField
           v-if="item.service_key === 'speech'"
           label="協定"
@@ -80,15 +98,18 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { extractError } from '../api/errors'
+import { extractError, privateEndpointFromError } from '../api/errors'
 import {
   listExternalServices,
   updateExternalService,
 } from '../api/externalServices'
+import { useAuthStore } from '../stores/auth'
 import { PageHead, TermBox, TermButton, TermField } from '../components/cli'
 
+const authStore = useAuthStore()
 const services = ref([])
 const drafts = reactive({})
+const privateEndpointByKey = reactive({})
 const feedback = ref('')
 const feedbackTone = ref('ok')
 const busy = ref(false)
@@ -131,17 +152,53 @@ function bodyFor(item) {
   return body
 }
 
+function rememberPrivateEndpoint(item, error, body) {
+  const action = privateEndpointFromError(error, {
+    canManageTrustedHosts: authStore.isOwner,
+  })
+  if (!action) {
+    delete privateEndpointByKey[item.service_key]
+    return
+  }
+  privateEndpointByKey[item.service_key] = { ...action, retryBody: body }
+}
+
 async function save(item) {
+  const body = bodyFor(item)
   busy.value = true
   feedback.value = ''
+  delete privateEndpointByKey[item.service_key]
   try {
-    await updateExternalService(item.service_key, bodyFor(item))
+    await updateExternalService(item.service_key, body)
     feedbackTone.value = 'ok'
     feedback.value = '已儲存。憑證不會顯示回來。'
     await load()
   } catch (error) {
     feedbackTone.value = 'error'
     feedback.value = extractError(error, '儲存失敗')
+    rememberPrivateEndpoint(item, error, body)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function addTrustedHostAndRetry(item) {
+  const block = privateEndpointByKey[item.service_key]
+  if (!block?.canManage || busy.value) return
+  busy.value = true
+  feedback.value = ''
+  try {
+    const { createTrustedHost } = await import('../api/trustedHosts')
+    await createTrustedHost({ host: block.host, note: block.note })
+    await updateExternalService(item.service_key, block.retryBody)
+    delete privateEndpointByKey[item.service_key]
+    feedbackTone.value = 'ok'
+    feedback.value = '已儲存。憑證不會顯示回來。'
+    await load()
+  } catch (error) {
+    feedbackTone.value = 'error'
+    feedback.value = extractError(error, '儲存失敗')
+    rememberPrivateEndpoint(item, error, block.retryBody)
   } finally {
     busy.value = false
   }
@@ -176,4 +233,5 @@ onMounted(() => {
 .form-grid { display: grid; gap: 12px; max-width: 640px; }
 .check { display: flex; gap: 8px; align-items: center; }
 .health { margin: 0; }
+.private-endpoint { display: grid; gap: 8px; }
 </style>

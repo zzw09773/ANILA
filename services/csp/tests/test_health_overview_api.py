@@ -146,6 +146,37 @@ def test_overview_counts_registry_five_state(client, db: Session, all_healthy):
     assert body["agents"]["unhealthy"] == 1
 
 
+def test_overview_ignores_platform_router_when_no_models_are_registered(
+    client, db: Session, all_healthy
+):
+    admin = make_user(db, username="health-router-only", role="admin")
+    platform = make_model(db, name="anila-router")
+    platform.health_status = "healthy"
+    db.commit()
+
+    body = client.get(OVERVIEW_URL, headers=_bearer(admin)).json()
+
+    assert body["models"]["total"] == 0
+    assert body["models"]["healthy"] == 0
+
+
+def test_overview_counts_ordinary_models_and_skips_platform_router(
+    client, db: Session, all_healthy
+):
+    admin = make_user(db, username="health-router-plus", role="admin")
+    platform = make_model(db, name="anila-router")
+    platform.health_status = "healthy"
+    ordinary = make_model(db, name="counts-ordinary")
+    ordinary.health_status = "degraded"
+    db.commit()
+
+    body = client.get(OVERVIEW_URL, headers=_bearer(admin)).json()
+
+    assert body["models"]["total"] == 1
+    assert body["models"]["degraded"] == 1
+    assert body["models"]["healthy"] == 0
+
+
 def test_overview_marks_unapproved_agent_disabled(client, db: Session, all_healthy):
     admin = make_user(db, username="health-pending-agent", role="admin")
     agent = make_agent(db, admin, name="pending-agent", approval_status="pending")

@@ -22,6 +22,7 @@ import {
   formatCheckedAt,
   healthTone,
   probeReasonLabel,
+  registryHealthLine,
   summarizeHealthOverview,
   worstStatus,
 } from '../src/utils/healthOverview.js'
@@ -161,6 +162,18 @@ test('DB 掛掉時 models/agents 是 null,不補 0(0 是謊)', () => {
   assert.equal(view.agents, null)
 })
 
+test('沒有登錄模型時跟模型頁同一句話，不把 0/0 說成健康', () => {
+  assert.equal(registryHealthLine({ total: 0, healthy: 0 }, null), '尚未註冊模型')
+  assert.equal(registryHealthLine({ total: 2, healthy: 1 }, null), '模型 1/2 健康')
+  assert.equal(registryHealthLine(null, { total: 1, healthy: 1 }), 'Agent 1/1 健康')
+  assert.equal(registryHealthLine(null, null), '')
+  assert.equal(
+    registryHealthLine({ total: 0, healthy: 0 }, { total: 1, healthy: 1 }),
+    '尚未註冊模型 · Agent 1/1 健康',
+  )
+  assert.doesNotMatch(registryHealthLine(null, null), /尚未註冊/)
+})
+
 // ── 原始碼層護欄:呼叫端真的掛上去了 ──────────────────────────────────────
 
 test('首頁掛了服務健康卡', () => {
@@ -175,6 +188,8 @@ test('首頁掛了服務健康卡', () => {
 test('健康總覽卡用共用 helper,不自己重寫五態判斷', () => {
   const source = stripComments(readSource('components/dashboard/ServiceHealthCard.vue'))
   assert.ok(source.includes('summarizeHealthOverview'), '卡片應走共用 helper')
+  assert.ok(source.includes('registryHealthLine'), '模型計數要走共用那一行')
+  assert.doesNotMatch(source, /模型 \$\{models\.healthy\}/)
   assert.ok(source.includes('最後檢查'), '卡片必須顯示最後檢查時間')
 })
 

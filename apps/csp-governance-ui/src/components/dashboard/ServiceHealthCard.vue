@@ -43,7 +43,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { summarizeHealthOverview } from '../../utils/healthOverview'
+import { registryHealthLine, summarizeHealthOverview } from '../../utils/healthOverview'
 import TermBox from '../cli/TermBox.vue'
 import TermDot from '../cli/TermDot.vue'
 import TermEmpty from '../cli/TermEmpty.vue'
@@ -71,14 +71,7 @@ const overallHeadline = computed(() => {
 
 const hint = computed(() => (view.value.loaded ? `共 ${view.value.total} 個服務` : ''))
 
-const registryHint = computed(() => {
-  const { models, agents } = view.value
-  if (!models && !agents) return ''
-  const parts = []
-  if (models) parts.push(`模型 ${models.healthy}/${models.total} 健康`)
-  if (agents) parts.push(`Agent ${agents.healthy}/${agents.total} 健康`)
-  return parts.join(' · ')
-})
+const registryHint = computed(() => registryHealthLine(view.value.models, view.value.agents))
 </script>
 
 <style scoped>
