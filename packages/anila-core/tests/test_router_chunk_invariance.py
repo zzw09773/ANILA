@@ -143,6 +143,7 @@ def _drive(
     box["first"] = None
 
     async def run() -> str:
+        rs._REVEAL_REASONING.set(True)
         parts: list[str] = []
         async for line in rs._router_streaming(
             "sk",
@@ -482,6 +483,7 @@ def test_forced_partial_answer_survives_stream_error(monkeypatch) -> None:
     monkeypatch.setattr(rs, "_stream_llm_sse", fake_stream)
 
     async def run() -> str:
+        rs._REVEAL_REASONING.set(True)
         parts: list[str] = []
         async for line in rs._router_streaming(
             "sk",

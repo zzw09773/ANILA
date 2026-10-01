@@ -51,6 +51,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import is_admin_tier, require_admin, require_steward
+from app.services.reasoning_gate import redact_visible_text
 from app.services.feedback_notice import mark_feedback_read
 from app.schemas.base import ApiResponseModel
 from app.schemas.contracts.classification import (
@@ -321,8 +322,8 @@ def _export_csv(
             break
         items.append(item)
         bodies[item.message_id] = (
-            _user_prompt_for(db, msg, parent_cache),
-            msg.content or "",
+            redact_visible_text(_user_prompt_for(db, msg, parent_cache), reveal=False) or "",
+            redact_visible_text(msg.content or "", reveal=False) or "",
         )
         try:
             level = ClassificationLevel.from_storage(conv.classification_level)

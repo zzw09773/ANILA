@@ -1,4 +1,8 @@
-"""Cookie-auth thinking-summary endpoint. Fail-open: always 200."""
+"""Cookie-auth thinking-summary endpoint.
+
+殼層不再呼叫這支。非特權呼叫者仍回 200，但 summary 為 null，也不打模型。
+擁有者、管理員、開發者失敗時同樣回 200、summary 為 null。
+"""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -10,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import get_current_user
+from app.services.reasoning_gate import may_see_raw_reasoning
 from app.services.thinking_summary import MAX_HISTORY, summarize_reasoning_batch
 
 router = APIRouter(prefix="/api/thinking", tags=["thinking"])
@@ -30,6 +35,8 @@ async def summarize_thinking(
     db: Session = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> ThinkingSummaryOut:
+    if not may_see_raw_reasoning(_user):
+        return ThinkingSummaryOut(summary=None)
     added = body.added or ""
     if len(added) > 16_384:
         added = added[-16_384:]

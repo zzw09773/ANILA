@@ -91,7 +91,9 @@ def test_prepare_still_413s_when_other_metadata_alone_is_over_budget():
 
 
 def test_put_long_reasoning_keeps_body_and_persist_status(client, db):
-    _user, headers = _auth(client, db, username="reason_budget_body")
+    # 一般使用者寫入會丟掉 reasoning，fitter 不會產生 reasoning_persist。
+    # 這支測的是截斷本身，所以用看得到原文的角色。
+    _user, headers = _auth(client, db, username="reason_budget_body", role="developer")
     cid = _create_conv(client, headers)["id"]
     writer = "w-reason-body-token"
     mid = _turn(client, headers, cid, "問題", writer=writer).json()["assistant"]["id"]
@@ -133,7 +135,7 @@ def test_put_long_reasoning_keeps_body_and_persist_status(client, db):
 
 
 def test_put_empty_length_reply_is_not_a_successful_answer(client, db):
-    _user, headers = _auth(client, db, username="reason_budget_empty")
+    _user, headers = _auth(client, db, username="reason_budget_empty", role="developer")
     cid = _create_conv(client, headers)["id"]
     writer = "w-reason-empty-token"
     mid = _turn(client, headers, cid, "深入一題", writer=writer).json()["assistant"]["id"]
@@ -190,7 +192,7 @@ def test_put_other_metadata_over_budget_still_413s_and_keeps_row(client, db):
 
 
 def test_put_classified_uses_same_budget_not_a_shorter_one(client, db):
-    _user, headers = _auth(client, db, username="reason_budget_secret")
+    _user, headers = _auth(client, db, username="reason_budget_secret", role="developer")
     cid = _create_conv(client, headers)["id"]
     writer = "w-reason-secret-token"
     mid = _turn(client, headers, cid, "列管題", writer=writer).json()["assistant"]["id"]

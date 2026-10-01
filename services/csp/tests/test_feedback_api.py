@@ -303,6 +303,27 @@ def test_feedback_csv_includes_user_prompt_for_unclassified(client, db: Session)
     assert rows[1][-1] == "這是助手的回答正文"
 
 
+def test_feedback_csv_strips_inline_thinking(client, db: Session):
+    marker = "ANILA_RAW_MARKER_7f3c9e"
+    admin = make_user(db, username="fb-csv-think-admin", role="admin")
+    owner = make_user(db, username="fb-csv-think-u", role="user")
+    _seed_rated_message(
+        db,
+        owner=owner,
+        rating="down",
+        content=f"<think>{marker}</think>這是回答",
+        user_content=f"<think>{marker}</think>請介紹 ANILA",
+    )
+    resp = client.get(
+        FEEDBACK_URL, headers=_bearer(admin), params={"format": "csv"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert marker.encode() not in resp.content
+    rows = _csv_rows(resp)
+    assert "請介紹 ANILA" in rows[1][-2]
+    assert rows[1][-1] == "這是回答"
+
+
 def test_feedback_csv_honours_the_filters(client, db: Session):
     """匯出的必須就是畫面上那組篩選的結果,不是整庫倒出來。"""
     admin = make_user(db, username="fb-csv-filter-admin", role="admin")

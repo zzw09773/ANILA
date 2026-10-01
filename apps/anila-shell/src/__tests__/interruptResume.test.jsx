@@ -440,11 +440,6 @@ describe("ask_user interrupt — 主聊天流程", () => {
       .disableTitleGeneration()
       .enqueueFrames(interruptFrames(), { sessionId: "sess-think-1" })
       .enqueueSessionAnswerManual();
-    backend.route("POST", "/api/thinking/summarize", (req, { jsonResponse }) => {
-      const added = String(req.body?.added || "");
-      if (!added.includes("續答思考")) return jsonResponse({ summary: null });
-      return jsonResponse({ summary: "整理剛才的選擇" });
-    });
     await mountOrchestrator({ backend });
 
     await sendText("請幫我寫報告");
@@ -462,14 +457,15 @@ describe("ask_user interrupt — 主聊天流程", () => {
 
     const piece = "續答思考";
     await act(async () => {
+      backend.stream.push(namedEventFrame("anila.thinking_summary", { delta: "整理剛才的選擇" }));
       for (let i = 0; i < 100; i += 1) {
         backend.stream.push(namedEventFrame("anila.reasoning", { delta: piece }));
       }
     });
     await waitFor(() => {
-      const calls = backend.requestsFor("/api/thinking/summarize", "POST");
-      expect(calls.some((call) => String(call.body?.added || "").includes("續答思考"))).toBe(true);
+      expect(screen.getByTestId("thinking-summary-headline").textContent).toContain("整理剛才的選擇");
     });
+    expect(backend.requestsFor("/api/thinking/summarize", "POST")).toHaveLength(0);
     expect(screen.getByTestId("thinking-summary-headline").textContent).toContain("整理剛才的選擇");
     expect(screen.queryByText(/續答正文/)).toBeNull();
 

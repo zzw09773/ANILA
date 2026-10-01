@@ -23,6 +23,7 @@ _ARBITRATION = re.compile(
     r"語言|正體|繁體中文|簡體|系統指令|system prompt|instruction|i should|i need|the user asked",
     re.IGNORECASE,
 )
+_CJK_LINE = re.compile(r"[一-鿿]")
 
 _SYSTEM_PROMPT = (
     "你是對話進度播報員。根據模型新增的思考內容，用一句繁體中文向使用者說明"
@@ -43,6 +44,11 @@ def sanitize_summary(text: Optional[str]) -> Optional[str]:
         return None
     first = raw.splitlines()[0].strip().strip("「」\"'")
     if len(first) < 4 or len(first) > MAX_SUMMARY_CHARS:
+        return None
+    # 進度句必須是中文。夾一個漢字的英文代號（原文回聲）不算摘要。
+    cjk_count = len(_CJK_LINE.findall(first))
+    compact = re.sub(r"[\s。．.，,、！!？?：:；;「」\"'（）()]", "", first)
+    if cjk_count < 4 or cjk_count * 2 < len(compact):
         return None
     if _ARBITRATION.search(first):
         return None
@@ -141,5 +147,65 @@ async def summarize_reasoning_batch(
         return None
     except Exception:
         logger.warning("thinking_summary: LLM call failed", exc_info=True)
+        return None
+    return sanitize_summary(content)
+
+
+async def summarize_reasoning_detached(
+    *,
+    added: str,
+    previous: list | None = None,
+    user_id: int | None = None,
+    department_id: int | None = None,
+) -> Optional[str]:
+    """串流途中的摘要。自己開一條連線，commit 並 close 之後才打模型。
+
+    不沿用請求那條已經關掉的 session。失敗回 None，不把原文寫進日誌。
+    """
+    chunk = (added or "").strip()
+    if len(chunk) < MIN_ADDED_CHARS:
+        return None
+    from app.database import SessionLocal
+    from app.services.internal_llm import (
+        InternalCompletionError,
+        _snapshot,
+        complete_chat_prepared,
+    )
+    from app.services.proxy.service import resolve_proxy_tuning
+
+    snapshot = None
+    tuning = None
+    db = SessionLocal()
+    try:
+        model = _summary_model(db)
+        if model is None:
+            return None
+        snapshot = _snapshot(model)
+        tuning = resolve_proxy_tuning(db)
+        db.commit()
+    except Exception:
+        logger.warning("thinking_summary: detached lookup failed")
+        return None
+    finally:
+        db.close()
+    if snapshot is None or tuning is None:
+        return None
+    payload = build_summarize_payload(
+        model=snapshot.name, added=chunk, previous=previous
+    )
+    try:
+        content = await complete_chat_prepared(
+            snapshot,
+            tuning,
+            payload,
+            user_id=user_id,
+            department_id=department_id,
+            on_behalf_of_user=True,
+        )
+    except InternalCompletionError as exc:
+        logger.warning("thinking_summary: LLM call failed status=%s", exc.status_code)
+        return None
+    except Exception:
+        logger.warning("thinking_summary: LLM call failed")
         return None
     return sanitize_summary(content)

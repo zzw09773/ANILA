@@ -7,7 +7,7 @@ import time
 from types import SimpleNamespace
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from anila_core.security.external_content import (
@@ -68,6 +68,12 @@ from app.services.proxy_service import (
     proxy_stream,
 )
 from app.services.endpoint_author_service import visible_endpoint_url
+from app.services.reasoning_gate import (
+    gate_completion_payload,
+    gate_sse_stream,
+    may_see_raw_reasoning,
+    reveal_headers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +92,25 @@ def _endpoint_display_for(
         db=db,
         caller=caller_user,
     )
+
+
+def _reasoning_viewer(user):
+    """角色與 id 要在 session close 之前讀完。串流開始後不能再碰這列。"""
+    reveal = may_see_raw_reasoning(getattr(user, "role", None))
+    return (
+        reveal,
+        getattr(user, "id", None),
+        getattr(user, "department_id", None),
+        reveal_headers(reveal),
+    )
+
+
+def _stamp_reveal(response: Response | None, headers: dict) -> None:
+    """標頭只在 HTTP 出口寫。直接 await 時沒有 Response，回傳值仍是 dict。"""
+    if response is None:
+        return
+    for key, value in headers.items():
+        response.headers[key] = value
 
 
 def pause_request_session(db: Session) -> None:
@@ -1796,16 +1821,19 @@ async def list_models_openai(
     })
 
 
-def _unreadable_credential_stream(exc: HTTPException):
+def _unreadable_credential_stream(exc: HTTPException, extra_headers: dict | None = None):
     """串流已經要開始時，憑證讀不到要走 anila.error，不要用通用的暫時無法使用。"""
     if exc.detail != MODEL_CREDENTIAL_UNREADABLE:
         return None
     from app.services.proxy.service import format_anila_stream_error
 
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if extra_headers:
+        headers.update(extra_headers)
     return StreamingResponse(
         iter([format_anila_stream_error(MODEL_CREDENTIAL_UNREADABLE)]),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=headers,
     )
 
 
@@ -1813,23 +1841,31 @@ async def _complete_dispatched_model(
     request: Request,
     call: DispatchModelCall,
     db: Session,
+    response: Response | None = None,
 ):
     """Agent 帶派工 JWT 呼叫自己核准的底層模型。不查提問者的模型授權。"""
+    # 頭與正文用同一個 reveal。非特權提問者連這一跳也收不到原文。
+    reveal, reveal_user_id, reveal_dept, reveal_hdrs = _reasoning_viewer(call.user)
     pause_request_session(db)
     body = await request.json()
     model_name = body.get("model") if isinstance(body, dict) else None
     if not model_name:
-        raise HTTPException(status_code=400, detail="缺少 model 參數")
+        raise HTTPException(status_code=400, detail="缺少 model 參數", headers=reveal_hdrs)
     base = call.agent.base_model
     if base is None and call.agent.base_model_id is not None:
         base = db.get(ModelRegistry, call.agent.base_model_id)
     approved_name = base.name if base is not None else "（未指定）"
     if base is None or model_name != base.name or not base.is_active:
         if base is not None and model_name == base.name and not base.is_active:
-            raise HTTPException(status_code=403, detail=AGENT_TEMPORARILY_UNAVAILABLE)
+            raise HTTPException(
+                status_code=403,
+                detail=AGENT_TEMPORARILY_UNAVAILABLE,
+                headers=reveal_hdrs,
+            )
         raise HTTPException(
             status_code=403,
             detail=f"此 agent 只核准使用 {approved_name}",
+            headers=reveal_hdrs,
         )
     # 分類來自派工 JWT 簽過的任務或對話，不看 X-ANILA-Task-Id 或 body。
     enforce_dispatched_model_ceiling(db, call, base)
@@ -1850,7 +1886,8 @@ async def _complete_dispatched_model(
     try:
         gateway_api_key = resolve_model_gateway_key(base_snap)
     except HTTPException as exc:
-        streamed = _unreadable_credential_stream(exc) if stream else None
+        exc.headers = {**(exc.headers or {}), **reveal_hdrs}
+        streamed = _unreadable_credential_stream(exc, reveal_hdrs) if stream else None
         if streamed is not None:
             release_request_session(db)
             return streamed
@@ -1873,12 +1910,22 @@ async def _complete_dispatched_model(
             tuning=tuning,
             model=base_snap,
         )
-        return StreamingResponse(
+        gated = gate_sse_stream(
             upstream,
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            reveal=reveal,
+            user_id=reveal_user_id,
+            department_id=reveal_dept,
         )
-    return await proxy_request(
+        return StreamingResponse(
+            gated,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                **reveal_hdrs,
+            },
+        )
+    payload = await proxy_request(
         model=base_snap,
         api_key_id=None,
         user_id=user_id,
@@ -1891,6 +1938,14 @@ async def _complete_dispatched_model(
         tuning=tuning,
         model_name_snapshot=base_snap.name,
     )
+    payload = await gate_completion_payload(
+        payload,
+        reveal=reveal,
+        user_id=reveal_user_id,
+        department_id=reveal_dept,
+    )
+    _stamp_reveal(response, reveal_hdrs)
+    return payload
 
 
 def _attach_applied_skill(payload, applied):
@@ -1922,9 +1977,10 @@ async def chat_completions(
     request: Request,
     caller: Caller | DispatchModelCall = Depends(resolve_chat_caller),
     db: Session = Depends(get_db),
+    response: Response = None,
 ):
     if isinstance(caller, DispatchModelCall):
-        return await _complete_dispatched_model(request, caller, db)
+        return await _complete_dispatched_model(request, caller, db, response)
     pause_request_session(db)
     body = await request.json()
     side, client_passages = _take_external_sidechannel(body)
@@ -2151,6 +2207,7 @@ async def chat_completions(
         # **在 handler 回傳之後才被抽乾**，那時 request scope 的 session 可能
         # 已經關了 —— 所以值要在這裡凍結，不能讓 proxy 那一層自己去查。
         tuning = resolve_proxy_tuning(db)
+        reveal, reveal_user_id, reveal_dept, reveal_hdrs = _reasoning_viewer(user)
         if stream:
             upstream = proxy_stream(
                 target_url=join_upstream_path(
@@ -2184,7 +2241,14 @@ async def chat_completions(
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
-            guarded = _guard_sse_stream(upstream, side, user)
+            # 原文閘在 tee 之前，記憶才不會記下 think 裡的原文。
+            gated = gate_sse_stream(
+                upstream,
+                reveal=reveal,
+                user_id=reveal_user_id,
+                department_id=reveal_dept,
+            )
+            guarded = _guard_sse_stream(gated, side, user)
             teed = _tee_stream_capture_assistant(
                 guarded,
                 on_complete=lambda assistant_text: _schedule_memory_write(
@@ -2205,7 +2269,11 @@ async def chat_completions(
             return StreamingResponse(
                 traced,
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    **reveal_hdrs,
+                },
             )
         # Non-streaming agent call — use proxy_request with a synthetic ModelRegistry-like obj
         # by forwarding to the agent endpoint directly
@@ -2263,6 +2331,12 @@ async def chat_completions(
                     existing_meta["classified"] = True
                 _annotate_agent_reply_payload(payload, agent_name)
                 # 派工這一跳不打模型，不寫 token_usage。
+                payload = await gate_completion_payload(
+                    payload,
+                    reveal=reveal,
+                    user_id=reveal_user_id,
+                    department_id=reveal_dept,
+                )
                 before_echo = len(side.findings)
                 _apply_output_guard(payload, side)
                 # 連線已在出向之前歸還。這筆稽核用同一個 session 再開一筆短交易，
@@ -2280,13 +2354,15 @@ async def chat_completions(
                 # Slice 2b-C: run finished.
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
-                # 出口 2/4（agent 非串流）。
-                return _attach_applied_skill(
+                # 出口 2/4（agent 非串流）。回傳 dict，讓直接 await 的呼叫端能下標。
+                body_out = _attach_applied_skill(
                     _merge_kb_meta(
                         _merge_attachment_trace(payload, attach_inject), kb_meta,
                     ),
                     applied_skill,
                 )
+                _stamp_reveal(response, reveal_hdrs)
+                return body_out
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Agent %s 上游 HTTP 錯誤 url=%s: %s",
@@ -2309,6 +2385,7 @@ async def chat_completions(
                     f"Agent「{agent_name}」上游回應錯誤"
                     f"（HTTP {e.response.status_code}）"
                 ),
+                headers=reveal_hdrs,
             )
         except Exception as e:
             # Fixed caller-facing text; exception may embed the URL.
@@ -2331,6 +2408,7 @@ async def chat_completions(
             raise _HTTPException(
                 status_code=502,
                 detail=f"Agent「{agent_name}」呼叫失敗",
+                headers=reveal_hdrs,
             )
 
     if resolved_model is None:
@@ -2386,6 +2464,7 @@ async def chat_completions(
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     # 同上：串流在 handler 回傳之後才抽乾，值必須在這裡解。
     tuning = resolve_proxy_tuning(db)
+    reveal, reveal_user_id, reveal_dept, reveal_hdrs = _reasoning_viewer(user)
     try:
         caller_authorization, router_extra_headers, usage_kind, gateway_api_key = (
             _prepare_platform_router_forward(
@@ -2393,7 +2472,8 @@ async def chat_completions(
             )
         )
     except HTTPException as exc:
-        streamed = _unreadable_credential_stream(exc) if stream else None
+        exc.headers = {**(exc.headers or {}), **reveal_hdrs}
+        streamed = _unreadable_credential_stream(exc, reveal_hdrs) if stream else None
         if streamed is not None:
             release_request_session(db)
             return streamed
@@ -2448,7 +2528,13 @@ async def chat_completions(
             model=model_snap,
             request_type=request_type,
         )
-        guarded = _guard_sse_stream(upstream, side, user)
+        gated = gate_sse_stream(
+            upstream,
+            reveal=reveal,
+            user_id=reveal_user_id,
+            department_id=reveal_dept,
+        )
+        guarded = _guard_sse_stream(gated, side, user)
         teed = _tee_stream_capture_assistant(
             guarded,
             on_complete=lambda assistant_text: _schedule_memory_write(
@@ -2468,7 +2554,11 @@ async def chat_completions(
         return StreamingResponse(
             traced,
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                **reveal_hdrs,
+            },
         )
     payload = await proxy_request(
         model=model_snap,
@@ -2493,6 +2583,12 @@ async def chat_completions(
         usage_kind=usage_kind,
         model_name_snapshot=model_snap.name,
     )
+    payload = await gate_completion_payload(
+        payload,
+        reveal=reveal,
+        user_id=reveal_user_id,
+        department_id=reveal_dept,
+    )
     before_echo = len(side.findings)
     _apply_output_guard(payload, side)
     # 同上：出向期間 session 是關的，收尾再開一筆短交易寫稽核。
@@ -2505,13 +2601,15 @@ async def chat_completions(
         assistant_message=assistant_text,
         is_encrypted=inherited_encryption,
     )
-    # 出口 4/4（model 非串流）。
-    return _attach_applied_skill(
+    # 出口 4/4（model 非串流）。回傳 dict，讓直接 await 的呼叫端能下標。
+    body_out = _attach_applied_skill(
         _merge_kb_meta(
             _merge_attachment_trace(payload, attach_inject), kb_meta,
         ),
         applied_skill,
     )
+    _stamp_reveal(response, reveal_hdrs)
+    return body_out
 
 
 @router.post("/v1/agents/{agent_name}/sessions/{session_id}/answer")
@@ -2577,6 +2675,7 @@ async def resume_agent_session(
     # ⚠ 在 closure **外面**解析：``_passthrough_stream`` 是 StreamingResponse 的
     # generator，執行時 handler 已經回傳，session 不保證還活著。
     llm_timeout = float(get_setting(db, "proxy.llm_timeout"))
+    reveal, reveal_user_id, reveal_dept, reveal_hdrs = _reasoning_viewer(user)
 
     async def _passthrough_stream():
         try:
@@ -2610,9 +2709,18 @@ async def resume_agent_session(
 
     db.close()
     return StreamingResponse(
-        _passthrough_stream(),
+        gate_sse_stream(
+            _passthrough_stream(),
+            reveal=reveal,
+            user_id=reveal_user_id,
+            department_id=reveal_dept,
+        ),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            **reveal_hdrs,
+        },
     )
 
 

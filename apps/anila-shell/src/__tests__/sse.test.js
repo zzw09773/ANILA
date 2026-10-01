@@ -217,6 +217,21 @@ describe("dispatchSseEvent", () => {
     expect(acc.get()).toBe("");
   });
 
+  it("routes anila.thinking_summary onto onThinkingSummary", () => {
+    const onThinkingSummary = vi.fn();
+    const acc = makeAccumulator();
+    dispatchSseEvent(
+      {
+        event: "anila.thinking_summary",
+        data: JSON.stringify({ delta: "正在整理題目。" }),
+        raw: "",
+      },
+      { onThinkingSummary, accumulator: acc },
+    );
+    expect(onThinkingSummary).toHaveBeenCalledWith("正在整理題目。");
+    expect(acc.get()).toBe("");
+  });
+
   it("ignores anila.reasoning frames without delta", () => {
     const onReasoning = vi.fn();
     dispatchSseEvent(

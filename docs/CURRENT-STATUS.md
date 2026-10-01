@@ -73,6 +73,10 @@ cd apps/csp-governance-ui && npm test && npm run build
 
 Shell 對話列不再放「產出」按鈕。那個連結只帶對話 Task 的 id；Shell 建立的 Task 是 `source_scope=none`、沒有知識庫，對應對話的 `collection_id` 也是空的，ANILA LM 沒有可開的工作區，Studio 綁定無從預填。
 
+## 原始思考（2026-10-01）
+
+模型原文只留給擁有者、管理員、開發者。CSP 在聊天出口剝掉 `reasoning_content`、`reasoning`、`<think>` 與 thought 開頭，並在伺服器產生中文摘要（`anila_thinking_summary`）。摘要失敗不擋回答；原文不確定時也不外送。重新載入舊對話時，不可看原文的人拿不到 `metadata.reasoning`。
+
 ## 內部服務身分（自動核發）
 
 CSP 在啟動時，以及之後每個週期（預設一小時），為內建名單核發憑證。人不產生、也不複製這些明文。

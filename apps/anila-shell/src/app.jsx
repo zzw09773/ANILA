@@ -53,7 +53,6 @@ import {
   listRouterModels as apiListRouterModels,
   setConversationRouterModel as apiSetConversationRouterModel,
   setConversationThinking as apiSetConversationThinking,
-  summarizeThinking as apiSummarizeThinking,
   createConversation as apiCreateConversation,
   adoptConversation as apiAdoptConversation,
   getConversation as apiGetConversation,
@@ -151,7 +150,6 @@ import {
 import { persistFieldsFromSaved } from "./runtime/reasoningPersist.js";
 import {
   appendThinkingSummary,
-  createThinkingSummaryPump,
   latestAssistantMessageId,
   thinkingStatusFromFinish,
 } from "./runtime/thinkingSummary.js";
@@ -471,6 +469,14 @@ export function injectionMetaFields(meta) {
   return {
     promptInjectionSuspected: m.prompt_injection_suspected === true,
   };
+}
+
+const liveThinkingPumpMaps = new Set();
+
+export function liveThinkingPumpCount() {
+  let count = 0;
+  for (const map of liveThinkingPumpMaps) count += map.size;
+  return count;
 }
 
 export function agentReplyMetaFields(meta) {
@@ -964,6 +970,20 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
+  const thinkingPumpRef = useRef(null);
+  if (thinkingPumpRef.current == null) {
+    const map = new Map();
+    liveThinkingPumpMaps.add(map);
+    thinkingPumpRef.current = map;
+  }
+  useEffect(() => {
+    const map = thinkingPumpRef.current;
+    if (map) liveThinkingPumpMaps.add(map);
+    return () => {
+      map?.clear();
+      liveThinkingPumpMaps.delete(map);
+    };
+  }, []);
   // 續答時把新階段的 index 接到既有清單後面。一般送出是 0。
   const stageBaseRef = useRef(new Map());
   const streamInterruptRef = useRef(new Map());
@@ -1050,6 +1070,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             });
           }
           streamOpts.onThinkingStage?.(event);
+        },
+        onThinkingSummary: (text) => {
+          if (assistantId) {
+            thinkingPumpRef.current.get(assistantId)?.pushSummary?.(text);
+          }
+          streamOpts.onThinkingSummary?.(text);
         },
         onDocument: (payload) => {
           if (assistantId) {
@@ -2276,7 +2302,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             },
             onReasoning: (delta) => {
               accumulatedReasoning += delta;
-              applyLiveReasoningDelta(convId, assistantId, delta, thinkingPump);
+              applyLiveReasoningDelta(convId, assistantId, delta);
             },
           });
           // 按停止時 streamChatCompletion 是正常返回而不是拋出(sse.js:153),
@@ -2429,8 +2455,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }));
   }
 
-  function applyLiveReasoningDelta(convId, msgId, delta, thinkingPump) {
-    thinkingPump?.feed(delta);
+  function applyLiveReasoningDelta(convId, msgId, delta) {
     setMessagesByConv((prev) => ({
       ...prev,
       [convId]: (prev[convId] || []).map((m) =>
@@ -2448,37 +2473,22 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           .map((row) => ({ text: row.text, at: row.at }))
       : [];
     const startedAt = Date.now();
-    if (hideThinking) {
-      return {
-        feed() {},
-        async flush() {},
-        close() {},
-        startedAt,
-        snapshot() {
-          return { thinkingSummaries: [] };
-        },
-      };
-    }
-    const pump = createThinkingSummaryPump({
-      requestSummary: async (added) => {
-        const data = await apiSummarizeThinking(authRequest, {
-          added,
-          previous: previous.map((row) => ({ text: row.text })),
-        });
-        return data?.summary || null;
-      },
-      onSummary: (text) => {
+    const pump = {
+      // 摘要由伺服器產生。這裡只接收 anila.thinking_summary，不再打 /api/thinking/summarize。
+      pushSummary(text) {
+        if (hideThinking) return;
         const next = appendThinkingSummary(previous, text, Date.now());
         previous.splice(0, previous.length, ...next);
         updateMsg(convId, assistantId, { thinkingSummaries: [...previous] });
       },
-    });
-    return {
-      feed: (delta) => pump.feed(delta),
-      flush: () => pump.flush(),
-      close: () => pump.close(),
+      feed() {},
+      async flush() {},
+      close() {
+        if (assistantId != null) thinkingPumpRef.current?.delete(assistantId);
+      },
       startedAt,
       snapshot(extra = {}) {
+        if (hideThinking) return { thinkingSummaries: [] };
         const summaries = [...previous];
         const elapsed = Date.now() - startedAt;
         const thought = summaries.length > 0 || Boolean(extra.hadReasoning);
@@ -2496,6 +2506,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         };
       },
     };
+    if (assistantId != null) thinkingPumpRef.current.set(assistantId, pump);
+    return pump;
   }
 
   function updateMsg(convId, msgId, patch) {
@@ -2743,7 +2755,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
-            applyLiveReasoningDelta(convId, msg.id, delta, thinkingPump);
+            applyLiveReasoningDelta(convId, msg.id, delta);
+          },
+          onThinkingSummary: (text) => {
+            thinkingPump.pushSummary?.(text);
           },
           onRescue: (payload) => {
             const line = rescueStatusFromEvent(payload);
@@ -3436,7 +3451,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
-            applyLiveReasoningDelta(convId, assistantId, delta, thinkingPump);
+            applyLiveReasoningDelta(convId, assistantId, delta);
           },
         });
         // ⚠ 使用者按停止時 streamChatCompletion 是「正常返回」而不是拋出
@@ -3685,7 +3700,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               },
               onReasoning: (delta) => {
                 accumulatedReasoning += delta;
-                applyLiveReasoningDelta(convId, placeholderId, delta, thinkingPump);
+                applyLiveReasoningDelta(convId, placeholderId, delta);
               },
             });
             thinkingPump.close();
@@ -3796,7 +3811,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         },
         onReasoning: (delta) => {
           accumulatedReasoning += delta;
-          applyLiveReasoningDelta(convId, assistantMsg.id, delta, thinkingPump);
+          applyLiveReasoningDelta(convId, assistantMsg.id, delta);
         },
       });
     } catch (err) {
@@ -3981,7 +3996,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           },
           onReasoning: (delta) => {
             accumulatedReasoning += delta;
-            applyLiveReasoningDelta(convId, placeholderId, delta, thinkingPump);
+            applyLiveReasoningDelta(convId, placeholderId, delta);
           },
         });
         thinkingPump.close();
@@ -3995,6 +4010,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       },
     });
     if (!streamPhase.ok) {
+      thinkingPump.close();
       setMessagesByConv((prev) => ({
         ...prev,
         [convId]: sanitizeRestoredMessages(streamPhase.messages),

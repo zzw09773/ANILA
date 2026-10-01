@@ -138,6 +138,8 @@ def _drive(
     monkeypatch.setattr(rs, "_stream_llm_sse", fake_stream)
 
     async def run() -> str:
+        # 這組測試看的是 STAGE 行怎麼折進思考摺頁。原文通道要開著，閘門另有測試。
+        rs._REVEAL_REASONING.set(True)
         parts: list[str] = []
         async for line in rs._router_streaming(
             "sk",

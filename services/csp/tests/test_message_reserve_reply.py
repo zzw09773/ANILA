@@ -30,9 +30,9 @@ def _bypass_dev_secret_gate(monkeypatch):
     monkeypatch.setattr(ss_module, "assert_no_dev_defaults", lambda: None)
 
 
-def _auth(client: TestClient, db: Session, username: str = "reserve_user"
-          ) -> tuple[User, dict]:
-    user = make_user(db, username=username)
+def _auth(client: TestClient, db: Session, username: str = "reserve_user",
+          role: str = "user") -> tuple[User, dict]:
+    user = make_user(db, username=username, role=role)
     return user, {"Authorization": f"Bearer {login(client, username=username)}"}
 
 

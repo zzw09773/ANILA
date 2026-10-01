@@ -128,3 +128,40 @@ async def complete_chat(
     if not text:
         raise InternalCompletionError(None)
     return text
+
+
+async def complete_chat_prepared(
+    snapshot,
+    tuning,
+    body: dict,
+    *,
+    user_id: int | None,
+    department_id: int | None = None,
+    on_behalf_of_user: bool = False,
+) -> str:
+    """連線已經 commit 並且 close 之後才打模型。這裡不再碰 Session。"""
+    from app.services.proxy.service import proxy_request, sync_model_deadline
+
+    payload = dict(body)
+    payload["model"] = snapshot.name
+    record = user_id is not None
+    try:
+        result = await proxy_request(
+            model=snapshot,
+            api_key_id=None,
+            user_id=user_id if user_id is not None else 0,
+            department_id=department_id,
+            request_body=payload,
+            endpoint_path=f"/{snapshot.api_version}/chat/completions",
+            record_usage=record,
+            usage_kind="inference" if on_behalf_of_user else "platform",
+            request_type_override=None if on_behalf_of_user else "internal",
+            tuning=tuning,
+            deadline=sync_model_deadline(),
+        )
+    except HTTPException as exc:
+        raise InternalCompletionError(exc.status_code) from exc
+    text = _assistant_text(result).strip()
+    if not text:
+        raise InternalCompletionError(None)
+    return text

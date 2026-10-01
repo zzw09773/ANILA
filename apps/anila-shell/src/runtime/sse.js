@@ -166,6 +166,7 @@ export async function streamChatCompletion({
   onQueue,
   // 階段標題。{index, title, status}，同一則訊息上一條清單。
   onThinkingStage,
+  onThinkingSummary,
   onDocument,
   // 這一則實際套用的 skill（手動或自動）。
   onSkill,
@@ -275,6 +276,7 @@ export async function streamChatCompletion({
         onRescue,
         onQueue,
         onThinkingStage,
+        onThinkingSummary,
         onDocument,
         onSkill,
         onError: (payload) => {
@@ -377,6 +379,17 @@ export function dispatchSseEvent(event, callbacks) {
         if (payload?.delta) callbacks.onReasoning?.(payload.delta);
       },
       "anila.reasoning",
+    );
+    return;
+  }
+  if (event.event === "anila.thinking_summary") {
+    safeJsonInvoke(
+      event.data,
+      (payload) => {
+        const text = typeof payload?.delta === "string" ? payload.delta : "";
+        if (text) callbacks.onThinkingSummary?.(text);
+      },
+      "anila.thinking_summary",
     );
     return;
   }

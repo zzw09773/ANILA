@@ -33,6 +33,12 @@ def test_sanitize_rejects_language_arbitration_and_empty():
     assert sanitize_summary("ok") is None
 
 
+def test_sanitize_rejects_english_echo_of_raw_reasoning():
+    assert sanitize_summary("ANILA_RAW_MARKER_7f3c9e") is None
+    assert sanitize_summary("Sorting the question now.") is None
+    assert sanitize_summary("整理ANILA_RAW_MARKER_7f3c9e題") is None
+
+
 def test_sanitize_does_not_keep_a_raw_reasoning_dump():
     raw = (
         "The user asked about the universe. I need to check the language "
@@ -122,17 +128,31 @@ def test_summarize_endpoint_is_authenticated_and_fail_open(client, db, monkeypat
     token = login(client, username="think_sum_user")
     headers = {"Authorization": f"Bearer {token}"}
 
+    calls = {"n": 0}
+
     async def _fake(*_a, **_k):
+        calls["n"] += 1
         return "正在整理暗物質與暗能量的差異。"
 
     monkeypatch.setattr(
         "app.api.thinking.summarize_reasoning_batch",
         _fake,
     )
-    ok = client.post(
+    denied_role = client.post(
         "/api/thinking/summarize",
         json={"added": "暗物質佔 27%。" * 10, "previous": []},
         headers=headers,
+    )
+    assert denied_role.status_code == 200, denied_role.text
+    assert denied_role.json()["summary"] is None
+    assert calls["n"] == 0
+
+    make_user(db, username="think_sum_admin", role="admin")
+    admin_headers = {"Authorization": f"Bearer {login(client, username='think_sum_admin')}"}
+    ok = client.post(
+        "/api/thinking/summarize",
+        json={"added": "暗物質佔 27%。" * 10, "previous": []},
+        headers=admin_headers,
     )
     assert ok.status_code == 200, ok.text
     assert ok.json()["summary"] == "正在整理暗物質與暗能量的差異。"

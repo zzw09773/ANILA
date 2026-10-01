@@ -19,6 +19,11 @@ from app.models.user import User
 from app.services import conversation_service as svc
 from app.services import message_tree as mtree
 from app.services.auth_service import is_admin_tier
+from app.services.reasoning_gate import (
+    may_see_raw_reasoning,
+    redact_message_metadata,
+    redact_visible_text,
+)
 from app.services.usage_service import get_conversation_usage
 from app.schemas.base import ApiResponseModel
 
@@ -315,13 +320,34 @@ def _attachments_for_sibling_group(
     )
 
 
-def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageOut:
+def _stored_metadata(metadata, user: User | None):
+    """非特權寫入直接丟掉 reasoning。None 維持 None，不要改成空 dict。"""
+    if metadata is None:
+        return None
+    return redact_message_metadata(metadata, reveal=may_see_raw_reasoning(user))
+
+
+def _stored_content(content, user: User | None):
+    """非特權寫入的正文也剝掉行內思考。None 代表這次不改內容。"""
+    if content is None:
+        return None
+    return redact_visible_text(content, reveal=may_see_raw_reasoning(user))
+
+
+def _message_out(
+    msg: Message,
+    sibling_ids: list[int] | None = None,
+    *,
+    user: User | None = None,
+) -> MessageOut:
     """Build MessageOut with derived sibling nav fields.
 
     When the message belongs to a multi-member sibling group (same
     ``parent_id``, via ``mtree.sibling_groups``), surface every attachment
     bound to any sibling so branch chips match the turn. Solo messages keep
     the ORM ``msg.attachments`` relationship unchanged.
+
+    沒有檢視者就當一般使用者：舊資料列裡的 metadata.reasoning 也不回傳。
     """
     ids = sibling_ids if sibling_ids is not None else [msg.id]
     try:
@@ -330,11 +356,14 @@ def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageO
         index = 0
         ids = [msg.id]
     base = MessageOut.model_validate(msg)
+    reveal = may_see_raw_reasoning(user)
     update: dict = {
         "parent_id": msg.parent_id,
         "sibling_index": index,
         "sibling_count": len(ids),
         "sibling_ids": ids,
+        "metadata": redact_message_metadata(base.metadata, reveal=reveal),
+        "content": redact_visible_text(base.content, reveal=reveal),
     }
     # Symmetric union is deliberate: siblings are two versions of the same
     # question, so their chips must agree. Solo → leave ORM attachments alone.
@@ -351,11 +380,14 @@ def _message_out(msg: Message, sibling_ids: list[int] | None = None) -> MessageO
 
 
 def _enrich_message_list(
-    messages: list[Message], edges: list[tuple[int, int | None]],
+    messages: list[Message],
+    edges: list[tuple[int, int | None]],
+    *,
+    user: User | None = None,
 ) -> list[MessageOut]:
     groups = mtree.sibling_groups(edges)
     return [
-        _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+        _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=user)
         for msg in messages
     ]
 
@@ -419,17 +451,21 @@ def _conversation_detail(
     meta = svc.get_user_meta(db, user.id, conv.id)
     data = _enrich_out(conv, meta, db=db, user=user)
     data["active_leaf_message_id"] = conv.active_leaf_message_id
-    data["messages"] = _enrich_message_list(messages, edges)
+    data["messages"] = _enrich_message_list(messages, edges, user=user)
     return ConversationDetail(**data)
 
 
 def _path_out(
-    db: Session, conv: Conversation, messages: list[Message],
+    db: Session,
+    conv: Conversation,
+    messages: list[Message],
+    *,
+    user: User | None = None,
 ) -> ConversationPathOut:
     edges = mtree.load_edges(db, conv.id)
     return ConversationPathOut(
         active_leaf_message_id=conv.active_leaf_message_id,
-        messages=_enrich_message_list(messages, edges),
+        messages=_enrich_message_list(messages, edges, user=user),
     )
 
 
@@ -754,12 +790,12 @@ def adopt_compare_answer(
         db,
         current_user,
         title=body.title,
-        user_content=body.user_content,
-        assistant_content=body.assistant_content,
+        user_content=_stored_content(body.user_content, current_user),
+        assistant_content=_stored_content(body.assistant_content, current_user),
         agent_id=body.agent_id,
         agent_name=body.agent_name,
         origin=origin,
-        assistant_metadata=body.assistant_metadata,
+        assistant_metadata=_stored_metadata(body.assistant_metadata, current_user),
         assistant_trace_id=body.assistant_trace_id,
         assistant_latency_ms=body.assistant_latency_ms,
         assistant_agent_name=body.assistant_agent_name,
@@ -831,9 +867,13 @@ def search_conversations(
                 .first()
             )
             if msg and msg.content:
-                idx = msg.content.lower().find(q.lower())
-                start = max(0, idx - 20)
-                snippet = ("…" if start > 0 else "") + msg.content[start:start + 80].strip()
+                visible = redact_visible_text(
+                    msg.content, reveal=may_see_raw_reasoning(current_user),
+                ) or ""
+                idx = visible.lower().find(q.lower())
+                if idx >= 0:
+                    start = max(0, idx - 20)
+                    snippet = ("…" if start > 0 else "") + visible[start:start + 80].strip()
         # L242 read-audit when snippet content is actually exposed.
         # Same AuditLog shape as log_classified_access; defer commit to
         # one WAL fsync after the loop (interactive sidebar, limit≤100).
@@ -934,19 +974,19 @@ def append_message(
     msg = svc.append_message(
         db, conv_id, current_user,
         role=body.role,
-        content=body.content,
+        content=_stored_content(body.content, current_user),
         trace_id=body.trace_id,
         latency_ms=body.latency_ms,
         model_name=body.model_name,
         agent_name=body.agent_name,
-        metadata=body.metadata,
+        metadata=_stored_metadata(body.metadata, current_user),
         parent_id=body.parent_id,
         parent_id_explicit=explicit,
         set_active=body.set_active,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
 
 
 @router.post("/{conv_id}/turn", response_model=TurnHeadOut, status_code=201)
@@ -966,18 +1006,21 @@ def start_turn(
     """
     user_msg, assistant_msg, unanswered_msg = svc.start_turn(
         db, conv_id, current_user,
-        content=body.content,
+        content=_stored_content(body.content, current_user),
         writer=body.stream_writer,
         model_name=body.model_name,
         agent_name=body.agent_name,
-        user_metadata=body.metadata,
+        user_metadata=_stored_metadata(body.metadata, current_user),
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
     return TurnHeadOut(
-        user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
+        user=_message_out(
+            user_msg, groups.get(user_msg.parent_id, [user_msg.id]), user=current_user,
+        ),
         assistant=_message_out(
             assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+            user=current_user,
         ),
         unanswered=(
             None
@@ -985,6 +1028,7 @@ def start_turn(
             else _message_out(
                 unanswered_msg,
                 groups.get(unanswered_msg.parent_id, [unanswered_msg.id]),
+                user=current_user,
             )
         ),
     )
@@ -1016,7 +1060,7 @@ def reserve_reply(
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
 
 
 @router.post(
@@ -1040,18 +1084,21 @@ def branch_turn(
     """
     user_msg, assistant_msg = svc.branch_turn(
         db, conv_id, message_id, current_user,
-        content=body.content,
+        content=_stored_content(body.content, current_user),
         writer=body.stream_writer,
         model_name=body.model_name,
         agent_name=body.agent_name,
-        user_metadata=body.metadata,
+        user_metadata=_stored_metadata(body.metadata, current_user),
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
     return TurnHeadOut(
-        user=_message_out(user_msg, groups.get(user_msg.parent_id, [user_msg.id])),
+        user=_message_out(
+            user_msg, groups.get(user_msg.parent_id, [user_msg.id]), user=current_user,
+        ),
         assistant=_message_out(
             assistant_msg, groups.get(assistant_msg.parent_id, [assistant_msg.id]),
+            user=current_user,
         ),
     )
 
@@ -1071,17 +1118,17 @@ def branch_message(
     msg = svc.branch_message(
         db, conv_id, message_id, current_user,
         role=body.role,
-        content=body.content,
+        content=_stored_content(body.content, current_user),
         trace_id=body.trace_id,
         latency_ms=body.latency_ms,
         model_name=body.model_name,
         agent_name=body.agent_name,
-        metadata=body.metadata,
+        metadata=_stored_metadata(body.metadata, current_user),
         set_active=body.set_active,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
 
 
 @router.put("/{conv_id}/active-leaf", response_model=ConversationPathOut)
@@ -1092,7 +1139,7 @@ def set_active_leaf(
     current_user: User = Depends(get_current_user),
 ):
     conv, path = svc.set_active_leaf(db, conv_id, current_user, body.message_id)
-    return _path_out(db, conv, path)
+    return _path_out(db, conv, path, user=current_user)
 
 
 @router.delete(
@@ -1106,7 +1153,7 @@ def delete_message_branch(
     current_user: User = Depends(get_current_user),
 ):
     conv, path = svc.delete_message_branch(db, conv_id, message_id, current_user)
-    return _path_out(db, conv, path)
+    return _path_out(db, conv, path, user=current_user)
 
 
 @router.put("/{conv_id}/messages/{message_id}/rating", response_model=MessageOut)
@@ -1127,7 +1174,7 @@ def set_message_rating(
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
 
 
 @router.put("/{conv_id}/messages/{message_id}", response_model=MessageOut)
@@ -1145,17 +1192,17 @@ def update_message(
     """
     msg = svc.update_message_content(
         db, conv_id, message_id, current_user,
-        content=body.content,
+        content=_stored_content(body.content, current_user),
         trace_id=body.trace_id,
         latency_ms=body.latency_ms,
         model_name=body.model_name,
         agent_name=body.agent_name,
-        metadata=body.metadata,
+        metadata=_stored_metadata(body.metadata, current_user),
         stream_writer=body.stream_writer,
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return _message_out(msg, groups.get(msg.parent_id, [msg.id]))
+    return _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────

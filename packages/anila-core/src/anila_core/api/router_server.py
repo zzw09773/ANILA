@@ -75,6 +75,11 @@ from ..compact.strip_images import (
     strip_images_openai,
     visible_prompt_for_tokenize,
 )
+from ..text.leaked_thought import (
+    CJK_RE as _CJK_RE,
+    THOUGHT_PREFIX_RE as _THOUGHT_PREFIX_RE,
+    sanitize_leaked_thought as _sanitize_leaked_thought,
+)
 from ..text.model_tokenize import tokenize_prompt
 from ..prompts.sampling import get_sampling
 from ..providers.guards import is_empty_reply
@@ -1359,6 +1364,14 @@ async def _resume_router_ask(
                             for frame in _router_llm_outage_frames(err):
                                 yield frame
                             return
+                        if kind == "thinking_summary":
+                            text = str(ev.get("content") or "").strip()
+                            if text:
+                                _note_summary_line(text)
+                                yield _make_event(
+                                    "anila.thinking_summary", {"delta": text}
+                                )
+                            continue
                         if kind == "reasoning":
                             visible_reason, stage_events = live_stages.feed_reasoning(
                                 ev["content"]
@@ -1601,14 +1614,8 @@ def _ask_event_payload(record: InterruptRecord) -> dict[str, Any]:
     }
 
 
-# Matches a "thought" / "thinking" line at the very start of content. Gemma-
-# style models emit this when they ignore the "no chain-of-thought in content"
-# system rule. gpt-oss class models put their analysis in a separate
-# `reasoning_content` field instead, so they never trigger this path.
-_THOUGHT_PREFIX_RE = re.compile(
-    r"^\s*(?:\*{0,2}|`)?(?:thought|thinking)(?:\*{0,2}|`)?\s*[:：]?\s*(?:\n|$)",
-    re.IGNORECASE,
-)
+# thought／thinking 開頭的切法在 ``anila_core.text.leaked_thought``，
+# 與 CSP 共用，避免兩端把同一段文字切成不同結果。
 
 # ---------------------------------------------------------------------------
 # X-ANILA-Route — the Router's answer channel, declared to CSP
@@ -1661,82 +1668,6 @@ def _resolve_route_signal(inbound_headers: Mapping[str, str]) -> str:
                 return _ROUTE_FORCED
             break
     return _ROUTE_DIRECT
-
-
-_CJK_RE = re.compile(r"[一-鿿]")
-
-
-def _sanitize_leaked_thought(content: str, reasoning: str | None) -> tuple[str, str]:
-    """Split leaked thought-prefixed content into (answer, reasoning).
-
-    Observed structure for gemma-class models that ignore the no-CoT rule:
-      ``thought\\n<English-dominant analysis, possibly with blank lines>\\n
-      <optional handoff marker>\\n<long CJK answer block>``
-
-    The thought/answer boundary is unreliable when approached as a single
-    marker (models vary: some leave a blank line, some glue ``.aggression.首先``
-    directly). The one stable invariant across all observed samples is:
-      - thought is English-dominant
-      - the final answer is a sustained CJK block
-
-    Algorithm:
-      1. If content doesn't start with "thought/thinking", passthrough — this
-         covers gpt-oss (reasoning already in its own field) and any
-         well-behaved model.
-      2. Scan forward for the first CJK character whose 80-char lookahead
-         contains ≥ 20 CJK characters. That's the start of the sustained
-         answer block.
-      3. Rewind to the nearest clean break before it: previous blank line,
-         newline, or sentence-terminator — whichever is closest. This pulls
-         the final handoff sentence (``Decision: Reply directly.`` or the
-         English concluding sentence) out of the user-visible answer.
-      4. If no sustained CJK block is found, dump the entire leak into
-         reasoning with a placeholder answer so the UI isn't empty.
-    """
-    reasoning = (reasoning or "").strip()
-    if not content or not _THOUGHT_PREFIX_RE.match(content):
-        return content, reasoning
-
-    # Scan for the first CJK char that begins a *dense* CJK run. Density
-    # (≥50 %) is the key filter — it rejects incidental CJK inside the
-    # English thought section (e.g. an agent name like "軍人法規智慧助手"
-    # that happens to appear in the analysis) while accepting the sustained
-    # answer block.
-    window = 80
-    split_at = -1
-    for m in _CJK_RE.finditer(content):
-        i = m.start()
-        if i < 10:  # still inside the "thought" header
-            continue
-        lookahead = content[i : i + window]
-        cjk_count = len(_CJK_RE.findall(lookahead))
-        # Require both ≥50% density *and* ≥20 absolute CJK chars. The
-        # minimum count rejects short CJK tails — e.g. Gemma echoing the
-        # user's 5-char query ("顯示參數表") after a broken DISPATCH line.
-        if cjk_count >= 20 and cjk_count * 2 >= len(lookahead):
-            split_at = i
-            break
-
-    if split_at > 0:
-        # Pull leading markdown markers (bold/heading/list) back into answer.
-        j = split_at
-        while j > 0 and content[j - 1] in "*#":
-            j -= 1
-        # A hyphen list marker needs a trailing space to qualify.
-        if j >= 2 and content[j - 2 : j] in ("- ", "+ "):
-            j -= 2
-        split_at = j
-        thought = content[:split_at].rstrip()
-        answer = content[split_at:].strip()
-        if answer and thought:
-            merged = (reasoning + "\n\n" + thought).strip() if reasoning else thought
-            return answer, merged
-
-    merged = (reasoning + "\n\n" + content).strip() if reasoning else content
-    placeholder = (
-        "（Router 已完成分析但未能自動萃取最終回覆，請展開上方「思考過程」檢視。）"
-    )
-    return placeholder, merged
 
 
 def _parse_dispatch(text: str) -> tuple[str, str, int, int] | None:
@@ -1907,8 +1838,216 @@ def _make_chunk(
     return "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
 
 
+# CSP 用這個回應頭告訴 Router：這位呼叫者能不能看模型原文。
+# 只有這次回應明確寫 1 才送出。缺頭與 0 都藏起來。明確的 0 不會被後來的 1 翻回來。
+_REVEAL_REASONING: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "anila_reveal_reasoning", default=None
+)
+_THINKING_SUMMARIES: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "anila_thinking_summaries", default=None
+)
+_SEEN_RAW: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "anila_seen_raw_reasoning", default=None
+)
+# 用量與畫面上的摘要／階段不是原文。其餘 reasoning*／thinking* 在隱藏時整鍵拿掉。
+_VISIBLE_REASONING_KEYS = frozenset({
+    "reasoning_tokens",
+    "reasoning_tokens_source",
+    "thinking_summaries",
+    "thinking_summary",
+    "thinking_stages",
+    "thinking_stage",
+    "thinking_applied",
+})
+_FREE_TEXT_KEYS = frozenset({"detail", "text", "message"})
+_THINK_SPAN_RE = re.compile(
+    r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _reset_reasoning_gate() -> None:
+    _REVEAL_REASONING.set(None)
+    _THINKING_SUMMARIES.set([])
+    _SEEN_RAW.set([])
+
+
+def _raw_reasoning_visible() -> bool:
+    return _REVEAL_REASONING.get() is True
+
+
+def _note_reveal_header(response) -> None:
+    """只在頭真的在時才寫。沒帶頭不要改決定；明確的 0 也不要被後來的 1 蓋掉。
+
+    HTTP 頭大小寫不分。httpx 自己會折，測試用的普通 dict 不會，所以這裡再掃一次。
+    """
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return
+    try:
+        raw = headers.get("x-anila-reveal-reasoning")
+        if raw is None:
+            for key, value in headers.items():
+                if str(key).lower() == "x-anila-reveal-reasoning":
+                    raw = value
+                    break
+    except Exception:
+        return
+    if raw is None:
+        return
+    token = str(raw).strip()
+    current = _REVEAL_REASONING.get()
+    if token == "0":
+        _REVEAL_REASONING.set(False)
+    elif token == "1" and current is not False:
+        _REVEAL_REASONING.set(True)
+
+
+def _note_seen_raw(text: str) -> None:
+    if not isinstance(text, str):
+        return
+    cleaned = text.strip()
+    if len(cleaned) < 8:
+        return
+    rows = _SEEN_RAW.get()
+    if rows is None:
+        rows = []
+        _SEEN_RAW.set(rows)
+    if cleaned in rows:
+        return
+    rows.append(cleaned)
+    if len(rows) > 32:
+        del rows[:-32]
+
+
+def _collect_raw_strings(value, bucket: list[str]) -> None:
+    if isinstance(value, str):
+        if value.strip():
+            bucket.append(value)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _collect_raw_strings(item, bucket)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_raw_strings(item, bucket)
+
+
+def _is_hidden_raw_key(key: object) -> bool:
+    if not isinstance(key, str) or key in _VISIBLE_REASONING_KEYS:
+        return False
+    return (
+        key == "reasoning"
+        or key.startswith("reasoning_")
+        or key == "thinking"
+        or key.startswith("thinking_")
+    )
+
+
+def _strip_think_spans(text: str) -> str:
+    cleaned = _THINK_SPAN_RE.sub("", text)
+    open_at = cleaned.lower().find("<think")
+    if open_at >= 0:
+        cleaned = cleaned[:open_at]
+    return cleaned
+
+
+def _strip_seen_raw(text: str, seen: list[str]) -> str:
+    cleaned = text
+    for raw in sorted((item for item in seen if len(item) >= 8), key=len, reverse=True):
+        if raw in cleaned:
+            cleaned = cleaned.replace(raw, "")
+    return cleaned
+
+
+def _scrub_detail_text(text: str, seen: list[str]) -> str:
+    """detail 不靠先前看過的原文：先剝 think，再切 thought 開頭，最後才扣看過的片段。"""
+    cleaned = _strip_think_spans(text)
+    cleaned, _hidden = _sanitize_leaked_thought(cleaned, None)
+    return _strip_seen_raw(cleaned, seen)
+
+
+def _scrub_free_text(key: str, text: str, seen: list[str]) -> str:
+    if key == "detail":
+        return _scrub_detail_text(text, seen)
+    return _strip_think_spans(text)
+
+
+def _scrub_node(value, seen: list[str]):
+    if isinstance(value, dict):
+        collected: list[str] = []
+        for key, item in value.items():
+            if _is_hidden_raw_key(key):
+                _collect_raw_strings(item, collected)
+        for piece in collected:
+            _note_seen_raw(piece)
+        local = list(seen)
+        for piece in collected:
+            if len(piece) >= 8 and piece not in local:
+                local.append(piece)
+        out = {}
+        for key, item in value.items():
+            if _is_hidden_raw_key(key):
+                continue
+            if key in _FREE_TEXT_KEYS and isinstance(item, str):
+                out[key] = _scrub_free_text(key, item, local)
+            else:
+                out[key] = _scrub_node(item, local)
+        return out
+    if isinstance(value, list):
+        return [_scrub_node(item, seen) for item in value]
+    return value
+
+
+def _scrub_raw_tree(value):
+    if _raw_reasoning_visible() or value is None:
+        return value
+    seen = [item for item in (_SEEN_RAW.get() or []) if isinstance(item, str) and len(item) >= 8]
+    return _scrub_node(value, seen)
+
+
+def _note_summary_line(text: str) -> None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return
+    rows = _THINKING_SUMMARIES.get()
+    if rows is None:
+        rows = []
+        _THINKING_SUMMARIES.set(rows)
+    if rows and isinstance(rows[-1], dict) and rows[-1].get("text") == cleaned:
+        return
+    rows.append({"text": cleaned, "at": 0})
+    if len(rows) > 24:
+        del rows[:-24]
+
+
+def _summary_rows() -> list[dict]:
+    rows = _THINKING_SUMMARIES.get() or []
+    return [dict(item) for item in rows[-24:] if isinstance(item, dict)]
+
+
 def _make_event(event: str, payload: dict[str, Any]) -> str:
-    return f"event: {event}\n" + "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+    visible = _raw_reasoning_visible()
+    body = payload
+    if event == "anila.reasoning" and not visible:
+        if isinstance(payload, dict):
+            delta = payload.get("delta")
+            if isinstance(delta, str):
+                _note_seen_raw(delta)
+        return ""
+    # 隱藏時每個具名事件都剝。agent 不只有 meta／trace 會帶原文。
+    if isinstance(payload, dict) and not visible:
+        body = _scrub_raw_tree(payload)
+    if event == "anila.meta" and isinstance(body, dict):
+        rows = _summary_rows()
+        if rows:
+            if body is payload:
+                body = dict(payload)
+            else:
+                body = dict(body)
+            body["thinking_summaries"] = rows
+    return f"event: {event}\n" + "data: " + json.dumps(body, ensure_ascii=False) + "\n\n"
 
 
 _MODEL_UNAVAILABLE_REASONS = frozenset({
@@ -2003,12 +2142,20 @@ def _absorb_llm_turn(response: dict[str, Any], text: str) -> str:
     if live is None:
         return text
     keep_body = bool(REQUEST_CONTINUE.get())
+    # 出口已把原文從 reasoning 拿掉時，階段機仍要讀 STAGE 行。讀完不要寫回。
+    hidden = response.pop("_stage_reasoning", None)
+    source = response.get("reasoning") or ""
+    if not source and isinstance(hidden, str):
+        source = hidden
     reasoning, content, _events = live.absorb_turn(
-        str(response.get("reasoning") or ""),
+        str(source or ""),
         "" if keep_body else (text or ""),
         rescued=bool(response.get("rescued")),
     )
-    response["reasoning"] = reasoning or None
+    if isinstance(hidden, str) and not response.get("reasoning"):
+        response["reasoning"] = None
+    else:
+        response["reasoning"] = reasoning or None
     if keep_body:
         return text
     response["content"] = content
@@ -2022,6 +2169,14 @@ def _make_full_response(
     *,
     finish: str = "stop",
 ) -> dict:
+    meta = dict(anila_meta or _default_anila_meta())
+    if not _raw_reasoning_visible():
+        scrubbed = _scrub_raw_tree(meta)
+        if isinstance(scrubbed, dict):
+            meta = scrubbed
+    rows = _summary_rows()
+    if rows:
+        meta["thinking_summaries"] = rows
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object": "chat.completion",
@@ -2029,7 +2184,7 @@ def _make_full_response(
         "model": model,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": finish}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        "anila_meta": anila_meta or _default_anila_meta(),
+        "anila_meta": meta,
     }
 
 
@@ -2779,6 +2934,7 @@ def create_router_app(
     async def chat_completions(request: Request) -> StreamingResponse | JSONResponse:
         # 上一筆非串流留下的階段清單不能跟著這個工作進來。
         _REQUEST_STAGES.set(None)
+        _reset_reasoning_gate()
         # 這一則的分輪、續寫、救援與過長重試共用一個呼叫預算。
         begin_model_call_budget()
         caller_api_key = _extract_bearer_api_key(request)
@@ -3333,7 +3489,19 @@ def create_router_app(
                     forwarded_headers=anila_headers,
                 ):
                     kind = event.get("type")
+                    if kind == "thinking_summary":
+                        text = str(event.get("content") or "").strip()
+                        if text:
+                            _note_summary_line(text)
+                            yield _make_event("anila.thinking_summary", {"delta": text})
+                        continue
                     if kind == "content":
+                        summary = event.get("thinking_summary")
+                        if isinstance(summary, str) and summary.strip():
+                            _note_summary_line(summary)
+                            yield _make_event(
+                                "anila.thinking_summary", {"delta": summary.strip()}
+                            )
                         piece = event["content"]
                         aggregated += piece
                         yield _make_chunk(piece, "anila-router")
@@ -3905,6 +4073,7 @@ def create_router_app(
         """
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
+        _reset_reasoning_gate()
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
 
         if "interrupt_id" not in body or "answer" not in body:
@@ -4063,6 +4232,7 @@ def create_router_app(
                 async with client.stream(
                     "POST", url, json=body, headers=_with_csp_host(headers)
                 ) as resp:
+                    _note_reveal_header(resp)
                     if resp.status_code >= 400:
                         err_body = await resp.aread()
                         raw = err_body[:300].decode("utf-8", errors="replace")
@@ -4111,7 +4281,19 @@ def create_router_app(
                         if kind == "done":
                             yield "data: [DONE]\n\n"
                             return
+                        if kind == "thinking_summary":
+                            text = str(event.get("content") or "").strip()
+                            if text:
+                                _note_summary_line(text)
+                                yield _make_event("anila.thinking_summary", {"delta": text})
+                            continue
                         if kind in ("content", "finish"):
+                            summary = event.get("thinking_summary")
+                            if isinstance(summary, str) and summary.strip():
+                                _note_summary_line(summary)
+                                yield _make_event(
+                                    "anila.thinking_summary", {"delta": summary.strip()}
+                                )
                             usage = event.get("usage")
                             if isinstance(usage, dict):
                                 known_usage = usage
@@ -5639,7 +5821,7 @@ async def _rescue_non_stream_answer(
     if result.get("error") or is_empty_reply(result.get("content")):
         return None
     prior = reasoning.strip() if isinstance(reasoning, str) else ""
-    if prior:
+    if prior and _raw_reasoning_visible():
         result["reasoning"] = prior
     result["rescued"] = True
     return result
@@ -5785,6 +5967,7 @@ async def _call_llm_non_stream(
             json=payload,
             headers=_with_csp_host(headers),
         )
+        _note_reveal_header(response)
         response.raise_for_status()
         data = response.json()
         choice = data["choices"][0]
@@ -5841,14 +6024,28 @@ async def _call_llm_non_stream(
             clean_content, merged_reasoning = raw_content, reasoning
         else:
             clean_content, merged_reasoning = _sanitize_leaked_thought(raw_content, reasoning)
+        # 頭不是明確的 1 時，回傳的 reasoning 要是空的。STAGE 行另存，階段機讀完就丟。
+        stage_reasoning = None
+        if not _raw_reasoning_visible() and merged_reasoning:
+            _note_seen_raw(merged_reasoning)
+            stage_reasoning = merged_reasoning
+            merged_reasoning = ""
+        summary = message.get("anila_thinking_summary")
+        if isinstance(summary, str):
+            _note_summary_line(summary)
+        meta = data.get("anila_meta")
+        if not _raw_reasoning_visible() and isinstance(meta, dict):
+            meta = _scrub_raw_tree(meta)
         result = {
             "content": clean_content,
             "reasoning": merged_reasoning or None,
-            "anila_meta": data.get("anila_meta"),
+            "anila_meta": meta,
             "raw": data,
             "error": None,
             "finish_reason": str(choice.get("finish_reason") or "stop"),
         }
+        if stage_reasoning:
+            result["_stage_reasoning"] = stage_reasoning
         remaining = (
             LENGTH_AUTO_CONTINUE_ROUNDS if _auto_continue_left is None else _auto_continue_left
         )
@@ -5878,6 +6075,14 @@ async def _call_llm_non_stream(
                 prior = result["reasoning"] or ""
                 result["reasoning"] = (
                     (prior + "\n\n" + extra_reason).strip() if prior else extra_reason
+                )
+            extra_hidden = more.get("_stage_reasoning")
+            if isinstance(extra_hidden, str) and extra_hidden:
+                prior_hidden = result.get("_stage_reasoning") or ""
+                result["_stage_reasoning"] = (
+                    f"{prior_hidden}\n\n{extra_hidden}".strip()
+                    if prior_hidden
+                    else extra_hidden
                 )
             if more.get("anila_meta") or result.get("anila_meta"):
                 result["anila_meta"] = merge_round_anila_meta(
@@ -6119,6 +6324,7 @@ async def _stream_llm_sse(
         async with client.stream(
             "POST", url, json=payload, headers=_with_csp_host(headers)
         ) as resp:
+            _note_reveal_header(resp)
             if resp.status_code >= 400:
                 body = await resp.aread()
                 detail = body.decode("utf-8", errors="replace")
@@ -6247,7 +6453,13 @@ async def _stream_llm_sse(
                 reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(reasoning_piece, str) and reasoning_piece:
                     reasoning_parts.append(reasoning_piece)
+                    # 救援提示仍要用這段緩衝。對外的 anila.reasoning 由 _make_event
+                    # 決定，只有這次回應明確 reveal=1 才送得出去。
                     yield {"type": "reasoning", "content": reasoning_piece}
+                summary_piece = delta.get("anila_thinking_summary")
+                if isinstance(summary_piece, str) and summary_piece.strip():
+                    _note_summary_line(summary_piece)
+                    yield {"type": "thinking_summary", "content": summary_piece.strip()}
                 content_piece = delta.get("content")
                 if isinstance(content_piece, str) and content_piece:
                     saw_content = True
@@ -7346,6 +7558,20 @@ def _classify_upstream_frame(
         if isinstance(choice, dict) and choice.get("finish_reason"):
             finish_reason = str(choice["finish_reason"])
             break
+    summary_text = ""
+    for choice in _openai_choices(chunk):
+        if not isinstance(choice, dict):
+            continue
+        for field in ("delta", "message"):
+            container = choice.get(field)
+            if not isinstance(container, dict):
+                continue
+            candidate = container.get("anila_thinking_summary")
+            if isinstance(candidate, str) and candidate.strip():
+                summary_text = candidate.strip()
+                break
+        if summary_text:
+            break
     if content_piece or finish_reason:
         event_out: dict[str, Any] = {
             "type": "content" if content_piece else "finish",
@@ -7355,7 +7581,11 @@ def _classify_upstream_frame(
             event_out["finish_reason"] = finish_reason
         if usage:
             event_out["usage"] = usage
+        if summary_text:
+            event_out["thinking_summary"] = summary_text
         return event_out
+    if summary_text:
+        return {"type": "thinking_summary", "content": summary_text}
     if usage:
         return {"type": "usage", "usage": usage}
     return None
@@ -7431,6 +7661,7 @@ async def _stream_agent_sse(
         async with client.stream(
             "POST", url, json=payload, headers=_with_csp_host(headers)
         ) as resp:
+            _note_reveal_header(resp)
             if resp.status_code >= 400:
                 body = await resp.aread()
                 # Status only in the user-facing string. The body is
@@ -8049,6 +8280,12 @@ async def _router_streaming_body(
             yield _make_chunk("", "anila-router", finish="stop")
             yield "data: [DONE]\n\n"
             return
+        if kind == "thinking_summary":
+            text = str(ev.get("content") or "").strip()
+            if text:
+                _note_summary_line(text)
+                yield _make_event("anila.thinking_summary", {"delta": text})
+            continue
         if kind == "reasoning":
             # 階段行留在篩子裡，不進原始思考。半行等下一個片段或串流結束。
             visible_reason, stage_events = live_stages.feed_reasoning(ev["content"])
@@ -8660,7 +8897,17 @@ async def _router_streaming_body(
         forwarded_headers=forwarded_headers,
     ):
         kind = event.get("type")
+        if kind == "thinking_summary":
+            text = str(event.get("content") or "").strip()
+            if text:
+                _note_summary_line(text)
+                yield _make_event("anila.thinking_summary", {"delta": text})
+            continue
         if kind == "content":
+            summary = event.get("thinking_summary")
+            if isinstance(summary, str) and summary.strip():
+                _note_summary_line(summary)
+                yield _make_event("anila.thinking_summary", {"delta": summary.strip()})
             _remember_usage(event.get("usage"))
             if buffer_for_recompose:
                 aggregated_parts.append(event["content"])  # emit after recompose

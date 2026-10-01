@@ -36,10 +36,17 @@ def _long_reasoning() -> str:
 
 
 class _Resp:
-    def __init__(self, payload: dict | None = None, status: int = 200, text: str | None = None):
+    def __init__(
+        self,
+        payload: dict | None = None,
+        status: int = 200,
+        text: str | None = None,
+        headers: dict | None = None,
+    ):
         self.status_code = status
         self._payload = payload or {}
         self.text = text if text is not None else json.dumps(self._payload)
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code < 400:
@@ -88,17 +95,27 @@ class _Client:
         return self._streams.pop(0)
 
 
-def _reply(content: str, finish: str = "stop", reasoning: str = "") -> _Resp:
+def _reply(
+    content: str,
+    finish: str = "stop",
+    reasoning: str = "",
+    *,
+    reveal: str | None = None,
+) -> _Resp:
     message: dict = {"role": "assistant", "content": content}
     if reasoning:
         message["reasoning_content"] = reasoning
+    headers = {}
+    if reveal is not None:
+        headers["X-ANILA-Reveal-Reasoning"] = reveal
     return _Resp(
         {
             "choices": [
                 {"index": 0, "message": message, "finish_reason": finish}
             ],
             "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
-        }
+        },
+        headers=headers,
     )
 
 
@@ -154,10 +171,29 @@ def test_non_stream_rescue_bounds_reasoning_and_disables_thinking(monkeypatch):
         rs.REQUEST_THINKING_TIER.reset(token)
     assert result["content"] == ANSWER
     assert result["rescued"] is True
-    assert result["reasoning"] == reasoning
+    assert not result.get("reasoning")
     assert len(client.posts) == 2
     assert client.posts[0]["anila_thinking_tier"] == "deep"
     assert client.posts[0]["model"] == client.posts[1]["model"]
+    _assert_rescue_prompt(client.posts[1], reasoning)
+
+
+def test_non_stream_rescue_keeps_reasoning_only_when_header_is_one(monkeypatch):
+    reasoning = _long_reasoning()
+    client = _Client(answers=[
+        _reply("  \n", "length", reasoning, reveal="1"),
+        _reply(ANSWER, reveal="1"),
+    ])
+    monkeypatch.setattr(rs, "get_http_client", lambda: client)
+    result = asyncio.run(
+        rs._call_llm_non_stream(
+            "sk",
+            [{"role": "user", "content": USER}],
+            rescue_empty_length=True,
+        )
+    )
+    assert result["content"] == ANSWER
+    assert result["reasoning"] == reasoning
     _assert_rescue_prompt(client.posts[1], reasoning)
 
 
@@ -271,6 +307,9 @@ async def db_path(tmp_path: Path):
     await close_all_connections()
 
 
+_REVEAL_ON = {"X-ANILA-Reveal-Reasoning": "1"}
+
+
 def _sse_body(content: str = "", finish: str = "stop", reasoning: str = "") -> str:
     return "".join(line + "\n\n" for line in _stream_lines(content, finish, reasoning))
 
@@ -340,16 +379,18 @@ def test_direct_answer_rescue_reaches_the_client(db_path: Path, stream: bool) ->
                 return httpx.Response(
                     200,
                     content=_sse_body("", "length", reasoning).encode(),
-                    headers={"Content-Type": "text/event-stream"},
+                    headers={"Content-Type": "text/event-stream", **_REVEAL_ON},
                 )
-            return httpx.Response(200, json=_completion(" \n ", "length", reasoning))
+            return httpx.Response(
+                200, json=_completion(" \n ", "length", reasoning), headers=_REVEAL_ON,
+            )
         if body.get("stream"):
             return httpx.Response(
                 200,
                 content=_sse_body(ANSWER, "stop").encode(),
-                headers={"Content-Type": "text/event-stream"},
+                headers={"Content-Type": "text/event-stream", **_REVEAL_ON},
             )
-        return httpx.Response(200, json=_completion(ANSWER))
+        return httpx.Response(200, json=_completion(ANSWER), headers=_REVEAL_ON)
 
     respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
     respx.post(CSP_URL).mock(side_effect=handler)
@@ -386,6 +427,56 @@ def test_direct_answer_rescue_reaches_the_client(db_path: Path, stream: bool) ->
         assert body["choices"][0]["message"]["content"] == ANSWER
         assert body["anila_meta"]["rescue"]["reason"] == "reasoning_exhausted"
         assert body["anila_meta"]["reasoning"] == reasoning
+
+
+@respx.mock
+@pytest.mark.parametrize("stream", [True, False])
+def test_direct_answer_rescue_hides_reasoning_when_header_is_absent(db_path: Path, stream: bool) -> None:
+    reasoning = _long_reasoning()
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        seen.append(body)
+        if len(seen) == 1:
+            if body.get("stream"):
+                return httpx.Response(
+                    200,
+                    content=_sse_body("", "length", reasoning).encode(),
+                    headers={"Content-Type": "text/event-stream"},
+                )
+            return httpx.Response(200, json=_completion(" \n ", "length", reasoning))
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=_sse_body(ANSWER, "stop").encode(),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_completion(ANSWER))
+
+    respx.get(CSP_AGENTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    respx.post(CSP_URL).mock(side_effect=handler)
+    client = TestClient(create_router_app(session_db_path=str(db_path)))
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": USER}], "stream": stream},
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(seen) == 2
+    _assert_rescue_prompt(seen[1], reasoning)
+    assert "HEADMARK" not in response.text
+    assert "TAILMARK" not in response.text
+    assert "anila.reasoning" not in response.text
+    if stream:
+        events = _parse_sse(response.text)
+        assert any(ev["event"] == "anila.rescue" for ev in events)
+        assert ANSWER in _chunk_text(events)
+    else:
+        body = response.json()
+        assert body["choices"][0]["message"]["content"] == ANSWER
+        assert body["anila_meta"]["rescue"]["reason"] == "reasoning_exhausted"
+        assert "reasoning" not in body["anila_meta"]
 
 
 @respx.mock
