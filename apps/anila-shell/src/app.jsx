@@ -167,6 +167,7 @@ import {
 } from "./agentic.jsx";
 import { visibleAskParts } from "./runtime/askTranscript.js";
 import { visibleReasoningText } from "./runtime/thinkingSummary.js";
+import { canSeeRawReasoning } from "./shellNav.jsx";
 import {
   applyThinkingStage,
   mergeThinkingStages,
@@ -2299,7 +2300,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const thinkingSnap = thinkingPump.snapshot({
         finishReason: lengthBudget ? "length" : undefined,
         lengthBudget,
-        hadReasoning: accumulatedReasoning.length > 0,
+        hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
       });
       updateMsg(convId, assistantId, thinkingSnap);
       const persistedInterrupt = interruptFromMessage(convId, assistantId);
@@ -2443,13 +2444,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       startedAt,
       snapshot(extra = {}) {
         const summaries = [...previous];
-        if (!summaries.length && !extra.hadReasoning) {
-          return { thinkingSummaries: [] };
+        const elapsed = Date.now() - startedAt;
+        const thought = summaries.length > 0 || Boolean(extra.hadReasoning);
+        if (!thought) {
+          // 沒有思考內容仍記下回覆時間，畫面改寫「回覆用時」，不標成已思考。
+          return {
+            thinkingSummaries: [],
+            thinkingElapsedMs: elapsed,
+          };
         }
         return {
           thinkingSummaries: summaries,
           thinkingStatus: thinkingStatusFromFinish(extra),
-          thinkingElapsedMs: Date.now() - startedAt,
+          thinkingElapsedMs: elapsed,
         };
       },
     };
@@ -2750,7 +2757,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingPump.close();
       await thinkingPump.flush();
       const snap = thinkingPump.snapshot({
-        hadReasoning: accumulatedReasoning.length > 0,
+        hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
         finishReason,
         lengthBudget: finishReason === "length",
       });
@@ -3419,7 +3426,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const thinkingSnap = thinkingPump.snapshot({
         finishReason: lengthBudget ? "length" : undefined,
         lengthBudget,
-        hadReasoning: accumulatedReasoning.length > 0,
+        hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
       });
       updateMsg(convId, assistantId, {
         streaming: false,
@@ -3628,7 +3635,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             thinkingPump.close();
             await thinkingPump.flush();
             const thinkingSnap = thinkingPump.snapshot({
-              hadReasoning: accumulatedReasoning.length > 0,
+              hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
             });
             updateMsg(convId, placeholderId, { streaming: false, ...thinkingSnap });
           },
@@ -3646,7 +3653,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           };
         }
         const thinkingSnap = thinkingPump.snapshot({
-          hadReasoning: accumulatedReasoning.length > 0,
+          hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
         });
         const drafted = (messagesRef.current[convId] || []).find((m) => m.id === placeholderId);
         return {
@@ -3751,7 +3758,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       && !isHarnessEmptyNotice(appended);
     const nextReason = gainedText ? (row?.finishReason || "length") : "length";
     const snap = thinkingPump.snapshot({
-      hadReasoning: accumulatedReasoning.length > 0,
+      hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
       finishReason: nextReason,
       lengthBudget: nextReason === "length",
     });
@@ -3926,7 +3933,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         updateMsg(convId, placeholderId, {
           streaming: false,
           ...thinkingPump.snapshot({
-            hadReasoning: accumulatedReasoning.length > 0,
+            hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
           }),
         });
       },
@@ -3961,7 +3968,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           document: stageRow?.document,
           finishReason: stageRow?.finishReason,
           ...thinkingPump.snapshot({
-            hadReasoning: accumulatedReasoning.length > 0,
+            hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
           }),
         });
         try {
@@ -4763,6 +4770,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 AgentSelector={AgentSelector}
                 Composer={Composer}
                 MessageBubble={MessageBubble}
+                showRawReasoning={canSeeRawReasoning(user)}
               />
             ) : (
               <>
@@ -4816,6 +4824,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                             isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
                             questionAttachmentBasis={m.role === "assistant" ? questionAttachmentBasis(currentMsgs, idx) : "none"}
                             onCiteDocument={(attachment) => setComposerCite(attachment)}
+                            showRawReasoning={canSeeRawReasoning(user)}
                           />
                         </React.Fragment>
                       ))

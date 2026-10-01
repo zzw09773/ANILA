@@ -3,7 +3,7 @@
 
 import React from "react";
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 
 import {
   ANILA_LM_COMING_SOON_LABEL,
@@ -12,6 +12,7 @@ import {
 import {
   ShellNav,
   canSeeGovernance,
+  canSeeRawReasoning,
   originHref,
   buildShellEntries,
 } from "../shellNav.jsx";
@@ -46,6 +47,22 @@ describe("canSeeGovernance", () => {
     expect(canSeeGovernance(undefined)).toBe(false);
     expect(canSeeGovernance({})).toBe(false);
     expect(canSeeGovernance({ role: 42 })).toBe(false);
+  });
+});
+
+describe("canSeeRawReasoning", () => {
+  it("shows raw reasoning only for owner / admin / developer", () => {
+    expect(canSeeRawReasoning({ role: "owner" })).toBe(true);
+    expect(canSeeRawReasoning({ role: "admin" })).toBe(true);
+    expect(canSeeRawReasoning({ role: "developer" })).toBe(true);
+  });
+
+  it("hides raw reasoning from plain users and unit admins", () => {
+    expect(canSeeRawReasoning({ role: "user" })).toBe(false);
+    expect(canSeeRawReasoning({ role: "user", is_unit_admin: true })).toBe(false);
+    expect(canSeeRawReasoning({ role: "system" })).toBe(false);
+    expect(canSeeRawReasoning(null)).toBe(false);
+    expect(canSeeRawReasoning({})).toBe(false);
   });
 });
 
@@ -141,11 +158,28 @@ describe("ShellNav", () => {
     expect(screen.queryByText("治理中心")).toBeNull();
   });
 
-  it("shows 治理中心 for an admin and links it to the origin root", () => {
-    openNav({ role: "admin" });
-    const gov = screen.getByText("治理中心").closest("a");
-    expect(gov).toBeTruthy();
-    expect(gov.getAttribute("href")).toBe(`${ORIGIN}/`);
+  it("shows 治理中心 in the sidebar before the popup, and the popup uses the same href", () => {
+    render(<ShellNav user={{ role: "admin" }} />);
+    const nav = screen.getByRole("navigation", { name: "ANILA 主導覽" });
+    const direct = within(nav).getByRole("link", { name: "治理中心" });
+    expect(direct.getAttribute("href")).toBe(`${ORIGIN}/`);
+    expect(screen.queryByText("對話")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
+    const links = screen.getAllByRole("link", { name: "治理中心" });
+    expect(links).toHaveLength(2);
+    expect(links.map((el) => el.getAttribute("href"))).toEqual([`${ORIGIN}/`, `${ORIGIN}/`]);
+  });
+
+  it("shows the sidebar 治理中心 link for a unit admin", () => {
+    render(<ShellNav user={{ role: "user", is_unit_admin: true }} />);
+    const nav = screen.getByRole("navigation", { name: "ANILA 主導覽" });
+    expect(within(nav).getByRole("link", { name: "治理中心" }).getAttribute("href")).toBe(`${ORIGIN}/`);
+  });
+
+  it("does not put 治理中心 in the sidebar for a plain user", () => {
+    render(<ShellNav user={{ role: "user" }} />);
+    const nav = screen.getByRole("navigation", { name: "ANILA 主導覽" });
+    expect(within(nav).queryByRole("link", { name: "治理中心" })).toBeNull();
   });
 
   it("shows 我的知識庫 as disabled Coming Soon when the release gate is closed", () => {

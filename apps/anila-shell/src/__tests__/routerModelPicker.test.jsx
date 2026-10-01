@@ -103,6 +103,34 @@ describe("RouterModelPicker", () => {
     expect(screen.queryByText("anila-router")).toBeNull();
   });
 
+  it("非預設模型顯示沿用上次選擇，回到預設會選回全院預設", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <RouterModelPicker models={MODELS} selectedId={4} defaultModelId={3} onChange={onChange} />,
+    );
+    expect(screen.getByText("沿用上次選擇")).toBeTruthy();
+    const back = screen.getByRole("button", { name: "回到預設" });
+    expect(back.getAttribute("title")).toBe("切換到全院預設模型");
+    fireEvent.click(back);
+    expect(onChange).toHaveBeenCalledWith(3);
+    rerender(
+      <RouterModelPicker models={MODELS} selectedId={3} defaultModelId={3} onChange={onChange} />,
+    );
+    expect(screen.queryByText("沿用上次選擇")).toBeNull();
+    expect(screen.queryByRole("button", { name: "回到預設" })).toBeNull();
+  });
+
+  it("送出中回到預設也鎖住，不會改模型", () => {
+    const onChange = vi.fn();
+    render(
+      <RouterModelPicker models={MODELS} selectedId={4} defaultModelId={3} disabled onChange={onChange} />,
+    );
+    const back = screen.getByRole("button", { name: "回到預設" });
+    expect(back.disabled).toBe(true);
+    fireEvent.click(back);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("locks during send and shows reselect error", () => {
     render(
       <RouterModelPicker

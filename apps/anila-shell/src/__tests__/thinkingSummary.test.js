@@ -5,10 +5,14 @@ import {
   THINKING_SUMMARY_RAW_LABEL,
   appendThinkingSummary,
   createThinkingSummaryPump,
+  formatFinishedThinkingLabel,
+  formatReplyElapsed,
+  formatThinkingComplete,
   formatThinkingElapsed,
   shouldRequestSummary,
   thinkingStatusFromFinish,
   thinkingSummaryHeadline,
+  turnHadReasoningContent,
   latestAssistantMessageId,
 } from "../runtime/thinkingSummary.js";
 
@@ -101,6 +105,33 @@ describe("latestAssistantMessageId", () => {
       { id: "a2", role: "assistant" },
     ])).toBe("a2");
     expect(latestAssistantMessageId([{ id: "u1", role: "user" }])).toBeNull();
+  });
+});
+
+describe("沒有思考內容時不寫已思考", () => {
+  it("空白原文、沒有摘要與階段，不算有思考", () => {
+    expect(turnHadReasoningContent({ reasoning: "\n  \n", summaries: [], stages: [] })).toBe(false);
+    expect(turnHadReasoningContent({
+      reasoning: "",
+      summaries: [{ text: "整理報告架構。", at: 1 }],
+    })).toBe(true);
+    expect(turnHadReasoningContent({
+      reasoning: "",
+      reasoningPersist: { status: "omitted" },
+    })).toBe(true);
+  });
+
+  it("不滿 1 秒不標回覆時間，滿 1 秒才寫回覆用時", () => {
+    expect(formatReplyElapsed(400)).toBe("");
+    expect(formatReplyElapsed(999)).toBe("");
+    expect(formatReplyElapsed(1000)).toBe("回覆用時 1 秒");
+    expect(formatReplyElapsed(2500)).toBe("回覆用時 2 秒");
+    expect(formatFinishedThinkingLabel({ ms: 400, hadReasoning: false })).toBe("");
+    expect(formatFinishedThinkingLabel({ ms: 2500, hadReasoning: false })).toBe("回覆用時 2 秒");
+    expect(formatFinishedThinkingLabel({ ms: 31000, hadReasoning: true })).toBe(
+      formatThinkingComplete(31000),
+    );
+    expect(formatFinishedThinkingLabel({ ms: 400, hadReasoning: false })).not.toMatch(/已思考/);
   });
 });
 

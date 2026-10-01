@@ -26,6 +26,7 @@ describe("ReasoningSummary 思考保存狀態", () => {
           original_chars: 24,
           kept_chars: 4,
         }}
+        showRawReasoning
       />,
     );
     expect(screen.getByText(REASONING_PERSIST_LIVE_NOTICE)).toBeTruthy();
@@ -46,6 +47,7 @@ describe("ReasoningSummary 思考保存狀態", () => {
           original_chars: 20000,
           kept_chars: 5,
         }}
+        showRawReasoning
       />,
     );
     expect(screen.getByText(REASONING_PERSIST_RELOAD_NOTICE)).toBeTruthy();

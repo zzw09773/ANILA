@@ -99,10 +99,11 @@ import { reasoningPersistNotice } from "./runtime/reasoningPersist.js";
 import {
   THINKING_SUMMARY_PENDING,
   THINKING_SUMMARY_RAW_LABEL,
-  formatThinkingAborted,
-  formatThinkingComplete,
+  formatFinishedThinkingLabel,
+  formatReplyElapsed,
   formatThinkingElapsed,
   thinkingSummaryHeadline,
+  turnHadReasoningContent,
   visibleReasoningText,
 } from "./runtime/thinkingSummary.js";
 import { THINKING_STAGE_MARK } from "./runtime/thinkingStages.js";
@@ -348,6 +349,7 @@ export const ReasoningSummary = ({
   thinkingStartedAt = null,
   thinkingStages = null,
   showThinkingOrb = null,
+  showRawReasoning = false,
 }) => {
   const [open, setOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
@@ -363,7 +365,16 @@ export const ReasoningSummary = ({
   const hasSummaries = summaries.length > 0;
   const stages = Array.isArray(thinkingStages) ? thinkingStages : [];
   const hasStages = stages.length > 0;
-  const summaryMode = Boolean(streaming || hasSummaries || thinkingStatus || hasStages);
+  const hadReasoningContent = turnHadReasoningContent({
+    reasoning: reasoningText,
+    summaries,
+    stages,
+    reasoningPersist,
+  });
+  // 只有計時、沒有思考內容時不進摘要模式，避免寫成「已思考」。
+  const summaryMode = Boolean(
+    streaming || ((hasSummaries || hasStages || thinkingStatus) && hadReasoningContent),
+  );
   const elapsedMs = useThinkingElapsed(thinkingStartedAt, streaming, thinkingElapsedMs);
   const persistWithoutBody =
     persistNotice
@@ -371,7 +382,25 @@ export const ReasoningSummary = ({
     && !hasTrace
     && !hasSummaries
     && (reasoningPersist?.status === "omitted" || reasoningPersist?.status === "truncated");
+  const replyOnly = !streaming && !hadReasoningContent && !hasTrace && !hasSummaries && !hasStages
+    && !thinkingLocked && !hasUsageReasoning && !appliedLabel;
   if (hideThinking) return null;
+  if (replyOnly) {
+    const replyLine = formatReplyElapsed(elapsedMs);
+    if (!replyLine && !persistNotice) return null;
+    return (
+      <div
+        className="anila-reasoning"
+        data-testid="reply-elapsed"
+        style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}
+      >
+        {replyLine || null}
+        {persistNotice ? (
+          <div style={{ marginTop: replyLine ? 4 : 0 }}>{persistNotice}</div>
+        ) : null}
+      </div>
+    );
+  }
   if (persistWithoutBody && !summaryMode) {
     return (
       <div className="anila-reasoning" style={{ marginBottom: 10, fontSize: 12, color: "var(--fg-subtle)" }}>
@@ -396,11 +425,13 @@ export const ReasoningSummary = ({
     const headline = hasSummaries
       ? thinkingSummaryHeadline({ streaming, summaries })
       : (streaming && traceFallback) || thinkingSummaryHeadline({ streaming, summaries }) || THINKING_SUMMARY_PENDING;
-    const statusLine = thinkingStatus === "aborted"
-      ? formatThinkingAborted(elapsedMs)
-      : (!streaming && (thinkingStatus === "complete" || hasSummaries || hasStages)
-        ? formatThinkingComplete(elapsedMs)
-        : null);
+    const statusLine = !streaming && (thinkingStatus || hasSummaries || hasStages)
+      ? (formatFinishedThinkingLabel({
+          ms: elapsedMs,
+          hadReasoning: hadReasoningContent,
+          aborted: thinkingStatus === "aborted",
+        }) || null)
+      : null;
     const liveElapsed = streaming ? formatThinkingElapsed(elapsedMs) : "";
     const canExpand = hasSummaries || hasTrace;
     const buttonLabel = statusLine || headline;
@@ -489,7 +520,7 @@ export const ReasoningSummary = ({
                 {persistNotice}
               </div>
             )}
-            {hasReasoning && (
+            {hasReasoning && showRawReasoning && (
               <>
                 <button
                   type="button"
@@ -576,11 +607,12 @@ export const ReasoningSummary = ({
           <AgentPill agent={routedAgent} size="sm" />
         )}
       </button>
-      {open && (hasTrace || hasReasoning) && (
+      {open && (hasTrace || (hasReasoning && showRawReasoning)) && (
         <div className="anila-reasoning__body">
           {hasTrace && <StepTimeline trace={trace} streaming={false} finishedAt={finishedAt} />}
-          {hasReasoning && (
+          {hasReasoning && showRawReasoning && (
             <div
+              data-testid="raw-reasoning"
               style={{
                 marginTop: hasTrace ? 8 : 0,
                 whiteSpace: "pre-wrap",
@@ -1010,6 +1042,7 @@ export const MessageBubble = ({
   /** included／omitted／none。只有 included 才說「依附件回答」。 */
   questionAttachmentBasis = "none",
   onCiteDocument,
+  showRawReasoning = false,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1458,6 +1491,7 @@ export const MessageBubble = ({
             thinkingStartedAt={msg.thinkingStartedAt}
             thinkingStages={msg.thinkingStages}
             showThinkingOrb={isLatestAssistant}
+            showRawReasoning={showRawReasoning}
           />
         );
         const renderBody = (text, streaming) => (

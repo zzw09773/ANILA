@@ -61,6 +61,7 @@ describe("ReasoningSummary 即時思考摘要", () => {
         thinkingElapsedMs={31000}
         thinkingSummaries={[{ text: "規劃涵蓋暗物質等主題的簡潔回覆架構。", at: 1 }]}
         reasoningPersist={{ status: "full", original_chars: 16, kept_chars: 16 }}
+        showRawReasoning
       />,
     );
     expect(screen.getByText(formatThinkingComplete(31000))).toBeTruthy();
@@ -138,6 +139,7 @@ describe("ReasoningSummary 即時思考摘要", () => {
         thinkingStatus="complete"
         thinkingElapsedMs={33000}
         thinkingSummaries={[{ text: "整理報告架構", at: 1 }]}
+        showRawReasoning
       />,
     );
     const label = screen.getByRole("button", { name: THINKING_SUMMARY_RAW_LABEL });
@@ -175,5 +177,54 @@ describe("ReasoningSummary 即時思考摘要", () => {
       />,
     );
     expect(screen.getByRole("status")).toBeTruthy();
+  });
+
+  it("沒有思考內容時不寫已思考，不滿 1 秒什麼都不標，較久才寫回覆用時", () => {
+    const { rerender } = render(
+      <ReasoningSummary
+        trace={[]}
+        reasoning={"\n"}
+        streaming={false}
+        thinkingStatus="complete"
+        thinkingElapsedMs={400}
+        thinkingSummaries={[]}
+      />,
+    );
+    expect(screen.queryByText(/已思考/)).toBeNull();
+    expect(screen.queryByText(/回覆用時/)).toBeNull();
+    expect(document.querySelector(".anila-reasoning")).toBeNull();
+    rerender(
+      <ReasoningSummary
+        trace={[]}
+        reasoning={"\n"}
+        streaming={false}
+        thinkingStatus="complete"
+        thinkingElapsedMs={2500}
+        thinkingSummaries={[]}
+      />,
+    );
+    expect(screen.getByTestId("reply-elapsed").textContent).toBe("回覆用時 2 秒");
+    expect(screen.queryByText(/已思考/)).toBeNull();
+  });
+
+  it("一般使用者不把原始思考放進 DOM，中文摘要仍在", () => {
+    const raw = "User Preferences (from memory): secret-raw";
+    render(
+      <ReasoningSummary
+        trace={[]}
+        reasoning={raw}
+        streaming={false}
+        thinkingStatus="complete"
+        thinkingElapsedMs={31000}
+        thinkingSummaries={[{ text: "執行格式測試。", at: 1 }]}
+        showRawReasoning={false}
+      />,
+    );
+    expect(screen.getByText(formatThinkingComplete(31000))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /已思考/ }));
+    expect(screen.getByText("執行格式測試。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: THINKING_SUMMARY_RAW_LABEL })).toBeNull();
+    expect(document.querySelector("[data-testid='raw-reasoning']")).toBeNull();
+    expect(document.body.textContent).not.toContain(raw);
   });
 });

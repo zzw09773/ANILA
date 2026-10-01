@@ -47,6 +47,18 @@ export function canSeeGovernance(user) {
 }
 
 /**
+ * 原始思考只給平台擁有者、管理員、開發者。
+ * 一般使用者與單位管理員只看中文摘要。單位管理員看得到治理中心，但看不到原文。
+ * @param {{ role?: string } | null | undefined} user
+ * @returns {boolean}
+ */
+export function canSeeRawReasoning(user) {
+  const role = user?.role;
+  if (typeof role !== "string") return false;
+  return GOVERNANCE_ROLES.has(role);
+}
+
+/**
  * 組出 origin 絕對路徑。外部同源介面（/anilalm、/）必須從 origin 起算，
  * 不能相對於 shell 的 /anila/ base，否則會被解析成 /anila/anilalm。
  * @param {string} path 以 '/' 開頭的路徑
@@ -210,8 +222,9 @@ function NavRow({ entry, collapsed }) {
 }
 
 /**
- * ANILA Shell 主導覽：側欄只留一顆「平台入口」，點開後用彈窗列出
- * 對話 / 知識庫 / 專案入口（+ admin 的治理中心）。
+ * ANILA Shell 主導覽：側欄一顆「平台入口」，點開後用彈窗列出
+ * 對話 / 知識庫 / 專案入口。看得到治理中心的人，側欄另有直接連結，
+ * 彈窗裡也保留同一顆，href 相同。
  * @param {{
  *   user?: { role?: string } | null,
  *   collapsed?: boolean,
@@ -280,6 +293,9 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
             </>
           )}
         </button>
+        {canSeeGovernance(user) ? (
+          <NavRow entry={governanceEntry()} collapsed={collapsed} />
+        ) : null}
       </nav>
       <Modal
         open={open}

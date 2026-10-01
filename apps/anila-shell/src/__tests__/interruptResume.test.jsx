@@ -434,7 +434,9 @@ describe("ask_user interrupt — 主聊天流程", () => {
   }
 
   it("續答串流的思考增量會即時長出來，結束後不再送出中", async () => {
-    const backend = createFakeBackend()
+    const backend = createFakeBackend({
+      user: { id: 1, username: "tester", display_name: "測試使用者", role: "developer" },
+    })
       .disableTitleGeneration()
       .enqueueFrames(interruptFrames(), { sessionId: "sess-think-1" })
       .enqueueSessionAnswerManual();
@@ -918,7 +920,9 @@ describe("ask_user interrupt — 主聊天流程", () => {
 
   it("這一輪的原始思考跟在標籤後面，串流中不先亮空標籤，重整後還在", async () => {
     const q1 = askInterrupt("int-k1", "這份報告要多長？", ["重點摘要", "完整報告"]);
-    const backend = createFakeBackend()
+    const backend = createFakeBackend({
+      user: { id: 1, username: "tester", display_name: "測試使用者", role: "admin" },
+    })
       .disableTitleGeneration()
       .enqueueFrames(routerAskFrames(q1), { sessionId: "sess-raw-keep" })
       .enqueueSessionAnswerManual();

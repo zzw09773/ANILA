@@ -4,6 +4,7 @@ import {
   mountOrchestrator,
   waitForAnswer,
   waitForIdle,
+  clickNewChat,
   screen,
   waitFor,
   act,
@@ -80,5 +81,23 @@ describe("ChatRuntime router model selection", () => {
     await waitFor(() => expect(backend.requestsFor("/router-model", "PUT").length).toBeGreaterThan(putsBefore));
     expect(backend.storedConversation(id).router_selection_version).toBe(v);
     expect(backend.storedConversation(id).router_model_id).toBe(3);
+  });
+
+  it("新對話沿用上次模型，並可回到全院預設", async () => {
+    const { backend } = await mountOrchestrator();
+    backend.enqueueAnswer("ok");
+    await chooseRouterModel("Qwen");
+    expect(screen.getByText("沿用上次選擇")).toBeTruthy();
+    await sendText("用 Qwen");
+    await waitForAnswer("ok");
+    await waitForIdle();
+    await clickNewChat();
+    const trigger = screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選");
+    expect(trigger).toHaveTextContent("Qwen");
+    expect(screen.getByText("沿用上次選擇")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "回到預設" }));
+    await waitFor(() => expect(trigger).toHaveTextContent("GLM"));
+    expect(screen.queryByRole("button", { name: "回到預設" })).toBeNull();
+    expect(screen.queryByText("沿用上次選擇")).toBeNull();
   });
 });

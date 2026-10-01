@@ -25,6 +25,42 @@ export function formatThinkingAborted(ms) {
   return `思考因長度上限中止 · ${sec} 秒`;
 }
 
+/** 不滿 1 秒的回覆不標時間，避免快問快答也被寫成「用時 1 秒」。 */
+export function formatReplyElapsed(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 1000) return "";
+  return `回覆用時 ${Math.floor(ms / 1000)} 秒`;
+}
+
+/**
+ * 這一輪有沒有收到思考內容。只有計時、空白原文、沒有摘要也沒有階段，不算。
+ * 原文被長度預算丟掉（omitted／truncated）仍算有思考。
+ */
+export function turnHadReasoningContent({
+  reasoning,
+  summaries,
+  stages,
+  reasoningPersist,
+} = {}) {
+  if (visibleReasoningText(reasoning)) return true;
+  const rows = Array.isArray(summaries) ? summaries : [];
+  if (rows.some((row) => visibleReasoningText(typeof row === "string" ? row : row?.text))) {
+    return true;
+  }
+  const stageRows = Array.isArray(stages) ? stages : [];
+  if (stageRows.some((row) => visibleReasoningText(row?.title))) return true;
+  const persist = reasoningPersist?.status;
+  if (persist === "omitted" || persist === "truncated") return true;
+  return false;
+}
+
+/** 有思考內容才寫「已思考」；否則改「回覆用時」，太短就留空。 */
+export function formatFinishedThinkingLabel({ ms, hadReasoning, aborted = false } = {}) {
+  if (hadReasoning) {
+    return aborted ? formatThinkingAborted(ms) : formatThinkingComplete(ms);
+  }
+  return formatReplyElapsed(ms);
+}
+
 export function thinkingStatusFromFinish({ finishReason, lengthBudget } = {}) {
   if (lengthBudget || finishReason === "length") return "aborted";
   return "complete";

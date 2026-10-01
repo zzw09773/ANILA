@@ -73,6 +73,7 @@ describe("思考階段清單的畫面", () => {
           { index: 0, title: "拆解需求", status: "done" },
           { index: 1, title: "撰寫第一章", status: "stopped" },
         ]}
+        showRawReasoning
       />,
     );
     expect(screen.getByText("拆解需求")).toBeTruthy();

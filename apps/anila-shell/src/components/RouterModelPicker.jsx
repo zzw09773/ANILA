@@ -63,7 +63,12 @@ export default function RouterModelPicker({
     if (highlighted && !locked) setOpen(true);
   }, [highlighted, locked]);
 
+  const keptPrevious = defaultModelId != null
+    && selectedId != null
+    && selectedId !== defaultModelId;
+
   return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%" }}>
     <div className="router-model-picker" ref={rootRef} style={{ position: "relative", display: "inline-block" }}>
       <button
         type="button"
@@ -154,6 +159,36 @@ export default function RouterModelPicker({
           {error}
         </span>
       ) : null}
+    </div>
+    {keptPrevious ? (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        <span title="沿用上次選擇" style={{ fontSize: 11, color: "var(--fg-subtle)", whiteSpace: "nowrap" }}>
+          沿用上次選擇
+        </span>
+        <button
+          type="button"
+          title="切換到全院預設模型"
+          disabled={locked}
+          onClick={() => {
+            if (locked) return;
+            if (typeof onChange === "function") onChange(defaultModelId);
+          }}
+          style={{
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            font: "inherit",
+            fontSize: 11,
+            color: "var(--accent)",
+            cursor: locked ? "not-allowed" : "pointer",
+            opacity: locked ? 0.55 : 1,
+            whiteSpace: "nowrap",
+          }}
+        >
+          回到預設
+        </button>
+      </span>
+    ) : null}
     </div>
   );
 }
