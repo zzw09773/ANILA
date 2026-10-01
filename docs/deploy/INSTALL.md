@@ -12,7 +12,7 @@
 |---|---|
 | 出貨包 | 開發機打包產生的 `anila-YYYY.MM.DD-N.tar.gz`，約 4 GB。還要有打包結束時印出的 SHA256 |
 | 主機 | Linux，Docker 與 docker compose 2.17 以上。帳號要在 `docker` 群組 |
-| sudo | 只有第 2 步建兩個目錄時要用。之後都用一般帳號 |
+| sudo | 安裝、更新、回復都用 `sudo` 執行。平台的上傳與附件目錄屬於服務帳號，一般帳號做不了更新前的檔案快照 |
 | 磁碟 | 安裝目錄與 Docker 目錄各留約出貨包的四倍（約 20 GB） |
 | 模型 | 模型不在出貨包裡，由模型主機提供。安裝完才在治理中心登錄 |
 
@@ -49,18 +49,12 @@ bash scripts/release/build-release.sh
 sha256sum ~/anila-YYYY.MM.DD-N.tar.gz     # 要和打包時印出的值一樣
 ```
 
-建安裝目錄與安裝記錄目錄。只有這一步要 sudo，擁有者設成之後執行安裝的帳號：
-
-```bash
-sudo install -d -o "$USER" -g "$USER" -m 755 /opt/anila
-sudo install -d -o "$USER" -g "$USER" -m 700 /var/lib/anila
-```
-
 解開出貨包，跑預檢：
 
 ```bash
-tar -xzf ~/anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
-bash /opt/anila/anila-YYYY.MM.DD-N/preflight.sh ~/anila-YYYY.MM.DD-N.tar.gz
+sudo mkdir -p /opt/anila
+sudo tar -xzf ~/anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/preflight.sh ~/anila-YYYY.MM.DD-N.tar.gz
 ```
 
 預檢不改任何東西。每一條 `✗` 都附上要執行的指令，處理完再跑一次，直到最後一行是「全部通過」。
@@ -70,9 +64,9 @@ bash /opt/anila/anila-YYYY.MM.DD-N/preflight.sh ~/anila-YYYY.MM.DD-N.tar.gz
 預檢會寫「埠 443 被 xxx 佔用」。在第一次安裝**之前**指定另一個埠：
 
 ```bash
-mkdir -p /opt/anila/state
-umask 077
-printf 'NGINX_HTTPS_PORT=8443\n' >> /opt/anila/state/.env
+sudo mkdir -p /opt/anila/state
+printf 'NGINX_HTTPS_PORT=8443\n' | sudo tee -a /opt/anila/state/.env >/dev/null
+sudo chmod 600 /opt/anila/state/.env
 ```
 
 安裝程式會沿用這個值，入口檢查也走這個埠。之後網址要帶埠：`https://<主機>:8443/`。
@@ -85,7 +79,7 @@ printf 'NGINX_HTTPS_PORT=8443\n' >> /opt/anila/state/.env
 **在終端機直接執行，不要把輸出導到檔案。** 安裝程式會把新產生的密鑰印在畫面上一次；導到檔案，密鑰就留在那個檔裡。
 
 ```bash
-bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 ```
 
 它只問一題：
@@ -107,7 +101,7 @@ bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 | 入口 | `✓ 入口已開啟，登入頁回應 200` | |
 | 完成 | `✓ 更新完成：none → YYYY.MM.DD-N` | |
 
-`/opt/anila/state/generated-secrets.txt`（權限 600）存著管理員密碼與資料庫密碼。抄進密碼管理器後，這個檔可以留著（只有安裝帳號讀得到），也可以刪掉。
+`/opt/anila/state/generated-secrets.txt`（權限 600，擁有者 root）存著管理員密碼與資料庫密碼，用 `sudo cat` 讀。抄進密碼管理器後，這個檔可以留著（只有安裝帳號讀得到），也可以刪掉。
 
 ### 中途失敗時
 
@@ -116,8 +110,8 @@ bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 失敗原因看畫面最後幾行，以及：
 
 ```bash
-cat /opt/anila/state/operations.log
-docker compose -f /opt/anila/current/compose.yaml -f /opt/anila/current/.anila-images.yml -p anila logs --tail 80 csp
+sudo cat /opt/anila/state/operations.log
+sudo docker compose -f /opt/anila/current/compose.yaml -f /opt/anila/current/.anila-images.yml -p anila logs --tail 80 csp
 ```
 
 ---
@@ -169,13 +163,13 @@ docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'
    ```bash
    cd /opt/anila/current
    # 編輯 /opt/anila/state/.env 的 CARD_INITIAL_OWNERS=員編1,員編2
-   docker compose -f compose.yaml -f .anila-images.yml -p anila up -d --no-build --pull never csp
+   sudo docker compose -f compose.yaml -f .anila-images.yml -p anila up -d --no-build --pull never csp
    ```
 4. **外部服務**：治理中心「外部服務」填文件解析（docling）與語音解碼端的位址。沒填時匯入用內建解析器、麥克風不出現。
 5. **HTTPS 憑證**：把院內正式憑證放到 `/opt/anila/state/certs/server.crt` 與 `server.key`（覆蓋自簽的那張），再重建入口：
    ```bash
    cd /opt/anila/current
-   docker compose -f compose.yaml -f .anila-images.yml -p anila up -d --no-build --pull never --force-recreate nginx
+   sudo docker compose -f compose.yaml -f .anila-images.yml -p anila up -d --no-build --pull never --force-recreate nginx
    ```
 
 code-server 與 n8n 的映像已載入，預設不啟動。要用時的指令在安裝結束時會印出，也寫在 [`UPDATE.md`](UPDATE.md)。
@@ -212,3 +206,11 @@ code-server 與 n8n 的映像已載入，預設不啟動。要用時的指令在
 | 8 | 原始碼封存只要出現「PRIVATE KEY」字樣就拒絕 | 用與映像掃描同一套規則 |
 | 9 | 產生 JWT 時找開發機才有的映像名 `anila-csp:latest` | 改用載入時標的 `anila/csp:running` |
 | 10 | 安裝程式把密鑰印在畫面上，導到檔案就留在檔裡 | 本文第 3 步註明不要導到檔案 |
+
+2026-10-01 在同一台演練「更新」（09.30-14 → 10.01-1），又撞到三個，都只有真的更新失敗才會走到：
+
+| # | 問題 | 修正 |
+|---|---|---|
+| 11 | 更新前打包 studio 成品用的輔助映像名是開發機才有的 `anila-csp:latest` | 改用 `anila/csp:running` |
+| 12 | 一般帳號讀不到服務帳號的上傳／附件目錄，檔案快照少一半卻沒停 | 安裝與更新改用 sudo；停服務前先檢查讀不讀得到；快照不完整就停 |
+| 13 | 失敗後自動回復，服務都健康了卻等滿 300 秒、入口不開，平台整個連不上 | 健康判斷裡不帶數字的 `return` 在 EXIT trap 中回傳進 trap 前的結束碼；全部改明寫 |

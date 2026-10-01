@@ -187,8 +187,9 @@ anchor_binds_here() {
 install_root_is_real_anchor() {
   local root_phys anchor
   if [[ -f "$(_install_anchor_file)" ]]; then
+    # 明寫 $?：EXIT trap 裡不帶數字的 return 會回傳進 trap 前的結束碼。
     anchor_binds_here
-    return
+    return $?
   fi
   root_phys="$(install_root_phys)"
   anchor="/opt/anila"
@@ -253,7 +254,7 @@ existing_compose_stack() {
 refuse_if_existing_stack() {
   existing_compose_stack || return 0
   die "拒絕操作：這不是第一次安裝。這台已有名稱像 $(compose_project) 的 compose 專案或 volume。請先備份再認領：
-bash anila-update.sh adopt $(install_root)/versions/<目前版本>"
+sudo bash anila-update.sh adopt $(install_root)/versions/<目前版本>"
 }
 
 # 停服務、還原、刪除或改名資料庫、載入或標記映像：

@@ -1065,6 +1065,45 @@ make_min_bundle() {
   rm -f "$lines"
 }
 
+# 失敗後的回復跑在 EXIT trap 裡。不帶數字的 return 在 trap 裡回傳進 trap 前的
+# 結束碼，csp-credential-dirs 會永遠「沒就緒」，入口不開（2026-10-01 .35 實撞）。
+test_readiness_inside_exit_trap() {
+  local out
+  out="$(bash -c '
+    source "$1"
+    trap "service_is_ready csp-credential-dirs \"Exited (0) 2 minutes ago\" && echo READY || echo NOT_READY" EXIT
+    false
+    exit 1
+  ' _ "$ROOT/scripts/release/anila-update.sh" 2>/dev/null || true)"
+  [[ "$out" == *READY* && "$out" != *NOT_READY* ]] || {
+    echo "trap 裡 csp-credential-dirs Exited (0) 被判成沒就緒：$out" >&2
+    return 1
+  }
+  if grep -nE '^\s*return\s*$' "$ROOT/scripts/release/anila-update.sh" "$ROOT/scripts/release/release-lib.sh"; then
+    echo "仍有不帶數字的 return" >&2
+    return 1
+  fi
+}
+
+# 服務帳號的目錄（700）一般帳號讀不到，快照會少一半。要在停服務前就停下，
+# 請操作者改用 sudo（2026-10-01 .35 更新演練）。
+test_unreadable_share_refuses_before_stop() {
+  local root err
+  root="$tmp/unreadable-share-root"
+  mkdir -p "$root/state/share/attachments/inner"
+  printf 'x\n' > "$root/state/share/attachments/inner/a.txt"
+  chmod 000 "$root/state/share/attachments/inner"
+  err="$tmp/unreadable.err"
+  if ( ANILA_INSTALL_ROOT="$root" assert_share_readable ) 2>"$err"; then
+    chmod 700 "$root/state/share/attachments/inner"
+    echo "讀不到的附件目錄沒有被擋下" >&2
+    return 1
+  fi
+  chmod 700 "$root/state/share/attachments/inner"
+  grep -q 'sudo' "$err" || { echo "沒有提示改用 sudo" >&2; cat "$err" >&2; return 1; }
+  ( ANILA_INSTALL_ROOT="$root" assert_share_readable ) || { echo "讀得到時仍被擋下" >&2; return 1; }
+}
+
 test_bundle_ships_preflight() {
   bash -n "$ROOT/scripts/release/preflight.sh" || return 1
   grep -q 'cp "$SCRIPT_DIR/preflight.sh" "$stage/preflight.sh"' "$ROOT/scripts/release/build-release.sh" || {
@@ -1082,6 +1121,13 @@ test_host_steps_use_project_image_tags() {
   fi
   grep -q 'image="$(image_project_ref csp running)"' "$ROOT/scripts/release/anila-update.sh" || {
     echo "JWT 金鑰沒有用專案標籤的 csp 映像" >&2
+    return 1
+  }
+  # 從清單讀出的名稱也不能直接拿去 docker run（2026-10-01：studio 快照）。
+  local got
+  got="$(COMPOSE_PROJECT_NAME="$TEST_PROJECT" studio_helper_image)"
+  [[ "$got" == "$TEST_PROJECT/csp:running" ]] || {
+    echo "studio 快照的輔助映像是 $got，不是專案標籤" >&2
     return 1
   }
 }
@@ -2296,6 +2342,8 @@ check "映像清單缺漏或重複就停" test_image_catalog_rejects_missing_and
 check "containerd 儲存用 manifest 雜湊核對" test_load_accepts_containerd_manifest_digest
 check "主機只用載入時標的專案標籤" test_host_steps_use_project_image_tags
 check "出貨包帶預檢腳本" test_bundle_ships_preflight
+check "失敗回復的 trap 裡健康判斷照樣正確" test_readiness_inside_exit_trap
+check "讀不到檔案目錄就在停服務前拒絕" test_unreadable_share_refuses_before_stop
 check "打錯版本且稽核失敗會標待寫" test_cancel_marks_pending_when_db_audit_fails
 check "studio volume 跟檔案一起快照" test_studio_volume_is_snapshotted_with_share_dirs
 check "一般檔與 redis 都掃私鑰" test_scan_reads_plain_files_and_redis

@@ -26,14 +26,14 @@ bash scripts/release/build-release.sh
 沒有安裝記錄時，第一次安裝的預設位置是 `/opt/anila`。解在別的地方，腳本會停並印出下面這兩行。記錄寫在安裝包外面的 `/var/lib/anila/install-anchor`（權限 600，root 執行時擁有者是 root）。這份記錄一旦存在，就是唯一依據：停服務、還原、回復、第一次安裝、認領，都要目前的安裝根目錄與 compose 專案跟記錄相同。不會把既有記錄改寫成另一個根目錄，另外指定安裝根目錄也不能繞過。版本目錄裡的 `state/release.state` 不能拿來冒充。從 git 工作樹對專案 `anila` 會直接拒絕。第一次、而且還沒有記錄時：
 
 ```bash
-tar -xzf anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
-bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
+sudo tar -xzf anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 ```
 
 之後同一支腳本已複製到 `/opt/anila/anila-update.sh`，傳目錄或壓縮檔都可以：
 
 ```bash
-bash /opt/anila/anila-update.sh anila-YYYY.MM.DD-N.tar.gz
+sudo bash /opt/anila/anila-update.sh anila-YYYY.MM.DD-N.tar.gz
 ```
 
 腳本依序做這些事：
@@ -48,7 +48,7 @@ bash /opt/anila/anila-update.sh anila-YYYY.MM.DD-N.tar.gz
 這台已經有同名的 compose 專案或 volume、卻沒有安裝記錄時，不要直接更新。先備份再認領。認領會把舊部署寫在版本目錄裡的 `.env`（若還在）收進 `state/.env`，再像更新一樣準備目錄：站台設定、JWT、模型 CA、檔案所有權、網路，然後才啟動。新產生的密鑰用十六進位。成功會在 `operations.log` 與資料庫稽核留下動作 `adopt`。專案 `anila` 同時寫外面的 anchor；已有不同根目錄的記錄時拒絕，不會覆寫：
 
 ```bash
-bash /opt/anila/anila-update.sh adopt /opt/anila/versions/<目前版本>
+sudo bash /opt/anila/anila-update.sh adopt /opt/anila/versions/<目前版本>
 ```
 
 第一次安裝沒有上一版，只問站台名稱 `ANILA_HOST`。其餘密鑰自動產生（十六進位），只顯示一次，並寫在 `/opt/anila/state/generated-secrets.txt`（權限 600）。用產生的管理員密碼登入。卡片首次擁有者先是空的；要指定員工編號，之後改既有的 `CARD_INITIAL_OWNERS` 再重建 csp。沒有院內憑證時會先簽一張自簽憑證，正式憑證換成同一路徑即可，不要放進出貨包。
@@ -65,7 +65,7 @@ asr-gateway 跟平台一起啟動；解碼端在治理中心「外部服務」�
 ## 手動回復
 
 ```bash
-bash /opt/anila/anila-update.sh rollback
+sudo bash /opt/anila/anila-update.sh rollback
 ```
 
 會先停掉會寫入的服務，再用備份當時的時間計算會消失的對話、訊息、文件（備份之後到現在的新增都會消失），畫面上仍會看到目前版本，然後要求打字輸入要回到的版本。打錯或取消會把平台拉起來，不還原，並寫資料庫稽核（寫不進去就留待寫標記）。打對才還原：先還原進空資料庫，核對 alembic 版本，把線上庫改名保留（不先刪），檔案快照也留著上一份。還原成功之後才把 `current` 指到要回去的版本，先做內部健康檢查，通過才開 nginx。健康檢查過了才丟掉改名保留的舊庫、清掉檔案上一份。資料庫或檔案還原失敗時，線上資料庫保持原樣，映像標籤與 `current` 指回正在跑的那一版，把那一版拉起來，並寫下失敗。健康檢查沒過也一樣：資料庫改回來、檔案換回、映像標籤與 `current` 切回正在跑的那一版再啟動。回復成功後沒有再上一版，要等下一次更新。

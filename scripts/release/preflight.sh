@@ -55,28 +55,27 @@ else
   fail "docker compose 版本 ${cv:-讀不到}，需要 2.17 以上"
 fi
 
-# ── 安裝目錄與安裝記錄 ───────────────────────────────────────────────────────
-for d in "$root" "$anchor_dir"; do
-  if [[ -d "$d" && -w "$d" ]]; then
-    pass "$d 存在且可寫"
-  elif [[ "$(id -u)" -eq 0 ]]; then
-    pass "$d 會由 root 建立"
-  else
-    fail "$d 不存在或不可寫（安裝程式不會自己 sudo）"
-    if [[ "$d" == "$anchor_dir" ]]; then
-      fix "sudo install -d -o $me -g $me -m 700 $d"
-    else
-      fix "sudo install -d -o $me -g $me -m 755 $d"
-    fi
-  fi
-done
-if [[ -f "$anchor_dir/install-anchor" ]]; then
+# ── 執行身分 ─────────────────────────────────────────────────────────────────
+# 平台的上傳、附件目錄屬於服務帳號（權限 700）。一般帳號做不了更新前的檔案快照，
+# 所以安裝與更新都用 sudo 跑（2026-10-01 .35 更新演練）。
+if [[ "$(id -u)" -eq 0 ]]; then
+  pass "以 root 執行"
+else
+  note "安裝、更新、回復都要用 sudo 執行：sudo bash …/anila-update.sh …（這次預檢用目前帳號跑，只能看到部分項目）"
+fi
+# 安裝記錄目錄是 root 的 700。一般帳號看不到，就不判斷是不是第一次安裝。
+anchor_known=1
+if [[ -d "$anchor_dir" && ! -r "$anchor_dir" ]]; then
+  anchor_known=0
+  note "看不到 $anchor_dir（只有 root 讀得到），用 sudo 跑才能判斷這次是第一次安裝還是更新"
+fi
+if [[ "$anchor_known" == 1 && -f "$anchor_dir/install-anchor" ]]; then
   note "已有安裝記錄：$(tr '\n' ' ' < "$anchor_dir/install-anchor")— 這次是更新，不是第一次安裝"
 fi
 if docker volume ls -q 2>/dev/null | grep -q '^anila_'; then
-  if [[ ! -f "$anchor_dir/install-anchor" ]]; then
+  if [[ "$anchor_known" == 1 && ! -f "$anchor_dir/install-anchor" ]]; then
     fail "已有 anila_ 開頭的 volume，但沒有安裝記錄。這是舊部署，要先認領"
-    fix "bash $root/anila-update.sh adopt $root/versions/<目前版本>    # 見 docs/deploy/UPDATE.md"
+    fix "sudo bash $root/anila-update.sh adopt $root/versions/<目前版本>    # 見 docs/deploy/UPDATE.md"
   fi
 fi
 

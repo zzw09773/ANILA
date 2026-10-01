@@ -315,7 +315,7 @@ open_bundle() {
   if [[ -d "$spec" ]]; then
     [[ -f "$spec/manifest.txt" ]] || die "這個目錄不是出貨包（沒有 manifest.txt）"
     readlink -f "$spec"
-    return
+    return 0
   fi
   [[ -f "$spec" ]] || die "找不到出貨包：$spec"
   root="$(install_root)"
@@ -333,11 +333,11 @@ open_bundle() {
   sub="$(find "$dest" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
   if [[ -n "$sub" && -f "$sub/manifest.txt" ]]; then
     readlink -f "$sub"
-    return
+    return 0
   fi
   if [[ -f "$dest/manifest.txt" ]]; then
     readlink -f "$dest"
-    return
+    return 0
   fi
   die "壓縮檔裡沒有 manifest.txt"
 }
@@ -432,11 +432,13 @@ studio_volume_name() {
   printf '%s' "$name"
 }
 
+# 借 csp 映像的 tar 讀寫 studio volume。主機上只有載入時標的專案標籤，
+# 清單裡的 anila-csp:latest 只存在開發機（2026-10-01 .35 更新演練：快照是空的）。
 studio_helper_image() {
   local svc image archive start
   while read -r svc image archive start; do
     if [[ "$svc" == "csp" ]]; then
-      printf '%s' "$image"
+      image_project_ref csp running
       return 0
     fi
   done < <(release_catalog)
@@ -524,6 +526,22 @@ rm -rf /volume/.anila-restore-staging /volume/.anila-restore-previous
 ' || true
 }
 
+# 上傳、附件等目錄屬於服務帳號（10001），權限 700。一般帳號讀不到，硬連結
+# 快照與還原都做不成，cp 只印錯誤、快照少一半（2026-10-01 .35 更新演練）。
+# 在停任何服務之前檢查，讀不到就停，請操作者改用 sudo。
+assert_share_readable() {
+  local root name src out
+  root="$(install_root)"
+  for name in $(share_snapshot_names); do
+    src="$root/state/share/$name"
+    [[ -d "$src" && ! -L "$src" ]] || continue
+    out="$(find "$src" \( ! -readable -o \( -type d ! -executable \) \) -print -quit 2>&1 || true)"
+    if [[ -n "$out" ]]; then
+      die "讀不到 ${src}（屬於平台的服務帳號），做不了更新前的檔案快照。平台沒有動。請用 sudo 執行這支腳本。"
+    fi
+  done
+}
+
 snapshot_share_files() {
   local dest_parent="$1" root name src oldmask
   root="$(install_root)"
@@ -535,7 +553,7 @@ snapshot_share_files() {
     src="$root/state/share/$name"
     [[ -d "$src" && ! -L "$src" ]] || continue
     rm -rf "$dest_parent/$name"
-    cp -al "$src" "$dest_parent/$name"
+    cp -al "$src" "$dest_parent/$name" || die "檔案快照不完整：${name}。不換版本。"
   done
   umask "$oldmask"
 }
@@ -682,8 +700,9 @@ prune_old_preupdate_backups() {
 # 進入這裡之後若失敗，結束時會把上一版拉起來。
 backup_for_update() {
   local tree="$1" dest="$2" stamp ver oldmask
-  _update_failure_restart=1
   assert_destructive_allowed
+  assert_share_readable
+  _update_failure_restart=1
   stop_writers "$tree"
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   preupdate_dump "$tree" "$dest"
@@ -1007,9 +1026,12 @@ service_is_ready() {
   local svc="$1" status="$2" low
   low="$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')"
   [[ "$low" == *unhealthy* ]] && return 1
+  # 不要寫成「[[ … ]]; return」。在 EXIT trap 裡，不帶數字的 return 回傳的是
+  # 進 trap 之前的結束碼（die 的 1），失敗後回復的健康檢查會永遠不過、入口不開
+  # （2026-10-01 .35 更新演練實撞）。
   if [[ "$svc" == "csp-credential-dirs" ]]; then
-    [[ "$low" == *"exited (0)"* ]]
-    return
+    [[ "$low" == *"exited (0)"* ]] && return 0
+    return 1
   fi
   if [[ "$low" == *"(healthy)"* ]]; then
     return 0
@@ -1583,6 +1605,8 @@ cmd_update() {
     _fail_new="$new"
     _fail_dump="$dump"
     _fail_before=""
+    # 讀不到檔案目錄就在停任何服務之前結束，不走回復。
+    assert_share_readable
     # backup_for_update 在命令替換裡。旗標要設在這個 shell，失敗才拉得回上一版。
     _update_failure_restart=1
     info "先停掉會寫入的服務，再做更新前的資料庫備份"
@@ -1679,6 +1703,7 @@ cmd_rollback() {
   dump="$(state_get pre_update_dump)"
   [[ -f "${dump}.time" ]] || die "備份沒有時間，無法計算會消失的筆數"
   since="$(tr -d '[:space:]' < "${dump}.time")"
+  assert_share_readable
   stop_writers "$tree"
   if ! counts="$(created_since_counts "$tree" "$since")"; then
     restart_platform "$tree"
@@ -1786,6 +1811,7 @@ cmd_adopt() {
   _fail_new="$base"
   _update_failure_restart=1
   dump="$root/state/share/backups/pre-update/${base}/db.dump"
+  assert_share_readable
   stamp="$(backup_for_update "$phys" "$dump")" || exit 1
   state_set install_root "$root"
   state_set compose_project "$(compose_project)"
