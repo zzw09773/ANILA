@@ -141,6 +141,8 @@ services:
     volumes:
       - anila-service-credentials:/run/anila/service-clients
     restart: "no"
+    labels:
+      anila.oneshot: "true"
 
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:

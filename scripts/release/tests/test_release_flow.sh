@@ -167,6 +167,14 @@ if [[ "$joined" == *'image ls'* ]]; then
   fi
   exit 0
 fi
+# 裸的 docker ps（沒有 -a）。第一次安裝看佔用埠的是不是 anila-nginx。
+# compose ps -a 已在上面處理，這裡不能先截走。
+if [[ "${1:-}" == ps ]]; then
+  if [[ -n "${STUB_DOCKER_PS_PORTS:-}" ]]; then
+    printf '%s\n' "$STUB_DOCKER_PS_PORTS"
+  fi
+  exit 0
+fi
 exit 0
 EOF
   cat > "$bindir/pg_dump" <<'EOF'
@@ -187,7 +195,21 @@ if [[ "$*" == *http_code* ]]; then
 fi
 exit 0
 EOF
-  chmod +x "$bindir/docker" "$bindir/pg_dump" "$bindir/psql" "$bindir/curl"
+  # ss -Hltn "sport = :PORT"。STUB_LISTEN_PORTS 用逗號分隔；沒列到的埠當成沒人聽。
+  cat > "$bindir/ss" <<'EOF'
+#!/usr/bin/env bash
+port=""
+for arg in "$@"; do
+  if [[ "$arg" == "sport = :"* ]]; then
+    port="${arg#"sport = :"}"
+  fi
+done
+if [[ -n "$port" && ",${STUB_LISTEN_PORTS:-}," == *",$port,"* ]]; then
+  printf 'LISTEN 0 128 *:%s *:*\n' "$port"
+fi
+exit 0
+EOF
+  chmod +x "$bindir/docker" "$bindir/pg_dump" "$bindir/psql" "$bindir/curl" "$bindir/ss"
 }
 
 # 解析到的 docker / pg_dump / psql 必須是替身，否則中止整份測試。
@@ -2802,6 +2824,1261 @@ check "compose 版本低於 2.17 就停" test_compose_version_gate
 check "Postgres 記憶體計算 62GB 與 755GB" test_postgres_memconf_62_and_755
 check "Postgres 啟動時記下算出的參數" test_postgres_memconf_logs_chosen_values
 check "讀不到記憶體時用 Postgres 內建預設" test_postgres_memconf_unreadable_uses_defaults
+
+# 第一次安裝、還沒改任何東西之前：根目錄先於 /var/lib/anila。不是 root 就印出 sudo。
+test_first_install_refuses_missing_root_with_sudo() {
+  local root spec log err
+  [[ "$(id -u)" -ne 0 ]] || { echo "這項要一般帳號才看得到 sudo 拒絕" >&2; return 1; }
+  root="$tmp/missing-install-root"
+  spec="$tmp/anila-2026.10.01-1.tar.gz"
+  log="$tmp/missing-root.log"
+  err="$tmp/missing-root.err"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  export ANILA_INSTALL_ROOT="$root"
+  export COMPOSE_PROJECT_NAME="$TEST_PROJECT"
+  if ( trap - EXIT; cmd_update "$spec" ) >"$tmp/missing-root.out" 2>"$err"; then
+    echo "目錄不存在仍繼續安裝" >&2
+    return 1
+  fi
+  grep -q '下面的目錄不存在或不可寫' "$err" || {
+    echo "沒有說目錄不可寫" >&2
+    cat "$err" >&2
+    return 1
+  }
+  grep -F "$root" "$err" >/dev/null || { echo "訊息沒有安裝根目錄" >&2; cat "$err" >&2; return 1; }
+  grep -F "sudo bash" "$err" >/dev/null || { echo "沒有印出 sudo" >&2; cat "$err" >&2; return 1; }
+  grep -F "$ROOT/scripts/release/anila-update.sh" "$err" >/dev/null || {
+    echo "sudo 指令不是這支更新程式" >&2
+    cat "$err" >&2
+    return 1
+  }
+  grep -F "$spec" "$err" >/dev/null || { echo "sudo 指令沒有帶出貨包" >&2; cat "$err" >&2; return 1; }
+  [[ ! -e "$root" ]] || { echo "拒絕之前就建立了安裝根目錄" >&2; return 1; }
+  [[ ! -s "$log" ]] || { echo "拒絕之前就呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+}
+
+test_unready_install_dirs_order() {
+  local a b lines err spec
+  a="$tmp/order-root"
+  b="$tmp/order-anchor"
+  lines="$(collect_unready_install_dirs "$a" "$b")"
+  [[ "$(printf '%s\n' "$lines" | sed -n '1p')" == "$a" ]] || {
+    echo "不可寫目錄的第一個不是安裝根目錄" >&2
+    printf '%s\n' "$lines" >&2
+    return 1
+  }
+  [[ "$(printf '%s\n' "$lines" | sed -n '2p')" == "$b" ]] || {
+    echo "第二個不是安裝記錄目錄" >&2
+    return 1
+  }
+  mkdir -p "$a" "$b"
+  [[ -z "$(collect_unready_install_dirs "$a" "$b")" ]] || {
+    echo "兩個都可寫仍被列成沒準備好" >&2
+    return 1
+  }
+  rmdir "$b"
+  [[ "$(collect_unready_install_dirs "$a" "$b")" == "$b" ]] || {
+    echo "只缺記錄目錄時仍列出了根目錄" >&2
+    return 1
+  }
+  # root 缺少的目錄會自己建。id 只在這個子 shell 換成 0，避免改到操作紀錄的使用者名稱。
+  (
+    id() {
+      if [[ "${1:-}" == "-u" ]]; then
+        printf '0\n'
+        return 0
+      fi
+      /usr/bin/id "$@"
+    }
+    install_dir_ready "$tmp/root-may-create-this"
+  ) || { echo "root 應該把缺少的目錄視為可建立" >&2; return 1; }
+  install_dir_ready "$tmp/user-cannot-create-this" && {
+    echo "一般帳號缺少的目錄不該算準備好" >&2
+    return 1
+  }
+  spec="$tmp/order-bundle.tar.gz"
+  err="$tmp/order.err"
+  export ANILA_INSTALL_ROOT="$tmp/order-missing-root"
+  export COMPOSE_PROJECT_NAME=anila
+  if ( trap - EXIT; _refuse_unready_install_dirs "$spec" ) >"$tmp/order.out" 2>"$err"; then
+    echo "正式專案目錄沒準備好仍放行" >&2
+    return 1
+  fi
+  local root_at anchor_at
+  root_at="$(first_line "$err" "$tmp/order-missing-root")"
+  anchor_at="$(first_line "$err" '/var/lib/anila')"
+  [[ -n "$root_at" ]] || { echo "沒有列出安裝根目錄" >&2; cat "$err" >&2; return 1; }
+  if [[ -n "$anchor_at" && "$root_at" -gt "$anchor_at" ]]; then
+    echo "安裝根目錄排在 /var/lib/anila 後面" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -F 'sudo bash' "$err" >/dev/null || { echo "正式專案沒有印出 sudo" >&2; cat "$err" >&2; return 1; }
+  # 預檢同一順序：先 /opt/anila，再 /var/lib/anila。
+  local pre_out opt_at var_at
+  pre_out="$tmp/preflight.out"
+  if bash "$ROOT/scripts/release/preflight.sh" >"$pre_out" 2>&1; then
+    :
+  fi
+  opt_at="$(first_line "$pre_out" '/opt/anila')"
+  var_at="$(first_line "$pre_out" '/var/lib/anila')"
+  [[ -n "$opt_at" && -n "$var_at" && "$opt_at" -lt "$var_at" ]] || {
+    echo "預檢沒有先看安裝根目錄" >&2
+    cat "$pre_out" >&2
+    return 1
+  }
+  if grep -q '不存在或不可寫' "$pre_out"; then
+    grep -F 'sudo bash' "$pre_out" >/dev/null || {
+      echo "預檢發現目錄不可寫，卻沒有印出 sudo" >&2
+      return 1
+    }
+  fi
+}
+
+# 只有第一次安裝、埠被別人佔住才問。空回答就是 8443。沒有終端機要說明怎麼寫 .env。
+test_first_install_https_port_saved() {
+  local root file mode
+  root="$tmp/port-root"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  export STUB_LISTEN_PORTS=443
+  export STUB_DOCKER_PS_PORTS=""
+  ensure_first_install_https_port "" >"$tmp/port.out" 2>"$tmp/port.err" || {
+    echo "空回答沒有改用 8443" >&2
+    cat "$tmp/port.err" >&2
+    return 1
+  }
+  file="$root/state/.env"
+  grep -qx 'NGINX_HTTPS_PORT=8443' "$file" || {
+    echo "沒有把 8443 寫進 state/.env" >&2
+    cat "$file" >&2
+    return 1
+  }
+  mode="$(stat -c %a "$file")"
+  [[ "$mode" == "600" ]] || { echo "state/.env 權限是 $mode" >&2; return 1; }
+  grep -q 'HTTPS 埠改為 8443' "$tmp/port.err" || { echo "沒有說明埠已改" >&2; return 1; }
+  # 已寫好的埠沒被佔用，就不再問，也不改檔。
+  export STUB_LISTEN_PORTS=443
+  ensure_first_install_https_port "99999" >"$tmp/port-keep.out" 2>"$tmp/port-keep.err" || return 1
+  grep -qx 'NGINX_HTTPS_PORT=8443' "$file" || { echo "已設的埠被改掉" >&2; return 1; }
+  unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+}
+
+test_https_port_no_tty_explains_env() {
+  local root err
+  root="$tmp/port-notty"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  err="$tmp/port-notty.err"
+  export STUB_LISTEN_PORTS=443
+  export STUB_DOCKER_PS_PORTS=$'other-nginx 0.0.0.0:443->443/tcp'
+  if ( trap - EXIT; ensure_first_install_https_port ) </dev/null >"$tmp/port-notty.out" 2>"$err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有終端機仍繼續" >&2
+    return 1
+  fi
+  grep -F "請在 ${root}/state/.env 寫入 NGINX_HTTPS_PORT=<另一個埠>（例如 8443），chmod 600，然後再執行一次。" "$err" >/dev/null || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有說明怎麼在 state/.env 換埠" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$root/state/.env" ]] || { echo "拒絕之後仍寫了 .env" >&2; return 1; }
+  # 不是數字、或建議的埠也被佔，都不寫。
+  if ( trap - EXIT; ensure_first_install_https_port abc ) >"$tmp/port-abc.out" 2>"$tmp/port-abc.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "不是數字仍接受" >&2
+    return 1
+  fi
+  grep -q '1 到 65535' "$tmp/port-abc.err" || { echo "沒有拒絕非整數埠" >&2; return 1; }
+  export STUB_LISTEN_PORTS=443,8443
+  if ( trap - EXIT; ensure_first_install_https_port 8443 ) >"$tmp/port-taken.out" 2>"$tmp/port-taken.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "被佔用的埠仍接受" >&2
+    return 1
+  fi
+  grep -q '也被佔用' "$tmp/port-taken.err" || { echo "沒有說建議埠也被佔" >&2; return 1; }
+  [[ ! -e "$root/state/.env" ]] || { echo "不合法的埠寫進了 .env" >&2; return 1; }
+  # anila-nginx 自己聽 443 就不問。
+  export STUB_LISTEN_PORTS=443
+  export STUB_DOCKER_PS_PORTS=$'anila-nginx 0.0.0.0:443->443/tcp'
+  ensure_first_install_https_port >"$tmp/port-own.out" 2>"$tmp/port-own.err" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "ANILA 自己的入口被當成衝突" >&2
+    cat "$tmp/port-own.err" >&2
+    return 1
+  }
+  [[ ! -e "$root/state/.env" ]] || { echo "自己的入口仍改寫了埠" >&2; return 1; }
+  unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+}
+
+test_update_does_not_ask_https_port() {
+  local root old bundle log err
+  root="$tmp/port-update-root"
+  old="2026.09.29-2"
+  bundle="$tmp/port-update-bundle"
+  log="$tmp/port-update.log"
+  err="$tmp/port-update.err"
+  mkdir -p "$root/versions/$old/infra/deployment/scripts"
+  cp "$ROOT/infra/deployment/scripts/backup-lib.sh" \
+    "$root/versions/$old/infra/deployment/scripts/backup-lib.sh"
+  printf 'name: anila\n' > "$root/versions/$old/compose.yaml"
+  ln -sfn "versions/$old" "$root/current"
+  mkdir -p "$root/state"
+  printf 'current=%s\n' "$old" > "$root/state/release.state"
+  arm_test_install "$root"
+  make_min_bundle "$bundle" "2026.09.29-3"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  export STUB_BANNER_COUNT=1
+  export STUB_DUMP_FAIL=1
+  export STUB_LIVE_ALEMBIC=r1_0062
+  export STUB_LISTEN_PORTS=443
+  export ANILA_HEALTH_TIMEOUT=0
+  export ANILA_HEALTH_POLL=0
+  if ( trap - EXIT; cmd_update "$bundle" ) </dev/null >"$tmp/port-update.out" 2>"$err"; then
+    unset STUB_LISTEN_PORTS
+    echo "備份失敗仍當作更新成功" >&2
+    return 1
+  fi
+  if grep -q '要改用哪個 HTTPS 埠' "$err" || grep -q 'HTTPS 埠' "$err"; then
+    unset STUB_LISTEN_PORTS
+    echo "更新時詢問了 HTTPS 埠" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  if [[ -f "$root/state/.env" ]] && grep -q '^NGINX_HTTPS_PORT=' "$root/state/.env"; then
+    unset STUB_LISTEN_PORTS
+    echo "更新把 NGINX_HTTPS_PORT 寫進 state/.env" >&2
+    return 1
+  fi
+  grep -q '備份' "$err" || { echo "沒有走到更新前備份" >&2; cat "$err" >&2; return 1; }
+  unset STUB_LISTEN_PORTS STUB_DUMP_FAIL STUB_BANNER_COUNT
+}
+
+# 產生出來的值只能在檔案裡。標準輸出與標準錯誤都要搜過。
+test_generated_secrets_absent_from_installer_output() {
+  local root tree all key val mode
+  root="$tmp/secret-quiet"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  tree="$(use_version_tree "$root" "2026.09.29-1")"
+  printf 'ANILA_HOST=lab\n' > "$root/state/.env"
+  chmod 600 "$root/state/.env"
+  ln -sfn "$root/state/.env" "$tree/.env"
+  ensure_platform_env "$tree" >"$tmp/secret.out" 2>"$tmp/secret.err" || {
+    echo "產生密鑰失敗" >&2
+    return 1
+  }
+  all="$tmp/secret-all"
+  cat "$tmp/secret.out" "$tmp/secret.err" > "$all"
+  [[ -f "$root/state/generated-secrets.txt" ]] || { echo "沒有寫 generated-secrets.txt" >&2; return 1; }
+  mode="$(stat -c %a "$root/state/generated-secrets.txt")"
+  [[ "$mode" == "600" ]] || { echo "generated-secrets.txt 權限是 $mode" >&2; return 1; }
+  grep -F "sudo cat $root/state/generated-secrets.txt" "$all" >/dev/null || {
+    echo "沒有印出 sudo cat 的路徑" >&2
+    cat "$all" >&2
+    return 1
+  }
+  while IFS= read -r key; do
+    val="$(awk -F= -v k="$key" '$1==k { print substr($0, index($0, "=") + 1); exit }' \
+      "$root/state/generated-secrets.txt")"
+    [[ -n "$val" ]] || { echo "檔案裡沒有 $key" >&2; return 1; }
+    if grep -F "$val" "$all" >/dev/null; then
+      echo "密鑰 $key 出現在安裝程式的輸出" >&2
+      return 1
+    fi
+  done <<'EOF'
+SECRET_KEY
+ADMIN_PASSWORD
+CSP_DB_PASSWORD
+CSP_APP_DB_PASSWORD
+CODESERVER_PASSWORD
+EOF
+}
+
+test_success_log_notes_unfinished_install() {
+  local root file
+  root="$tmp/ops-note"
+  mkdir -p "$root/state"
+  arm_test_install "$root"
+  file="$root/state/operations.log"
+  printf 't\top\tupdate\tnone\t2026.10.01-1\tfailure\n' > "$file"
+  append_operations_log update none 2026.10.01-1 success || return 1
+  grep -F $'update\tnone\t2026.10.01-1\tsuccess\t接續上次未完成的安裝' "$file" >/dev/null || {
+    echo "安裝成功沒有註記接續" >&2
+    cat "$file" >&2
+    return 1
+  }
+  printf 't\top\tupdate\t2026.09.29-1\t2026.10.01-2\tfailure\n' >> "$file"
+  printf 't\top\tupdate\tnone\t2026.10.01-9\tsuccess\n' >> "$file"
+  append_operations_log update 2026.09.29-1 2026.10.01-2 success || return 1
+  grep -F $'update\t2026.09.29-1\t2026.10.01-2\tsuccess\t接續上次未完成的更新' "$file" >/dev/null || {
+    echo "更新成功沒有註記接續" >&2
+    cat "$file" >&2
+    return 1
+  }
+  # 同一個目標版本的最近一筆已是成功，或根本是別的版本，就不加註。
+  append_operations_log update none 2026.10.01-1 success || return 1
+  local again
+  again="$(grep $'update\tnone\t2026.10.01-1\tsuccess' "$file" | tail -1)"
+  [[ "$again" == *$'\tsuccess' ]] || {
+    echo "前一筆已成功仍加了註記：$again" >&2
+    return 1
+  }
+  append_operations_log update none 2026.10.01-8 success || return 1
+  grep -E $'update\tnone\t2026.10.01-8\tsuccess$' "$file" >/dev/null || {
+    echo "沒有失敗紀錄的成功被加了註記" >&2
+    cat "$file" >&2
+    return 1
+  }
+  append_operations_log rollback 2026.10.01-2 2026.09.29-1 success || return 1
+  grep -E $'rollback\t2026.10.01-2\t2026.09.29-1\tsuccess$' "$file" >/dev/null || {
+    echo "回復成功被加了安裝註記" >&2
+    return 1
+  }
+}
+
+test_oneshot_credential_dirs_labeled_and_summarized() {
+  local file
+  for file in "$ROOT/infra/compose/platform.yml" "$ROOT/infra/compose/dev.yml"; do
+    grep -q '^  csp-credential-dirs:' "$file" || {
+      echo "$file 改了服務名稱" >&2
+      return 1
+    }
+    awk '
+      /^  [A-Za-z0-9_-]+:$/ { svc=$1; sub(/:$/, "", svc) }
+      svc == "csp-credential-dirs" && /anila.oneshot: "true"/ { found=1 }
+      END { exit found ? 0 : 1 }
+    ' "$file" || {
+      echo "$file 的 csp-credential-dirs 沒有 anila.oneshot" >&2
+      return 1
+    }
+  done
+  awk '
+    /更新完成/ { seen=1 }
+    seen && /初始化工作 csp-credential-dirs 已正常結束/ { found=1 }
+    END { exit found ? 0 : 1 }
+  ' "$ROOT/scripts/release/anila-update.sh" || {
+    echo "成功收尾沒有說明初始化工作已結束" >&2
+    return 1
+  }
+  grep -q 'anila.oneshot=true' "$ROOT/docs/deploy/INSTALL.md" || {
+    echo "INSTALL.md 沒有寫一次性標籤" >&2
+    return 1
+  }
+  if grep -n 'label!=' "$ROOT/docs/deploy/INSTALL.md"; then
+    echo "INSTALL.md 用了 docker 不支援的 label!= 過濾" >&2
+    return 1
+  fi
+  grep -F -q "docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'" \
+    "$ROOT/docs/deploy/INSTALL.md" || {
+    echo "INSTALL.md 的驗證指令不是列出運行中的容器" >&2
+    return 1
+  }
+}
+
+# 健康檢查過了、入口沒開：最後要明說同仁連不上，並給出開入口的指令。
+test_auto_rollback_closed_entry_tells_how_to_open() {
+  local root log err ps dump want closed_at cmd_at
+  root="$tmp/closed-entry-root"
+  log="$tmp/closed-entry.log"
+  err="$tmp/closed-entry.err"
+  ps="$tmp/closed-entry.ps"
+  layout_rollback_install "$root"
+  arm_test_install "$root"
+  dump="$root/state/share/backups/pre-update/2026.09.29-1/db.dump"
+  write_ps_file "$ps"
+  sed -i 's/^nginx .*/nginx Exited (1)/' "$ps"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  export DOCKER_PS_FILE="$ps"
+  export STUB_LIVE_ALEMBIC=r1_0062
+  export ANILA_HEALTH_TIMEOUT=0
+  export ANILA_HEALTH_POLL=0
+  if ( trap - EXIT; auto_rollback "$root" "2026.09.29-1" "2026.09.29-2" "r1_0062" "$dump" ) \
+    >"$tmp/closed-entry.out" 2>"$err"; then
+    echo "入口沒開仍當作自動回復成功" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -F '入口未開啟，同仁目前連不上。' "$err" >/dev/null || {
+    echo "沒有說明同仁連不上" >&2
+    cat "$err" >&2
+    return 1
+  }
+  want="$(open_entry_command "$root/versions/2026.09.29-1")"
+  grep -F "$want" "$err" >/dev/null || {
+    echo "開入口的指令不對，期望：$want" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ "$want" == *" -p ${TEST_PROJECT} "* ]] || { echo "指令的專案不是測試專案" >&2; return 1; }
+  [[ "$want" == *"up -d --no-build --pull never nginx" ]] || return 1
+  closed_at="$(first_line "$err" '入口未開啟，同仁目前連不上')"
+  cmd_at="$(first_line "$err" 'up -d --no-build --pull never nginx')"
+  [[ -n "$closed_at" && -n "$cmd_at" && "$closed_at" -lt "$cmd_at" ]] || {
+    echo "開入口的指令沒有接在說明後面" >&2
+    return 1
+  }
+  # 入口其實開著就不要這句。
+  write_ps_file "$ps"
+  if ( trap - EXIT; report_closed_entry "$root/versions/2026.09.29-2" ) \
+    >"$tmp/open-entry.out" 2>"$tmp/open-entry.err"; then
+    :
+  else
+    echo "入口已開時報告失敗" >&2
+    return 1
+  fi
+  if grep -q '入口未開啟' "$tmp/open-entry.err"; then
+    echo "入口已開仍說同仁連不上" >&2
+    return 1
+  fi
+}
+
+test_banner_gate_without_tty_explains() {
+  local err
+  err="$tmp/banner-notty.err"
+  unset ANILA_UPDATE_ASSUME_YES
+  if banner_gate 0 "" </dev/null >"$tmp/banner-notty.out" 2>"$err"; then
+    echo "沒有公告、也沒有終端機，卻繼續了" >&2
+    return 1
+  fi
+  grep -F '沒有生效中的公告，且沒有終端機可以詢問，已取消。請先在治理中心貼公告，或設 ANILA_UPDATE_ASSUME_YES=1。' \
+    "$err" >/dev/null || {
+    echo "非互動取消的說明不對" >&2
+    cat "$err" >&2
+    return 1
+  }
+  if grep -F -- '--no-banner-check' "$err" >/dev/null; then
+    echo "仍提到不存在的 --no-banner-check" >&2
+    return 1
+  fi
+  grep -q 'ANILA_UPDATE_ASSUME_YES=1' "$ROOT/docs/deploy/UPDATE.md" || {
+    echo "UPDATE.md 沒有寫 ANILA_UPDATE_ASSUME_YES" >&2
+    return 1
+  }
+}
+
+test_banner_gate_assume_yes_skips() {
+  local err
+  err="$tmp/banner-yes.err"
+  if ! ANILA_UPDATE_ASSUME_YES=1 banner_gate 0 "" </dev/null >"$tmp/banner-yes.out" 2>"$err"; then
+    echo "ANILA_UPDATE_ASSUME_YES=1 仍取消" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ ! -s "$err" ]] || { echo "跳過詢問時仍印了公告警告" >&2; cat "$err" >&2; return 1; }
+  unset ANILA_UPDATE_ASSUME_YES
+  if ANILA_UPDATE_ASSUME_YES=1 banner_gate 0 n </dev/null >"$tmp/banner-n.out" 2>"$tmp/banner-n.err"; then
+    echo "明確回答 n 仍被環境變數放行" >&2
+    return 1
+  fi
+  local flag
+  for flag in true yes; do
+    if ! ANILA_UPDATE_ASSUME_YES="$flag" banner_gate 0 "" </dev/null >"$tmp/banner-$flag.out" 2>"$tmp/banner-$flag.err"; then
+      echo "ANILA_UPDATE_ASSUME_YES=$flag 仍取消" >&2
+      cat "$tmp/banner-$flag.err" >&2
+      return 1
+    fi
+  done
+  if ANILA_UPDATE_ASSUME_YES=no banner_gate 0 "" </dev/null >"$tmp/banner-no.out" 2>"$tmp/banner-no.err"; then
+    echo "ANILA_UPDATE_ASSUME_YES=no 仍放行" >&2
+    return 1
+  fi
+  unset ANILA_UPDATE_ASSUME_YES
+}
+
+_cleanup_test_runner_extracts() {
+  local d
+  shopt -s nullglob
+  for d in "${HOME:-}"/.anila-runner.* "${TMPDIR:-/tmp}"/anila-runner.* /tmp/anila-runner.* \
+      "${TMPDIR:-/tmp}"/anila-bundle-check.* /tmp/anila-bundle-check.*; do
+    [[ -n "$d" && -d "$d" ]] || continue
+    rm -rf -- "$d"
+  done
+  shopt -u nullglob
+}
+
+_write_stub_runner() {
+  local dest="$1" marker="$2"
+  cat > "$dest/anila-update.sh" <<EOF
+#!/usr/bin/env bash
+{
+  printf 'args=%s\n' "\$*"
+  printf 'handoff=%s\n' "\${ANILA_RUNNER_HANDOFF:-}"
+} > $(printf '%q' "$marker")
+exit 0
+EOF
+  chmod +x "$dest/anila-update.sh"
+}
+
+test_old_runner_hands_off() {
+  local bundle tar marker ver out err args
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-7"
+  bundle="$tmp/handoff-bundle"
+  tar="$tmp/anila-${ver}.tar.gz"
+  marker="$tmp/handoff-marker"
+  mkdir -p "$bundle"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  out="$tmp/handoff.out"
+  err="$tmp/handoff.err"
+  : > "$tmp/handoff-docker.log"
+  if ! env \
+      ANILA_INSTALL_ROOT="$tmp/handoff-missing-root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/handoff-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "目錄出貨包沒有交給新的更新程式" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -F "交給新出貨包的更新程式 ${ver}" "$out" >/dev/null || {
+    _cleanup_test_runner_extracts
+    echo "沒有印出交給新出貨包" >&2
+    cat "$out" >&2
+    return 1
+  }
+  [[ "$(grep -c "交給新出貨包的更新程式" "$out")" == "1" ]] || {
+    _cleanup_test_runner_extracts
+    echo "交給的訊息不是一行" >&2
+    return 1
+  }
+  args="$(grep '^args=' "$marker" | head -1)"
+  [[ "$args" == "args=${bundle}" ]] || {
+    _cleanup_test_runner_extracts
+    echo "新程式收到的引數不是原出貨包：$args" >&2
+    return 1
+  }
+  [[ "$(grep '^handoff=' "$marker")" == "handoff=1" ]] || {
+    _cleanup_test_runner_extracts
+    echo "沒有設 ANILA_RUNNER_HANDOFF" >&2
+    return 1
+  }
+  rm -f "$marker"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  if ! env \
+      ANILA_INSTALL_ROOT="$tmp/handoff-missing-root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/handoff-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "壓縮檔出貨包沒有交給新的更新程式" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ "$(grep -c "交給新出貨包的更新程式 ${ver}" "$out")" == "1" ]] || {
+    _cleanup_test_runner_extracts
+    echo "壓縮檔沒有恰好交一次" >&2
+    cat "$out" >&2
+    return 1
+  }
+  args="$(grep '^args=' "$marker" | head -1)"
+  [[ "$args" == "args=${tar}" ]] || {
+    _cleanup_test_runner_extracts
+    echo "壓縮檔交出去的引數不對：$args" >&2
+    return 1
+  }
+  grep -F 'sudo bash /opt/anila/anila-update.sh <新包.tar.gz>' "$ROOT/docs/deploy/UPDATE.md" >/dev/null || {
+    _cleanup_test_runner_extracts
+    echo "UPDATE.md 沒有寫已安裝的更新程式" >&2
+    return 1
+  }
+  grep -F '兩種都可以' "$ROOT/docs/deploy/UPDATE.md" >/dev/null || {
+    _cleanup_test_runner_extracts
+    echo "UPDATE.md 沒有寫兩種執行方式都可以" >&2
+    return 1
+  }
+  _cleanup_test_runner_extracts
+}
+
+test_runner_handoff_does_not_recurse() {
+  local bundle tar ver out err rc n
+  command -v timeout >/dev/null || { echo "沒有 timeout，無法偵測遞迴" >&2; return 1; }
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-8"
+  bundle="$tmp/recurse-bundle"
+  tar="$tmp/anila-${ver}.tar.gz"
+  mkdir -p "$bundle"
+  cp "$ROOT/scripts/release/anila-update.sh" "$bundle/anila-update.sh"
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  chmod +x "$bundle/anila-update.sh"
+  make_min_bundle "$bundle" "$ver"
+  out="$tmp/recurse.out"
+  err="$tmp/recurse.err"
+  : > "$tmp/recurse-docker.log"
+  set +e
+  env \
+    ANILA_INSTALL_ROOT="$tmp/recurse-missing-root" \
+    COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+    DOCKER_LOG="$tmp/recurse-docker.log" \
+    timeout 20 bash "$bundle/anila-update.sh" "$bundle" >"$out" 2>"$err"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 124 ]] || {
+    _cleanup_test_runner_extracts
+    echo "直接執行出貨包裡的更新程式時遞迴" >&2
+    return 1
+  }
+  n="$(grep -c '交給新出貨包的更新程式' "$out" || true)"
+  [[ "$n" == "0" ]] || {
+    _cleanup_test_runner_extracts
+    echo "正在跑的就是這包的腳本，仍再交了一次" >&2
+    return 1
+  }
+  grep -q '下面的目錄不存在或不可寫' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "直接執行沒有進入安裝檢查" >&2
+    cat "$err" >&2
+    return 1
+  }
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  set +e
+  env \
+    ANILA_INSTALL_ROOT="$tmp/recurse-missing-root" \
+    COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+    DOCKER_LOG="$tmp/recurse-docker.log" \
+    timeout 20 bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 124 ]] || {
+    _cleanup_test_runner_extracts
+    echo "舊程式交壓縮檔時遞迴" >&2
+    return 1
+  }
+  n="$(grep -c "交給新出貨包的更新程式 ${ver}" "$out" || true)"
+  [[ "$n" == "1" ]] || {
+    _cleanup_test_runner_extracts
+    echo "壓縮檔交給的次數是 ${n}，應為 1" >&2
+    cat "$out" >&2
+    return 1
+  }
+  grep -q '下面的目錄不存在或不可寫' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "新程式沒有接著做安裝檢查" >&2
+    cat "$err" >&2
+    return 1
+  }
+  set +e
+  env \
+    ANILA_INSTALL_ROOT="$tmp/recurse-missing-root" \
+    COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+    DOCKER_LOG="$tmp/recurse-docker.log" \
+    timeout 20 bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$out" 2>"$err"
+  rc=$?
+  set -e
+  [[ "$rc" -ne 124 ]] || {
+    _cleanup_test_runner_extracts
+    echo "舊程式交目錄時遞迴" >&2
+    return 1
+  }
+  n="$(grep -c "交給新出貨包的更新程式 ${ver}" "$out" || true)"
+  [[ "$n" == "1" ]] || {
+    _cleanup_test_runner_extracts
+    echo "目錄交給的次數是 ${n}，應為 1" >&2
+    cat "$out" >&2
+    return 1
+  }
+  _cleanup_test_runner_extracts
+}
+
+test_tampered_runner_refused() {
+  local bundle marker ver err
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-9"
+  bundle="$tmp/tamper-bundle"
+  marker="$tmp/tamper-marker"
+  mkdir -p "$bundle"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  printf '\n' >> "$bundle/anila-update.sh"
+  err="$tmp/tamper.err"
+  : > "$tmp/tamper-docker.log"
+  if env \
+      ANILA_INSTALL_ROOT="$tmp/tamper-missing-root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/tamper-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/tamper.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "被改過的更新程式仍繼續" >&2
+    return 1
+  fi
+  grep -q '出貨包的更新程式與清單不符，拒絕更新。' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "沒有拒絕與清單不符的更新程式" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$marker" ]] || { echo "雜湊不符仍執行了更新程式" >&2; return 1; }
+  # 清單的 SHA256 仍對，但 file 行拿掉：不能執行。
+  rm -f "$marker"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  grep -v ' anila-update.sh$' "$bundle/manifest.txt" > "$bundle/manifest.txt.new"
+  mv "$bundle/manifest.txt.new" "$bundle/manifest.txt"
+  ( cd "$bundle" && sha256sum manifest.txt > manifest.sha256 )
+  chmod 644 "$bundle/manifest.sha256"
+  if env \
+      ANILA_INSTALL_ROOT="$tmp/tamper-missing-root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/tamper-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/tamper-miss.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "清單沒有更新程式仍繼續" >&2
+    return 1
+  fi
+  grep -q '出貨包的更新程式不在清單裡，拒絕更新。' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "沒有拒絕清單裡缺少的更新程式" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$marker" ]] || { echo "清單沒有這支程式仍執行了它" >&2; return 1; }
+  # 清單列了這支程式，但檔案本身被拿掉。不要重封清單，否則 file 行會一起消失。
+  rm -f "$marker"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  rm -f "$bundle/anila-update.sh"
+  if env \
+      ANILA_INSTALL_ROOT="$tmp/tamper-missing-root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/tamper-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/tamper-gone.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "檔案不見仍繼續" >&2
+    return 1
+  fi
+  grep -q '出貨包缺少更新程式 anila-update.sh，拒絕更新。' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "沒有拒絕缺少的更新程式檔" >&2
+    cat "$err" >&2
+    return 1
+  }
+  _cleanup_test_runner_extracts
+}
+
+test_handoff_verifies_whole_bundle() {
+  local bundle marker ver err
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-23"
+  bundle="$tmp/whole-bundle"
+  marker="$tmp/whole-marker"
+  mkdir -p "$bundle"
+  grep -q '信任根是操作者事先對過的出貨包 tar.gz SHA256' \
+    "$ROOT/scripts/release/anila-update.sh" || {
+    echo "沒有註明信任根是出貨包 tar.gz 的 SHA256" >&2
+    return 1
+  }
+  _write_stub_runner "$bundle" "$marker"
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  cp "$ROOT/scripts/release/images.tsv" "$bundle/images.tsv"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  err="$tmp/whole.err"
+  : > "$tmp/whole-docker.log"
+  if ! env \
+      ANILA_INSTALL_ROOT="$tmp/whole-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/whole-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/whole.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "完整出貨包沒有交給新程式" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ -e "$marker" ]] || { echo "完整出貨包沒有執行更新程式" >&2; return 1; }
+  rm -f "$marker"
+  printf '\n# tamper\n' >> "$bundle/release-lib.sh"
+  if env \
+      ANILA_INSTALL_ROOT="$tmp/whole-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/whole-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/whole-lib.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "release-lib.sh 被改過仍繼續" >&2
+    return 1
+  fi
+  grep -q '檔案 SHA256 不符：release-lib.sh' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "沒有拒絕被改過的 release-lib.sh" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$marker" ]] || { echo "release-lib.sh 不符仍執行了更新程式" >&2; return 1; }
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  rm -f "$marker"
+  printf '\n# tamper\n' >> "$bundle/images.tsv"
+  if env \
+      ANILA_INSTALL_ROOT="$tmp/whole-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/whole-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/whole-tsv.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "images.tsv 被改過仍繼續" >&2
+    return 1
+  fi
+  grep -q '檔案 SHA256 不符：images.tsv' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "沒有拒絕被改過的 images.tsv" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$marker" ]] || { echo "images.tsv 不符仍執行了更新程式" >&2; return 1; }
+  _cleanup_test_runner_extracts
+}
+
+test_handoff_env_cannot_skip() {
+  local bundle marker ver err
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-24"
+  bundle="$tmp/envskip-bundle"
+  marker="$tmp/envskip-marker"
+  mkdir -p "$bundle"
+  rm -f "$marker"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  err="$tmp/envskip.err"
+  : > "$tmp/envskip-docker.log"
+  if ! env \
+      ANILA_RUNNER_HANDOFF=1 \
+      ANILA_INSTALL_ROOT="$tmp/envskip-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/envskip-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/envskip.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "設了 ANILA_RUNNER_HANDOFF=1 就沒有交接" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ -e "$marker" ]] || {
+    _cleanup_test_runner_extracts
+    echo "環境變數讓交接被跳過，新程式沒跑" >&2
+    return 1
+  }
+  grep -F "交給新出貨包的更新程式 ${ver}" "$tmp/envskip.out" >/dev/null || {
+    _cleanup_test_runner_extracts
+    echo "環境變數讓交接訊息消失" >&2
+    cat "$tmp/envskip.out" >&2
+    return 1
+  }
+  _cleanup_test_runner_extracts
+}
+
+test_cleanup_ignores_caller_extract_path() {
+  local canary owned
+  canary="${HOME}/.anila-runner.caller-supplied"
+  rm -rf -- "$canary"
+  mkdir -p "$canary"
+  printf 'keep\n' > "$canary/keep"
+  ANILA_RUNNER_EXTRACT="$canary" _cleanup_runner_extract
+  if [[ ! -f "$canary/keep" ]]; then
+    echo "清掉了呼叫者放在 ANILA_RUNNER_EXTRACT 的目錄" >&2
+    return 1
+  fi
+  rm -rf -- "$canary"
+  owned="$(mktemp -d "${TMPDIR:-/tmp}/anila-runner.XXXXXX")"
+  printf 'x\n' > "$owned/x"
+  _anila_runner_extract_owned="$owned"
+  _cleanup_runner_extract
+  if [[ -e "$owned" ]]; then
+    echo "自己建立的解壓目錄沒有清掉" >&2
+    rm -rf -- "$owned"
+    return 1
+  fi
+  [[ -z "${_anila_runner_extract_owned:-}" ]] || {
+    echo "清完沒有忘掉路徑" >&2
+    return 1
+  }
+}
+
+test_handoff_runs_runner_with_bash() {
+  local bundle marker nx ver out err
+  command -v unshare >/dev/null || { echo "沒有 unshare，無法測 noexec" >&2; return 1; }
+  grep -q 'exec bash "$target"' "$ROOT/scripts/release/anila-update.sh" || {
+    echo "交接沒有用 exec bash" >&2
+    return 1
+  }
+  if grep -n 'chmod +x "$runner"' "$ROOT/scripts/release/anila-update.sh"; then
+    echo "交接仍把更新程式 chmod +x" >&2
+    return 1
+  fi
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-25"
+  bundle="$tmp/bash-exec-bundle"
+  marker="$tmp/bash-exec-marker"
+  nx="$tmp/noexec-mnt"
+  mkdir -p "$bundle" "$nx"
+  rm -f "$marker"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  out="$tmp/bash-exec.out"
+  err="$tmp/bash-exec.err"
+  : > "$tmp/bash-exec-docker.log"
+  if ! unshare --mount --user --map-root-user bash -s -- \
+      "$nx" "$bundle" "$ROOT/scripts/release/anila-update.sh" \
+      "$tmp/bash-exec-missing" "$TEST_PROJECT" "$tmp/bash-exec-docker.log" \
+      >"$out" 2>"$err" <<'EOS'
+set -euo pipefail
+nx="$1"
+bundle="$2"
+updater="$3"
+root="$4"
+project="$5"
+dlog="$6"
+mount -t tmpfs -o noexec,nosuid,nodev tmpfs "$nx"
+mkdir -p "$nx/bundle"
+cp -a "$bundle/." "$nx/bundle/"
+if "$nx/bundle/anila-update.sh" >/dev/null 2>&1; then
+  echo "noexec 掛載仍直接執行了更新程式" >&2
+  exit 1
+fi
+env \
+  ANILA_INSTALL_ROOT="$root" \
+  COMPOSE_PROJECT_NAME="$project" \
+  DOCKER_LOG="$dlog" \
+  bash "$updater" "$nx/bundle"
+EOS
+  then
+    _cleanup_test_runner_extracts
+    echo "noexec 上的更新程式沒有透過 bash 跑起來" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ -e "$marker" ]] || {
+    _cleanup_test_runner_extracts
+    echo "bash 交接沒有執行更新程式" >&2
+    cat "$err" >&2
+    return 1
+  }
+  grep -F "交給新出貨包的更新程式 ${ver}" "$out" >/dev/null || {
+    _cleanup_test_runner_extracts
+    echo "noexec 交接沒有印出交給新出貨包" >&2
+    cat "$out" >&2
+    return 1
+  }
+  _cleanup_test_runner_extracts
+}
+
+test_handoff_extract_without_home() {
+  local bundle tar marker ver td out err script mode stage home_seen
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-26"
+  bundle="$tmp/nohome-bundle"
+  tar="$tmp/anila-${ver}.tar.gz"
+  marker="$tmp/nohome-marker"
+  td="$tmp/nohome-tmp"
+  mkdir -p "$bundle" "$td"
+  cat > "$bundle/anila-update.sh" <<EOF
+#!/usr/bin/env bash
+{
+  printf 'script=%s\n' "\$(realpath -- "\$0")"
+  d="\$(realpath -- "\$0")"
+  while [[ "\$d" != / ]]; do
+    base="\$(basename -- "\$d")"
+    if [[ "\$base" == anila-runner.* ]]; then
+      printf 'mode=%s\n' "\$(stat -c %a "\$d")"
+      printf 'stage=%s\n' "\$d"
+      break
+    fi
+    d="\$(dirname -- "\$d")"
+  done
+  printf 'home=%s\n' "\${HOME-unset}"
+} > $(printf '%q' "$marker")
+exit 0
+EOF
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  out="$tmp/nohome.out"
+  err="$tmp/nohome.err"
+  : > "$tmp/nohome-docker.log"
+  if ! env -u HOME \
+      TMPDIR="$td" \
+      ANILA_INSTALL_ROOT="$tmp/nohome-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/nohome-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "HOME 沒設時交接失敗" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ -f "$marker" ]] || { echo "HOME 沒設時新程式沒跑" >&2; cat "$err" >&2; return 1; }
+  script="$(sed -n 's/^script=//p' "$marker")"
+  stage="$(sed -n 's/^stage=//p' "$marker")"
+  mode="$(sed -n 's/^mode=//p' "$marker")"
+  home_seen="$(sed -n 's/^home=//p' "$marker")"
+  [[ "$script" == "$td"/* ]] || {
+    echo "解壓不在 TMPDIR：${script:-空白}" >&2
+    return 1
+  }
+  [[ "$mode" == "700" ]] || { echo "解壓目錄權限是 ${mode:-沒有}" >&2; return 1; }
+  [[ "$home_seen" == "unset" ]] || { echo "子行程仍看得到 HOME" >&2; return 1; }
+  [[ ! -d "$stage" ]] || { echo "父行程沒有清掉自己建立的解壓目錄" >&2; return 1; }
+  _cleanup_test_runner_extracts
+}
+
+test_interrupted_handoff_cleans_stage() {
+  local bundle tar marker ver td out err stage rc
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-27"
+  bundle="$tmp/sigterm-bundle"
+  tar="$tmp/anila-${ver}.tar.gz"
+  marker="$tmp/sigterm-marker"
+  td="$tmp/sigterm-tmp"
+  mkdir -p "$bundle" "$td"
+  # 新程式記下自己所在的解壓目錄，然後對父行程送 TERM（模擬更新途中被中斷）。
+  cat > "$bundle/anila-update.sh" <<EOF
+#!/usr/bin/env bash
+d="\$(dirname -- "\$(realpath -- "\$0")")"
+while [[ "\$d" != / && "\$(basename -- "\$d")" != anila-runner.* ]]; do d="\$(dirname -- "\$d")"; done
+printf 'stage=%s\n' "\$d" > $(printf '%q' "$marker")
+kill -TERM "\$PPID"
+exit 0
+EOF
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  out="$tmp/sigterm.out"
+  err="$tmp/sigterm.err"
+  : > "$tmp/sigterm-docker.log"
+  set +e
+  env TMPDIR="$td" \
+      ANILA_INSTALL_ROOT="$tmp/sigterm-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/sigterm-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"
+  rc=$?
+  set -e
+  [[ -f "$marker" ]] || { echo "新程式沒跑" >&2; cat "$err" >&2; return 1; }
+  stage="$(sed -n 's/^stage=//p' "$marker")"
+  [[ "$stage" == "$td"/anila-runner.* ]] || { echo "找不到解壓目錄：${stage:-空白}" >&2; return 1; }
+  [[ "$rc" -ne 0 ]] || { echo "被 TERM 中斷卻回傳 0" >&2; return 1; }
+  [[ ! -d "$stage" ]] || { echo "被中斷後解壓目錄沒有清掉" >&2; _cleanup_test_runner_extracts; return 1; }
+  _cleanup_test_runner_extracts
+}
+
+test_https_port_rejects_other_anila_ports() {
+  local root file
+  root="$tmp/port-reserved"
+  mkdir -p "$root/state"
+  arm_test_install "$root"
+  file="$root/state/.env"
+  export STUB_LISTEN_PORTS=443
+  export STUB_DOCKER_PS_PORTS=""
+  if ( trap - EXIT; ensure_first_install_https_port 80 ) >"$tmp/port-80.out" 2>"$tmp/port-80.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "預設 HTTP 埠 80 被接受當 HTTPS" >&2
+    return 1
+  fi
+  grep -F '埠 80 與 NGINX_HTTP_PORT 相同' "$tmp/port-80.err" >/dev/null || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有說明撞到 NGINX_HTTP_PORT" >&2
+    cat "$tmp/port-80.err" >&2
+    return 1
+  }
+  if ( trap - EXIT; ensure_first_install_https_port 4443 ) >"$tmp/port-4443.out" 2>"$tmp/port-4443.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "預設 UI 埠 4443 被接受當 HTTPS" >&2
+    return 1
+  fi
+  grep -F '埠 4443 與 ANILA_UI_HTTPS_PORT 相同' "$tmp/port-4443.err" >/dev/null || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有說明撞到 ANILA_UI_HTTPS_PORT" >&2
+    cat "$tmp/port-4443.err" >&2
+    return 1
+  }
+  printf 'NGINX_HTTP_PORT=8080\nANILA_UI_HTTPS_PORT=9443\n' > "$file"
+  chmod 600 "$file"
+  if ( trap - EXIT; ensure_first_install_https_port 8080 ) >"$tmp/port-8080.out" 2>"$tmp/port-8080.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "state/.env 的 HTTP 埠被接受當 HTTPS" >&2
+    return 1
+  fi
+  grep -F '埠 8080 與 NGINX_HTTP_PORT 相同' "$tmp/port-8080.err" >/dev/null || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有讀 state/.env 的 NGINX_HTTP_PORT" >&2
+    cat "$tmp/port-8080.err" >&2
+    return 1
+  }
+  if ( trap - EXIT; ensure_first_install_https_port 9443 ) >"$tmp/port-9443.out" 2>"$tmp/port-9443.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "state/.env 的 UI 埠被接受當 HTTPS" >&2
+    return 1
+  fi
+  grep -F '埠 9443 與 ANILA_UI_HTTPS_PORT 相同' "$tmp/port-9443.err" >/dev/null || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有讀 state/.env 的 ANILA_UI_HTTPS_PORT" >&2
+    return 1
+  }
+  ensure_first_install_https_port 80 >"$tmp/port-80-ok.out" 2>"$tmp/port-80-ok.err" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "覆寫預設後，空著的 80 仍被拒絕" >&2
+    cat "$tmp/port-80-ok.err" >&2
+    return 1
+  }
+  grep -qx 'NGINX_HTTPS_PORT=80' "$file" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有把 80 寫進 state/.env" >&2
+    cat "$file" >&2
+    return 1
+  }
+  unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+}
+
+test_port_is_listening_survives_sigpipe() {
+  ss() {
+    printf 'LISTEN 0 128 *:443 *:*\n'
+    # 超過管道緩衝。grep -q 提早結束時，後面這段會收到 SIGPIPE。內容不要用 NUL。
+    dd if=/dev/zero bs=1024 count=256 status=none | tr '\0' 'x' || return 141
+    return 0
+  }
+  if ! port_is_listening 443; then
+    echo "ss 被 SIGPIPE 打斷時，佔用中的埠被看成空的" >&2
+    return 1
+  fi
+  ss() { return 0; }
+  if port_is_listening 443; then
+    echo "沒有輸出仍看成有人在聽" >&2
+    return 1
+  fi
+  if port_is_listening abc; then
+    echo "不是數字仍看成有人在聽" >&2
+    return 1
+  fi
+}
+
+test_generated_secrets_absent_from_xtrace() {
+  local root tree trace fd key val
+  root="$tmp/xtrace-root"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  tree="$(use_version_tree "$root" "2026.09.29-1")"
+  printf 'ANILA_HOST=lab\n' > "$root/state/.env"
+  chmod 600 "$root/state/.env"
+  ln -sfn "$root/state/.env" "$tree/.env"
+  trace="$tmp/xtrace.log"
+  : > "$trace"
+  exec {fd}>"$trace"
+  (
+    BASH_XTRACEFD=$fd
+    set -x
+    ensure_platform_env "$tree" >"$tmp/xtrace-run.out" 2>"$tmp/xtrace-run.err"
+    set +x
+  )
+  exec {fd}>&-
+  [[ -f "$root/state/generated-secrets.txt" ]] || { echo "沒有產生密鑰檔" >&2; return 1; }
+  grep -q 'COMPOSE_PROJECT_NAME' "$trace" || {
+    echo "xtrace 沒有打開" >&2
+    return 1
+  }
+  while IFS= read -r key; do
+    val="$(awk -F= -v k="$key" '$1==k { print substr($0, index($0, "=") + 1); exit }' \
+      "$root/state/generated-secrets.txt")"
+    [[ -n "$val" ]] || { echo "檔案裡沒有 $key" >&2; return 1; }
+    if grep -F -- "$val" "$trace" >/dev/null; then
+      echo "密鑰 $key 出現在 bash -x 的追蹤" >&2
+      return 1
+    fi
+  done <<'EOF'
+SECRET_KEY
+ADMIN_PASSWORD
+CSP_DB_PASSWORD
+CSP_APP_DB_PASSWORD
+CODESERVER_PASSWORD
+EOF
+}
+
+test_install_dir_requires_execute() {
+  local d
+  if [[ "$(id -u)" -eq 0 ]]; then
+    echo "這項要用一般帳號測目錄權限" >&2
+    return 1
+  fi
+  d="$tmp/nox-dir"
+  mkdir -p "$d"
+  chmod a-x "$d"
+  if install_dir_ready "$d"; then
+    chmod a+x "$d"
+    echo "不能進入的目錄仍算準備好" >&2
+    return 1
+  fi
+  chmod u+x "$d"
+  install_dir_ready "$d" || {
+    echo "可寫且可進入的目錄被拒絕" >&2
+    return 1
+  }
+  grep -q '\[\[ -d "\$d" && -w "\$d" && -x "\$d" \]\]' \
+    "$ROOT/scripts/release/preflight.sh" || {
+    echo "預檢沒有同時要求可寫與可進入" >&2
+    return 1
+  }
+}
+
+test_resume_note_matches_action() {
+  local root file line
+  root="$tmp/ops-match"
+  mkdir -p "$root/state"
+  arm_test_install "$root"
+  file="$root/state/operations.log"
+  printf 't\top\tupdate\tnone\t2026.10.01-3\tfailure\n' > "$file"
+  printf 't\top\trollback\t2026.10.01-4\t2026.10.01-3\tfailure\n' >> "$file"
+  append_operations_log update none 2026.10.01-3 success || return 1
+  line="$(grep $'update\tnone\t2026.10.01-3\tsuccess' "$file" | tail -1)"
+  [[ "$line" == *$'\tsuccess' ]] || {
+    echo "回復失敗仍註記接續安裝：$line" >&2
+    return 1
+  }
+  printf 't\top\tadopt\tnone\t2026.10.01-5\tfailure\n' >> "$file"
+  append_operations_log update none 2026.10.01-5 success || return 1
+  line="$(grep $'update\tnone\t2026.10.01-5\tsuccess' "$file" | tail -1)"
+  [[ "$line" == *$'\tsuccess' ]] || {
+    echo "認領失敗仍註記接續安裝：$line" >&2
+    return 1
+  }
+  printf 't\top\tupdate\t2026.09.29-1\t2026.10.01-6\tfailure\n' >> "$file"
+  append_operations_log update none 2026.10.01-6 success || return 1
+  line="$(grep $'update\tnone\t2026.10.01-6\tsuccess' "$file" | tail -1)"
+  [[ "$line" == *$'\tsuccess' ]] || {
+    echo "更新失敗被註記成接續安裝：$line" >&2
+    return 1
+  }
+  printf 't\top\tupdate\t2026.09.29-1\t2026.10.01-7\tfailure\n' >> "$file"
+  append_operations_log update 2026.09.29-1 2026.10.01-7 success || return 1
+  grep -F $'update\t2026.09.29-1\t2026.10.01-7\tsuccess\t接續上次未完成的更新' "$file" >/dev/null || {
+    echo "同一種更新失敗沒有註記接續" >&2
+    cat "$file" >&2
+    return 1
+  }
+}
+
+check "第一次安裝目錄不可寫就印出 sudo" test_first_install_refuses_missing_root_with_sudo
+check "安裝目錄檢查順序與 root 可建立" test_unready_install_dirs_order
+check "第一次安裝把空著的 HTTPS 埠寫成 8443" test_first_install_https_port_saved
+check "沒有終端機時說明怎麼寫 HTTPS 埠" test_https_port_no_tty_explains_env
+check "更新不問 HTTPS 埠" test_update_does_not_ask_https_port
+check "產生的密鑰不出現在安裝輸出" test_generated_secrets_absent_from_installer_output
+check "接續未完成的安裝會寫進成功紀錄" test_success_log_notes_unfinished_install
+check "一次性初始化有標籤且成功時說明" test_oneshot_credential_dirs_labeled_and_summarized
+check "自動回復入口沒開要說明並給出指令" test_auto_rollback_closed_entry_tells_how_to_open
+check "沒有終端機時公告取消要說明原因" test_banner_gate_without_tty_explains
+check "ANILA_UPDATE_ASSUME_YES 跳過公告詢問" test_banner_gate_assume_yes_skips
+check "舊更新程式核對清單後交給新出貨包" test_old_runner_hands_off
+check "交給新出貨包不會遞迴" test_runner_handoff_does_not_recurse
+check "清單不符或缺少的更新程式拒絕執行" test_tampered_runner_refused
+check "交給前核對清單裡的每一個檔" test_handoff_verifies_whole_bundle
+check "環境變數不能單獨跳過交接" test_handoff_env_cannot_skip
+check "不會刪掉環境變數給的解壓路徑" test_cleanup_ignores_caller_extract_path
+check "交接用 bash 執行，noexec 也能跑" test_handoff_runs_runner_with_bash
+check "沒有 HOME 時仍能解開出貨包" test_handoff_extract_without_home
+check "交接途中被中斷也清掉解壓目錄" test_interrupted_handoff_cleans_stage
+check "HTTPS 埠不能跟其他 ANILA 埠相同" test_https_port_rejects_other_anila_ports
+check "ss 被截斷時不會把佔用埠看成空的" test_port_is_listening_survives_sigpipe
+check "密鑰不出現在 xtrace" test_generated_secrets_absent_from_xtrace
+check "目錄要可寫也要能進入" test_install_dir_requires_execute
+check "接續註記只看同一種操作的失敗" test_resume_note_matches_action
 
 if [[ "$_fail_count" -ne 0 ]]; then
   printf '%s 項失敗\n' "$_fail_count" >&2

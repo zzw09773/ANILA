@@ -55,6 +55,24 @@ else
   fail "docker compose 版本 ${cv:-讀不到}，需要 2.17 以上"
 fi
 
+# ── 安裝目錄與安裝記錄 ───────────────────────────────────────────────────────
+# 順序固定：先安裝根目錄，再 /var/lib/anila。安裝程式動任何東西之前做同一套。
+# 現在安裝與更新都用 sudo。不是 root、目錄又不存在、不可寫或進不去，印出要改跑的指令。
+for d in "$root" "$anchor_dir"; do
+  if [[ -d "$d" && -w "$d" && -x "$d" ]]; then
+    pass "$d 存在且可寫"
+  elif install_dir_ready "$d"; then
+    pass "$d 會由 root 建立"
+  else
+    fail "$d 不存在或不可寫"
+    if [[ -n "$bundle" ]]; then
+      fix "$(printf 'sudo bash %q %q' "$HERE/anila-update.sh" "$bundle")"
+    else
+      fix "$(printf 'sudo bash %q' "$HERE/anila-update.sh")"
+    fi
+  fi
+done
+
 # ── 執行身分 ─────────────────────────────────────────────────────────────────
 # 平台的上傳、附件目錄屬於服務帳號（權限 700）。一般帳號做不了更新前的檔案快照，
 # 所以安裝與更新都用 sudo 跑（2026-10-01 .35 更新演練）。
@@ -88,11 +106,8 @@ port_of() {
   fi
   printf '%s' "${v:-$def}"
 }
-listening() { ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; }
-anila_owns() {
-  docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null \
-    | grep -E "^anila-nginx .*:$1->" >/dev/null
-}
+listening() { port_is_listening "$1"; }
+anila_owns() { anila_nginx_owns_port "$1"; }
 for spec in "NGINX_HTTP_PORT 80" "NGINX_HTTPS_PORT 443" "ANILA_UI_HTTPS_PORT 4443"; do
   read -r key def <<<"$spec"
   port="$(port_of "$key" "$def")"

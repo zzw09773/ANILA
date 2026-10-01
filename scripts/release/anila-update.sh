@@ -7,7 +7,8 @@
 #   bash anila-update.sh rollback
 #   bash anila-update.sh adopt <versions/版本目錄>
 #
-# 沒有安裝記錄時，第一次安裝的預設位置是 /opt/anila。第一次只問 ANILA_HOST，其餘密鑰自動產生。
+# 沒有安裝記錄時，第一次安裝的預設位置是 /opt/anila。第一次問 ANILA_HOST；
+# HTTPS 埠被佔用才再問。密鑰自動產生，只寫進檔案，不印在畫面上。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,7 +86,9 @@ _entry_manifest_sha256() {
     return 1
   fi
   local pair_out rc
-  tmp="$(mktemp -d "${HOME}/.anila-bundle-check.XXXXXX")"
+  # $HOME 在排程或 sudo 下可能沒設。暫存放 ${TMPDIR:-/tmp}，mktemp -d 是 0700。
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/anila-bundle-check.XXXXXX")"
+  chmod 700 "$tmp"
   if ! tar -tzf "$spec" > "$tmp/list" 2>/dev/null; then
     rm -rf "$tmp"
     printf '無法讀取出貨包，拒絕更新。\n' >&2
@@ -124,8 +127,194 @@ _entry_manifest_sha256() {
   rm -rf "$tmp"
 }
 
+# 清單所在的那一層（出貨包根目錄）。壓縮檔先解開到暫存時，根目錄在上一層。
+_bundle_manifest_dir() {
+  local root="$1" list pair_out rc txt
+  list="$(mktemp "${TMPDIR:-/tmp}/anila-bundle-list.XXXXXX")"
+  (cd "$root" && find . -type f -print | sed 's|^\./||') > "$list"
+  set +e
+  pair_out="$(_pick_bundle_manifest_pair "$list" 2>/dev/null)"
+  rc=$?
+  set -e
+  rm -f "$list"
+  [[ "$rc" -eq 0 ]] || return 1
+  txt="$(printf '%s\n' "$pair_out" | awk 'NR==1')"
+  [[ -n "$txt" ]] || return 1
+  if [[ "$txt" == manifest.txt ]]; then
+    printf '%s\n' "$root"
+  else
+    printf '%s\n' "$root/$(dirname -- "$txt")"
+  fi
+}
+
+# 更新程式必須在清單的 file 行裡，而且雜湊相符。不在或被改過就拒絕。
+_bundle_runner_ok() {
+  local dir="$1" manifest runner listed got
+  manifest="$dir/manifest.txt"
+  runner="$dir/anila-update.sh"
+  [[ -f "$manifest" ]] || return 1
+  listed="$(awk '$1=="file" && $3=="anila-update.sh" { print $2; exit }' "$manifest")"
+  if [[ -z "$listed" ]]; then
+    printf '出貨包的更新程式不在清單裡，拒絕更新。\n' >&2
+    return 1
+  fi
+  if [[ ! -f "$runner" ]]; then
+    printf '出貨包缺少更新程式 anila-update.sh，拒絕更新。\n' >&2
+    return 1
+  fi
+  got="$(sha256sum -- "$runner" | awk '{print $1}')"
+  if [[ "$got" != "$listed" ]]; then
+    printf '出貨包的更新程式與清單不符，拒絕更新。\n' >&2
+    return 1
+  fi
+  return 0
+}
+
+# 這次執行自己建立的解壓目錄。清理只認這個變數，不認呼叫者傳進來的路徑。
+_anila_runner_extract_owned=""
+
+# 目錄出貨包：正在跑的就是這包的 anila-update.sh（比的是 realpath，不是環境變數）。
+_dir_runner_is_self() {
+  local spec="$1" dir runner self
+  [[ -d "$spec" ]] || return 1
+  dir="$(_bundle_manifest_dir "$spec" 2>/dev/null)" || return 1
+  runner="$dir/anila-update.sh"
+  [[ -f "$runner" ]] || return 1
+  self="$(realpath -- "$0")"
+  [[ "$self" == "$(realpath -- "$runner")" ]]
+}
+
+# 壓縮檔交接時，父行程把 nonce、自己的 PID、tar SHA256 寫進 stage/owner。
+# 子行程只有在自己就是這個 stage 裡的更新程式時才不再交一次。
+# 環境變數對得上還不夠：realpath 必須落在這個 stage 裡面。
+_claim_is_this_runner() {
+  local spec="$1" stage nonce owner_nonce owner_pid owner_sha actual
+  local dir runner self stage_real
+  [[ -f "$spec" ]] || return 1
+  stage="${ANILA_RUNNER_EXTRACT:-}"
+  nonce="${ANILA_RUNNER_NONCE:-}"
+  [[ -n "$stage" && -n "$nonce" && -d "$stage" && ! -L "$stage" ]] || return 1
+  [[ -f "$stage/owner" && ! -L "$stage/owner" ]] || return 1
+  [[ -d "$stage/tree" && ! -L "$stage/tree" ]] || return 1
+  owner_nonce="$(sed -n '1p' "$stage/owner" || true)"
+  owner_pid="$(sed -n '2p' "$stage/owner" || true)"
+  owner_sha="$(sed -n '3p' "$stage/owner" || true)"
+  [[ "$owner_nonce" == "$nonce" ]] || return 1
+  [[ "$owner_pid" == "$PPID" ]] || return 1
+  actual="$(sha256sum -- "$spec" | awk '{print $1}')"
+  [[ -n "$owner_sha" && "$owner_sha" == "$actual" ]] || return 1
+  dir="$(_bundle_manifest_dir "$stage/tree" 2>/dev/null)" || return 1
+  runner="$dir/anila-update.sh"
+  [[ -f "$runner" && ! -L "$runner" ]] || return 1
+  self="$(realpath -- "$0")"
+  stage_real="$(realpath -- "$stage")"
+  [[ "$self" == "$stage_real"/* ]] || return 1
+  [[ "$self" == "$(realpath -- "$runner")" ]]
+}
+
+_source_release_lib() {
+  if ! declare -F release_verify_bundle >/dev/null 2>&1; then
+    # shellcheck source=release-lib.sh
+    source "$HERE/release-lib.sh"
+  fi
+}
+
+# 已安裝的舊更新程式核對完整個出貨包後，把工作交給新出貨包裡那一支。
+# 信任根是操作者事先對過的出貨包 tar.gz SHA256，這裡不另做簽章。
+# ANILA_RUNNER_HANDOFF 不能單獨跳過；正在跑的腳本必須就是這包的更新程式。
+_handoff_to_bundle_runner() {
+  local spec="${1:-}" dir="" stage="" runner self target ver nonce tar_sha rc
+  case "$spec" in
+    ""|rollback|adopt|help|-h|--help) return 0 ;;
+  esac
+  if _dir_runner_is_self "$spec"; then
+    return 0
+  fi
+  if _claim_is_this_runner "$spec"; then
+    return 0
+  fi
+  if [[ -d "$spec" ]]; then
+    dir="$spec"
+  elif [[ -f "$spec" ]]; then
+    # mktemp -d 是 0700。用 sudo 跑時擁有者是 root。不用 $HOME：排程裡它可能沒設。
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/anila-runner.XXXXXX")"
+    chmod 700 "$stage"
+    mkdir -m 700 "$stage/tree"
+    if ! tar -xzf "$spec" -C "$stage/tree"; then
+      rm -rf -- "$stage"
+      printf '無法讀取出貨包，拒絕更新。\n' >&2
+      return 1
+    fi
+    dir="$(_bundle_manifest_dir "$stage/tree")" || {
+      rm -rf -- "$stage"
+      printf '出貨包缺少清單，拒絕更新。\n' >&2
+      return 1
+    }
+    _anila_runner_extract_owned="$stage"
+  else
+    return 0
+  fi
+  if ! _bundle_runner_ok "$dir"; then
+    [[ -n "$stage" ]] && rm -rf -- "$stage"
+    _anila_runner_extract_owned=""
+    return 1
+  fi
+  # 清單裡的每一個檔都要核對（anila-update.sh、release-lib.sh、images.tsv，以及其他 file 行）。
+  _source_release_lib
+  if ! release_verify_bundle "$dir"; then
+    [[ -n "$stage" ]] && rm -rf -- "$stage"
+    _anila_runner_extract_owned=""
+    return 1
+  fi
+  runner="$dir/anila-update.sh"
+  self="$(realpath -- "$0")"
+  target="$(realpath -- "$runner")"
+  if [[ "$self" == "$target" ]]; then
+    return 0
+  fi
+  ver="$(awk '$1=="version" {print $2; exit}' "$dir/manifest.txt")"
+  printf '交給新出貨包的更新程式 %s\n' "${ver:-未知}"
+  export ANILA_RUNNER_HANDOFF=1
+  if [[ -n "$stage" ]]; then
+    nonce="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    tar_sha="$(sha256sum -- "$spec" | awk '{print $1}')"
+    printf '%s\n%s\n%s\n' "$nonce" "$$" "$tar_sha" > "$stage/owner"
+    chmod 600 "$stage/owner"
+    export ANILA_RUNNER_EXTRACT="$stage"
+    export ANILA_RUNNER_NONCE="$nonce"
+    # 父行程等子行程結束，再刪自己建立的目錄。不從環境變數取路徑。
+    # Ctrl-C、TERM、HUP 時 bash 會先等前景子行程結束才跑 trap，所以中斷也會清掉暫存。
+    trap 'rm -rf -- "$stage"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    set +e
+    bash "$target" "$@"
+    rc=$?
+    set -e
+    trap - EXIT INT TERM HUP
+    rm -rf -- "$stage"
+    _anila_runner_extract_owned=""
+    exit "$rc"
+  fi
+  # 目錄出貨包沒有暫存要清。用 bash 讀腳本，不靠執行位元，noexec 掛載也能跑。
+  exec bash "$target" "$@"
+}
+
+# 只刪這次執行建立的解壓目錄。呼叫者設的 ANILA_RUNNER_EXTRACT 不算。
+# 子行程還在讀腳本時不能刪；tar 交接由父行程等它結束再刪。
+_cleanup_runner_extract() {
+  local d
+  d="${_anila_runner_extract_owned:-}"
+  [[ -n "$d" ]] || return 0
+  rm -rf -- "$d"
+  _anila_runner_extract_owned=""
+  return 0
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   _entry_manifest_sha256 "${1:-}" || exit 1
+  _handoff_to_bundle_runner "$@" || exit 1
 fi
 
 # shellcheck source=release-lib.sh
@@ -235,6 +424,7 @@ _anila_exit() {
     fi
   fi
   cleanup_extracted_bundle || true
+  _cleanup_runner_extract || true
   if [[ -n "${_anila_prev_exit_quoted:-}" ]]; then
     eval "prev=${_anila_prev_exit_quoted}"
     eval "$prev" || true
@@ -896,6 +1086,130 @@ ensure_host_account() {
   fi
 }
 
+nginx_https_port_of() {
+  local file="$1" val=""
+  if [[ -f "$file" ]]; then
+    val="$(
+      cd "$(dirname -- "$file")"
+      get_env NGINX_HTTPS_PORT
+    )"
+  fi
+  if [[ -z "$val" ]]; then
+    printf '443'
+  else
+    printf '%s' "$val"
+  fi
+}
+
+_write_nginx_https_port() {
+  local file="$1" port="$2" dir
+  dir="$(dirname -- "$file")"
+  mkdir -p "$dir"
+  if [[ ! -e "$file" && ! -L "$file" ]]; then
+    (umask 077; : > "$file")
+  fi
+  chmod 600 "$file" || true
+  (
+    cd "$dir"
+    set_env NGINX_HTTPS_PORT "$port"
+  )
+  chmod 600 "$file"
+}
+
+# state/.env 裡的埠。沒寫就用預設。
+_state_port() {
+  local file="$1" key="$2" def="$3" val=""
+  if [[ -f "$file" ]]; then
+    val="$(
+      cd "$(dirname -- "$file")"
+      get_env "$key"
+    )"
+  fi
+  if [[ -z "$val" ]]; then
+    printf '%s' "$def"
+  else
+    printf '%s' "$val"
+  fi
+}
+
+# 這個埠若等於另一個 ANILA 入口（HTTP 或 UI HTTPS），印出那個鍵。
+# 值來自 state/.env，沒寫則 NGINX_HTTP_PORT=80、ANILA_UI_HTTPS_PORT=4443。
+_anila_port_collision() {
+  local file="$1" port="$2" key def other
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  for spec in "NGINX_HTTP_PORT 80" "ANILA_UI_HTTPS_PORT 4443"; do
+    read -r key def <<<"$spec"
+    other="$(_state_port "$file" "$key" "$def")"
+    if port_number_ok "$other" && (( 10#$port == 10#$other )); then
+      printf '%s' "$key"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 只有第一次安裝會問。埠空著、是 ANILA 的入口、且沒有撞到其他 ANILA 埠，就不問。
+# 沒有終端機時拒絕，請操作者把 NGINX_HTTPS_PORT 寫進 state/.env。
+# 測試可傳入一個回答；空字串表示採用建議的 8443。正式執行不傳。
+ensure_first_install_https_port() {
+  local file port choice="" collision="" choice_collision="" blocked=0
+  file="$(install_root)/state/.env"
+  port="$(nginx_https_port_of "$file")"
+  if ! port_number_ok "$port"; then
+    blocked=1
+  elif collision="$(_anila_port_collision "$file" "$port")"; then
+    blocked=1
+  elif port_is_listening "$port" && ! anila_nginx_owns_port "$port"; then
+    blocked=1
+    collision=""
+  fi
+  if (( blocked == 0 )); then
+    return 0
+  fi
+  if [[ $# -ge 1 ]]; then
+    choice="$1"
+  elif [[ -t 0 ]]; then
+    while true; do
+      if [[ -n "$collision" ]]; then
+        printf '埠 %s 與 %s 相同，不能當作 HTTPS 埠。要改用哪個 HTTPS 埠？[8443] ' "$port" "$collision" >&2
+      else
+        printf '埠 %s 已被佔用，不是 ANILA 的入口。要改用哪個 HTTPS 埠？[8443] ' "$port" >&2
+      fi
+      read -r choice || true
+      [[ -z "$choice" ]] && choice=8443
+      if ! port_number_ok "$choice"; then
+        printf '請輸入 1 到 65535 的數字。\n' >&2
+        continue
+      fi
+      if port_is_listening "$choice" && ! anila_nginx_owns_port "$choice"; then
+        printf '埠 %s 也被佔用。\n' "$choice" >&2
+        continue
+      fi
+      if choice_collision="$(_anila_port_collision "$file" "$choice")"; then
+        printf '埠 %s 與 %s 相同，不能當作 HTTPS 埠。\n' "$choice" "$choice_collision" >&2
+        continue
+      fi
+      break
+    done
+  elif [[ -n "$collision" ]]; then
+    die "HTTPS 埠 ${port} 與 ${collision} 相同，而且沒有終端機可以詢問。請在 ${file} 寫入 NGINX_HTTPS_PORT=<另一個埠>（例如 8443），chmod 600，然後再執行一次。"
+  else
+    die "HTTPS 埠 ${port} 已被佔用，而且沒有終端機可以詢問。請在 ${file} 寫入 NGINX_HTTPS_PORT=<另一個埠>（例如 8443），chmod 600，然後再執行一次。"
+  fi
+  [[ -z "$choice" ]] && choice=8443
+  if ! port_number_ok "$choice"; then
+    die "HTTPS 埠必須是 1 到 65535 的數字。"
+  fi
+  if port_is_listening "$choice" && ! anila_nginx_owns_port "$choice"; then
+    die "埠 ${choice} 也被佔用。請換一個沒有人用的埠。"
+  fi
+  if choice_collision="$(_anila_port_collision "$file" "$choice")"; then
+    die "埠 ${choice} 與 ${choice_collision} 相同，不能當作 HTTPS 埠。請換一個沒有被 ANILA 其他入口使用的埠。"
+  fi
+  _write_nginx_https_port "$file" "$choice"
+  ok "HTTPS 埠改為 ${choice}"
+}
+
 ensure_platform_env() {
   local tree="$1"
   (
@@ -915,7 +1229,12 @@ ensure_platform_env() {
       [[ -n "$host" ]] || die "ANILA_HOST 不能空白"
       ensure_env ANILA_HOST "$host"
     fi
-    local newly=() key gen
+    local newly=() key gen xtrace=0
+    # bash -x 會把 set_env 的參數印出來。產生密鑰這段先關掉。
+    if [[ $- == *x* ]]; then
+      xtrace=1
+      set +x
+    fi
     while IFS= read -r key; do
       [[ -z "$(get_env "$key")" ]] || continue
       gen="$(openssl rand -hex 32)"
@@ -928,6 +1247,9 @@ CSP_DB_PASSWORD
 CSP_APP_DB_PASSWORD
 CODESERVER_PASSWORD
 EOF
+    if (( xtrace )); then
+      set -x
+    fi
     ensure_env COMPOSE_PROJECT_NAME anila
     ensure_env CODESERVER_WORKSPACE ../..
     ensure_env ANILA_AUTH_MODE card-only
@@ -949,20 +1271,30 @@ EOF
       chmod 600 "$(readlink -f -- .env)"
     fi
     if (( ${#newly[@]} > 0 )); then
-      local out
+      local out xtrace_write=0
+      if [[ $- == *x* ]]; then
+        xtrace_write=1
+        set +x
+      fi
       out="$(install_root)/state/generated-secrets.txt"
       umask 077
       {
-        printf '這些密鑰只在第一次產生時出現。請存進密碼管理器。\n'
+        printf '這些密鑰只寫在這個檔案，畫面不會印出內容。請抄進密碼管理器。\n'
         for key in "${newly[@]}"; do
           printf '%s=%s\n' "$key" "$(get_env "$key")"
         done
       } > "$out"
       chmod 600 "$out"
-      printf '已產生密鑰（只顯示這一次，另存 %s）：\n' "$out"
-      for key in "${newly[@]}"; do
-        printf '  %s=%s\n' "$key" "$(get_env "$key")"
-      done
+      if (( xtrace_write )); then
+        set -x
+      fi
+      if [[ "$(id -u)" -eq 0 ]]; then
+        chown root:root "$out" || true
+      fi
+      # 值只在檔案裡。標準輸出與標準錯誤只給路徑與讀取指令。
+      printf '已產生密鑰，寫在 %s（權限 600）。\n' "$out"
+      printf '請用下面的指令讀取，抄進密碼管理器：\n'
+      printf '  sudo cat %s\n' "$out"
       printf '卡片首次擁有者尚未指定。請用管理員密碼登入；需要的話再改既有的 CARD_INITIAL_OWNERS。\n'
     fi
   )
@@ -1155,9 +1487,40 @@ created_since_counts() {
     "SELECT (SELECT count(*) FROM conversations WHERE created_at > timestamptz '${since}'), (SELECT count(*) FROM messages WHERE created_at > timestamptz '${since}'), (SELECT count(*) FROM ingestion_documents WHERE uploaded_at > timestamptz '${since}')"
 }
 
+# 同一個目標版本的最近一筆若是失敗，而且操作種類與這次相同，成功紀錄才註記接續。
+# 安裝是 from=none（或 action=install）；更新是 action=update 且 from 是版本。
+# 最近一筆若是 rollback 或 adopt，不算未完成的安裝或更新。
+_unfinished_note() {
+  local from="$1" to="$2" file="$3"
+  local act="" f="" to_f="" result_f="" last_result="" last_act="" last_from=""
+  [[ -f "$file" ]] || return 0
+  while IFS=$'\t' read -r _ts _op act f to_f result_f _extra || [[ -n "${act:-}" ]]; do
+    [[ -n "${to_f:-}" ]] || continue
+    [[ "$to_f" == "$to" ]] || continue
+    last_result="${result_f:-}"
+    last_act="${act:-}"
+    last_from="${f:-}"
+  done < "$file"
+  [[ "$last_result" == failure ]] || return 0
+  case "$last_act" in
+    update|install) ;;
+    *) return 0 ;;
+  esac
+  if [[ "$from" == "none" || -z "$from" ]]; then
+    if [[ "$last_act" == install || "$last_from" == none || -z "$last_from" ]]; then
+      printf '接續上次未完成的安裝'
+    fi
+    return 0
+  fi
+  if [[ "$last_act" == update && -n "$last_from" && "$last_from" != none ]]; then
+    printf '接續上次未完成的更新'
+  fi
+  return 0
+}
+
 append_operations_log() {
   local action="$1" from="$2" to="$3" result="$4"
-  local file op oldmask
+  local file op oldmask note=""
   case "$action" in
     update|rollback|adopt) ;;
     *) die "未知的操作紀錄：$action" ;;
@@ -1169,14 +1532,22 @@ append_operations_log() {
   file="$(install_root)/state/operations.log"
   # 拒絕時安裝根目錄可能還不存在。不要為了寫紀錄而建立 /opt/anila。
   [[ -d "$(install_root)" ]] || return 0
+  if [[ "$result" == success && "$action" == update ]]; then
+    note="$(_unfinished_note "$from" "$to" "$file")"
+  fi
   mkdir -p "$(dirname "$file")"
   oldmask="$(umask)"
   umask 077
   touch "$file"
   chmod 600 "$file"
   op="$(id -un)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$op" "$action" "$from" "$to" "$result" >> "$file"
+  if [[ -n "$note" ]]; then
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$op" "$action" "$from" "$to" "$result" "$note" >> "$file"
+  else
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$op" "$action" "$from" "$to" "$result" >> "$file"
+  fi
   chmod 600 "$file"
   umask "$oldmask"
 }
@@ -1325,6 +1696,31 @@ entry_ready() {
   [[ "$code" == "200" ]]
 }
 
+open_entry_command() {
+  local tree="$1" project
+  project="$(compose_project)"
+  if [[ -f "$tree/.anila-images.yml" ]]; then
+    printf 'docker compose -f %q -f %q -p %q up -d --no-build --pull never nginx' \
+      "$tree/compose.yaml" "$tree/.anila-images.yml" "$project"
+  else
+    printf 'docker compose -f %q -p %q up -d --no-build --pull never nginx' \
+      "$tree/compose.yaml" "$project"
+  fi
+}
+
+# 自動回復結束時入口沒開，要直接說同仁連不上，並給出開入口的指令。
+report_closed_entry() {
+  local tree="$1" cmd
+  [[ -n "$tree" && -f "$tree/compose.yaml" ]] || return 0
+  if entry_ready "$tree"; then
+    return 0
+  fi
+  cmd="$(open_entry_command "$tree")"
+  printf '入口未開啟，同仁目前連不上。\n' >&2
+  printf '%s\n' "$cmd" >&2
+  return 0
+}
+
 open_entry() {
   local tree="$1" timeout start now
   compose_up_no_build "$tree" nginx || return 1
@@ -1435,6 +1831,7 @@ _note_rollback_failure() {
   fi
   _ops_done=1
   printf '%s\n' "$message" >&2
+  report_closed_entry "$tree"
 }
 
 auto_rollback() {
@@ -1506,6 +1903,7 @@ auto_rollback() {
   write_db_audit "$old_tree" update "${old:-none}" "$new" failure || true
   _ops_done=1
   printf '自動回復後健康檢查仍失敗。目前指標指回 %s，請看容器日誌。\n' "$old" >&2
+  report_closed_entry "$old_tree"
   return 1
 }
 
@@ -1529,6 +1927,20 @@ die_first_install_location() {
   die "拒絕操作：第一次安裝必須解在 /opt/anila。請執行：
 tar -xzf ${name}.tar.gz -C /opt/anila
 bash /opt/anila/${name}/anila-update.sh /opt/anila/${name}"
+}
+
+# 第一次安裝、還沒改任何東西之前：安裝根目錄與（正式專案）/var/lib/anila 要能放得下。
+# 檢查順序與 preflight 相同。不是 root 就印出這次要改跑的 sudo 指令。
+_refuse_unready_install_dirs() {
+  local spec="$1" root anchor="" bad cmd
+  root="$(install_root)"
+  if [[ "$(compose_project)" == "anila" ]]; then
+    anchor="$(dirname -- "$(_install_anchor_file)")"
+  fi
+  bad="$(collect_unready_install_dirs "$root" "$anchor")"
+  [[ -n "$bad" ]] || return 0
+  cmd="$(printf 'sudo bash %q %q' "${BASH_SOURCE[0]}" "$spec")"
+  die "$(printf '下面的目錄不存在或不可寫：\n%s\n目前不是 root。請改用：\n%s' "$bad" "$cmd")"
 }
 
 cmd_update() {
@@ -1555,6 +1967,7 @@ cmd_update() {
     if [[ "$(compose_project)" == "anila" ]] && ! install_root_is_real_anchor; then
       die_first_install_location "$spec"
     fi
+    _refuse_unready_install_dirs "$spec"
     if [[ -d "$root" ]]; then
       acquire_install_lock
     fi
@@ -1617,6 +2030,7 @@ cmd_update() {
     tag_running_as_version "$old"
   else
     info "這台還沒有在跑的平台，略過公告與更新前備份"
+    ensure_first_install_https_port
   fi
   dest="$root/versions/$new"
   rm -rf "$dest"
@@ -1651,6 +2065,7 @@ cmd_update() {
   retry_pending_db_audits "$dest" || true
   record_audit "$dest" update "${old:-none}" "$new" success
   ok "更新完成：${old:-none} → ${new}"
+  printf '初始化工作 csp-credential-dirs 已正常結束。它是一次性工作（標籤 anila.oneshot=true），做完就退出；docker ps 只列出運行中的容器。\n'
   printf 'codeserver 與 n8n 的映像已在本機，預設沒有啟動。最後演練才執行：\n'
   printf '  docker compose -f %q -f %q -p %q --profile maint up -d --no-build --pull never codeserver\n' \
     "$(install_root)/current/compose.yaml" "$(install_root)/current/.anila-images.yml" "$(compose_project)"

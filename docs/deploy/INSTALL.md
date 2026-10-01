@@ -61,7 +61,9 @@ sudo bash /opt/anila/anila-YYYY.MM.DD-N/preflight.sh ~/anila-YYYY.MM.DD-N.tar.gz
 
 ### 443 被別的服務佔用時
 
-預檢會寫「埠 443 被 xxx 佔用」。在第一次安裝**之前**指定另一個埠：
+預檢會寫「埠 443 被 xxx 佔用」。第一次安裝若發現 HTTPS 埠（預設 443，或 `state/.env` 裡已寫的 `NGINX_HTTPS_PORT`）有人在聽、而且不是 `anila-nginx`，會在終端機詢問要改用哪個埠，直接按 Enter 就是 8443。埠必須是 1–65535、而且沒有被佔用，寫進 `/opt/anila/state/.env`（權限 600）。之後網址要帶埠：`https://<主機>:8443/`。更新不會問這個問題。
+
+沒有終端機時安裝會停下。先寫好再跑：
 
 ```bash
 sudo mkdir -p /opt/anila/state
@@ -69,20 +71,17 @@ printf 'NGINX_HTTPS_PORT=8443\n' | sudo tee -a /opt/anila/state/.env >/dev/null
 sudo chmod 600 /opt/anila/state/.env
 ```
 
-安裝程式會沿用這個值，入口檢查也走這個埠。之後網址要帶埠：`https://<主機>:8443/`。
 正式機 443 若是空的，不必做這一步。
 
 ---
 
 ## 3. 第一次安裝
 
-**在終端機直接執行，不要把輸出導到檔案。** 安裝程式會把新產生的密鑰印在畫面上一次；導到檔案，密鑰就留在那個檔裡。
-
 ```bash
 sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 ```
 
-它只問一題：
+它先問站台名稱。HTTPS 埠被別的程式佔用時才再問埠（見上一節）。
 
 ```
 站台名稱 ANILA_HOST（院內這台的名稱或 IP）：
@@ -94,14 +93,14 @@ sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM
 |---|---|---|
 | 核對 | `manifest.txt: OK`、`這台還沒有在跑的平台，略過公告與更新前備份` | 數秒 |
 | 載入映像 | 15 行 `Loaded image: anila-bundle/…` | 約 10 分鐘 |
-| 密鑰 | `已產生密鑰（只顯示這一次，另存 /opt/anila/state/generated-secrets.txt）` | 數秒 |
+| 密鑰 | `已產生密鑰，寫在 /opt/anila/state/generated-secrets.txt`，下一行是 `sudo cat`。畫面沒有密鑰內容 | 數秒 |
 | 憑證 | `沒有現成的 TLS 憑證，先簽一張…的自簽憑證` | 數秒 |
 | JWT | `已產生 JWT 簽章金鑰` | 數秒 |
 | 啟動 | 建網路、volume、容器，等資料庫與 CSP 健康 | 約 3 分鐘 |
 | 入口 | `✓ 入口已開啟，登入頁回應 200` | |
 | 完成 | `✓ 更新完成：none → YYYY.MM.DD-N` | |
 
-`/opt/anila/state/generated-secrets.txt`（權限 600，擁有者 root）存著管理員密碼與資料庫密碼，用 `sudo cat` 讀。抄進密碼管理器後，這個檔可以留著（只有安裝帳號讀得到），也可以刪掉。
+`/opt/anila/state/generated-secrets.txt`（權限 600，root 執行時擁有者是 root）存著管理員密碼與資料庫密碼。畫面不印這些值。用安裝結束時印出的 `sudo cat /opt/anila/state/generated-secrets.txt` 讀，抄進密碼管理器。這個檔可以留著，也可以刪掉。
 
 ### 中途失敗時
 
@@ -126,6 +125,8 @@ done
 docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'
 ```
 
+`docker ps` 只列出運行中的容器。`csp-credential-dirs` 的標籤是 `anila.oneshot=true`，初始化做完就退出，不會出現在上面；`docker ps -a` 看到它是 Exited，表示正常結束。
+
 演練機的結果（這就是正常）：
 
 | 路徑 | 結果 |
@@ -137,7 +138,7 @@ docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'
 | `/router/health` | `200 application/json` |
 
 看內容類型，不要只看 200：打錯的路徑也會回 `200 text/html`。
-容器共 13 個在跑（`csp-credential-dirs` 做完初始化就結束，正常）。
+運行中的容器不含 `csp-credential-dirs`（它已正常結束）。其餘服務應是 Up。
 
 ### 用管理員帳號登入
 
@@ -205,7 +206,7 @@ code-server 與 n8n 的映像已載入，預設不啟動。要用時的指令在
 | 7 | 逐層掃描對 n8n 要跑七小時以上 | 每層只解一次；約 4 分鐘 |
 | 8 | 原始碼封存只要出現「PRIVATE KEY」字樣就拒絕 | 用與映像掃描同一套規則 |
 | 9 | 產生 JWT 時找開發機才有的映像名 `anila-csp:latest` | 改用載入時標的 `anila/csp:running` |
-| 10 | 安裝程式把密鑰印在畫面上，導到檔案就留在檔裡 | 本文第 3 步註明不要導到檔案 |
+| 10 | 安裝程式把密鑰印在畫面上，導到檔案就留在檔裡 | 只寫進 `generated-secrets.txt`（600），畫面只印路徑與 `sudo cat` |
 
 2026-10-01 在同一台演練「更新」（09.30-14 → 10.01-1），又撞到三個，都只有真的更新失敗才會走到：
 

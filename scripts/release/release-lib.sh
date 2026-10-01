@@ -142,6 +142,55 @@ _install_anchor_file() {
   printf '%s\n' /var/lib/anila/install-anchor
 }
 
+# 目錄已存在、目前使用者可寫、而且進得去，或是 root（缺少的目錄由安裝程式建立），就算準備好。
+# 只有寫入權、不能進入時，裡面建不了檔。不是 root、目錄又不存在或不可寫時，呼叫端要停下並印出 sudo 指令。
+install_dir_ready() {
+  local d="$1"
+  if [[ -d "$d" && -w "$d" && -x "$d" ]]; then
+    return 0
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# 還沒準備好的目錄，一行一個。順序固定：先安裝根目錄，再安裝記錄目錄。
+# anchor 空著就只查根目錄。preflight 與 anila-update 都走這裡。
+collect_unready_install_dirs() {
+  local root="$1" anchor="${2:-}"
+  if ! install_dir_ready "$root"; then
+    printf '%s\n' "$root"
+  fi
+  if [[ -n "$anchor" ]] && ! install_dir_ready "$anchor"; then
+    printf '%s\n' "$anchor"
+  fi
+  return 0
+}
+
+# 埠有沒有人在聽、是不是 ANILA 的入口。preflight 與第一次安裝共用。
+port_is_listening() {
+  local port="$1" out
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  # 先把 ss 的輸出收完再判斷。pipefail 下 ss | grep -q 一對到就關管道，
+  # ss 收到 SIGPIPE，整段被當成失敗，佔用中的埠會被看成沒人聽。
+  out="$(ss -Hltn "sport = :${port}" 2>/dev/null || true)"
+  [[ -n "${out//[[:space:]]/}" ]]
+}
+
+anila_nginx_owns_port() {
+  local port="$1"
+  docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null \
+    | grep -E "^anila-nginx .*:${port}->" >/dev/null
+}
+
+port_number_ok() {
+  local p="$1"
+  [[ "$p" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$p >= 1 && 10#$p <= 65535 )) || return 1
+  return 0
+}
+
 _anchor_value() {
   local key="$1" f line
   f="$(_install_anchor_file)"
@@ -579,8 +628,19 @@ banner_gate() {
   if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
     return 0
   fi
+  # 沒有終端機時不要讀到空值就只說「已取消」。
+  # 排程要跳過這題：ANILA_UPDATE_ASSUME_YES=1、true 或 yes。
+  if [[ -z "$answer" ]]; then
+    case "${ANILA_UPDATE_ASSUME_YES:-}" in
+      1|true|yes) return 0 ;;
+    esac
+  fi
   printf '目前沒有生效中的公告。請先到治理中心貼上「將於幾點更新」這類公告，讓同仁看得到。\n' >&2
   if [[ -z "$answer" ]]; then
+    if [[ ! -t 0 ]]; then
+      printf '沒有生效中的公告，且沒有終端機可以詢問，已取消。請先在治理中心貼公告，或設 ANILA_UPDATE_ASSUME_YES=1。\n' >&2
+      return 1
+    fi
     printf '仍要繼續嗎？[y/N] ' >&2
     read -r answer || true
   fi

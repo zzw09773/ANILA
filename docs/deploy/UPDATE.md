@@ -30,19 +30,18 @@ sudo tar -xzf anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
 sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
 ```
 
-之後每次更新，一樣先解開新包，**執行新包裡附的腳本**：
+之後每次更新：
 
 ```bash
-sudo tar -xzf anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
-sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N
+sudo bash /opt/anila/anila-update.sh <新包.tar.gz>
 ```
 
-不要用 `/opt/anila/anila-update.sh`（上一版留下的那支）來跑：整個更新會由舊腳本執行，新包對更新流程本身的修正要到下一次才生效（2026-10-01 演練：照舊腳本跑會重撞已修好的問題）。更新前先在治理中心貼公告；同仁登入後會看到。
+也可以先解開，執行新包裡的 `anila-update.sh`。兩種都可以。已安裝的更新程式核對清單之後，會把工作交給新出貨包裡那一支，所以這一版對更新流程的修正立刻生效。更新前先在治理中心貼公告；同仁登入後會看到。
 
 腳本依序做這些事：
 
 1. 進入腳本、尚未讀入任何程式之前，先用 `sha256sum -c` 核對清單本身。壓縮檔裡的 `manifest.txt` 與 `manifest.sha256` 必須是同一目錄的那一對。不符就停，不動正在跑的平台。接著再核對每個檔案，並拿這包裡已核對 SHA256 的 `images.tsv`，逐欄對上每一條映像行的服務、映像名、封存路徑與 digest。對不上、缺一條或重複就停，還沒有停服務。
-2. 若平台已經在跑，檢查資料庫裡有沒有生效中的公告。治理中心先貼「將於幾點更新」這類公告，同仁登入看得到。沒有公告會警告，並詢問要不要繼續（預設否）。
+2. 若平台已經在跑，檢查資料庫裡有沒有生效中的公告。治理中心先貼「將於幾點更新」這類公告，同仁登入看得到。沒有公告會警告，並詢問要不要繼續（預設否）。沒有終端機、也沒有公告時，不會只說「已取消」，會說明沒有終端機可以詢問。排程要在沒有公告時繼續，執行前設定 `ANILA_UPDATE_ASSUME_YES=1`。
 3. 更新、回復、認領開始前會在安裝根目錄取得排他鎖（`state/update.lock`）。另一個正在進行就停，也不清別人解開的暫存。沒有人持有鎖時，才清掉上次留下的解壓目錄。若已經有上一版，資料庫必須先回應；沒有回應就停，不會把它當成第一次安裝，也不做備份或載入映像。沒有安裝記錄、但這台已有同名的 compose 專案或 volume，也不是第一次安裝，腳本會停並說明怎麼認領。然後先停掉會寫入的服務（csp、router、anila-studio、ingestion-worker、anilalm，以及入口、備份與其他會寫資料的服務），再備份資料庫，並用硬連結快照 `state/share` 裡的上傳、附件、靜態檔。Studio 成品在具名 volume `anila-studio-artifacts`，用輔助容器掛上該 volume，把內容打包進同一份備份。備份放在 `/opt/anila/state/share/backups/pre-update/<舊版本>/`，目錄 700、檔案 600。同一處記下備份時間與當時的 alembic 版本。硬連結不複製未改過的位元組，所以多留一份快照不會把磁碟用掉一倍；檔案被換掉才佔新空間。刪掉線上的檔不會立刻還空間，要等這份快照被清掉。只留最近兩版（含 studio 的打包檔），映像也一樣。正在跑的映像標成 `<compose 專案>/<服務>:<舊版本>` 與 `<compose 專案>/<服務>:running`，不會改到 `anila-csp:latest`、`redis:7-alpine` 或其他專案的標籤。清理也只刪這個專案命名空間裡的舊標籤。`docker compose` 的目錄必須是 `/opt/anila/versions/<版本>`，而且對得上安裝記錄；另外疊一層 `.anila-images.yml`，讓 compose 用上面那個 running 標籤。停寫入之後，備份、解壓、載入、準備目錄、啟動或健康檢查失敗，都會把上一版拉起來。資料庫要不要還原，看目前的 alembic 版本是否與備份記下的版本不同；不同才還原，相同就不還原資料庫。資料庫一旦確認可用，之後的失敗、取消或打錯版本都會寫資料庫稽核；寫不進去就留待寫標記。
 4. 壓縮包解到 `/opt/anila` 底下，腳本結束就刪掉這份暫存。`docker load` 之後用清單裡的映像 ID 核對（不靠 manifest-list 的 RepoDigest；redis 的 pull digest 仍釘在打包腳本與 `images.tsv`），再標成這個專案的版本標籤與 running 標籤。原始碼放到 `/opt/anila/versions/<版本>`，還原成功後 `current` 才指到它。`.env` 維持指向 `state/.env` 的連結，密鑰寫進那份檔並保持權限 600，不會落到版本目錄。憑證與上傳檔也留在 `state/`。然後 `docker compose up -d --no-build --pull never`，這時先不起 nginx。資料庫遷移在 CSP 啟動時跑。
 5. 先等內部服務健康、CSP `/health` 正常（最多五分鐘）。通過之後才啟動 nginx，並確認登入頁回應 200。沒過就把入口停掉，並回到上一版。
@@ -54,7 +53,7 @@ sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM
 sudo bash /opt/anila/anila-update.sh adopt /opt/anila/versions/<目前版本>
 ```
 
-第一次安裝沒有上一版，只問站台名稱 `ANILA_HOST`。其餘密鑰自動產生（十六進位），只顯示一次，並寫在 `/opt/anila/state/generated-secrets.txt`（權限 600）。用產生的管理員密碼登入。卡片首次擁有者先是空的；要指定員工編號，之後改既有的 `CARD_INITIAL_OWNERS` 再重建 csp。沒有院內憑證時會先簽一張自簽憑證，正式憑證換成同一路徑即可，不要放進出貨包。
+第一次安裝沒有上一版，問站台名稱 `ANILA_HOST`；HTTPS 埠被佔用才再問。其餘密鑰自動產生（十六進位），不印在畫面上，只寫在 `/opt/anila/state/generated-secrets.txt`（權限 600）。用 `sudo cat` 讀，再用產生的管理員密碼登入。卡片首次擁有者先是空的；要指定員工編號，之後改既有的 `CARD_INITIAL_OWNERS` 再重建 csp。沒有院內憑證時會先簽一張自簽憑證，正式憑證換成同一路徑即可，不要放進出貨包。
 
 codeserver、n8n、asr-gateway 的映像在包裡，預設不起。codeserver 與 n8n 留到最後演練。腳本印出的指令帶目前這版的 compose 檔與專案名，同樣是 `--no-build --pull never`：
 
