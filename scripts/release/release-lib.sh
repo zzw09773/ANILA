@@ -426,6 +426,8 @@ release_assert_clean() {
   fi
 }
 
+# 序號只在這個輸出目錄裡往上加：seq 檔，以及已經在的 anila-YYYY.MM.DD-*
+# （目錄或 tar.gz）。N 用數字比，10 比 9 大。換一個輸出目錄會從 1 再算。
 release_next_version() {
   local out_dir="$1" day="$2"
   local seq_file n=0 num base prefix name
@@ -434,6 +436,7 @@ release_next_version() {
   if [[ -f "$seq_file" ]]; then
     n="$(tr -cd '0-9' < "$seq_file")"
     [[ -n "$n" ]] || n=0
+    n=$((10#$n))
   fi
   prefix="anila-${day}-"
   shopt -s nullglob
@@ -442,14 +445,117 @@ release_next_version() {
     base="${base%.tar.gz}"
     num="${base#"$prefix"}"
     [[ "$num" =~ ^[0-9]+$ ]] || continue
-    if (( num > n )); then
-      n=$num
+    if (( 10#$num > 10#$n )); then
+      n=$((10#$num))
     fi
   done
   shopt -u nullglob
   n=$((n + 1))
   printf '%s\n' "$n" > "$seq_file"
   printf '%s-%s\n' "$day" "$n"
+}
+
+release_note_version_scope() {
+  printf '版本號只在這個輸出目錄內遞增；請確認比主機上已安裝的版本新\n'
+}
+
+# 版本是 YYYY.MM.DD-N。先比日期，再把 N 當數字比（10 比 9 新）。
+# 回傳 0：出貨包較新。1：相同。2：出貨包較舊。3：格式不對。
+release_compare_versions() {
+  local bundle="$1" installed="$2"
+  local by bm bd bn iy im id inn
+  [[ "$bundle" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})-([0-9]+)$ ]] || return 3
+  by=$((10#${BASH_REMATCH[1]}))
+  bm=$((10#${BASH_REMATCH[2]}))
+  bd=$((10#${BASH_REMATCH[3]}))
+  bn=$((10#${BASH_REMATCH[4]}))
+  [[ "$installed" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})-([0-9]+)$ ]] || return 3
+  iy=$((10#${BASH_REMATCH[1]}))
+  im=$((10#${BASH_REMATCH[2]}))
+  id=$((10#${BASH_REMATCH[3]}))
+  inn=$((10#${BASH_REMATCH[4]}))
+  if (( by != iy )); then
+    (( by > iy )) && return 0
+    return 2
+  fi
+  if (( bm != im )); then
+    (( bm > im )) && return 0
+    return 2
+  fi
+  if (( bd != id )); then
+    (( bd > id )) && return 0
+    return 2
+  fi
+  if (( bn > inn )); then
+    return 0
+  fi
+  if (( bn == inn )); then
+    return 1
+  fi
+  return 2
+}
+
+# 還沒安裝就放行。相同要 ANILA_UPDATE_REINSTALL=1，較舊要 ANILA_ALLOW_DOWNGRADE=1。
+# 拒絕時訊息在 stderr，回傳 1。
+release_version_order_ok() {
+  local bundle="$1" installed="$2" rc=0
+  if [[ -z "$installed" || "$installed" == none ]]; then
+    return 0
+  fi
+  if release_compare_versions "$bundle" "$installed"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) return 0 ;;
+    1)
+      if [[ "${ANILA_UPDATE_REINSTALL:-}" == 1 ]]; then
+        return 0
+      fi
+      printf '✗ 這一版已經安裝了（%s）\n' "$bundle" >&2
+      return 1
+      ;;
+    2)
+      if [[ "${ANILA_ALLOW_DOWNGRADE:-}" == 1 ]]; then
+        return 0
+      fi
+      printf '✗ 出貨包 %s 比已安裝的 %s 舊。要回到舊版請用 rollback\n' "$bundle" "$installed" >&2
+      return 1
+      ;;
+    *)
+      printf '✗ 清單上的版本格式不對，拒絕更新。\n' >&2
+      return 1
+      ;;
+  esac
+}
+
+# 安裝根目錄 state/release.state 的 current。讀不到、空的、none 都當沒有。
+release_installed_version() {
+  local root="$1" file line
+  file="$root/state/release.state"
+  [[ -r "$file" ]] || return 0
+  line="$(grep -E '^current=' "$file" | tail -1 || true)"
+  line="${line#current=}"
+  line="${line//$'\r'/}"
+  if [[ -z "$line" || "$line" == none ]]; then
+    return 0
+  fi
+  printf '%s' "$line"
+}
+
+# 只讀清單上的版本，不解到安裝根目錄。目錄或 tar.gz。讀不到就印空字串。
+release_peek_bundle_version() {
+  local spec="$1" member ver=""
+  if [[ -d "$spec" && -f "$spec/manifest.txt" ]]; then
+    awk '$1=="version" { print $2; exit }' "$spec/manifest.txt"
+    return 0
+  fi
+  [[ -f "$spec" ]] || return 0
+  member="$(tar -tzf "$spec" 2>/dev/null | awk '/(^|\/)manifest\.txt$/ { print; exit }' || true)"
+  [[ -n "$member" ]] || return 0
+  ver="$(tar -xOzf "$spec" "$member" 2>/dev/null | awk '$1=="version" { print $2; exit }' || true)"
+  printf '%s' "$ver"
 }
 
 release_seal_manifest() {

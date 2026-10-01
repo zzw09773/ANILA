@@ -152,6 +152,24 @@ if [[ -n "$bundle" ]]; then
   else
     fail "看不懂出貨包：$bundle"
   fi
+  # 讀得到已安裝版本才比先後。ANILA_PREFLIGHT_ROOT 只給測試把這段指到暫存。
+  order_root="${ANILA_PREFLIGHT_ROOT:-$root}"
+  installed="$(release_installed_version "$order_root")"
+  if [[ -n "$installed" ]]; then
+    bver="$(release_peek_bundle_version "$bundle")"
+    if [[ -z "$bver" ]]; then
+      fail "讀不到出貨包的版本，無法和已安裝的 ${installed} 比較"
+    elif release_compare_versions "$bver" "$installed"; then
+      pass "出貨包 ${bver} 比已安裝的 ${installed} 新"
+    else
+      rc=$?
+      case "$rc" in
+        1) fail "這一版已經安裝了（${bver}）" ;;
+        2) fail "出貨包 ${bver} 比已安裝的 ${installed} 舊。要回到舊版請用 rollback" ;;
+        *) fail "版本格式不對，無法比較 ${bver} 與 ${installed}" ;;
+      esac
+    fi
+  fi
 fi
 
 echo

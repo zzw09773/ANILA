@@ -4,7 +4,7 @@
 #
 #   bash scripts/release/build-release.sh [輸出目錄]
 #
-# 工作目錄不乾淨就拒絕。版本是 YYYY.MM.DD-N，同一天自動加 1。
+# 工作目錄不乾淨就拒絕。版本是 YYYY.MM.DD-N，同一天在這個輸出目錄裡自動加 1。
 # 不要把 .env、secrets/、憑證私鑰、備份打進去。
 set -euo pipefail
 
@@ -173,6 +173,7 @@ main() {
   day="$(TZ=Asia/Taipei date +%Y.%m.%d)"
   mkdir -p "$out_dir"
   ver="$(release_next_version "$out_dir" "$day")"
+  release_note_version_scope
   commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   stage="$out_dir/anila-$ver"
   rm -rf "$stage"

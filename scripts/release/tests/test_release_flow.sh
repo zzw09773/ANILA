@@ -287,6 +287,15 @@ v3="$(release_next_version "$out" "2026.09.30")"
 touch "$out/anila-2026.09.30-4.tar.gz"
 v4="$(release_next_version "$out" "2026.09.30")"
 [[ "$v4" == "2026.09.30-5" ]] || fail "已有 -4 時下一版應為 -5，得到 $v4"
+mkdir -p "$out/anila-2026.10.01-9"
+touch "$out/anila-2026.10.01-10.tar.gz"
+v5="$(release_next_version "$out" "2026.10.01")"
+[[ "$v5" == "2026.10.01-11" ]] || fail "已有 -9 與 -10 時下一版應為 -11，得到 $v5"
+note="$(release_note_version_scope)"
+[[ "$note" == "版本號只在這個輸出目錄內遞增；請確認比主機上已安裝的版本新" ]] \
+  || fail "版本提醒文字不對：$note"
+grep -q 'release_note_version_scope' "$ROOT/scripts/release/build-release.sh" \
+  || fail "build-release.sh 沒有印出版本提醒"
 
 # ── 工作目錄不乾淨就拒絕打包 ──────────────────────────────────────────────
 repo="$tmp/repo"
@@ -3294,7 +3303,8 @@ _cleanup_test_runner_extracts() {
   local d
   shopt -s nullglob
   for d in "${HOME:-}"/.anila-runner.* "${TMPDIR:-/tmp}"/anila-runner.* /tmp/anila-runner.* \
-      "${TMPDIR:-/tmp}"/anila-bundle-check.* /tmp/anila-bundle-check.*; do
+      "${TMPDIR:-/tmp}"/anila-bundle-check.* /tmp/anila-bundle-check.* \
+      "${TMPDIR:-/tmp}"/anila-order.* /tmp/anila-order.*; do
     [[ -n "$d" && -d "$d" ]] || continue
     rm -rf -- "$d"
   done
@@ -4077,8 +4087,330 @@ check "交接途中被中斷也清掉解壓目錄" test_interrupted_handoff_clea
 check "HTTPS 埠不能跟其他 ANILA 埠相同" test_https_port_rejects_other_anila_ports
 check "ss 被截斷時不會把佔用埠看成空的" test_port_is_listening_survives_sigpipe
 check "密鑰不出現在 xtrace" test_generated_secrets_absent_from_xtrace
+# 版本先後：日期，再把 N 當數字。相同與較舊在改安裝之前拒絕。
+_cmp_rc() {
+  local rc=0
+  if release_compare_versions "$1" "$2"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  printf '%s' "$rc"
+}
+
+test_version_compare_orders_date_then_numeric_suffix() {
+  local rc
+  rc="$(_cmp_rc 2026.10.01-10 2026.10.01-9)"
+  [[ "$rc" == 0 ]] || { echo "2026.10.01-10 應比 -9 新，得到 $rc" >&2; return 1; }
+  rc="$(_cmp_rc 2026.10.01-9 2026.10.01-10)"
+  [[ "$rc" == 2 ]] || { echo "2026.10.01-9 應比 -10 舊，得到 $rc" >&2; return 1; }
+  rc="$(_cmp_rc 2026.10.01-02 2026.10.01-2)"
+  [[ "$rc" == 1 ]] || { echo "02 與 2 應相同，得到 $rc" >&2; return 1; }
+  rc="$(_cmp_rc 2026.10.02-1 2026.10.01-99)"
+  [[ "$rc" == 0 ]] || { echo "隔日 -1 應比前一日 -99 新，得到 $rc" >&2; return 1; }
+  rc="$(_cmp_rc 2026.09.30-8 2026.10.01-1)"
+  [[ "$rc" == 2 ]] || { echo "九月應比十月舊，得到 $rc" >&2; return 1; }
+  rc="$(_cmp_rc 2027.01.01-1 2026.12.31-5)"
+  [[ "$rc" == 0 ]] || { echo "跨年應較新，得到 $rc" >&2; return 1; }
+  release_version_order_ok 2026.10.01-1 "" || return 1
+  release_version_order_ok 2026.10.01-1 none || return 1
+}
+
+_refuse_leaves_install_untouched() {
+  local err="$1" log="$2" root="$3" needle="$4" absent="${5:-}"
+  grep -q "$needle" "$err" || {
+    echo "沒有拒絕：$needle" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -s "$log" ]] || { echo "拒絕之前就呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ -f "$root/versions/2026.10.01-2/compose.yaml" ]] || {
+    echo "拒絕時動到了已安裝的版本目錄" >&2
+    return 1
+  }
+  if [[ -n "$absent" && -e "$root/versions/$absent" ]]; then
+    echo "拒絕之前就建立了版本目錄 $absent" >&2
+    return 1
+  fi
+  if find "$root" -maxdepth 1 -type d -name 'incoming.*' | grep -q .; then
+    echo "拒絕之前就解壓到安裝根目錄" >&2
+    return 1
+  fi
+}
+
+test_update_refuses_same_and_older_before_changes() {
+  local root bundle log err
+  root="$tmp/order-install"
+  bundle="$tmp/order-bundle"
+  log="$tmp/order.log"
+  err="$tmp/order.err"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  use_version_tree "$root" "2026.10.01-2" >/dev/null
+  make_min_bundle "$bundle" "2026.10.01-2"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/order-same.out" 2>"$err"; then
+    echo "同一版仍繼續更新" >&2
+    return 1
+  fi
+  _refuse_leaves_install_untouched "$err" "$log" "$root" '這一版已經安裝了（2026.10.01-2）' || return 1
+  make_min_bundle "$bundle" "2026.10.01-1"
+  : > "$log"
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/order-old.out" 2>"$err"; then
+    echo "較舊的出貨包仍繼續更新" >&2
+    return 1
+  fi
+  _refuse_leaves_install_untouched "$err" "$log" "$root" \
+    '出貨包 2026.10.01-1 比已安裝的 2026.10.01-2 舊。要回到舊版請用 rollback' \
+    "2026.10.01-1" || return 1
+  # -10 比 -9 新。字串比會把 -10 看成較舊。
+  use_version_tree "$root" "2026.10.01-9" >/dev/null
+  make_min_bundle "$bundle" "2026.10.01-10"
+  : > "$log"
+  export STUB_DB_DOWN=1
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/order-ten.out" 2>"$err"; then
+    unset STUB_DB_DOWN
+    echo "較新的 -10 不該被版本檢查擋下" >&2
+    return 1
+  fi
+  unset STUB_DB_DOWN
+  if grep -q '已經安裝了\|比已安裝的 .* 舊' "$err"; then
+    echo "2026.10.01-10 被當成不比 -9 新" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '資料庫' "$err" || {
+    echo "較新的版本沒有走進更新（應停在資料庫）" >&2
+    cat "$err" >&2
+    return 1
+  }
+}
+
+test_version_order_env_overrides_allow_reinstall_and_downgrade() {
+  local root bundle log err
+  root="$tmp/order-override"
+  bundle="$tmp/order-override-bundle"
+  log="$tmp/order-override.log"
+  err="$tmp/order-override.err"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  use_version_tree "$root" "2026.10.01-2" >/dev/null
+  make_min_bundle "$bundle" "2026.10.01-2"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  export STUB_DB_DOWN=1
+  export ANILA_UPDATE_REINSTALL=1
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/order-re.out" 2>"$err"; then
+    unset STUB_DB_DOWN ANILA_UPDATE_REINSTALL
+    echo "允許重裝仍不該把資料庫沒起來當成成功" >&2
+    return 1
+  fi
+  unset ANILA_UPDATE_REINSTALL
+  if grep -q '已經安裝了' "$err"; then
+    unset STUB_DB_DOWN
+    echo "ANILA_UPDATE_REINSTALL=1 仍拒絕同一版" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '資料庫' "$err" || {
+    unset STUB_DB_DOWN
+    echo "重裝沒有走進更新" >&2
+    cat "$err" >&2
+    return 1
+  }
+  make_min_bundle "$bundle" "2026.10.01-1"
+  : > "$log"
+  export ANILA_ALLOW_DOWNGRADE=1
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/order-down.out" 2>"$err"; then
+    unset STUB_DB_DOWN ANILA_ALLOW_DOWNGRADE
+    echo "允許降版仍不該成功" >&2
+    return 1
+  fi
+  unset ANILA_ALLOW_DOWNGRADE STUB_DB_DOWN
+  if grep -q '比已安裝的 .* 舊' "$err"; then
+    echo "ANILA_ALLOW_DOWNGRADE=1 仍拒絕較舊的出貨包" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '資料庫' "$err" || { echo "降版沒有走進更新" >&2; cat "$err" >&2; return 1; }
+}
+
+test_handoff_refuses_older_before_runner_and_new_runner_checks() {
+  local root bundle marker log err tar
+  _cleanup_test_runner_extracts
+  root="$tmp/handoff-order-root"
+  bundle="$tmp/handoff-order-bundle"
+  marker="$tmp/handoff-order-marker"
+  log="$tmp/handoff-order.log"
+  err="$tmp/handoff-order.err"
+  mkdir -p "$root/state" "$bundle"
+  printf 'current=2026.10.01-2\n' > "$root/state/release.state"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "2026.10.01-1" "abc123"
+  : > "$log"
+  if env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$tmp/handoff-order.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "舊程式把較舊的出貨包交出去了" >&2
+    return 1
+  fi
+  grep -q '出貨包 2026.10.01-1 比已安裝的 2026.10.01-2 舊' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "交接前沒有拒絕較舊的出貨包" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$marker" ]] || {
+    _cleanup_test_runner_extracts
+    echo "拒絕之前就執行了出貨包裡的更新程式" >&2
+    return 1
+  }
+  [[ ! -s "$log" ]] || { echo "交接前拒絕仍呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  # 新出貨包自己的更新程式也要擋，不能只靠交出來的那一支。
+  rm -rf "$bundle"
+  bundle="$tmp/handoff-order-new"
+  mkdir -p "$bundle"
+  cp "$ROOT/scripts/release/anila-update.sh" "$bundle/anila-update.sh"
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  chmod +x "$bundle/anila-update.sh"
+  make_min_bundle "$bundle" "2026.10.01-1"
+  : > "$log"
+  if env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$log" \
+      bash "$bundle/anila-update.sh" "$bundle" >"$tmp/handoff-order-new.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "新出貨包的更新程式裝了較舊的版本" >&2
+    return 1
+  fi
+  grep -q '出貨包 2026.10.01-1 比已安裝的 2026.10.01-2 舊' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "新程式沒有拒絕較舊的版本" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$root/state/update.lock" ]] || {
+    _cleanup_test_runner_extracts
+    echo "新程式拒絕之前就拿了更新鎖" >&2
+    return 1
+  }
+  [[ ! -s "$log" ]] || {
+    _cleanup_test_runner_extracts
+    echo "新程式拒絕之前就呼叫了 docker" >&2
+    cat "$log" >&2
+    return 1
+  }
+  # 同一版：新程式直接跑也要拒絕。
+  make_min_bundle "$bundle" "2026.10.01-2"
+  printf 'current=2026.10.01-2\n' > "$root/state/release.state"
+  if env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$log" \
+      bash "$bundle/anila-update.sh" "$bundle" >"$tmp/handoff-order-same.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "新程式重裝了同一版" >&2
+    return 1
+  fi
+  grep -q '這一版已經安裝了（2026.10.01-2）' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "新程式沒有拒絕同一版" >&2
+    cat "$err" >&2
+    return 1
+  }
+  tar="$(dirname "$bundle")/anila-2026.10.01-1.tar.gz"
+  make_min_bundle "$bundle" "2026.10.01-1"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  : > "$log"
+  if env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$tmp/handoff-order-tar.out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "壓縮檔較舊仍交出去了" >&2
+    return 1
+  fi
+  grep -q '出貨包 2026.10.01-1 比已安裝的 2026.10.01-2 舊' "$err" || {
+    _cleanup_test_runner_extracts
+    echo "壓縮檔交接前沒有拒絕" >&2
+    cat "$err" >&2
+    return 1
+  }
+  if find "$root" -maxdepth 1 -type d -name 'incoming.*' | grep -q .; then
+    _cleanup_test_runner_extracts
+    echo "拒絕之前就把壓縮檔解進安裝根目錄" >&2
+    return 1
+  fi
+  _cleanup_test_runner_extracts
+}
+
+test_preflight_prints_version_order() {
+  local root bundle out tar got
+  root="$tmp/preflight-order-root"
+  bundle="$tmp/preflight-order-bundle"
+  out="$tmp/preflight-order.out"
+  mkdir -p "$root/state" "$bundle"
+  printf 'current=2026.10.01-9\n' > "$root/state/release.state"
+  printf 'name: anila\n' > "$bundle/compose.yaml"
+  release_seal_manifest "$bundle" "2026.10.01-10" "abc123"
+  ANILA_PREFLIGHT_ROOT="$root" bash "$ROOT/scripts/release/preflight.sh" "$bundle" >"$out" 2>&1 || true
+  grep -q '✓ 出貨包 2026.10.01-10 比已安裝的 2026.10.01-9 新' "$out" || {
+    echo "預檢沒有印出較新" >&2
+    cat "$out" >&2
+    return 1
+  }
+  release_seal_manifest "$bundle" "2026.10.01-9" "abc123"
+  ANILA_PREFLIGHT_ROOT="$root" bash "$ROOT/scripts/release/preflight.sh" "$bundle" >"$out" 2>&1 || true
+  grep -q '✗ 這一版已經安裝了（2026.10.01-9）' "$out" || {
+    echo "預檢沒有拒絕同一版" >&2
+    cat "$out" >&2
+    return 1
+  }
+  release_seal_manifest "$bundle" "2026.10.01-1" "abc123"
+  ANILA_PREFLIGHT_ROOT="$root" bash "$ROOT/scripts/release/preflight.sh" "$bundle" >"$out" 2>&1 || true
+  grep -q '✗ 出貨包 2026.10.01-1 比已安裝的 2026.10.01-9 舊。要回到舊版請用 rollback' "$out" || {
+    echo "預檢沒有拒絕較舊的出貨包" >&2
+    cat "$out" >&2
+    return 1
+  }
+  tar="$tmp/anila-preflight-order.tar.gz"
+  release_seal_manifest "$bundle" "2026.10.01-10" "abc123"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  got="$(release_peek_bundle_version "$tar")"
+  [[ "$got" == "2026.10.01-10" ]] || { echo "壓縮檔讀到的版本是 ${got:-空}" >&2; return 1; }
+  ANILA_PREFLIGHT_ROOT="$root" bash "$ROOT/scripts/release/preflight.sh" "$tar" >"$out" 2>&1 || true
+  grep -q '✓ 出貨包 2026.10.01-10 比已安裝的 2026.10.01-9 新' "$out" || {
+    echo "預檢沒有比較壓縮檔的版本" >&2
+    cat "$out" >&2
+    return 1
+  }
+  chmod 000 "$root/state/release.state"
+  ANILA_PREFLIGHT_ROOT="$root" bash "$ROOT/scripts/release/preflight.sh" "$bundle" >"$out" 2>&1 || true
+  chmod 600 "$root/state/release.state"
+  if grep -q '比已安裝的\|已經安裝了' "$out"; then
+    echo "讀不到已安裝版本仍印出先後" >&2
+    cat "$out" >&2
+    return 1
+  fi
+  grep -q '版本序號只在打包時的那個輸出目錄裡遞增' "$ROOT/docs/deploy/UPDATE.md" || {
+    echo "UPDATE.md 沒有寫版本先後" >&2
+    return 1
+  }
+}
+
 check "目錄要可寫也要能進入" test_install_dir_requires_execute
 check "接續註記只看同一種操作的失敗" test_resume_note_matches_action
+check "版本先比日期再把序號當數字" test_version_compare_orders_date_then_numeric_suffix
+check "同一版與較舊的出貨包在改安裝之前拒絕" test_update_refuses_same_and_older_before_changes
+check "環境變數允許重裝同一版或裝較舊的出貨包" test_version_order_env_overrides_allow_reinstall_and_downgrade
+check "交接前與新出貨包的更新程式都拒絕較舊版本" test_handoff_refuses_older_before_runner_and_new_runner_checks
+check "預檢印出出貨包與已安裝版本的先後" test_preflight_prints_version_order
 
 if [[ "$_fail_count" -ne 0 ]]; then
   printf '%s 項失敗\n' "$_fail_count" >&2

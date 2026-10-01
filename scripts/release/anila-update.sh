@@ -219,6 +219,72 @@ _source_release_lib() {
   fi
 }
 
+# 清單已經核對過。同一版與較舊的出貨包在這裡拒絕，還沒取鎖、也還沒停服務。
+# 交接前的舊程式，以及新出貨包自己的更新程式，都呼叫這支。
+_version_order_checked=0
+_guard_bundle_version() {
+  local dir="$1" installed new
+  _source_release_lib
+  installed="$(state_get current || true)"
+  if [[ -z "$installed" || "$installed" == none ]]; then
+    _version_order_checked=1
+    return 0
+  fi
+  new="$(manifest_value version "$dir/manifest.txt")"
+  if [[ -z "$new" ]]; then
+    printf '✗ 清單沒有版本\n' >&2
+    return 1
+  fi
+  _ops_to="$new"
+  if ! release_version_order_ok "$new" "$installed"; then
+    return 1
+  fi
+  _version_order_checked=1
+  return 0
+}
+
+# 目錄直接核對。壓縮檔若交接時已經解開，就用那份；否則先解到暫存，不放進安裝根目錄。
+_guard_update_spec() {
+  local spec="$1" dir="" stage=""
+  _source_release_lib
+  if [[ -d "$spec" ]]; then
+    if [[ ! -f "$spec/manifest.txt" ]]; then
+      printf '✗ 這個目錄不是出貨包（沒有 manifest.txt）\n' >&2
+      return 1
+    fi
+    dir="$spec"
+  elif [[ -n "${ANILA_RUNNER_EXTRACT:-}" && -d "${ANILA_RUNNER_EXTRACT}/tree" && ! -L "${ANILA_RUNNER_EXTRACT}" ]]; then
+    dir="$(_bundle_manifest_dir "${ANILA_RUNNER_EXTRACT}/tree" 2>/dev/null || true)"
+  elif [[ -f "$spec" ]]; then
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/anila-order.XXXXXX")"
+    chmod 700 "$stage"
+    if ! tar -xzf "$spec" -C "$stage"; then
+      rm -rf -- "$stage"
+      printf '✗ 無法讀取出貨包，拒絕更新。\n' >&2
+      return 1
+    fi
+    dir="$(_bundle_manifest_dir "$stage" 2>/dev/null || true)"
+  else
+    printf '✗ 找不到出貨包：%s\n' "$spec" >&2
+    return 1
+  fi
+  if [[ -z "$dir" || ! -f "$dir/manifest.txt" ]]; then
+    [[ -n "$stage" ]] && rm -rf -- "$stage"
+    printf '✗ 出貨包缺少清單，拒絕更新。\n' >&2
+    return 1
+  fi
+  if ! release_verify_bundle "$dir"; then
+    [[ -n "$stage" ]] && rm -rf -- "$stage"
+    return 1
+  fi
+  if ! _guard_bundle_version "$dir"; then
+    [[ -n "$stage" ]] && rm -rf -- "$stage"
+    return 1
+  fi
+  [[ -n "$stage" ]] && rm -rf -- "$stage"
+  return 0
+}
+
 # 已安裝的舊更新程式核對完整個出貨包後，把工作交給新出貨包裡那一支。
 # 信任根是操作者事先對過的出貨包 tar.gz SHA256，這裡不另做簽章。
 # ANILA_RUNNER_HANDOFF 不能單獨跳過；正在跑的腳本必須就是這包的更新程式。
@@ -227,10 +293,35 @@ _handoff_to_bundle_runner() {
   case "$spec" in
     ""|rollback|adopt|help|-h|--help) return 0 ;;
   esac
+  # 正在跑的就是這包的更新程式。核對之後先比版本，再進更新；舊程式交過來時也走這裡。
   if _dir_runner_is_self "$spec"; then
+    _source_release_lib
+    dir="$(_bundle_manifest_dir "$spec" 2>/dev/null || true)"
+    if [[ -z "$dir" || ! -f "$dir/manifest.txt" ]]; then
+      printf '出貨包缺少清單，拒絕更新。\n' >&2
+      return 1
+    fi
+    if ! release_verify_bundle "$dir"; then
+      return 1
+    fi
+    if ! _guard_bundle_version "$dir"; then
+      return 1
+    fi
     return 0
   fi
   if _claim_is_this_runner "$spec"; then
+    _source_release_lib
+    dir="$(_bundle_manifest_dir "${ANILA_RUNNER_EXTRACT}/tree" 2>/dev/null || true)"
+    if [[ -z "$dir" || ! -f "$dir/manifest.txt" ]]; then
+      printf '出貨包缺少清單，拒絕更新。\n' >&2
+      return 1
+    fi
+    if ! release_verify_bundle "$dir"; then
+      return 1
+    fi
+    if ! _guard_bundle_version "$dir"; then
+      return 1
+    fi
     return 0
   fi
   if [[ -d "$spec" ]]; then
@@ -262,6 +353,12 @@ _handoff_to_bundle_runner() {
   # 清單裡的每一個檔都要核對（anila-update.sh、release-lib.sh、images.tsv，以及其他 file 行）。
   _source_release_lib
   if ! release_verify_bundle "$dir"; then
+    [[ -n "$stage" ]] && rm -rf -- "$stage"
+    _anila_runner_extract_owned=""
+    return 1
+  fi
+  # 比完先後才交給新程式。新程式進來後會再比一次（上面兩個早退）。
+  if ! _guard_bundle_version "$dir"; then
     [[ -n "$stage" ]] && rm -rf -- "$stage"
     _anila_runner_extract_owned=""
     return 1
@@ -1962,6 +2059,10 @@ cmd_update() {
   root="$(install_root)"
   old="$(state_get current || true)"
   _ops_from="${old:-none}"
+  # 交接流程裡新程式已經比過。直接呼叫更新時，在取鎖與解壓到安裝根目錄之前比。
+  if [[ "${_version_order_checked:-0}" != 1 && -n "$old" && "$old" != none ]]; then
+    _guard_update_spec "$spec" || exit 1
+  fi
   if [[ -z "$old" || "$old" == "none" ]]; then
     refuse_if_anchor_mismatch
     if [[ "$(compose_project)" == "anila" ]] && ! install_root_is_real_anchor; then
@@ -1999,10 +2100,11 @@ cmd_update() {
   new="$(manifest_value version "$bundle/manifest.txt")"
   [[ -n "$new" ]] || die "清單沒有版本"
   _ops_to="$new"
-  mkdir -p "$root/versions" "$root/state"
-  if [[ -n "$old" && "$old" == "$new" ]]; then
-    die "這一版已經是目前版本 ${new}，不必再更新"
+  # 清單核對之後、建立版本目錄之前再比一次。交接與直接更新都看得到。
+  if ! release_version_order_ok "$new" "${old:-}"; then
+    exit 1
   fi
+  mkdir -p "$root/versions" "$root/state"
   before=""
   dump=""
   stamp=""
