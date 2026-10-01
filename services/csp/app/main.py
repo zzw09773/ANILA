@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, inspect as sa_inspect, text
 from app.config import settings
 from app.database import engine, Base
@@ -31,6 +31,11 @@ import app.models.jwt_signing_key  # noqa: F401  註冊 jwt_signing_keys
 import app.models.alert_mail  # noqa: F401  註冊警報寄信表
 import app.models.feedback_read  # noqa: F401  註冊管理員的回饋已讀水位
 from app.services.auth_service import require_admin
+from app.spa_fallback import (
+    FrontendAssetFiles,
+    install_unmatched_api_404,
+    register_frontend_spa,
+)
 
 APP_NAME = "ANILA"
 APP_VERSION = "1.0.0"
@@ -935,30 +940,18 @@ for candidate in [
         frontend_dist = candidate
         break
 
+# 未命中的 /api/* 在 SPA catch-all 之前就回 JSON 404。nginx 只是把
+# /api/ 轉給 CSP，HTML 是這裡的 index.html，不是 try_files。
+install_unmatched_api_404(app)
+
 if frontend_dist:
     assets_dir = frontend_dist / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
-
-    # M6: 確保任何 ``../`` 解析後仍位於 frontend_dist 內；否則一律 fallback
-    # 到 SPA index.html，避免讀到 /etc/passwd 或 backend source。
-    _frontend_root = frontend_dist.resolve()
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
-        index_path = _frontend_root / "index.html"
-        # 任何含 NUL / 非法 byte 的 path → 直接給 index.html。
-        if "\x00" in full_path:
-            return FileResponse(str(index_path))
-        try:
-            candidate = (_frontend_root / full_path).resolve()
-        except (OSError, ValueError):
-            return FileResponse(str(index_path))
-        # 必須仍位於 _frontend_root 子樹中；否則視為 SPA route fallback。
-        try:
-            candidate.relative_to(_frontend_root)
-        except ValueError:
-            return FileResponse(str(index_path))
-        if candidate.is_file():
-            return FileResponse(str(candidate))
-        return FileResponse(str(index_path))
+        app.mount(
+            "/assets",
+            FrontendAssetFiles(directory=str(assets_dir)),
+            name="frontend-assets",
+        )
+    # M6：路徑跳出前端目錄時回 index.html，不讀 /etc/passwd 或後端原始碼。
+    # /api/* 在 spa_response 裡另回 JSON 404，避免 catch-all 又把 HTML 補上。
+    register_frontend_spa(app, frontend_dist)

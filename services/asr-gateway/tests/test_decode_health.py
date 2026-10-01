@@ -111,6 +111,23 @@ def test_health_degraded_when_decoder_unreachable():
 
 
 @respx.mock
+def test_health_reports_the_live_decode_url_refresh_interval_when_degraded():
+    """PROVE RED: hardcode decode_url_refresh_interval_seconds=60 → TTL 45 fails.
+
+    既有的 /asr/health 帶這個欄位。解碼器壞掉、狀態不是 ok 時也要在。
+    """
+    _mock_csp_primary(CSP_URL)
+    _mock_decoder_down(CSP_URL)
+    s = _settings(ASR_DECODE_URL_TTL=45)
+    with TestClient(_app(s)) as client:
+        resp = client.get("/asr/health")
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["status"] != "ok"
+    assert body["decode_url_refresh_interval_seconds"] == 45
+
+
+@respx.mock
 def test_health_degraded_when_decoder_token_rejected():
     _mock_csp_primary(CSP_URL)
     respx.get(f"{CSP_URL}/health").mock(

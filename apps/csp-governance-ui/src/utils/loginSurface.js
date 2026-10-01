@@ -37,12 +37,19 @@ export async function loadLoginSurface(loadProviders) {
   }
 }
 
-export function shouldRenderAlternativeLogin(authMode, query = {}) {
-  return authMode !== 'card-only' || hasLoginAlternativesBypass(query)
+// 帳密欄位收不收起來只是畫面。card-only 時 POST /api/auth/login 仍只放行
+// 擁有者，其他人同一支 404。連結看得到不會改那條伺服器規則。
+export function shouldRenderAlternativeLogin() {
+  return true
 }
 
-export function shouldShowBreakGlassNotice(authMode, query = {}) {
-  return authMode === 'card-only' && hasLoginAlternativesBypass(query)
+export function shouldOpenAlternativeLogin(authMode, query = {}) {
+  return isPasswordPrimary(authMode) || hasLoginAlternativesBypass(query)
+}
+
+export function shouldShowBreakGlassNotice(authMode) {
+  // 說明跟欄位一起放在「其他登入方式」裡。不看 query：沒有參數也點得開。
+  return authMode === 'card-only'
 }
 
 export function shouldRenderSelfRegistration(authMode) {

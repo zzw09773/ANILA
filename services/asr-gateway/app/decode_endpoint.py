@@ -10,6 +10,7 @@ CSP 暫時連不上時，沿用上一筆成功讀到的位址，不悄悄改去�
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timezone
@@ -97,6 +98,21 @@ def decode_url_source() -> str:
     """``unconfigured`` / ``csp_registry`` / ``csp_registry_stale``."""
     with _lock:
         return str(_state["source"])
+
+
+def refresh_interval_seconds(settings: Settings) -> int:
+    """重讀治理中心語音位址的間隔，秒。給 /asr/health 與主控台那句話。
+
+    不足 1 秒仍算 1，避免畫面寫成「約 0 秒」。實際等待仍是
+    ``ASR_DECODE_URL_TTL``，這只是往上取整的顯示值。
+    """
+    try:
+        ttl = float(settings.ASR_DECODE_URL_TTL)
+    except (TypeError, ValueError):
+        return 1
+    if ttl != ttl or ttl <= 0:
+        return 1
+    return max(1, math.ceil(ttl))
 
 
 def decode_url_refresh_meta() -> dict[str, Any]:

@@ -12,7 +12,9 @@ import logging
 import os
 import re
 import threading
+import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse
 
@@ -48,9 +50,14 @@ from app.services.external_service_crypto import (
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 30
-# 背景探測的最短間隔。使用者的請求不會另開一輪。
+# 背景探測的最短間隔。管理員按的探測不看這個間隔，請求內做完。
 MIN_PROBE_INTERVAL_SECONDS = 30
+# read/write 是兩次收到資料之間的空檔，不是整段請求的上限。慢速滴資料
+# 可以一直重置這 8 秒。整段探測（含 DNS）共用 PROBE_DEADLINE_SECONDS。
 PROBE_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
+PROBE_DEADLINE_SECONDS = 8.0
+PROBE_TIMEOUT_DETAIL = "探測逾時"
+REDIRECT_DETAIL = "健康檢查被重新導向（HTTP 3xx）"
 _OPENAI_PATH = "/v1/audio/transcriptions"
 _USERINFO_IN_TEXT = re.compile(r"(https?://)[^/@\s]+@")
 # 與內部服務核發的系統帳號同名。身分是憑證檔裡的 sk-，不是 csk-。
@@ -97,7 +104,9 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ensure_rows(db: Session) -> None:
+def ensure_rows(db: Session) -> bool:
+    """補上缺少的列。有新增才 flush，回傳這次是否插入了列。"""
+    inserted = False
     for key in SERVICE_KEYS:
         if db.get(ExternalService, key) is None:
             db.add(
@@ -112,7 +121,10 @@ def ensure_rows(db: Session) -> None:
                     updated_at=_utcnow(),
                 )
             )
-    db.flush()
+            inserted = True
+    if inserted:
+        db.flush()
+    return inserted
 
 
 def _row(db: Session, service_key: str) -> ExternalService:
@@ -215,7 +227,7 @@ def public_view(row: ExternalService) -> dict:
     fallback, note = fallback_note(row)
     checked = row.health_checked_at
     updated = row.updated_at
-    return {
+    view = {
         "service_key": row.service_key,
         "enabled": bool(row.enabled),
         "base_url": display_base_url(row.base_url or ""),
@@ -231,13 +243,15 @@ def public_view(row: ExternalService) -> dict:
         "fallback_note": note,
         "updated_at": updated.isoformat() if updated else None,
     }
+    return view
 
 
-def enforce_base_url(url: str) -> None:
+def enforce_base_url(url: str, *, dns_timeout: float | None = None) -> None:
     """先限制 http/https、拒絕 userinfo，再走模型那道出向檢查。
 
     模型檢查接受 grpc/grpcs。文件解析與語音都是 HTTPX，那些 scheme 存進來
     只會等探測時才失敗。帳密必須走加密欄位，不能掛在網址上。
+    ``dns_timeout`` 只在探測裡帶，與整段 deadline 同一段時間。
     """
     cleaned = (url or "").strip()
     if not cleaned:
@@ -247,7 +261,7 @@ def enforce_base_url(url: str) -> None:
         raise ExternalServiceUrlError("userinfo")
     if parsed.scheme not in ("http", "https"):
         raise ExternalServiceUrlError("scheme")
-    validate_outbound_url(cleaned, ENDPOINT_KIND_MODEL)
+    validate_outbound_url(cleaned, ENDPOINT_KIND_MODEL, dns_timeout=dns_timeout)
 
 
 def document_parser_endpoint(db: Session) -> DoclingEndpoint | None:
@@ -288,43 +302,199 @@ def _silence_wav() -> bytes:
     return buffer.getvalue()
 
 
+def _config_stamp(base_url: str | None, updated_at: datetime | None) -> tuple:
+    """探測開始時的位址與更新時間。條件更新對不上就不寫。"""
+    return ((base_url or "").strip(), updated_at)
+
+
+def _perform_probe(target: dict, started: float, deadline: float) -> tuple:
+    """出向檢查（含 DNS）與 HTTP 都在這個 worker。不碰資料庫，也不自己寫結果。"""
+    url = target["url"]
+    secret = target["secret"]
+
+    def _finished(kind: str, payload) -> tuple:
+        return (kind, payload, time.monotonic())
+
+    try:
+        remaining = deadline - (time.monotonic() - started)
+        enforce_base_url(url, dns_timeout=remaining)
+    except TimeoutError:
+        return _finished("timeout", None)
+    except UnsafeEndpointError as exc:
+        return _finished("unsafe", exc)
+    except ExternalServiceUrlError as exc:
+        return _finished("url_error", exc)
+
+    def _send(client: httpx.Client):
+        headers: dict[str, str] = {}
+        if target["service_key"] == SPEECH and target["protocol"] == "openai":
+            if secret:
+                headers["Authorization"] = f"Bearer {secret}"
+            files = {"file": ("silence.wav", _silence_wav(), "audio/wav")}
+            data = {"model": target["model"], "response_format": "json"}
+            return client.post(
+                f"{url}{_OPENAI_PATH}", headers=headers, files=files, data=data
+            )
+        if secret:
+            headers["X-Token"] = secret
+        return client.get(f"{url}/health", headers=headers)
+
+    try:
+        client = httpx.Client(timeout=PROBE_TIMEOUT, follow_redirects=False)
+        with client:
+            response = _send(client)
+    except Exception as exc:
+        return _finished("error", exc)
+    finished = time.monotonic()
+    if finished - started > deadline:
+        return ("timeout", None, finished)
+    return ("ok", response, finished)
+
+
 def _probe_http(row: ExternalService) -> tuple[str, str]:
-    """回 (health_status, detail)。detail 不含憑證，請求網址不含 userinfo。"""
+    """回 (health_status, detail)。detail 不含憑證，請求網址不含 userinfo。
+
+    DNS 與 HTTP 共用同一段牆鐘。逾時後不再讀 worker 的回傳；worker 自己不寫庫。
+    """
     url = display_base_url((row.base_url or "").strip()).rstrip("/")
     secret = credential_plaintext(row)
+    target = {
+        "url": url,
+        "secret": secret,
+        "service_key": row.service_key,
+        "protocol": row.protocol or "native",
+        "model": (row.openai_model or "whisper-1").strip() or "whisper-1",
+    }
     if not url:
         return "unhealthy", "沒有位址"
+    started = time.monotonic()
+    deadline = PROBE_DEADLINE_SECONDS
+    # 不用 with：它的 shutdown 會 wait=True，逾時之後又把 worker 等完。
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="external-service-probe")
+    future = pool.submit(_perform_probe, target, started, deadline)
     try:
-        enforce_base_url(url)
-    except UnsafeEndpointError as exc:
-        return "unhealthy", f"位址未通過出向檢查（{exc.reason}）"
+        try:
+            outcome = future.result(timeout=deadline)
+        except TimeoutError:
+            return "unhealthy", PROBE_TIMEOUT_DETAIL
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
-    headers: dict[str, str] = {}
-    try:
-        with httpx.Client(timeout=PROBE_TIMEOUT, follow_redirects=False) as client:
-            if row.service_key == SPEECH and (row.protocol or "native") == "openai":
-                if secret:
-                    headers["Authorization"] = f"Bearer {secret}"
-                files = {"file": ("silence.wav", _silence_wav(), "audio/wav")}
-                data = {
-                    "model": (row.openai_model or "whisper-1").strip() or "whisper-1",
-                    "response_format": "json",
-                }
-                response = client.post(
-                    f"{url}{_OPENAI_PATH}", headers=headers, files=files, data=data
-                )
-            else:
-                if secret:
-                    headers["X-Token"] = secret
-                response = client.get(f"{url}/health", headers=headers)
-    except Exception as exc:
+    kind, payload, finished = outcome
+    if (
+        kind == "timeout"
+        or finished - started > deadline
+        or time.monotonic() - started > deadline
+    ):
+        return "unhealthy", PROBE_TIMEOUT_DETAIL
+    if kind == "unsafe":
+        return "unhealthy", f"位址未通過出向檢查（{payload.reason}）"
+    if kind == "url_error":
+        raise payload
+    if kind == "error":
+        exc = payload
+        if isinstance(exc, (httpx.TimeoutException, TimeoutError)) and (
+            finished - started
+        ) >= deadline:
+            return "unhealthy", PROBE_TIMEOUT_DETAIL
         return "unhealthy", _scrub(f"連線失敗（{type(exc).__name__}）", secret)
 
+    response = payload
+    if 300 <= response.status_code < 400:
+        return "unhealthy", REDIRECT_DETAIL
     if response.status_code in (401, 403):
         return "unhealthy", "憑證被拒絕"
     if response.status_code == 200:
         return "healthy", ""
     return "unhealthy", _scrub(f"HTTP {response.status_code}", secret)
+
+
+def _write_health_if_current(
+    db: Session,
+    service_key: str,
+    stamp: tuple,
+    now: datetime,
+    status: str,
+    detail: str,
+) -> bool:
+    """只在 service_key、位址、updated_at 都還是探測當時的值時寫健康。"""
+    base_url, updated_at = stamp
+    matched = (
+        db.query(ExternalService)
+        .filter(
+            ExternalService.service_key == service_key,
+            ExternalService.base_url == base_url,
+            ExternalService.updated_at == updated_at,
+        )
+        .update(
+            {
+                ExternalService.health_status: status,
+                ExternalService.health_detail: detail or None,
+                ExternalService.health_checked_at: now,
+            },
+            synchronize_session=False,
+        )
+    )
+    return matched == 1
+
+
+def _probe_and_record(db: Session, row: ExternalService, now: datetime) -> None:
+    """打一列並寫回。位址或 updated_at 對不上就不寫這次結果。
+
+    呼叫端要已持有 probe flight lock。停用的列只改狀態，不送憑證。
+    條件更新本身就是檢查，不再先查再寫。
+    """
+    if not row.enabled:
+        _write_health_if_current(
+            db,
+            row.service_key,
+            _config_stamp(row.base_url, row.updated_at),
+            now,
+            "disabled",
+            "未啟用",
+        )
+        return
+    # 舊外殼改寫會弄髒這列。先提交，戳記才對得上這次真正打出去的設定。
+    credential_plaintext(row)
+    if db.dirty or db.new or db.deleted:
+        db.commit()
+        db.refresh(row)
+        if not row.enabled:
+            _write_health_if_current(
+                db,
+                row.service_key,
+                _config_stamp(row.base_url, row.updated_at),
+                now,
+                "disabled",
+                "未啟用",
+            )
+            return
+    stamp = _config_stamp(row.base_url, row.updated_at)
+    status, detail = _probe_http(row)
+    # 先結束探測前打開的交易，條件更新才看得到別的連線已提交的新位址。
+    db.commit()
+    if not _write_health_if_current(db, row.service_key, stamp, now, status, detail):
+        logger.info(
+            "external_services[%s] 探測期間設定已變更，丟棄這次結果",
+            row.service_key,
+        )
+
+
+def probe_service_now(db: Session, service_key: str) -> ExternalService:
+    """管理員按探測。與背景迴圈共用同一把鎖，避免兩次一起打上游。
+
+    不看背景的最短間隔，否則剛存檔（健康被清成 unknown）按下去仍可能
+    什麼都不打。鎖要等背景那輪放掉；寫回前若設定已變，結果作廢。
+    """
+    if service_key not in SERVICE_KEYS:
+        raise KeyError(service_key)
+    with _probe_flight:
+        now = _utcnow()
+        row = _row(db, service_key)
+        _probe_and_record(db, row, now)
+        db.commit()
+        db.refresh(row)
+        return row
 
 
 def _within_probe_interval(row: ExternalService, now: datetime) -> bool:
@@ -337,7 +507,7 @@ def _within_probe_interval(row: ExternalService, now: datetime) -> bool:
 
 
 def run_probe_cycle(db: Session) -> bool:
-    """背景探測一輪。鎖不住表示已經有一輪在跑，這次不做。
+    """背景探測一輪。鎖不住表示已經有一輪在跑（含管理員按的探測），這次不做。
 
     健康時間還在最短間隔內的列不打上游。停用的列只改狀態，不送憑證。
     """
@@ -350,15 +520,7 @@ def run_probe_cycle(db: Session) -> bool:
             row = _row(db, key)
             if _within_probe_interval(row, now):
                 continue
-            if not row.enabled:
-                row.health_status = "disabled"
-                row.health_detail = "未啟用"
-                row.health_checked_at = now
-                continue
-            status, detail = _probe_http(row)
-            row.health_status = status
-            row.health_detail = detail or None
-            row.health_checked_at = now
+            _probe_and_record(db, row, now)
         db.commit()
         return True
     finally:
@@ -549,22 +711,30 @@ def _authorize_worker_key(db: Session, service_key: str, bearer: str) -> None:
         raise ReaderDenied(403, "ingestion-worker 只能讀文件解析")
 
 
+def _run_probe_cycle_session() -> None:
+    """開 session、跑一輪、關掉。給事件迴圈用執行緒呼叫，避免堵住 ASGI。"""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        run_probe_cycle(db)
+    except Exception:
+        logger.exception("external_services: 背景探測失敗")
+    finally:
+        db.close()
+
+
 async def start_external_service_probe():
-    """週期探測。測試把 ANILA_EXTERNAL_SERVICE_PROBE=0 時不啟動。"""
+    """週期探測。測試把 ANILA_EXTERNAL_SERVICE_PROBE=0 時不啟動。
+
+    一整輪（含 session 開關與同步的 httpx）都在工作執行緒，不佔事件迴圈。
+    """
     if not probe_loop_enabled():
         return None
 
     async def _loop() -> None:
-        from app.database import SessionLocal
-
         while True:
-            db = SessionLocal()
-            try:
-                run_probe_cycle(db)
-            except Exception:
-                logger.exception("external_services: 背景探測失敗")
-            finally:
-                db.close()
+            await asyncio.to_thread(_run_probe_cycle_session)
             await asyncio.sleep(MIN_PROBE_INTERVAL_SECONDS)
 
     logger.info("external_services: 背景健康探測已啟動")

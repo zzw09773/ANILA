@@ -24,12 +24,13 @@
       </TermField>
       <!-- 這個勾選框把公告的讀者從「已登入的人」放大到「連得到登入頁的任何人」，
            所以標籤要把後果講完，不能只寫「顯示在登入頁」。 -->
-      <TermField label="同時顯示在登入頁">
+      <TermField label="登入頁與等待核准畫面都顯示">
         <label class="login-opt">
           <input type="checkbox" v-model="form.show_on_login" />
           <span>
+            登入頁與等待核准畫面都顯示。
             勾選後，這則公告的內容<strong>任何連得到登入頁的人都讀得到</strong>，
-            包含尚未擁有帳號、正在等待核准的人。這正是它的用途（讓等核准的人知道能問誰），
+            包含尚未擁有帳號、正在等待核准的人。這正是它的用途（讓還沒登入、以及等核准的人知道），
             但也表示<strong>不要在這裡放只給院內看的內容</strong>。不勾就只有登入後看得到。
           </span>
         </label>
@@ -129,9 +130,9 @@ async function toggleShowOnLogin(b) {
   // 關閉是收回權限，不用擋。
   if (!b.show_on_login) {
     const ok = await confirm({
-      title: '在登入頁公開這則公告',
+      title: '在登入頁與等待核准畫面顯示',
       message:
-        '登入頁不需要帳號就看得到。確定這則公告的內容可以讓任何連得到登入頁的人讀到嗎？',
+        '登入頁與等待核准畫面都不需要帳號就看得到。確定這則公告的內容可以讓任何連得到登入頁的人讀到嗎？',
     })
     if (!ok) return
   }

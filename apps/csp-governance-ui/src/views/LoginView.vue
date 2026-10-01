@@ -17,6 +17,15 @@
       </button>
     </header>
 
+    <div v-if="loginBanners.length" class="login__banners" role="region" aria-label="公告">
+      <p
+        v-for="(banner, index) in loginBanners"
+        :key="index"
+        class="login__banner"
+        :class="`is-${banner.level}`"
+      >{{ banner.content }}</p>
+    </div>
+
     <main id="login-main" class="login__main" tabindex="-1">
       <section class="login__panel">
         <!-- Page hero title ---------------------------------------------- -->
@@ -117,7 +126,7 @@
         </section>
 
         <!-- Secondary: 帳密 + OIDC 收合在「其他登入方式」下,降低視覺權重 --- -->
-        <details v-if="showAlternativeLogin" :open="passwordPrimary" class="login__more" :class="{ 'login__more--primary': passwordPrimary }">
+        <details v-if="showAlternativeLogin" :open="alternativeLoginOpen" class="login__more" :class="{ 'login__more--primary': passwordPrimary }">
           <summary class="login__more-summary">{{ passwordPrimary ? '帳號密碼登入' : '其他登入方式' }}</summary>
 
           <div class="login__more-body">
@@ -317,6 +326,7 @@ import {
   getLoginErrorCode,
   getLoginErrorMessage,
   loadLoginSurface,
+  shouldOpenAlternativeLogin,
   shouldRenderAlternativeLogin,
   shouldRenderSelfRegistration,
   shouldShowBreakGlassNotice,
@@ -332,7 +342,7 @@ import {
   register as registerApi,
 } from '../api/auth'
 import { listPublicBanners } from '../api/banners'
-import { approvalContactNotice } from '../utils/approvalContact'
+import { approvalContactNotice, loginPageBanners } from '../utils/approvalContact'
 import {
   CARD_COMPONENT_ORIGIN,
   CardComponentNotInstalledError,
@@ -352,9 +362,9 @@ const route = useRoute()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
-// providers 失敗／欄位缺席 → **預設隱藏**。**這條不可改成 fail-open：偵測失效時
-// fail-open 不是「功能降級」，是「靜默回歸到 F-1 原缺陷」——失效等於回歸，比失效等於
-// 不可用更難被發現。旁路是純 query 判斷不依賴偵測，owner 救援不受此預設影響。
+// providers 失敗／欄位缺席 → 預設 card-only，憑證卡仍是主角，自助註冊不出現。
+// 「其他登入方式」連結一直在，點了才展開帳密；show_alternatives=1 只是預先展開。
+// 這只是畫面。伺服器仍依 ANILA_AUTH_MODE 決定帳密登不登得進去。
 const loginAuthMode = ref(DEFAULT_LOGIN_AUTH_MODE)
 // password 模式：憑證卡區塊不畫、帳密表單直接展開（外網／無讀卡機的部署）。
 const showCardLogin = computed(() => shouldRenderCardLogin(loginAuthMode.value))
@@ -372,6 +382,9 @@ function silenceBrandVideo(event) {
 
 const showAlternativeLogin = computed(() =>
   shouldRenderAlternativeLogin(loginAuthMode.value, route.query),
+)
+const alternativeLoginOpen = computed(() =>
+  shouldOpenAlternativeLogin(loginAuthMode.value, route.query),
 )
 const showBreakGlassNotice = computed(() =>
   shouldShowBreakGlassNotice(loginAuthMode.value, route.query),
@@ -461,6 +474,7 @@ const oidcProviders = computed(() =>
 
 // 等待核准畫面的「去問誰」。沿用既有的公告橫幅，不另建設定機制。
 const publicBanners = ref([])
+const loginBanners = computed(() => loginPageBanners(publicBanners.value))
 const approvalNotice = computed(() => approvalContactNotice(publicBanners.value))
 
 async function fetchPublicBanners() {
@@ -682,6 +696,28 @@ async function handleRegister() {
   font-size: var(--t-xs);
   color: var(--c-fg-2);
 }
+.login__banners {
+  width: min(440px, 100%);
+  margin: 0 auto;
+  padding: var(--gap-3) var(--gap-4) 0;
+  display: grid;
+  gap: 8px;
+}
+.login__banner {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--c-border);
+  border-left-width: 3px;
+  border-radius: var(--radius, 6px);
+  font-size: var(--t-sm);
+  color: var(--c-fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.login__banner.is-info { border-left-color: var(--c-accent); }
+.login__banner.is-warning { border-left-color: var(--c-warn); }
+.login__banner.is-error { border-left-color: var(--c-danger); }
+.login__banner.is-success { border-left-color: var(--c-ok); }
 .login__topbar-spacer { flex: 1; }
 .login__theme {
   background: transparent;

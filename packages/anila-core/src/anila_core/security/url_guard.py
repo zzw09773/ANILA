@@ -53,6 +53,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from contextvars import ContextVar, Token
 from typing import Callable
 from urllib.parse import urlparse
@@ -422,8 +423,45 @@ def _is_private_ip(addr: str) -> bool:
     return ip.is_private
 
 
-def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) -> None:
+def _resolve_host(host: str, timeout: float | None):
+    """解析主機。沒給 timeout 就同步查，行為與以前相同。
+
+    ``getaddrinfo`` 沒有 timeout 參數。有上限時放在背景執行緒等，時間到就
+    放棄那次結果，不把逾時當成「解不出來所以放行」。
+    """
+    if timeout is None:
+        return socket.getaddrinfo(host, None)
+    if timeout <= 0:
+        raise TimeoutError("dns timeout")
+    box: dict = {}
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            box["infos"] = socket.getaddrinfo(host, None)
+        except Exception as exc:
+            box["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, name="url-guard-dns", daemon=True).start()
+    if not done.wait(timeout):
+        raise TimeoutError("dns timeout")
+    if "error" in box:
+        raise box["error"]
+    return box.get("infos") or []
+
+
+def validate_outbound_url(
+    url: str,
+    endpoint_kind: str = ENDPOINT_KIND_GENERIC,
+    *,
+    dns_timeout: float | None = None,
+) -> None:
     """Raise ``UnsafeEndpointError`` if the URL would be unsafe to POST to.
+
+    ``dns_timeout``（秒）只限制這次 DNS。沒給就維持同步解析。逾時擲出
+    ``TimeoutError``，不會當成暫時解不出來而放行。
 
     Caller is expected to translate the exception into the appropriate
     framework error (HTTPException 400 in CSP, log + skip in worker).
@@ -543,10 +581,13 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
     # stays blocked. A private answer needs the coarse private-endpoint
     # switch and this hostname on the trusted-host list.
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = _resolve_host(host, dns_timeout)
+    except TimeoutError:
+        raise
     except socket.gaierror:
         # Unresolvable — let the actual call fail. We don't want to block
         # legitimate transient DNS outages at credential-create time.
+        # A dns_timeout expiry is TimeoutError, not this branch.
         return
 
     for info in infos:

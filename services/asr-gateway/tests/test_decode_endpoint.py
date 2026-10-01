@@ -19,6 +19,7 @@ from app.decode_endpoint import (
     current_decode_url,
     decode_url_source,
     refresh_decode_endpoint,
+    refresh_interval_seconds,
     reset_decode_endpoint_cache,
 )
 from app.main import create_app
@@ -47,6 +48,13 @@ def _settings(**overrides) -> Settings:
     )
     base.update(overrides)
     return Settings(**base)
+
+
+def test_refresh_interval_seconds_rounds_the_ttl_up_to_at_least_one():
+    """PROVE RED: return 60 from refresh_interval_seconds → 45 and 0.2 fail."""
+    assert refresh_interval_seconds(_settings(ASR_DECODE_URL_TTL=60)) == 60
+    assert refresh_interval_seconds(_settings(ASR_DECODE_URL_TTL=45)) == 45
+    assert refresh_interval_seconds(_settings(ASR_DECODE_URL_TTL=0.2)) == 1
 
 
 @pytest.fixture(autouse=True)

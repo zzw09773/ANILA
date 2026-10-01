@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import {
   APPROVAL_CONTACT_FALLBACK,
   approvalContactNotice,
+  loginPageBanners,
 } from '../src/utils/approvalContact.js'
 
 function readSource(relative) {
@@ -95,6 +96,29 @@ test('保底文案指得出方向,而且不含真人姓名／信箱／內網位�
   assert.doesNotMatch(APPROVAL_CONTACT_FALLBACK, /\d+\.\d+\.\d+\.\d+/)
 })
 
+test('登入頁上方顯示每一則公開公告，空白的不顯示', () => {
+  const rows = loginPageBanners([
+    banner({ content: '  維護公告  ', level: 'warning' }),
+    banner({ content: '   ' }),
+    banner({ content: '第二則', level: 'info' }),
+    banner({ is_active: false, content: '已停用' }),
+  ])
+  assert.deepEqual(rows, [
+    { content: '維護公告', level: 'warning' },
+    { content: '第二則', level: 'info' },
+  ])
+  assert.deepEqual(loginPageBanners(null), [])
+})
+
+test('等待核准畫面仍取第一則，登入頁上方則全部顯示', () => {
+  const rows = [
+    banner({ content: '第一則' }),
+    banner({ content: '第二則' }),
+  ]
+  assert.equal(approvalContactNotice(rows).text, '第一則')
+  assert.equal(loginPageBanners(rows).length, 2)
+})
+
 // ---- 原始碼層護欄:LoginView 真的把它掛上去了 -----------------------------
 
 test('LoginView 讀**公開**的公告 API,並把訊息掛在等待核准畫面上', () => {
@@ -105,7 +129,12 @@ test('LoginView 讀**公開**的公告 API,並把訊息掛在等待核准畫面�
   assert.match(source, /listPublicBanners/)
   assert.doesNotMatch(source, /listActiveBanners/)
   assert.match(source, /approvalContactNotice/)
+  assert.match(source, /loginPageBanners/)
+  assert.match(source, /login__banners/)
   assert.match(source, /fetchPublicBanners\(\)/)
+  const bannersAt = source.indexOf('login__banners')
+  const heroAt = source.indexOf('login__hero')
+  assert.ok(bannersAt !== -1 && heroAt !== -1 && bannersAt < heroAt)
 
   // 等待核准區塊真的渲染那一行。
   assert.match(source, /\{\{ approvalNotice\.text \}\}/)
@@ -135,6 +164,7 @@ test('治理中心的勾選框把「誰讀得到」講完,而且預設不勾', (
   assert.doesNotMatch(source, /show_on_login:\s*true/)
 
   // 標籤要說出後果 —— 「顯示在登入頁」本身不會讓管理員意識到那是公開的。
+  assert.match(source, /登入頁與等待核准畫面都顯示/)
   assert.match(source, /任何連得到登入頁的人都讀得到/)
   assert.match(source, /尚未擁有帳號/)
 })

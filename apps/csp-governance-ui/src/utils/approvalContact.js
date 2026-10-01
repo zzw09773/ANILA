@@ -12,8 +12,9 @@
  *
  * 讀的是 `GET /api/banners/public`，不是 `/active`。`/active` 要 token，而這
  * 一頁的讀者**還沒有帳號** —— 那支端點對他們永遠回 401，擁有者貼了公告也只有
- * 已經進得來的人看得到。`/public` 只回管理員逐則勾過「登入頁公開」的那幾則，
- * 欄位只有 `{ level, content }`。
+ * 已經進得來的人看得到。`/public` 只回管理員逐則勾過「登入頁與等待核准畫面都顯示」
+ * 的那幾則，欄位只有 `{ level, content }`。登入頁上方顯示全部，等待核准畫面
+ * 仍取第一則。
  *
  * ⚠ 這個 repo 是公開的：保底文案不得寫入任何真人姓名、信箱或內網位址。
  *
@@ -54,4 +55,28 @@ export function approvalContactNotice(banners) {
     text: active.content.trim(),
     level: typeof active.level === 'string' && active.level ? active.level : 'info',
   }
+}
+
+function bannerLevel(level) {
+  return typeof level === 'string' && level ? level : 'info'
+}
+
+/**
+ * 登入頁上方要顯示的公開公告。後端已排除沒勾、已停用的；這裡再丟掉空白。
+ * 等待核准畫面仍用 `approvalContactNotice`（第一則），兩邊讀同一份回應。
+ *
+ * @param {Array<{content?: string, level?: string, is_active?: boolean}>|null|undefined} banners
+ * @returns {{content: string, level: string}[]}
+ */
+export function loginPageBanners(banners) {
+  const rows = Array.isArray(banners) ? banners : []
+  return rows
+    .filter(
+      (b) =>
+        b &&
+        b.is_active !== false &&
+        typeof b.content === 'string' &&
+        b.content.trim() !== '',
+    )
+    .map((b) => ({ content: b.content.trim(), level: bannerLevel(b.level) }))
 }

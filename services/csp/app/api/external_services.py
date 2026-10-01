@@ -42,8 +42,8 @@ def list_external_services(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    svc.ensure_rows(db)
-    db.commit()
+    if svc.ensure_rows(db):
+        db.commit()
     return {
         "services": [
             svc.public_view(svc._row(db, key)) for key in SERVICE_KEYS
@@ -91,10 +91,10 @@ def probe_external_service(
     db: Session = Depends(get_db),
 ):
     _known(service_key)
-    # 這一支不打上游。探測在背景工作，請求裡不送憑證。
-    svc.ensure_rows(db)
-    db.commit()
-    return svc.public_view(svc._row(db, service_key))
+    # 請求內探測並寫回。瀏覽器不送憑證。空檔逾時是 PROBE_TIMEOUT，
+    # 整段牆鐘上限是 PROBE_DEADLINE_SECONDS。
+    row = svc.probe_service_now(db, service_key)
+    return svc.public_view(row)
 
 
 @router.get("/api/external-services/speech/status")

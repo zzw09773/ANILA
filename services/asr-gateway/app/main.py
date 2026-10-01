@@ -43,6 +43,7 @@ from app.decode_endpoint import (
     decode_url_refresh_meta,
     decode_url_source,
     refresh_decode_endpoint,
+    refresh_interval_seconds,
     reset_decode_endpoint_cache,
 )
 from app.decode_probe import (
@@ -334,6 +335,8 @@ def _register_routes(app: FastAPI) -> None:
             ),
             "decode_url_last_refresh_error": meta["last_refresh_error"],
             "decode_url_last_refresh_at": meta["last_refresh_at"],
+            # 治理中心改完位址後，最慢多久會被這支行程讀到。不是密文。
+            "decode_url_refresh_interval_seconds": refresh_interval_seconds(s),
             "decoder_probe": probe,
         }
         # 沒設定語音時行程本身是好的，healthcheck 不要因此重啟。

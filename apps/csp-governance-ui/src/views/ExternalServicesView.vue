@@ -78,12 +78,17 @@
           清除已存憑證
         </label>
         <p class="health">
-          健康：{{ item.health_status }}
-          <span v-if="item.health_detail"> — {{ item.health_detail }}</span>
-          。由平台背景更新，這一頁不會把憑證送去探測。
+          探測：{{ probeResultText(item) }}。憑證留在平台上，這一頁不會把憑證送出去。
         </p>
         <div class="row-actions">
           <TermButton type="submit" variant="primary" :disabled="busy" label="儲存" />
+          <TermButton
+            variant="ghost"
+            :disabled="busy"
+            :loading="probing === item.service_key"
+            label="探測"
+            @click="probe(item)"
+          />
           <TermButton
             variant="ghost"
             :disabled="busy"
@@ -97,12 +102,20 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import client from '../api/client'
 import { extractError, privateEndpointFromError } from '../api/errors'
 import {
   listExternalServices,
+  probeExternalService,
   updateExternalService,
 } from '../api/externalServices'
+import {
+  probeResultText,
+  readAsrHealth,
+  speechSaveFollowUp,
+  watchSpeechGateway,
+} from '../utils/externalServiceStatus'
 import { useAuthStore } from '../stores/auth'
 import { PageHead, TermBox, TermButton, TermField } from '../components/cli'
 
@@ -113,6 +126,24 @@ const privateEndpointByKey = reactive({})
 const feedback = ref('')
 const feedbackTone = ref('ok')
 const busy = ref(false)
+const probing = ref('')
+let stopGatewayWatch = null
+
+function stopSpeechGatewayWatch() {
+  if (typeof stopGatewayWatch === 'function') {
+    stopGatewayWatch()
+    stopGatewayWatch = null
+  }
+}
+
+function applyService(data) {
+  if (!data?.service_key) return
+  const index = services.value.findIndex((row) => row.service_key === data.service_key)
+  if (index === -1) return
+  const next = services.value.slice()
+  next[index] = { ...next[index], ...data }
+  services.value = next
+}
 
 function titleOf(item) {
   return item.service_key === 'document_parser' ? '文件解析（Docling）' : '語音辨識'
@@ -167,11 +198,28 @@ async function save(item) {
   const body = bodyFor(item)
   busy.value = true
   feedback.value = ''
+  stopSpeechGatewayWatch()
   delete privateEndpointByKey[item.service_key]
   try {
-    await updateExternalService(item.service_key, body)
+    const { data } = await updateExternalService(item.service_key, body)
     feedbackTone.value = 'ok'
-    feedback.value = '已儲存。憑證不會顯示回來。'
+    if (item.service_key === 'speech') {
+      const follow = speechSaveFollowUp(data)
+      feedback.value = `已儲存。憑證不會顯示回來。${follow.text}`
+      if (follow.watch) {
+        stopGatewayWatch = watchSpeechGateway({
+          savedBaseUrl: data?.base_url || '',
+          enabled: data?.enabled,
+          configured: data?.configured,
+          fetchHealth: (options) => readAsrHealth(client, options),
+          onStatus(text) {
+            feedback.value = `已儲存。憑證不會顯示回來。${text}`
+          },
+        })
+      }
+    } else {
+      feedback.value = '已儲存。憑證不會顯示回來。'
+    }
     await load()
   } catch (error) {
     feedbackTone.value = 'error'
@@ -204,13 +252,34 @@ async function addTrustedHostAndRetry(item) {
   }
 }
 
+async function probe(item) {
+  busy.value = true
+  probing.value = item.service_key
+  feedback.value = ''
+  stopSpeechGatewayWatch()
+  try {
+    const { data } = await probeExternalService(item.service_key)
+    applyService(data)
+    const text = probeResultText(data)
+    feedbackTone.value = data?.health_status === 'healthy' ? 'ok' : 'error'
+    feedback.value = `探測結果：${text}`
+  } catch (error) {
+    feedbackTone.value = 'error'
+    feedback.value = extractError(error, '探測失敗')
+  } finally {
+    probing.value = ''
+    busy.value = false
+  }
+}
+
 async function reloadStatus() {
   busy.value = true
   feedback.value = ''
+  stopSpeechGatewayWatch()
   try {
     await load()
     feedbackTone.value = 'ok'
-    feedback.value = '已重新整理。畫面上是最近一次背景探測的結果。'
+    feedback.value = '已重新整理。這是目前存著的狀態；要立刻探測請按探測。'
   } catch (error) {
     feedbackTone.value = 'error'
     feedback.value = extractError(error, '讀取失敗')
@@ -225,6 +294,8 @@ onMounted(() => {
     feedback.value = extractError(error, '讀取失敗')
   })
 })
+
+onBeforeUnmount(stopSpeechGatewayWatch)
 </script>
 
 <style scoped>

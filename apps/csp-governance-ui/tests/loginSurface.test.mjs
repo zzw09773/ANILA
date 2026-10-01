@@ -12,6 +12,7 @@ import {
   getLoginErrorCode,
   getLoginAuthModeFromProviders,
   loadLoginSurface,
+  shouldOpenAlternativeLogin,
   shouldRenderSelfRegistration,
   shouldShowBreakGlassNotice,
   shouldRenderAlternativeLogin,
@@ -19,65 +20,55 @@ import {
 
 const loginView = readFileSync(new URL('../src/views/LoginView.vue', import.meta.url), 'utf8')
 
-test('card-only without the bypass does not render alternative login', () => {
-  assert.equal(
-    shouldRenderAlternativeLogin(
-      getLoginAuthModeFromProviders({ auth_mode: 'card-only', providers: [] }),
-      {},
-    ),
-    false,
-  )
+test('card-only always shows the alternative link and keeps the card primary', () => {
+  const mode = getLoginAuthModeFromProviders({ auth_mode: 'card-only', providers: [] })
+  assert.equal(shouldRenderAlternativeLogin(mode, {}), true)
+  assert.equal(shouldOpenAlternativeLogin(mode, {}), false)
   assert.match(loginView, /<details v-if="showAlternativeLogin"[^>]*class="login__more"/)
+  assert.match(loginView, /其他登入方式/)
+  assert.match(loginView, /v-if="showCardLogin"/)
   assert.match(loginView, /<TermModal v-if="showSelfRegistration" :visible="showRegisterModal"/)
 })
 
-test('card-only with the explicit bypass renders alternative login', () => {
-  assert.equal(
-    shouldRenderAlternativeLogin(
-      getLoginAuthModeFromProviders({ auth_mode: 'card-only', providers: [] }),
-      { [LOGIN_ALTERNATIVES_QUERY]: LOGIN_ALTERNATIVES_QUERY_VALUE },
-    ),
-    true,
-  )
+test('card-only with the explicit bypass pre-opens alternative login', () => {
+  const mode = getLoginAuthModeFromProviders({ auth_mode: 'card-only', providers: [] })
+  const query = { [LOGIN_ALTERNATIVES_QUERY]: LOGIN_ALTERNATIVES_QUERY_VALUE }
+  assert.equal(shouldRenderAlternativeLogin(mode, query), true)
+  assert.equal(shouldOpenAlternativeLogin(mode, query), true)
 })
 
 test('non-card-only modes keep rendering alternative login', () => {
-  assert.equal(
-    shouldRenderAlternativeLogin(
-      getLoginAuthModeFromProviders({ auth_mode: 'password', providers: [] }),
-      {},
-    ),
-    true,
-  )
-  assert.equal(
-    shouldRenderAlternativeLogin(
-      getLoginAuthModeFromProviders({ auth_mode: 'mixed', providers: [] }),
-      {},
-    ),
-    true,
-  )
+  const password = getLoginAuthModeFromProviders({ auth_mode: 'password', providers: [] })
+  const mixed = getLoginAuthModeFromProviders({ auth_mode: 'mixed', providers: [] })
+  assert.equal(shouldRenderAlternativeLogin(password, {}), true)
+  assert.equal(shouldOpenAlternativeLogin(password, {}), true)
+  assert.equal(shouldRenderAlternativeLogin(mixed, {}), true)
+  assert.equal(shouldOpenAlternativeLogin(mixed, {}), false)
 })
 
-test('missing auth_mode fails closed but the bypass still renders the block', () => {
+test('missing auth_mode still shows the link; the query only pre-opens it', () => {
   const missingSignal = getLoginAuthModeFromProviders({ providers: [] })
   assert.equal(missingSignal, DEFAULT_LOGIN_AUTH_MODE)
-  assert.equal(shouldRenderAlternativeLogin(missingSignal, {}), false)
+  assert.equal(shouldRenderAlternativeLogin(missingSignal, {}), true)
+  assert.equal(shouldOpenAlternativeLogin(missingSignal, {}), false)
   assert.equal(
-    shouldRenderAlternativeLogin(missingSignal, {
+    shouldOpenAlternativeLogin(missingSignal, {
       [LOGIN_ALTERNATIVES_QUERY]: LOGIN_ALTERNATIVES_QUERY_VALUE,
     }),
     true,
   )
+  assert.equal(shouldRenderSelfRegistration(missingSignal), false)
 })
 
-test('a failed providers request fails closed but the bypass remains independent', async () => {
+test('a failed providers request still shows the link and does not pre-open it', async () => {
   const failedRequest = await loadLoginSurface(async () => {
     throw new Error('providers unavailable')
   })
   assert.equal(failedRequest.authMode, DEFAULT_LOGIN_AUTH_MODE)
-  assert.equal(shouldRenderAlternativeLogin(failedRequest.authMode, {}), false)
+  assert.equal(shouldRenderAlternativeLogin(failedRequest.authMode, {}), true)
+  assert.equal(shouldOpenAlternativeLogin(failedRequest.authMode, {}), false)
   assert.equal(
-    shouldRenderAlternativeLogin(failedRequest.authMode, {
+    shouldOpenAlternativeLogin(failedRequest.authMode, {
       [LOGIN_ALTERNATIVES_QUERY]: LOGIN_ALTERNATIVES_QUERY_VALUE,
     }),
     true,
@@ -140,11 +131,16 @@ test('pending approval branch uses the stable code even when backend wording cha
   assert.doesNotMatch(loginView, /detail\.(?:includes|toLowerCase)/)
 })
 
-test('without the query parameter card-only keeps the original hidden alternative branch', () => {
-  assert.equal(shouldShowBreakGlassNotice('card-only', {}), false)
+test('card-only without the query still offers the link, closed, with the owner notice inside', () => {
+  assert.equal(shouldShowBreakGlassNotice('card-only', {}), true)
+  assert.equal(shouldShowBreakGlassNotice('password'), false)
   assert.equal(shouldRenderSelfRegistration('card-only'), false)
-  assert.equal(shouldRenderAlternativeLogin('card-only', {}), false)
-  assert.match(loginView, /<details v-if="showAlternativeLogin"[^>]*class="login__more"/)
+  assert.equal(shouldRenderAlternativeLogin('card-only', {}), true)
+  assert.equal(shouldOpenAlternativeLogin('card-only', {}), false)
+  assert.match(loginView, /<details v-if="showAlternativeLogin"[^>]*:open="alternativeLoginOpen"/)
+  const surface = readFileSync(new URL('../src/utils/loginSurface.js', import.meta.url), 'utf8')
+  assert.match(surface, /POST \/api\/auth\/login/)
+  assert.match(surface, /不會改那條伺服器規則/)
 })
 
 // 2026-09-02：這台要給外網用、走帳密登入。password 模式下登入頁不能再以
@@ -171,7 +167,8 @@ test('mixed / card-only：憑證卡區塊照畫、副標照舊', () => {
 test('LoginView 把三個判斷接上了（v-if 憑證卡區塊、details 預設展開、副標綁定）', () => {
   const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../src/views/LoginView.vue'), 'utf8')
   assert.match(src, /v-if="showCardLogin"/u)
-  assert.match(src, /:open="passwordPrimary"/u)
+  assert.match(src, /:open="alternativeLoginOpen"/u)
+  assert.match(src, /shouldOpenAlternativeLogin/u)
   assert.match(src, /\{\{ heroSubtitle \}\}/u)
   assert.match(src, /passwordPrimary \? '帳號密碼登入' : '其他登入方式'/u)
 })

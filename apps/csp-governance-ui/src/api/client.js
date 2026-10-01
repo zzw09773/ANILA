@@ -89,6 +89,9 @@ client.interceptors.response.use(
         // previous route while /me/refresh fails. Check the browser URL too so
         // this fallback does not replace /login?show_alternatives=1 with a
         // bare /login before the login route receives its query.
+        // The query only pre-opens「其他登入方式」. The link is visible without
+        // it. Keeping the query does not authorize password login; card-only
+        // still accepts only the owner on POST /api/auth/login.
         if (router.currentRoute.value?.path !== '/login'
           && window.location.pathname !== '/login') {
           router.push('/login')
