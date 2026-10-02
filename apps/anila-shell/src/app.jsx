@@ -189,6 +189,7 @@ import {
   IconLock,
   IconMoon,
   IconNodes,
+  IconBook,
   IconSettings,
   IconShare,
   IconShield,
@@ -5268,7 +5269,7 @@ function SettingsModal({
             { id: "general", label: "一般",       icon: <IconSettings size={13} /> },
             { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
             { id: "memory",  label: "記憶",        icon: <IconHistory  size={13} /> },
-            { id: "skills",  label: "我的 skill",  icon: <IconNodes    size={13} /> },
+            { id: "skills",  label: "我的 skill",  icon: <IconBook     size={13} /> },
             { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
             { id: "about",   label: "關於",        icon: <AnilaLogoImg variant="mark" height={13} /> },
           ].map((t) => (

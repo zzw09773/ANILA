@@ -2489,6 +2489,19 @@ export const Composer = ({
     setSelectedSkill(next);
   };
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  // 點旁邊或按 Esc 就收起 skill 清單，跟預設提示詞選單一樣。
+  useEffect(() => {
+    if (!skillMenuOpen) return undefined;
+    const close = () => setSkillMenuOpen(false);
+    const onKey = (event) => { if (event.key === "Escape") close(); };
+    const t = setTimeout(() => document.addEventListener("click", close), 0);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [skillMenuOpen]);
   const [skillIdx, setSkillIdx] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
   const taRef = useRef(null);
@@ -2862,7 +2875,7 @@ export const Composer = ({
     if (slash === null) return [];
     return filterSkills(skills, slash);
   }, [skillMenuOpen, skills, slash]);
-  const skillMenuVisible = (skillMenuOpen || slash !== null) && skillChoices.length > 0;
+  const skillMenuVisible = skillMenuOpen || (slash !== null && skillChoices.length > 0);
 
   useEffect(() => {
     setSkillIdx(0);
@@ -3607,22 +3620,14 @@ export const Composer = ({
         {/* Per-agent preset prompts(開發者在 CSP 設計):點開清單,選一個填入輸入框。
             只有當前 agent 有設定預設提示詞時才顯示。 */}
         <span style={{ position: "relative", display: "inline-flex" }}>
-          <button
-            type="button"
+          <IconButton
+            title="套用 skill（也可以在輸入框打 /）"
             aria-label="skill"
-            onClick={(e) => { e.stopPropagation(); setSkillMenuOpen((open) => !open); }}
-            style={{
-              padding: "4px 8px",
-              fontSize: 12,
-              background: skillMenuOpen ? "var(--bg-subtle)" : "transparent",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              cursor: "pointer",
-              color: "var(--fg)",
-            }}
+            active={skillMenuOpen || Boolean(selectedSkill)}
+            onClick={(e) => { e?.stopPropagation?.(); setSkillMenuOpen((open) => !open); }}
           >
-            skill
-          </button>
+            <IconBook />
+          </IconButton>
           {skillMenuVisible && (
             <div
               role="listbox"
@@ -3633,15 +3638,25 @@ export const Composer = ({
                 bottom: "calc(100% + 6px)",
                 left: 0,
                 zIndex: 80,
-                width: 280,
-                maxHeight: 240,
+                width: 300,
+                maxHeight: 280,
                 overflowY: "auto",
                 background: "var(--bg-elev)",
                 border: "1px solid var(--border)",
-                borderRadius: 8,
+                borderRadius: "var(--radius)",
+                boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
                 padding: 4,
               }}
             >
+              <div style={{
+                padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
+                fontFamily: "var(--font-mono)", letterSpacing: 0.4,
+              }}>skill · 只套用在這一則</div>
+              {skillChoices.length === 0 ? (
+                <div style={{ padding: "8px", fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.6 }}>
+                  還沒有可用的 skill。到「設定 → 我的 skill」新增。
+                </div>
+              ) : null}
               {skillChoices.map((skill, index) => (
                 <button
                   key={skill.id}
@@ -3656,6 +3671,7 @@ export const Composer = ({
                     padding: "6px 8px",
                     background: index === skillIdx ? "var(--bg-subtle)" : "transparent",
                     border: "none",
+                    borderRadius: 4,
                     cursor: "pointer",
                     color: "var(--fg)",
                   }}

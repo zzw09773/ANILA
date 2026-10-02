@@ -257,6 +257,7 @@ describe("直接發布", () => {
         <SkillManager authRequest={authRequest} user={{ id: 2, department_id: 3 }} />
       </ConfirmProvider>,
     );
+    fireEvent.click(await screen.findByRole("button", { name: "新增 skill" }));
     const select = await screen.findByLabelText("直接發布到…");
     expect(screen.getByRole("option", { name: "東區" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "東區一組" })).toBeTruthy();
@@ -281,6 +282,7 @@ describe("直接發布", () => {
         <SkillManager authRequest={authRequest} user={{ id: 1, role: "admin" }} />
       </ConfirmProvider>,
     );
+    fireEvent.click(await screen.findByRole("button", { name: "新增 skill" }));
     const select = await screen.findByLabelText("直接發布到…");
     expect(screen.getByRole("option", { name: "全院" })).toBeTruthy();
     fireEvent.change(select, { target: { value: "campus" } });
@@ -303,6 +305,7 @@ describe("直接發布", () => {
       </ConfirmProvider>,
     );
     await screen.findByText("還沒有 skill。");
+    fireEvent.click(screen.getByRole("button", { name: "新增 skill" }));
     expect(screen.queryByLabelText("直接發布到…")).toBeNull();
   });
 
@@ -322,6 +325,7 @@ describe("直接發布", () => {
       </ConfirmProvider>,
     );
     await screen.findByText("還沒有 skill。");
+    fireEvent.click(screen.getByRole("button", { name: "新增 skill" }));
     expect(screen.queryByLabelText("直接發布到…")).toBeNull();
     const select = await screen.findByLabelText("送審到單位");
     expect(screen.getByRole("option", { name: "東區" })).toBeTruthy();
@@ -447,5 +451,20 @@ describe("比較模式套用 skill", () => {
     for (const mark of marks) {
       expect(mark.textContent).toContain("套用：週報");
     }
+  });
+});
+
+describe("skill 清單收合", () => {
+  it("按 Esc 或點旁邊會收起清單", async () => {
+    renderComposer();
+    fireEvent.click(screen.getByRole("button", { name: "skill" }));
+    expect(await screen.findByTestId("skill-picker")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("skill-picker")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "skill" }));
+    expect(await screen.findByTestId("skill-picker")).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 5));
+    fireEvent.click(document.body);
+    await waitFor(() => expect(screen.queryByTestId("skill-picker")).toBeNull());
   });
 });
