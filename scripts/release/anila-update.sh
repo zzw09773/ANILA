@@ -285,11 +285,70 @@ _guard_update_spec() {
   return 0
 }
 
+# 超過一天的交接暫存清掉。還在跑的那次不會留這麼久。
+# 只刪 .handoff 這一層的實體目錄，不跟符號連結，也不會掃到 versions/、current、state。
+_sweep_stale_handoff_stages() {
+  local base="$1" d now mtime
+  [[ -d "$base" && ! -L "$base" ]] || return 0
+  now="$(date +%s)"
+  shopt -s nullglob
+  for d in "$base"/anila-runner.*; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    mtime="$(stat -c %Y -- "$d" 2>/dev/null || true)"
+    [[ "$mtime" =~ ^[0-9]+$ ]] || continue
+    if (( now - mtime > 86400 )); then
+      rm -rf -- "$d" || true
+    fi
+  done
+  shopt -u nullglob
+}
+
+# 壓縮檔的交接暫存在安裝根目錄的 .handoff，不放 ${TMPDIR:-/tmp}。
+# 新程式要落在安裝根目錄裡，否則專案 anila 的防護會把它當成工作樹。
+# 目錄以點開頭，不在 versions/、current、state 底下，掃描不會把它當成版本目錄。
+# 安裝根目錄本身不是 git 工作樹時，這裡也不是。成功時印出路徑。
+_prepare_handoff_base() {
+  local root base
+  _source_release_lib
+  root="$(install_root)"
+  if [[ ! -d "$root" || ! -w "$root" || ! -x "$root" ]]; then
+    printf '安裝根目錄不存在或不可寫（%s），無法在裡面解開出貨包來交接，拒絕更新。\n' "$root" >&2
+    return 1
+  fi
+  base="$root/.handoff"
+  if [[ -L "$base" || ( -e "$base" && ! -d "$base" ) ]]; then
+    printf '安裝根目錄裡的 .handoff 不能用來解開出貨包，拒絕更新。\n' >&2
+    return 1
+  fi
+  if ! mkdir -p -- "$base"; then
+    printf '無法在安裝根目錄建立交接暫存（%s），拒絕更新。\n' "$base" >&2
+    return 1
+  fi
+  if [[ -L "$base" || ! -d "$base" ]]; then
+    printf '安裝根目錄裡的 .handoff 不能用來解開出貨包，拒絕更新。\n' >&2
+    return 1
+  fi
+  if ! chmod 700 "$base"; then
+    printf '無法把交接暫存設成只有擁有者能進，拒絕更新。\n' >&2
+    return 1
+  fi
+  # 正式機用 sudo。不是 root 時維持目前的擁有者（測試）。
+  if [[ "$(id -u)" -eq 0 ]]; then
+    chown root:root "$base" || true
+  fi
+  if [[ ! -w "$base" || ! -x "$base" ]]; then
+    printf '交接暫存不可寫（%s），拒絕更新。\n' "$base" >&2
+    return 1
+  fi
+  _sweep_stale_handoff_stages "$base"
+  printf '%s\n' "$base"
+}
+
 # 已安裝的舊更新程式核對完整個出貨包後，把工作交給新出貨包裡那一支。
 # 信任根是操作者事先對過的出貨包 tar.gz SHA256，這裡不另做簽章。
 # ANILA_RUNNER_HANDOFF 不能單獨跳過；正在跑的腳本必須就是這包的更新程式。
 _handoff_to_bundle_runner() {
-  local spec="${1:-}" dir="" stage="" runner self target ver nonce tar_sha rc
+  local spec="${1:-}" dir="" stage="" runner self target ver nonce tar_sha rc base=""
   case "$spec" in
     ""|rollback|adopt|help|-h|--help) return 0 ;;
   esac
@@ -327,8 +386,10 @@ _handoff_to_bundle_runner() {
   if [[ -d "$spec" ]]; then
     dir="$spec"
   elif [[ -f "$spec" ]]; then
-    # mktemp -d 是 0700。用 sudo 跑時擁有者是 root。不用 $HOME：排程裡它可能沒設。
-    stage="$(mktemp -d "${TMPDIR:-/tmp}/anila-runner.XXXXXX")"
+    # 解在安裝根目錄的 .handoff，不放 ${TMPDIR:-/tmp}，也不用 $HOME（排程裡可能沒設）。
+    # mktemp -d 是 0700。安裝根目錄不可寫就停下，不改解到別處。
+    base="$(_prepare_handoff_base)" || return 1
+    stage="$(mktemp -d "${base}/anila-runner.XXXXXX")"
     chmod 700 "$stage"
     mkdir -m 700 "$stage/tree"
     if ! tar -xzf "$spec" -C "$stage/tree"; then

@@ -3309,6 +3309,12 @@ _cleanup_test_runner_extracts() {
     rm -rf -- "$d"
   done
   shopt -u nullglob
+  if [[ -n "${tmp:-}" && -d "$tmp" ]]; then
+    while IFS= read -r d; do
+      [[ -n "$d" ]] || continue
+      rm -rf -- "$d"
+    done < <(find "$tmp" -type d -name 'anila-runner.*' 2>/dev/null || true)
+  fi
 }
 
 _write_stub_runner() {
@@ -3371,6 +3377,8 @@ test_old_runner_hands_off() {
   }
   rm -f "$marker"
   tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  # 壓縮檔要解進安裝根目錄。目錄交接不需要這個目錄先在。
+  mkdir -p "$tmp/handoff-missing-root"
   if ! env \
       ANILA_INSTALL_ROOT="$tmp/handoff-missing-root" \
       COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
@@ -3447,9 +3455,11 @@ test_runner_handoff_does_not_recurse() {
     return 1
   }
   tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  # 壓縮檔要有可寫的安裝根目錄才交得出去。新程式接著做破壞性檢查，根目錄沒有記錄就停。
+  mkdir -p "$tmp/recurse-ready-root"
   set +e
   env \
-    ANILA_INSTALL_ROOT="$tmp/recurse-missing-root" \
+    ANILA_INSTALL_ROOT="$tmp/recurse-ready-root" \
     COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
     DOCKER_LOG="$tmp/recurse-docker.log" \
     timeout 20 bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"
@@ -3467,7 +3477,7 @@ test_runner_handoff_does_not_recurse() {
     cat "$out" >&2
     return 1
   }
-  grep -q '下面的目錄不存在或不可寫' "$err" || {
+  grep -q '安裝根目錄不是 /opt/anila，也不是初次安裝記錄的路徑，不能停服務或動資料庫。' "$err" || {
     _cleanup_test_runner_extracts
     echo "新程式沒有接著做安裝檢查" >&2
     cat "$err" >&2
@@ -3774,14 +3784,16 @@ EOS
 }
 
 test_handoff_extract_without_home() {
-  local bundle tar marker ver td out err script mode stage home_seen
+  local bundle tar marker ver td out err script mode stage home_seen root root_phys git_seen base_mode
   _cleanup_test_runner_extracts
   ver="2026.10.01-26"
   bundle="$tmp/nohome-bundle"
   tar="$tmp/anila-${ver}.tar.gz"
   marker="$tmp/nohome-marker"
   td="$tmp/nohome-tmp"
-  mkdir -p "$bundle" "$td"
+  root="$tmp/nohome-root"
+  mkdir -p "$bundle" "$td" "$root"
+  root_phys="$(cd "$root" && pwd -P)"
   cat > "$bundle/anila-update.sh" <<EOF
 #!/usr/bin/env bash
 {
@@ -3797,6 +3809,11 @@ test_handoff_extract_without_home() {
     d="\$(dirname -- "\$d")"
   done
   printf 'home=%s\n' "\${HOME-unset}"
+  if git -C "\$(dirname -- "\$(realpath -- "\$0")")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'git=yes\n'
+  else
+    printf 'git=no\n'
+  fi
 } > $(printf '%q' "$marker")
 exit 0
 EOF
@@ -3807,7 +3824,7 @@ EOF
   : > "$tmp/nohome-docker.log"
   if ! env -u HOME \
       TMPDIR="$td" \
-      ANILA_INSTALL_ROOT="$tmp/nohome-missing" \
+      ANILA_INSTALL_ROOT="$root" \
       COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
       DOCKER_LOG="$tmp/nohome-docker.log" \
       bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
@@ -3821,25 +3838,49 @@ EOF
   stage="$(sed -n 's/^stage=//p' "$marker")"
   mode="$(sed -n 's/^mode=//p' "$marker")"
   home_seen="$(sed -n 's/^home=//p' "$marker")"
-  [[ "$script" == "$td"/* ]] || {
-    echo "解壓不在 TMPDIR：${script:-空白}" >&2
+  git_seen="$(sed -n 's/^git=//p' "$marker")"
+  [[ "$script" == "$root_phys"/.handoff/anila-runner.*/* ]] || {
+    echo "解壓不在安裝根目錄的 .handoff：${script:-空白}" >&2
+    return 1
+  }
+  [[ "$script" != "$td"/* ]] || { echo "解壓仍在 TMPDIR：${script}" >&2; return 1; }
+  [[ "$script" != */versions/* && "$script" != */current/* && "$script" != */state/* ]] || {
+    echo "交接暫存被放進版本、current 或 state：${script}" >&2
+    return 1
+  }
+  [[ "$stage" == "$root_phys"/.handoff/anila-runner.* ]] || {
+    echo "解壓目錄不是 .handoff 底下的 anila-runner：${stage:-空白}" >&2
     return 1
   }
   [[ "$mode" == "700" ]] || { echo "解壓目錄權限是 ${mode:-沒有}" >&2; return 1; }
   [[ "$home_seen" == "unset" ]] || { echo "子行程仍看得到 HOME" >&2; return 1; }
+  [[ "$git_seen" == "no" ]] || { echo "交接暫存被看成 git 工作樹" >&2; return 1; }
   [[ ! -d "$stage" ]] || { echo "父行程沒有清掉自己建立的解壓目錄" >&2; return 1; }
+  [[ -d "$root/.handoff" ]] || { echo "交接用的 .handoff 沒有留下" >&2; return 1; }
+  base_mode="$(stat -c %a "$root/.handoff")"
+  [[ "$base_mode" == "700" ]] || { echo ".handoff 權限是 ${base_mode}" >&2; return 1; }
+  [[ ! -d "$root/versions" && ! -e "$root/current" && ! -d "$root/state" ]] || {
+    echo "交接建立了版本目錄、current 或 state" >&2
+    return 1
+  }
+  if find "$td" -maxdepth 1 -type d -name 'anila-runner.*' | grep -q .; then
+    echo "TMPDIR 裡還有交接暫存" >&2
+    return 1
+  fi
   _cleanup_test_runner_extracts
 }
 
 test_interrupted_handoff_cleans_stage() {
-  local bundle tar marker ver td out err stage rc
+  local bundle tar marker ver td out err stage rc root root_phys
   _cleanup_test_runner_extracts
   ver="2026.10.01-27"
   bundle="$tmp/sigterm-bundle"
   tar="$tmp/anila-${ver}.tar.gz"
   marker="$tmp/sigterm-marker"
   td="$tmp/sigterm-tmp"
-  mkdir -p "$bundle" "$td"
+  root="$tmp/sigterm-root"
+  mkdir -p "$bundle" "$td" "$root"
+  root_phys="$(cd "$root" && pwd -P)"
   # 新程式記下自己所在的解壓目錄，然後對父行程送 TERM（模擬更新途中被中斷）。
   cat > "$bundle/anila-update.sh" <<EOF
 #!/usr/bin/env bash
@@ -3856,7 +3897,7 @@ EOF
   : > "$tmp/sigterm-docker.log"
   set +e
   env TMPDIR="$td" \
-      ANILA_INSTALL_ROOT="$tmp/sigterm-missing" \
+      ANILA_INSTALL_ROOT="$root" \
       COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
       DOCKER_LOG="$tmp/sigterm-docker.log" \
       bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"
@@ -3864,9 +3905,210 @@ EOF
   set -e
   [[ -f "$marker" ]] || { echo "新程式沒跑" >&2; cat "$err" >&2; return 1; }
   stage="$(sed -n 's/^stage=//p' "$marker")"
-  [[ "$stage" == "$td"/anila-runner.* ]] || { echo "找不到解壓目錄：${stage:-空白}" >&2; return 1; }
+  [[ "$stage" == "$root_phys"/.handoff/anila-runner.* ]] || {
+    echo "找不到解壓目錄：${stage:-空白}" >&2
+    return 1
+  }
+  [[ "$stage" != "$td"/* ]] || { echo "解壓仍在 TMPDIR：${stage}" >&2; return 1; }
   [[ "$rc" -ne 0 ]] || { echo "被 TERM 中斷卻回傳 0" >&2; return 1; }
   [[ ! -d "$stage" ]] || { echo "被中斷後解壓目錄沒有清掉" >&2; _cleanup_test_runner_extracts; return 1; }
+  _cleanup_test_runner_extracts
+}
+
+# 專案 anila、安裝根目錄可寫、而且根目錄不在 git 工作樹裡時，
+# 壓縮檔交出去的新程式要通過 assert_destructive_allowed。
+# 解在 /tmp 時腳本不在安裝根目錄裡，這一項會被當成工作樹拒絕。
+test_tar_handoff_passes_destructive_guard() {
+  local root bundle tar marker ver anchor out err script git_seen base_mode root_phys
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-28"
+  root="$tmp/guard-root"
+  bundle="$tmp/guard-bundle"
+  tar="$tmp/anila-${ver}.tar.gz"
+  marker="$tmp/guard-marker"
+  anchor="$tmp/guard-anchor"
+  out="$tmp/guard.out"
+  err="$tmp/guard.err"
+  mkdir -p "$root" "$bundle"
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "測試安裝根目錄在 git 工作樹裡" >&2
+    return 1
+  fi
+  root_phys="$(cd "$root" && pwd -P)"
+  printf 'install_root=%s\ncompose_project=anila\n' "$root_phys" > "$anchor"
+  chmod 600 "$anchor"
+  cat > "$bundle/anila-update.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+here="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=release-lib.sh
+source "\$here/release-lib.sh"
+_install_anchor_file() { printf '%s\n' $(printf '%q' "$anchor"); }
+assert_destructive_allowed
+{
+  printf 'ok=1\n'
+  printf 'script=%s\n' "\$(realpath -- "\$0")"
+  if git -C "\$here" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'git=yes\n'
+  else
+    printf 'git=no\n'
+  fi
+} > $(printf '%q' "$marker")
+exit 0
+EOF
+  chmod +x "$bundle/anila-update.sh"
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  : > "$tmp/guard-docker.log"
+  if ! env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME=anila \
+      DOCKER_LOG="$tmp/guard-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    _cleanup_test_runner_extracts
+    echo "tar.gz 交接後新程式沒有通過破壞性操作檢查" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ -f "$marker" ]] || { echo "新程式沒跑" >&2; cat "$err" >&2; return 1; }
+  grep -qx 'ok=1' "$marker" || { echo "沒有通過 assert_destructive_allowed" >&2; cat "$marker" >&2; return 1; }
+  script="$(sed -n 's/^script=//p' "$marker")"
+  git_seen="$(sed -n 's/^git=//p' "$marker")"
+  [[ "$script" == "$root_phys"/.handoff/anila-runner.*/* ]] || {
+    echo "新程式不在安裝根目錄的 .handoff：${script:-空白}" >&2
+    return 1
+  }
+  [[ "$script" != */versions/* && "$script" != */current/* && "$script" != */state/* ]] || {
+    echo "交接暫存被放進版本、current 或 state：${script}" >&2
+    return 1
+  }
+  [[ "$script" != */scripts/release/* ]] || {
+    echo "新程式仍在原始碼的 scripts/release：${script}" >&2
+    return 1
+  }
+  [[ "$git_seen" == "no" ]] || { echo "交接暫存被看成 git 工作樹" >&2; return 1; }
+  [[ ! -d "$root/versions" && ! -e "$root/current" && ! -d "$root/state" ]] || {
+    echo "交接建立了版本目錄、current 或 state" >&2
+    return 1
+  }
+  base_mode="$(stat -c %a "$root/.handoff")"
+  [[ "$base_mode" == "700" ]] || { echo ".handoff 權限是 ${base_mode}" >&2; return 1; }
+  if find "$root/.handoff" -mindepth 1 -maxdepth 1 -type d -name 'anila-runner.*' | grep -q .; then
+    echo "成功後交接暫存沒有清掉" >&2
+    return 1
+  fi
+  [[ ! -s "$tmp/guard-docker.log" ]] || {
+    echo "通過檢查之前就呼叫了 docker" >&2
+    cat "$tmp/guard-docker.log" >&2
+    return 1
+  }
+  grep -F 'chown root:root "$base"' "$ROOT/scripts/release/anila-update.sh" >/dev/null || {
+    echo "root 執行時沒有把 .handoff 交給 root" >&2
+    return 1
+  }
+  _cleanup_test_runner_extracts
+}
+
+# 安裝根目錄不可寫就拒絕，不改解到 TMPDIR。超過一天的 anila-runner 在開始時清掉，較新的留下。
+test_handoff_refuses_unwritable_and_sweeps_stale_stages() {
+  local root bundle tar marker ver td out err ready fresh stale locked blocked
+  _cleanup_test_runner_extracts
+  ver="2026.10.01-29"
+  bundle="$tmp/stale-bundle"
+  tar="$tmp/anila-${ver}.tar.gz"
+  marker="$tmp/stale-marker"
+  td="$tmp/stale-tmp"
+  ready="$tmp/stale-root"
+  locked="$tmp/stale-locked"
+  blocked="$tmp/stale-blocked"
+  mkdir -p "$bundle" "$td" "$ready/.handoff" "$locked" "$blocked"
+  stale="$ready/.handoff/anila-runner.stale"
+  fresh="$ready/.handoff/anila-runner.fresh"
+  mkdir -p "$stale" "$fresh"
+  printf 'old\n' > "$stale/keep"
+  printf 'new\n' > "$fresh/keep"
+  touch -d '2 days ago' "$stale"
+  _write_stub_runner "$bundle" "$marker"
+  release_seal_manifest "$bundle" "$ver" "abc123"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  out="$tmp/stale.out"
+  err="$tmp/stale.err"
+  : > "$tmp/stale-docker.log"
+  if env \
+      TMPDIR="$td" \
+      ANILA_INSTALL_ROOT="$tmp/stale-missing" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/stale-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    echo "安裝根目錄不存在仍交接" >&2
+    return 1
+  fi
+  grep -F '安裝根目錄不存在或不可寫' "$err" >/dev/null || {
+    echo "沒有說明安裝根目錄不可寫" >&2
+    cat "$err" >&2
+    return 1
+  }
+  [[ ! -e "$marker" ]] || { echo "根目錄不可寫仍執行了新程式" >&2; return 1; }
+  if find "$td" -maxdepth 1 -type d -name 'anila-runner.*' | grep -q .; then
+    echo "根目錄不可寫時改解到 TMPDIR" >&2
+    return 1
+  fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    chmod a-w "$locked"
+    if env \
+        TMPDIR="$td" \
+        ANILA_INSTALL_ROOT="$locked" \
+        COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+        DOCKER_LOG="$tmp/stale-docker.log" \
+        bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+      chmod u+w "$locked"
+      echo "安裝根目錄不可寫仍交接" >&2
+      return 1
+    fi
+    chmod u+w "$locked"
+    grep -F '安裝根目錄不存在或不可寫' "$err" >/dev/null || {
+      echo "不可寫的根目錄沒有拒絕" >&2
+      cat "$err" >&2
+      return 1
+    }
+  fi
+  printf 'x\n' > "$blocked/.handoff"
+  if env \
+      ANILA_INSTALL_ROOT="$blocked" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/stale-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    echo ".handoff 是檔案仍交接" >&2
+    return 1
+  fi
+  grep -F '.handoff 不能用來解開出貨包' "$err" >/dev/null || {
+    echo "沒有拒絕不是目錄的 .handoff" >&2
+    cat "$err" >&2
+    return 1
+  }
+  rm -f "$marker"
+  if ! env \
+      TMPDIR="$td" \
+      ANILA_INSTALL_ROOT="$ready" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/stale-docker.log" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    echo "可寫的安裝根目錄交接失敗" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  [[ -f "$marker" ]] || { echo "可寫時新程式沒跑" >&2; cat "$err" >&2; return 1; }
+  [[ ! -e "$stale" ]] || { echo "超過一天的交接暫存沒有清掉" >&2; return 1; }
+  [[ -f "$fresh/keep" ]] || { echo "不到一天的交接暫存被清掉" >&2; return 1; }
+  if find "$ready/.handoff" -mindepth 1 -maxdepth 1 -type d -name 'anila-runner.*' ! -name 'anila-runner.fresh' | grep -q .; then
+    echo "這次的交接暫存沒有清掉" >&2
+    return 1
+  fi
+  if find "$td" -maxdepth 1 -type d -name 'anila-runner.*' | grep -q .; then
+    echo "仍解到 TMPDIR" >&2
+    return 1
+  fi
   _cleanup_test_runner_extracts
 }
 
@@ -4084,6 +4326,8 @@ check "不會刪掉環境變數給的解壓路徑" test_cleanup_ignores_caller_e
 check "交接用 bash 執行，noexec 也能跑" test_handoff_runs_runner_with_bash
 check "沒有 HOME 時仍能解開出貨包" test_handoff_extract_without_home
 check "交接途中被中斷也清掉解壓目錄" test_interrupted_handoff_cleans_stage
+check "壓縮檔交接通過專案 anila 的破壞性檢查" test_tar_handoff_passes_destructive_guard
+check "根目錄不可寫就拒絕，並清掉超過一天的交接暫存" test_handoff_refuses_unwritable_and_sweeps_stale_stages
 check "HTTPS 埠不能跟其他 ANILA 埠相同" test_https_port_rejects_other_anila_ports
 check "ss 被截斷時不會把佔用埠看成空的" test_port_is_listening_survives_sigpipe
 check "密鑰不出現在 xtrace" test_generated_secrets_absent_from_xtrace
@@ -4345,6 +4589,11 @@ test_handoff_refuses_older_before_runner_and_new_runner_checks() {
   if find "$root" -maxdepth 1 -type d -name 'incoming.*' | grep -q .; then
     _cleanup_test_runner_extracts
     echo "拒絕之前就把壓縮檔解進安裝根目錄" >&2
+    return 1
+  fi
+  if find "$root/.handoff" -mindepth 1 -maxdepth 1 -type d -name 'anila-runner.*' 2>/dev/null | grep -q .; then
+    _cleanup_test_runner_extracts
+    echo "拒絕之後交接暫存還在" >&2
     return 1
   fi
   _cleanup_test_runner_extracts
