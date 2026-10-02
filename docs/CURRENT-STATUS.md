@@ -19,6 +19,7 @@
 - 分支：`main`（單一開發線；舊七分支模型已進 `docs/archive/agents-seven-branch-model.md`，不要再切 `prod-intranet-card` 那種線）
 - 專案權威：`PLAN.md`（現況與順序）、`SYSTEM-MAP.md`（規格）
 - `CLAUDE.md` **不存在**。環境事實看本頁與 `PLAN.md`，不要去找那份檔。
+- 接手擔任總指揮的 AI 主 session（例如 GPT）先讀 `docs/agents/ORCHESTRATOR-PLAYBOOK.md`：派工、驗證、跨家族審查、合併、發布演練的實際流程與踩過的坑。
 
 ## 容量（2026-09-28）
 
