@@ -4714,6 +4714,442 @@ test_preflight_prints_version_order() {
   }
 }
 
+# 正式寫入目標版本之前就拒絕時，operations.log 仍要記下清單上的版本。
+# 目錄名與 tar 檔名故意用別的版本，確認不是從檔名猜的。雜湊不符不能因為讀到版本就放行。
+test_early_reject_logs_peeked_bundle_version() {
+  local root bundle tar log err before link name
+  root="$tmp/peek-ver-root"
+  log="$tmp/peek-ver.log"
+  err="$tmp/peek-ver.err"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  use_version_tree "$root" "2026.09.29-2" >/dev/null
+  before="$(cat "$root/state/release.state")"
+  link="$(readlink "$root/current")"
+
+  name="anila-2099.01.01-7"
+  bundle="$tmp/$name"
+  rm -rf "$bundle"
+  make_min_bundle "$bundle" "2026.10.03-4"
+  printf 'x\n' >> "$bundle/manifest.txt"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/peek-ver-dir.out" 2>"$err"; then
+    echo "清單不符的目錄包仍更新成功" >&2
+    return 1
+  fi
+  grep -q $'update\t2026.09.29-2\t2026.10.03-4\tfailure' "$root/state/operations.log" || {
+    echo "目錄包早期拒絕沒記下清單版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '2099.01.01-7' "$root/state/operations.log"; then
+    echo "目錄包用檔名當成目標版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "目錄包拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "目錄包拒絕時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "目錄包拒絕時改了目前指標" >&2; return 1; }
+  [[ ! -d "$root/versions/2026.10.03-4" ]] || { echo "未核對的目錄包建立了版本目錄" >&2; return 1; }
+
+  rm -f "$root/state/operations.log"
+  bundle="$tmp/peek-tar-src"
+  rm -rf "$bundle"
+  make_min_bundle "$bundle" "2026.10.03-5"
+  printf 'x\n' >> "$bundle/manifest.txt"
+  name="anila-1999.12.31-9"
+  tar="$tmp/${name}.tar.gz"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  : > "$log"
+  if ( trap - EXIT; cmd_update "$tar" ) >"$tmp/peek-ver-tar.out" 2>"$err"; then
+    echo "清單不符的壓縮檔仍更新成功" >&2
+    return 1
+  fi
+  grep -q $'update\t2026.09.29-2\t2026.10.03-5\tfailure' "$root/state/operations.log" || {
+    echo "壓縮檔早期拒絕沒記下清單版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '1999.12.31-9' "$root/state/operations.log"; then
+    echo "壓縮檔用檔名當成目標版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "壓縮檔拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "壓縮檔拒絕時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "壓縮檔拒絕時改了目前指標" >&2; return 1; }
+  [[ ! -d "$root/versions/2026.10.03-5" ]] || { echo "未核對的壓縮檔建立了版本目錄" >&2; return 1; }
+
+  # 還沒有安裝版本：from 維持 none。位置不對就停，不能因為讀到版本就繼續。
+  root="$tmp/peek-first-root"
+  mkdir -p "$root/state"
+  printf 'current=none\n' > "$root/state/release.state"
+  export ANILA_INSTALL_ROOT="$root"
+  export COMPOSE_PROJECT_NAME=anila
+  bundle="$tmp/anila-2099.02.02-3"
+  rm -rf "$bundle"
+  make_min_bundle "$bundle" "2026.10.03-6"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/peek-first.out" 2>"$err"; then
+    echo "第一次安裝位置不對仍繼續" >&2
+    return 1
+  fi
+  grep -q '/opt/anila' "$err" || {
+    echo "不是第一次安裝的位置拒絕" >&2
+    cat "$err" >&2
+    return 1
+  }
+  grep -q $'update\tnone\t2026.10.03-6\tfailure' "$root/state/operations.log" || {
+    echo "第一次安裝早期拒絕沒保持 from=none 或沒記下版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '2099.02.02-3' "$root/state/operations.log"; then
+    echo "第一次安裝用檔名當成目標版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "第一次安裝拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(grep '^current=' "$root/state/release.state")" == "current=none" ]] || {
+    echo "第一次安裝拒絕時改了安裝指標" >&2
+    cat "$root/state/release.state" >&2
+    return 1
+  }
+  [[ ! -d "$root/versions" ]] || { echo "第一次安裝拒絕時建立了版本目錄" >&2; return 1; }
+}
+
+# 清單不在、壓縮檔讀不到、或清單沒有版本行：目標欄記「未讀到版本」，不改記成 none，也不用檔名。
+test_early_reject_logs_unread_version() {
+  local root bundle tar log err before link
+  root="$tmp/unread-ver-root"
+  log="$tmp/unread-ver.log"
+  err="$tmp/unread-ver.err"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  use_version_tree "$root" "2026.09.29-2" >/dev/null
+  before="$(cat "$root/state/release.state")"
+  link="$(readlink "$root/current")"
+
+  bundle="$tmp/anila-2099.03.03-1"
+  rm -rf "$bundle"
+  mkdir -p "$bundle"
+  printf 'name: anila\n' > "$bundle/compose.yaml"
+  : > "$log"
+  export DOCKER_LOG="$log"
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/unread-dir.out" 2>"$err"; then
+    echo "沒有清單的目錄包仍更新成功" >&2
+    return 1
+  fi
+  grep -q $'update\t2026.09.29-2\t未讀到版本\tfailure' "$root/state/operations.log" || {
+    echo "讀不到版本時沒有記成未讀到版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '2099.03.03-1' "$root/state/operations.log"; then
+    echo "讀不到版本時改用檔名" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  if grep -q $'update\t2026.09.29-2\tnone\tfailure' "$root/state/operations.log"; then
+    echo "讀不到版本時目標仍是 none" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "讀不到版本時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "讀不到版本時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "讀不到版本時改了目前指標" >&2; return 1; }
+
+  rm -f "$root/state/operations.log"
+  tar="$tmp/anila-2099.03.03-2.tar.gz"
+  printf 'not-a-bundle\n' > "$tar"
+  : > "$log"
+  if ( trap - EXIT; cmd_update "$tar" ) >"$tmp/unread-tar.out" 2>"$err"; then
+    echo "壞掉的壓縮檔仍更新成功" >&2
+    return 1
+  fi
+  grep -q $'update\t2026.09.29-2\t未讀到版本\tfailure' "$root/state/operations.log" || {
+    echo "壓縮檔讀不到版本時沒有記成未讀到版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '2099.03.03-2' "$root/state/operations.log"; then
+    echo "壞掉的壓縮檔用檔名當成版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "壞掉的壓縮檔拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "壞掉的壓縮檔改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "壞掉的壓縮檔改了目前指標" >&2; return 1; }
+
+  rm -f "$root/state/operations.log"
+  bundle="$tmp/anila-2099.03.03-3"
+  rm -rf "$bundle"
+  mkdir -p "$bundle"
+  printf 'ANILA-MANIFEST 1\ncommit abc\n' > "$bundle/manifest.txt"
+  : > "$log"
+  if ( trap - EXIT; cmd_update "$bundle" ) >"$tmp/unread-nover.out" 2>"$err"; then
+    echo "沒有版本行的目錄包仍更新成功" >&2
+    return 1
+  fi
+  grep -q $'update\t2026.09.29-2\t未讀到版本\tfailure' "$root/state/operations.log" || {
+    echo "沒有版本行時沒有記成未讀到版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '2099.03.03-3' "$root/state/operations.log"; then
+    echo "沒有版本行時改用檔名" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "沒有版本行時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "沒有版本行時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "沒有版本行時改了目前指標" >&2; return 1; }
+}
+
+# 壓縮檔裡巢狀 manifest.txt 排在前面，出貨根的 manifest.txt + manifest.sha256 在後面。
+# 失敗紀錄的目標必須是更新器會選的那一對（出貨根），不能是巢狀檔的版本。
+# 直接呼叫 cmd_update：入口的清單檢查在 cmd_update 之前就結束，那種拒絕本來不寫 operations.log。
+test_early_reject_logs_tar_root_pair_not_nested_manifest() {
+  local root bundle tar log err before link first
+  root="$tmp/nested-ver-root"
+  log="$tmp/nested-ver.log"
+  err="$tmp/nested-ver.err"
+  mkdir -p "$root"
+  arm_test_install "$root"
+  use_version_tree "$root" "2026.09.29-2" >/dev/null
+  before="$(cat "$root/state/release.state")"
+  link="$(readlink "$root/current")"
+
+  bundle="$tmp/nested-ver-src"
+  rm -rf "$bundle"
+  make_min_bundle "$bundle" "2026.10.03-7"
+  mkdir -p "$bundle/nested"
+  printf 'ANILA-MANIFEST 1\nversion 1999.01.01-1\ncommit nested\n' > "$bundle/nested/manifest.txt"
+  # 清單雜湊對不上才會在改安裝之前停下。版本行仍是出貨根的 2026.10.03-7。
+  printf 'x\n' >> "$bundle/manifest.txt"
+  tar="$tmp/anila-2099.04.04-8.tar.gz"
+  tar -C "$bundle" -czf "$tar" \
+    nested/manifest.txt \
+    manifest.txt \
+    manifest.sha256
+  first="$(tar -tzf "$tar" | sed 's|^\./||' | awk '/(^|\/)manifest\.txt$/ { print; exit }')"
+  [[ "$first" == "nested/manifest.txt" ]] || {
+    echo "測試壓縮檔沒有把巢狀清單放在第一個 manifest.txt：${first:-空}" >&2
+    return 1
+  }
+  : > "$log"
+  export DOCKER_LOG="$log"
+  if ( trap - EXIT; cmd_update "$tar" ) >"$tmp/nested-ver.out" 2>"$err"; then
+    echo "巢狀清單的壓縮檔仍更新成功" >&2
+    return 1
+  fi
+  grep -q $'update\t2026.09.29-2\t2026.10.03-7\tfailure' "$root/state/operations.log" || {
+    echo "早期拒絕沒記下出貨根版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  if grep -q '1999.01.01-1' "$root/state/operations.log"; then
+    echo "把巢狀 manifest 的版本當成目標" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  if grep -q '2099.04.04-8' "$root/state/operations.log"; then
+    echo "用壓縮檔檔名當成目標版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "拒絕時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "拒絕時改了目前指標" >&2; return 1; }
+  [[ ! -d "$root/versions/2026.10.03-7" && ! -d "$root/versions/1999.01.01-1" ]] || {
+    echo "拒絕時建立了版本目錄" >&2
+    return 1
+  }
+}
+
+# 正式入口是 bash anila-update.sh <包>。清單核對正確，包裡是目前的更新程式與 release-lib。
+# 安裝根目錄已存在。專案 anila、腳本落在工作樹（目錄包在根目錄外；壓縮檔交接進根目錄的
+# .handoff，根目錄本身在這棵 git 工作樹裡）時被拒絕，仍要記下出貨版本。
+# 缺清單或壞掉的壓縮檔不走這條：入口檢查在 cmd_update 之前失敗，本來就沒有 operations.log。
+test_cli_worktree_reject_logs_shipping_version() {
+  local root bundle tar log err before link ver out
+  root="$(mktemp -d "$ROOT/.anila-f29-cli-install.XXXXXX")"
+  log="$tmp/cli-ver.log"
+  err="$tmp/cli-ver.err"
+  out="$tmp/cli-ver.out"
+  trap 'rm -rf -- "$root"' RETURN
+  if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "隔離安裝根目錄不在 git 工作樹裡，壓縮檔交接後不會被工作樹防護拒絕" >&2
+    return 1
+  fi
+  forge_live_project_state "$root"
+  use_version_tree "$root" "2026.09.29-2" >/dev/null
+  before="$(cat "$root/state/release.state")"
+  link="$(readlink "$root/current")"
+
+  ver="2026.10.03-8"
+  bundle="$tmp/anila-2099.05.05-2"
+  rm -rf "$bundle"
+  mkdir -p "$bundle"
+  cp "$ROOT/scripts/release/anila-update.sh" "$bundle/anila-update.sh"
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  chmod +x "$bundle/anila-update.sh"
+  make_min_bundle "$bundle" "$ver"
+  : > "$log"
+  unset ANILA_RUNNER_EXTRACT ANILA_RUNNER_NONCE ANILA_RUNNER_HANDOFF || true
+  if env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME=anila \
+      DOCKER_LOG="$log" \
+      PATH="$STUB_BIN:$PATH" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$bundle" >"$out" 2>"$err"; then
+    echo "目錄包在工作樹裡仍更新成功" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '工作樹' "$err" || {
+    echo "目錄包不是被工作樹防護拒絕" >&2
+    cat "$err" >&2
+    return 1
+  }
+  grep -q $'update\t2026.09.29-2\t2026.10.03-8\tfailure' "$root/state/operations.log" || {
+    echo "正式入口的目錄包沒記下出貨版本" >&2
+    cat "$root/state/operations.log" >&2
+    cat "$err" >&2
+    return 1
+  }
+  if grep -q '2099.05.05-2' "$root/state/operations.log"; then
+    echo "目錄包用檔名當成目標版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "目錄包拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "目錄包拒絕時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "目錄包拒絕時改了目前指標" >&2; return 1; }
+  [[ ! -e /opt/anila ]] || { echo "目錄包拒絕時動到了 /opt/anila" >&2; return 1; }
+
+  rm -f "$root/state/operations.log"
+  ver="2026.10.03-9"
+  bundle="$tmp/cli-tar-src"
+  rm -rf "$bundle"
+  mkdir -p "$bundle"
+  cp "$ROOT/scripts/release/anila-update.sh" "$bundle/anila-update.sh"
+  cp "$ROOT/scripts/release/release-lib.sh" "$bundle/release-lib.sh"
+  chmod +x "$bundle/anila-update.sh"
+  make_min_bundle "$bundle" "$ver"
+  tar="$tmp/anila-2099.05.05-3.tar.gz"
+  tar -C "$(dirname "$bundle")" -czf "$tar" "$(basename "$bundle")"
+  : > "$log"
+  unset ANILA_RUNNER_EXTRACT ANILA_RUNNER_NONCE ANILA_RUNNER_HANDOFF || true
+  if env \
+      ANILA_INSTALL_ROOT="$root" \
+      COMPOSE_PROJECT_NAME=anila \
+      DOCKER_LOG="$log" \
+      PATH="$STUB_BIN:$PATH" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>"$err"; then
+    echo "壓縮檔在工作樹裡仍更新成功" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '工作樹' "$err" || {
+    echo "壓縮檔不是被工作樹防護拒絕" >&2
+    cat "$err" >&2
+    return 1
+  }
+  grep -q $'update\t2026.09.29-2\t2026.10.03-9\tfailure' "$root/state/operations.log" || {
+    echo "正式入口的壓縮檔沒記下出貨版本" >&2
+    cat "$root/state/operations.log" >&2
+    cat "$err" >&2
+    return 1
+  }
+  if grep -q '2099.05.05-3' "$root/state/operations.log"; then
+    echo "壓縮檔用檔名當成目標版本" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  fi
+  [[ ! -s "$log" ]] || { echo "壓縮檔拒絕時呼叫了 docker" >&2; cat "$log" >&2; return 1; }
+  [[ "$(cat "$root/state/release.state")" == "$before" ]] || {
+    echo "壓縮檔拒絕時改了安裝記錄" >&2
+    return 1
+  }
+  [[ "$(readlink "$root/current")" == "$link" ]] || { echo "壓縮檔拒絕時改了目前指標" >&2; return 1; }
+  [[ ! -d "$root/versions/2026.10.03-9" ]] || { echo "壓縮檔拒絕時建立了版本目錄" >&2; return 1; }
+  [[ ! -e /opt/anila ]] || { echo "壓縮檔拒絕時動到了 /opt/anila" >&2; return 1; }
+  rm -rf -- "$root"
+}
+
+# EXIT 還沒核對版本時，operations.log 可以用 _ops_log_to，資料庫稽核的 to 仍是 _ops_to。
+# write_db_audit 只記參數。不呼叫 psql、真資料庫或 Docker。
+test_early_log_fallback_does_not_change_db_audit() {
+  local root args rc got
+  root="$tmp/early-audit-root"
+  args="$tmp/early-audit-db-args"
+  rm -rf -- "$root"
+  mkdir -p "$root"
+  : > "$args"
+  arm_test_install "$root"
+  _anila_owner_pid="$BASHPID"
+  _anila_prev_exit_quoted=""
+  _anila_lock_fd=""
+  _anila_runner_extract_owned=""
+  _update_failure_restart=0
+  _failure_handled=0
+  _ops_db_ready=1
+  _ops_to=none
+  _ops_log_to=2026.10.03-10
+  _ops_action=update
+  _ops_from=none
+  _ops_done=0
+  _ops_tree=stub-tree
+  ANILA_TEST_AUDIT_ARGS="$args"
+  write_db_audit() {
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$ANILA_TEST_AUDIT_ARGS"
+    return 0
+  }
+  dc() { printf 'dc 不該被呼叫\n' >&2; return 97; }
+  set +e
+  (exit 17)
+  _anila_exit
+  rc=$?
+  set -e
+  [[ "$rc" -eq 17 ]] || { printf 'EXIT 沒有保留失敗狀態 rc=%s\n' "$rc" >&2; return 1; }
+  grep -q $'\tupdate\tnone\t2026.10.03-10\tfailure' "$root/state/operations.log" || {
+    printf 'operations.log 目標不是 2026.10.03-10\n' >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  [[ -s "$args" ]] || { printf '沒有呼叫 write_db_audit\n' >&2; return 1; }
+  got="$(awk -F '\t' 'NR==1 { print $4 }' "$args")"
+  [[ "$got" == "none" ]] || {
+    printf 'write_db_audit 的 to 是 %s，應維持 none\n' "$got" >&2
+    cat "$args" >&2
+    return 1
+  }
+}
+
 check "目錄要可寫也要能進入" test_install_dir_requires_execute
 check "接續註記只看同一種操作的失敗" test_resume_note_matches_action
 check "版本先比日期再把序號當數字" test_version_compare_orders_date_then_numeric_suffix
@@ -4721,6 +5157,11 @@ check "同一版與較舊的出貨包在改安裝之前拒絕" test_update_refus
 check "環境變數允許重裝同一版或裝較舊的出貨包" test_version_order_env_overrides_allow_reinstall_and_downgrade
 check "交接前與新出貨包的更新程式都拒絕較舊版本" test_handoff_refuses_older_before_runner_and_new_runner_checks
 check "預檢印出出貨包與已安裝版本的先後" test_preflight_prints_version_order
+check "早期拒絕記下出貨包版本而不是檔名" test_early_reject_logs_peeked_bundle_version
+check "讀不到版本時記成未讀到版本" test_early_reject_logs_unread_version
+check "巢狀清單排在前面時仍記下出貨根版本" test_early_reject_logs_tar_root_pair_not_nested_manifest
+check "正式入口在工作樹拒絕時記下出貨版本" test_cli_worktree_reject_logs_shipping_version
+check "早期失敗的 operations.log 用出貨版本，資料庫稽核的 to 仍是 none" test_early_log_fallback_does_not_change_db_audit
 
 if [[ "$_fail_count" -ne 0 ]]; then
   printf '%s 項失敗\n' "$_fail_count" >&2

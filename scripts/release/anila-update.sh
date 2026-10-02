@@ -512,6 +512,8 @@ _anila_prev_exit_quoted=""
 _ops_action=""
 _ops_from=""
 _ops_to=""
+# 只給 operations.log。還沒核對的版本不能寫進 _ops_to，那份變數會放行 compose 目錄。
+_ops_log_to=""
 _ops_tree=""
 _ops_done=1
 _ops_db_ready=0
@@ -585,12 +587,13 @@ acquire_install_lock() {
 }
 
 _anila_exit() {
-  local status=$? prev
+  local status=$? prev log_to
   [[ "$BASHPID" == "${_anila_owner_pid:-}" ]] || return "$status"
   if [[ "$status" -ne 0 && "${_update_failure_restart:-0}" == 1 && "${_failure_handled:-0}" == 0 ]]; then
     handle_update_failure || true
   elif [[ "${_ops_done:-1}" == 0 ]]; then
-    append_operations_log "${_ops_action:-update}" "${_ops_from:-none}" "${_ops_to:-none}" failure || true
+    log_to="$(_ops_to_for_log)"
+    append_operations_log "${_ops_action:-update}" "${_ops_from:-none}" "$log_to" failure || true
     _ops_done=1
     if [[ "${_ops_db_ready:-0}" == 1 && -n "${_ops_tree:-}" ]]; then
       write_db_audit "$_ops_tree" "${_ops_action:-update}" "${_ops_from:-none}" "${_ops_to:-none}" failure || true
@@ -618,6 +621,71 @@ _arm_exit() {
     _anila_prev_exit_quoted="$body"
   fi
   trap _anila_exit EXIT
+}
+
+# 只給 operations.log 讀壓縮檔版本。選取規則與 _pick_bundle_manifest_pair 相同：
+# 同一目錄的 manifest.txt 與 manifest.sha256，取最淺那一對。
+# 沒有配對、或同一層有多對，就當沒讀到，不用清單裡的第一個 manifest.txt。
+# 只把選中的 manifest.txt 讀到 stdout。成員名稱放在 -- 之後，不解到磁碟，也不讀其他成員。
+_peek_tar_pair_version_for_log() {
+  local spec="$1" tmp pair_out rc txt ver=""
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/anila-log-ver.XXXXXX")" || return 0
+  chmod 700 "$tmp" || { rm -rf -- "$tmp"; return 0; }
+  if ! tar -tzf "$spec" > "$tmp/list" 2>/dev/null; then
+    rm -rf -- "$tmp"
+    return 0
+  fi
+  set +e
+  pair_out="$(_pick_bundle_manifest_pair "$tmp/list" 2>/dev/null)"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    rm -rf -- "$tmp"
+    return 0
+  fi
+  txt="$(printf '%s\n' "$pair_out" | awk 'NR==1 { print; exit }')"
+  if [[ -z "$txt" ]] || ! _safe_member_path "$txt"; then
+    rm -rf -- "$tmp"
+    return 0
+  fi
+  ver="$(tar -xOzf "$spec" -- "$txt" 2>/dev/null | awk '$1=="version" { print $2; exit }' || true)"
+  rm -rf -- "$tmp"
+  printf '%s' "$ver"
+  return 0
+}
+
+# 清單核對之前先看版本，只為了失敗紀錄。空的、或不是 YYYY.MM.DD-N，記成「未讀到版本」。
+# 不寫進 _ops_to，也不拿來比較先後或放行更新。
+# 目錄只讀該目錄自己的 manifest.txt。壓縮檔只讀更新器會選的那一對，巢狀 manifest 不算。
+_note_bundle_version_for_log() {
+  local spec="$1" ver=""
+  if [[ -d "$spec" ]]; then
+    if [[ -f "$spec/manifest.txt" ]]; then
+      ver="$(awk '$1=="version" { print $2; exit }' "$spec/manifest.txt" 2>/dev/null || true)"
+    fi
+  elif [[ -f "$spec" ]]; then
+    ver="$(_peek_tar_pair_version_for_log "$spec" 2>/dev/null || true)"
+  fi
+  ver="${ver//$'\r'/}"
+  ver="${ver//$'\n'/}"
+  if [[ "$ver" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+$ ]]; then
+    _ops_log_to="$ver"
+  else
+    _ops_log_to="未讀到版本"
+  fi
+}
+
+# 已經正式讀到的目標優先。更新還沒讀到時才用上面那筆；回復與認領維持 none。
+_ops_to_for_log() {
+  if [[ -n "${_ops_to:-}" && "${_ops_to}" != none ]]; then
+    printf '%s' "$_ops_to"
+    return 0
+  fi
+  if [[ "${_ops_action:-}" == update && -n "${_ops_log_to:-}" ]]; then
+    printf '%s' "$_ops_log_to"
+    return 0
+  fi
+  printf '%s' none
 }
 
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila}"
@@ -2121,6 +2189,7 @@ cmd_update() {
   _ops_action=update
   _ops_from=none
   _ops_to=none
+  _ops_log_to=""
   _ops_done=0
   _ops_db_ready=0
   _ops_tree=""
@@ -2132,6 +2201,7 @@ cmd_update() {
   _fail_before=""
   _fail_dump=""
   _arm_exit
+  _note_bundle_version_for_log "$spec"
   root="$(install_root)"
   old="$(state_get current || true)"
   _ops_from="${old:-none}"
@@ -2273,6 +2343,7 @@ cmd_rollback() {
   _ops_action=rollback
   _ops_from=none
   _ops_to=none
+  _ops_log_to=""
   _ops_done=0
   _ops_db_ready=0
   _ops_tree=""
@@ -2361,6 +2432,7 @@ cmd_adopt() {
   _ops_action=adopt
   _ops_from=none
   _ops_to=none
+  _ops_log_to=""
   _ops_done=0
   _ops_db_ready=0
   _ops_tree=""

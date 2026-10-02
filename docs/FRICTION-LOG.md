@@ -210,3 +210,22 @@
 發生：從 `tar -tzf` 讀出的成員名稱原樣放進 `tar -x… "$成員"`。資料夾若取名為 `--to-command=…` 之類，tar 會把它當成選項解析；實測舊程式出現「只允許一個 --to-command 選項」，代表名稱確實被當成參數。能不能進一步執行指令取決於 tar 版本與選項，但不該把出貨包內容當參數。由 GPT 接手時發現（2026-10-02）。
 反直覺：出貨包的信任是在核對之後才成立，核對本身卻先用了出貨包裡的名字。
 建議：✅ 已改（14301231）：路徑每一段只接受英數、點、底線、連字號且不能以 - 開頭，不合規的成員直接忽略；從出貨包讀出的成員名稱一律放在 `--` 之後交給 tar。測試 `test_tar_member_names_cannot_inject_options` 在舊程式上失敗。
+
+## 2026-10-02　更新被擋下時目標版本記成 none
+
+**F-29　更新還沒正式讀到版本就被拒絕時，operations.log 的目標欄是 none**
+在哪：`anila-update.sh` 寫入 `operations.log` 的更新失敗紀錄。正式讀取並設定目標版本之前就拒絕的時候（清單不符、讀不到出貨包、第一次安裝位置不對）。
+發生：目標欄記成 none。出貨包清單裡其實有版本，或根本讀不到版本，紀錄都長得一樣。檔名即使像 `anila-2099.01.01-7`，也不該拿來補這個欄。
+反直覺：人是拿這一包去更新才被擋下來的，紀錄卻寫成沒有目標版本，事後分不出是哪一包。
+建議：✅ 已改（commit 待補）：拒絕前記下清單上的版本，只給 operations.log 用；讀不到或格式不對就記「未讀到版本」。未核對的版本不寫進會放行 compose 目錄的目標變數，也不拿來比較先後。目錄包與 tar.gz 都不看檔名。`from=none` 的第一次安裝，以及 rollback、adopt 的 none，維持原樣。
+
+修正輪：壓縮檔的失敗紀錄不再用 `release_peek_bundle_version` 的「第一個 manifest.txt」。`_note_bundle_version_for_log` 對壓縮檔改走 `_peek_tar_pair_version_for_log`，選取規則與更新器的 `_pick_bundle_manifest_pair` 相同：列出 tar 成員，只取同一目錄、最淺的 manifest.txt 與 manifest.sha256 那一對，再讀那份 manifest.txt 的版本。巢狀 manifest 即使排在前面，也不當成出貨版本。沒有配對，或同一層有多對、無法判定，記「未讀到版本」。成員名稱仍放在 `--` 之後，路徑規則不放寬，不解壓其他檔，候選版本不寫進 `_ops_to`。目錄包仍只讀該目錄自己的 manifest.txt。這只改寫進 operations.log 的路徑，沒有整理共用的 `release_peek_bundle_version`。
+
+既有邊界沒有改。不是每一種命令列早期拒絕都會留下 operations.log：
+
+- 入口的清單與 SHA256 檢查若在 source 與 `cmd_update` 之前就失敗，原本就不會寫 operations.log。這次只修原本會留下紀錄、目標卻記成 none 或記到巢狀清單的那條。
+- 安裝根目錄不存在時，原本就刻意不為了寫紀錄而建立 `/opt/anila`。維持。
+
+測試 `test_early_reject_logs_peeked_bundle_version`、`test_early_reject_logs_unread_version` 在初版舊程式上失敗。`test_early_reject_logs_tar_root_pair_not_nested_manifest` 在把第一個 manifest.txt 當成出貨版本的程式上失敗。`test_cli_worktree_reject_logs_shipping_version` 走正式入口 `bash anila-update.sh <包>`。
+
+日誌專用的版本 fallback 不傳入資料庫稽核，稽核仍使用原本的目標值。測試 `test_early_log_fallback_does_not_change_db_audit` 用 shell 函式替身，確認 operations.log 記出貨版本、稽核目標維持 none，且 EXIT 保留失敗狀態；修正前會失敗。
