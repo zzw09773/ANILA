@@ -9,6 +9,7 @@ _CONF = Path(__file__).resolve().parents[3] / "infra" / "nginx" / "anila.conf"
 _LONG_PATHS = (
     "/api/thinking/summarize",
     "/api/agents/system-prompt/suggest",
+    "/api/skills/assist",
     "/api/institutional-kb/preview",
     "/api/ingestion/collections/12/search",
     "/api/ingestion/collections/+12/search",

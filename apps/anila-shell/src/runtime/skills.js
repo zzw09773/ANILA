@@ -78,3 +78,11 @@ export function submitSkill(authRequest, id, body) {
 export function listPublishTargets(authRequest) {
   return authRequest("/api/skills/publish-targets");
 }
+
+export function assistSkill(authRequest, body, signal) {
+  return authRequest("/api/skills/assist", {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
+}

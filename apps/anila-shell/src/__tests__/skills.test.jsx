@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 
 import { Composer, MessageBubble } from "../chat.jsx";
 import { AppliedSkillIndicator, SkillManager } from "../skills.jsx";
@@ -466,5 +466,146 @@ describe("skill 清單收合", () => {
     await new Promise((r) => setTimeout(r, 5));
     fireEvent.click(document.body);
     await waitFor(() => expect(screen.queryByTestId("skill-picker")).toBeNull());
+  });
+});
+
+function assistApi(onAssist) {
+  return vi.fn(async (url, init) => {
+    const path = String(url);
+    if (path.includes("/api/skills/publish-targets")) {
+      return { campus: false, units: [], submit_units: [] };
+    }
+    if (path.includes("/api/skills/assist")) return onAssist(init);
+    return { skills: [] };
+  });
+}
+
+describe("AI 協助撰寫", () => {
+  const drafted = {
+    name: "週報整理",
+    description: "把一週工作整理成三段週報時使用。",
+    body: "1. 總結\n2. 分三段\n範例：本週完成三項。",
+    notes: ["填入你單位的格式"],
+  };
+
+  it("空白表單按幫我寫會填上三欄並顯示檢查清單", async () => {
+    const calls = [];
+    const authRequest = assistApi(async (init) => {
+      calls.push(JSON.parse(init.body));
+      return drafted;
+    });
+    render(
+      <ConfirmProvider>
+        <SkillManager authRequest={authRequest} user={{ id: 9, department_id: 3 }} />
+      </ConfirmProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "新增 skill" }));
+    fireEvent.change(screen.getByLabelText("想讓 skill 做什麼？"), { target: { value: "整理週報" } });
+    fireEvent.click(screen.getByRole("button", { name: "幫我寫" }));
+    await waitFor(() => expect(screen.getByLabelText("skill 名稱").value).toBe("週報整理"));
+    expect(screen.getByLabelText("skill 用途").value).toBe(drafted.description);
+    expect(screen.getByLabelText("skill 內容").value).toBe(drafted.body);
+    expect(screen.getByTestId("skill-assist-notes").textContent).toContain("填入你單位的格式");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls).toEqual([{
+      goal: "整理週報",
+      name: "",
+      description: "",
+      body: "",
+      mode: "create",
+    }]);
+    expect(screen.getByRole("button", { name: "幫我改寫" })).toBeTruthy();
+  });
+
+  it("已有內容時先確認才覆蓋，沒填目標就沿用用途說明", async () => {
+    const calls = [];
+    const authRequest = assistApi(async (init) => {
+      calls.push(JSON.parse(init.body));
+      return drafted;
+    });
+    render(
+      <ConfirmProvider>
+        <SkillManager authRequest={authRequest} user={{ id: 9, department_id: 3 }} />
+      </ConfirmProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "新增 skill" }));
+    fireEvent.change(screen.getByLabelText("skill 名稱"), { target: { value: "舊名稱" } });
+    fireEvent.change(screen.getByLabelText("skill 用途"), { target: { value: "舊的用途說明" } });
+    fireEvent.change(screen.getByLabelText("skill 內容"), { target: { value: "舊內容" } });
+    fireEvent.click(screen.getByRole("button", { name: "幫我改寫" }));
+    const dialog = await screen.findByRole("dialog", { name: "覆蓋目前的內容？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await act(async () => {});
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByLabelText("skill 名稱").value).toBe("舊名稱");
+    expect(calls).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "幫我改寫" }));
+    const again = await screen.findByRole("dialog", { name: "覆蓋目前的內容？" });
+    fireEvent.click(within(again).getByRole("button", { name: "覆蓋" }));
+    await waitFor(() => expect(screen.getByLabelText("skill 名稱").value).toBe("週報整理"));
+    expect(screen.getByLabelText("skill 內容").value).toBe(drafted.body);
+    expect(calls[0]).toMatchObject({
+      goal: "舊的用途說明",
+      name: "舊名稱",
+      description: "舊的用途說明",
+      body: "舊內容",
+      mode: "improve",
+    });
+  });
+
+  it("失敗時用 toast 顯示額度原文", async () => {
+    const quota = "已達使用者每日 token 上限（1），將於 2026-10-02 00:00（台北時間）重置。";
+    const authRequest = assistApi(async () => {
+      throw new Error(quota);
+    });
+    render(
+      <ConfirmProvider>
+        <SkillManager authRequest={authRequest} user={{ id: 9, department_id: 3 }} />
+      </ConfirmProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "新增 skill" }));
+    fireEvent.change(screen.getByLabelText("想讓 skill 做什麼？"), { target: { value: "整理週報" } });
+    fireEvent.click(screen.getByRole("button", { name: "幫我寫" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(quota);
+    expect(screen.getByLabelText("skill 名稱").value).toBe("");
+    expect(screen.getByRole("button", { name: "幫我寫" })).toBeEnabled();
+  });
+
+  it("關閉編輯器會中止尚未完成的協助撰寫", async () => {
+    const seen = {};
+    const authRequest = assistApi((init) => new Promise((resolve, reject) => {
+      seen.signal = init.signal;
+      const fail = () => reject(new DOMException("aborted", "AbortError"));
+      if (init.signal.aborted) {
+        fail();
+        return;
+      }
+      init.signal.addEventListener("abort", fail, { once: true });
+      seen.resolve = () => resolve({
+        name: "不該寫入",
+        description: "不該寫入",
+        body: "不該寫入",
+        notes: ["不該出現"],
+      });
+    }));
+    render(
+      <ConfirmProvider>
+        <SkillManager authRequest={authRequest} user={{ id: 9, department_id: 3 }} />
+      </ConfirmProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "新增 skill" }));
+    fireEvent.change(screen.getByLabelText("想讓 skill 做什麼？"), { target: { value: "整理週報" } });
+    fireEvent.click(screen.getByRole("button", { name: "幫我寫" }));
+    await waitFor(() => expect(seen.signal).toBeTruthy());
+    expect(screen.getByTestId("skill-assist-spinner")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "撰寫中…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(seen.signal.aborted).toBe(true));
+    expect(await screen.findByRole("button", { name: "新增 skill" })).toBeTruthy();
+    seen.resolve?.();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("不該寫入")).toBeNull();
+    expect(screen.queryByText("不該出現")).toBeNull();
   });
 });

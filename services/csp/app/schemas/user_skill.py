@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.base import ApiResponseModel
 
@@ -94,3 +95,40 @@ class SkillPublishTargets(ApiResponseModel):
     campus: bool
     units: list[SkillPublishUnit]
     submit_units: list[SkillPublishUnit] = Field(default_factory=list)
+
+
+class SkillAssistIn(BaseModel):
+    """協助撰寫。草稿可空，過長在這裡截斷，不把整段送進模型。"""
+
+    goal: str = Field(min_length=1, max_length=1000)
+    name: str | None = None
+    description: str | None = None
+    body: str | None = None
+    mode: Literal["create", "improve"]
+
+    @field_validator("goal")
+    @classmethod
+    def _goal_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("請說明想讓 skill 做什麼")
+        return text
+
+    @field_validator("name", "description", "body")
+    @classmethod
+    def _clip_draft(cls, value: str | None, info) -> str:
+        if not value:
+            return ""
+        limit = {
+            "name": NAME_MAX,
+            "description": DESCRIPTION_MAX,
+            "body": BODY_MAX,
+        }[info.field_name]
+        return value.strip()[:limit]
+
+
+class SkillAssistOut(BaseModel):
+    name: str = Field(max_length=NAME_MAX)
+    description: str = Field(max_length=DESCRIPTION_MAX)
+    body: str = Field(max_length=BODY_MAX)
+    notes: list[str]

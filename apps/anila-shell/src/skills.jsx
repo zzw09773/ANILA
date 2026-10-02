@@ -1,5 +1,5 @@
 // 我的 skill：設定頁管理，以及對話裡的套用標示。
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
@@ -7,6 +7,7 @@ import { IconBook, IconChevDown, IconChevRight, IconPencil, IconPlus, IconTrash,
 import {
   SKILL_STATUS_LABEL,
   appliedSkillLabel,
+  assistSkill,
   createSkill,
   deleteSkill,
   listPublishTargets,
@@ -140,6 +141,16 @@ export function AppliedSkillIndicator({ skill, includeManual = false }) {
   );
 }
 
+function AssistSpinner() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" data-testid="skill-assist-spinner">
+      <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="2" strokeDasharray="28 20" strokeLinecap="round">
+        <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite" />
+      </circle>
+    </svg>
+  );
+}
+
 function Field({ label, count, max, hint, children }) {
   return (
     <label style={{ display: "block" }}>
@@ -170,6 +181,10 @@ export function SkillManager({
   const [busy, setBusy] = useState(false);
   const [publishTargets, setPublishTargets] = useState({ campus: false, units: [], submit_units: [] });
   const [publishTo, setPublishTo] = useState("");
+  const [goal, setGoal] = useState("");
+  const [assistNotes, setAssistNotes] = useState([]);
+  const [assisting, setAssisting] = useState(false);
+  const assistAbort = useRef(null);
   const directPublish = publishTargets.campus || publishTargets.units.length > 0;
   const submitUnits = publishTargets.submit_units || [];
   const ownSubmitUnit = submitUnits.find((unit) => unit.id === user?.department_id) || null;
@@ -188,6 +203,11 @@ export function SkillManager({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => () => {
+    assistAbort.current?.abort();
+    assistAbort.current = null;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,21 +229,34 @@ export function SkillManager({
     };
   }, [authRequest]);
 
+  const stopAssist = () => {
+    assistAbort.current?.abort();
+    assistAbort.current = null;
+    setAssisting(false);
+  };
+
   const reset = () => {
+    stopAssist();
     setForm(EMPTY_FORM);
     setEditingId(null);
     setPublishTo("");
+    setGoal("");
+    setAssistNotes([]);
     setEditorOpen(false);
   };
 
   const openNew = () => {
+    stopAssist();
     setForm(EMPTY_FORM);
     setEditingId(null);
     setPublishTo("");
+    setGoal("");
+    setAssistNotes([]);
     setEditorOpen(true);
   };
 
   const openEdit = (row) => {
+    stopAssist();
     setEditingId(row.id);
     setForm({
       name: row.name,
@@ -232,7 +265,63 @@ export function SkillManager({
       auto_apply: Boolean(row.auto_apply),
     });
     setPublishTo("");
+    setGoal("");
+    setAssistNotes([]);
     setEditorOpen(true);
+  };
+
+  const fieldsEmpty = !form.name.trim() && !form.description.trim() && !form.body.trim();
+
+  const runAssist = async () => {
+    if (assistAbort.current) return;
+    const typedGoal = goal.trim() || form.description.trim();
+    if (!typedGoal) {
+      toast("先寫一下想讓 skill 做什麼", { tone: "error" });
+      return;
+    }
+    const controller = new AbortController();
+    assistAbort.current = controller;
+    setAssisting(true);
+    const hasText = !fieldsEmpty;
+    if (hasText) {
+      const ok = await confirm({
+        title: "覆蓋目前的內容？",
+        message: "名稱、用途說明與內容會換成協助撰寫的結果。",
+        confirmText: "覆蓋",
+      });
+      if (!ok || controller.signal.aborted) {
+        if (assistAbort.current === controller) {
+          assistAbort.current = null;
+          setAssisting(false);
+        }
+        return;
+      }
+    }
+    try {
+      const result = await assistSkill(authRequest, {
+        goal: typedGoal,
+        name: form.name,
+        description: form.description,
+        body: form.body,
+        mode: hasText ? "improve" : "create",
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      setForm((prev) => ({
+        ...prev,
+        name: typeof result?.name === "string" ? result.name : prev.name,
+        description: typeof result?.description === "string" ? result.description : prev.description,
+        body: typeof result?.body === "string" ? result.body : prev.body,
+      }));
+      setAssistNotes(Array.isArray(result?.notes) ? result.notes.filter((item) => typeof item === "string" && item) : []);
+    } catch (err) {
+      if (err?.name === "AbortError" || controller.signal.aborted) return;
+      toast(err?.message || "協助撰寫失敗", { tone: "error" });
+    } finally {
+      if (assistAbort.current === controller) {
+        assistAbort.current = null;
+        setAssisting(false);
+      }
+    }
   };
 
   const canSave = form.name.trim() && form.description.trim() && form.body.trim();
@@ -320,9 +409,41 @@ export function SkillManager({
       borderRadius: "var(--radius)",
     }}>
       <div style={{ ...SECTION_TITLE, marginBottom: 0 }}>{editingId ? "編輯 skill" : "新增 skill"}</div>
+      <div>
+        <div style={FIELD_LABEL}><span>AI 協助撰寫</span></div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            aria-label="想讓 skill 做什麼？"
+            value={goal}
+            maxLength={1000}
+            placeholder="想讓 skill 做什麼？"
+            disabled={assisting}
+            style={{ ...FIELD_BOX, flex: 1 }}
+            onChange={(event) => setGoal(event.target.value)}
+          />
+          <Button
+            variant="default"
+            size="sm"
+            type="button"
+            aria-busy={assisting || undefined}
+            disabled={assisting}
+            leftIcon={assisting ? <AssistSpinner /> : null}
+            style={{ opacity: assisting ? 0.55 : 1, cursor: assisting ? "not-allowed" : "pointer" }}
+            onClick={runAssist}
+          >
+            {assisting ? "撰寫中…" : (fieldsEmpty ? "幫我寫" : "幫我改寫")}
+          </Button>
+        </div>
+        {assistNotes.length ? (
+          <ul data-testid="skill-assist-notes" aria-label="協助撰寫檢查清單" aria-live="polite" style={{ ...SECTION_HINT, margin: "6px 0 0", paddingLeft: 18 }}>
+            {assistNotes.map((note, index) => <li key={`${index}-${note}`}>{note}</li>)}
+          </ul>
+        ) : null}
+      </div>
       <Field label="名稱" count={form.name.length} max={40}>
         <input
           aria-label="skill 名稱"
+          readOnly={assisting}
           value={form.name}
           maxLength={40}
           placeholder="例如：週報整理"
@@ -338,6 +459,7 @@ export function SkillManager({
       >
         <input
           aria-label="skill 用途"
+          readOnly={assisting}
           value={form.description}
           maxLength={200}
           placeholder="例如：把一週的工作紀錄整理成三段式週報"
@@ -353,6 +475,7 @@ export function SkillManager({
       >
         <textarea
           aria-label="skill 內容"
+          readOnly={assisting}
           value={form.body}
           maxLength={8000}
           rows={8}

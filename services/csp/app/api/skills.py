@@ -1,12 +1,14 @@
 """使用者自訂文字 skill。內容只當模型指示，平台不執行。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user_skill import (
+    SkillAssistIn,
+    SkillAssistOut,
     SkillListOut,
     SkillOut,
     SkillPublishTargets,
@@ -82,6 +84,29 @@ def read_publish_targets(
     db: Session = Depends(get_db),
 ):
     return publish_targets(db, user)
+
+
+@router.post("/assist", response_model=SkillAssistOut)
+async def assist(
+    body: SkillAssistIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """已登入的同仁請模型起草或改寫自己的 skill。不讀取別人的 skill。"""
+    from app.services.skill_assist_service import assist_skill
+
+    try:
+        return await assist_skill(
+            db,
+            user,
+            goal=body.goal,
+            name=body.name or "",
+            description=body.description or "",
+            body=body.body or "",
+            mode=body.mode,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("", response_model=SkillListOut)
