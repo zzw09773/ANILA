@@ -217,7 +217,7 @@
 在哪：`anila-update.sh` 寫入 `operations.log` 的更新失敗紀錄。正式讀取並設定目標版本之前就拒絕的時候（清單不符、讀不到出貨包、第一次安裝位置不對）。
 發生：目標欄記成 none。出貨包清單裡其實有版本，或根本讀不到版本，紀錄都長得一樣。檔名即使像 `anila-2099.01.01-7`，也不該拿來補這個欄。
 反直覺：人是拿這一包去更新才被擋下來的，紀錄卻寫成沒有目標版本，事後分不出是哪一包。
-建議：✅ 已改（commit 待補）：拒絕前記下清單上的版本，只給 operations.log 用；讀不到或格式不對就記「未讀到版本」。未核對的版本不寫進會放行 compose 目錄的目標變數，也不拿來比較先後。目錄包與 tar.gz 都不看檔名。`from=none` 的第一次安裝，以及 rollback、adopt 的 none，維持原樣。
+建議：✅ 已改（7bb50034）：拒絕前記下清單上的版本，只給 operations.log 用；讀不到或格式不對就記「未讀到版本」。未核對的版本不寫進會放行 compose 目錄的目標變數，也不拿來比較先後。目錄包與 tar.gz 都不看檔名。`from=none` 的第一次安裝，以及 rollback、adopt 的 none，維持原樣。
 
 修正輪：壓縮檔的失敗紀錄不再用 `release_peek_bundle_version` 的「第一個 manifest.txt」。`_note_bundle_version_for_log` 對壓縮檔改走 `_peek_tar_pair_version_for_log`，選取規則與更新器的 `_pick_bundle_manifest_pair` 相同：列出 tar 成員，只取同一目錄、最淺的 manifest.txt 與 manifest.sha256 那一對，再讀那份 manifest.txt 的版本。巢狀 manifest 即使排在前面，也不當成出貨版本。沒有配對，或同一層有多對、無法判定，記「未讀到版本」。成員名稱仍放在 `--` 之後，路徑規則不放寬，不解壓其他檔，候選版本不寫進 `_ops_to`。目錄包仍只讀該目錄自己的 manifest.txt。這只改寫進 operations.log 的路徑，沒有整理共用的 `release_peek_bundle_version`。
 
