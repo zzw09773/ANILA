@@ -150,6 +150,22 @@
 - 測試失敗、某一步跳過、某件事沒驗證到，都要直接講出來，不能說成「應該沒問題」。
 - 長時間在背景跑的工作，每隔一段時間就用一兩句話更新進度。
 
+## 7. 用 GPT 全域 harness（`~/gpt-harness`）時要注意的差異
+
+本手冊的指令以 `~/claude-harness` 為準。GPT 版是 2026-09-30 從它複製再改的，兩者行為不同：
+
+| 項目 | claude-harness | gpt-harness | 對流程的影響 |
+|---|---|---|---|
+| DeepSeek／Qwen | `agent-run deepseek` 以 headless codex 直接跑 | driver 是 `codex-subagent`，`agent-run` 直接回 `parent_dispatch_required`（exit 4），要由 GPT 主 session 自己 spawn 子代理 | 資安審查不能照 2.4 的指令跑。可以改用 `~/claude-harness/agent-run deepseek ...`（獨立行程，不占 GPT 額度），或用主 session 的子代理，但要給同樣聚焦的 prompt |
+| Jev 判斷 | 看門狗打轉確認、完成查核、失敗分類都即時問 Jev | `jev_gate.ask` 只把請求寫到 `state/jev-pending/`，直接回預設值 | 完成查核、失敗分類只剩程式規則。worker 自稱完成時更要自己重跑測試 |
+| 派工入口 | `agent-run` 直接帶 prompt | 正式任務要用 `gpt-harness run` 加一份 packet（goal、owned_files、acceptance、grade L0–L4、no_delegation） | 每包多寫一份 packet。owned_files 要列完整，否則 worker 會被擋 |
+| 自動換人 | 有備援鏈（opt-in） | 全部是空的 | 額度用完時要自己決定換誰 |
+| 審查 GPT 自己寫的程式 | — | 有 `claude`（Opus）、`claude-sonnet` worker | GPT 親手改的東西交給 claude worker 審，不能自己審 |
+| 鎖 | 只有 name 鎖 | name、workdir、provider session 三種鎖 | 同一個 worktree 同時跑兩個審查會被擋，第二個要等或用不同 workdir |
+| 其他 | 有 agent-dispatch、harness-calibrate、harness-label | 沒有 | 派給誰由總指揮自己決定（本手冊第 0 節已規定） |
+
+兩套的 state 與 worktree 各自獨立。不要在同一個 worktree 同時用兩套 harness 派工。
+
 ## 6. 現在的進度（2026-10-02）
 
 - main 最新的功能有：反直覺紀錄 F-01 到 F-26 已處理、使用者自訂文字型 skill（含介面重做）、原始思考不出伺服器、計價與額度（預設不計價、不限制）、版本順序防呆。
