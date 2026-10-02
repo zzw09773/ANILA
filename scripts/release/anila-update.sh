@@ -15,11 +15,26 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 壓縮檔裡 manifest.txt 與 manifest.sha256 必須是同一目錄的一對。
 # 取最淺的那一對（出貨包根目錄）。同一層有兩對就拒絕，不用清單裡的第一筆。
+# 跟 release-lib.sh 的 release_safe_member_path 相同。這裡在 source release-lib 之前就會用到。
+_safe_member_path() {
+  local path="$1" seg
+  [[ -n "$path" && "$path" != /* ]] || return 1
+  local IFS=/
+  for seg in $path; do
+    [[ "$seg" =~ ^[A-Za-z0-9_.][A-Za-z0-9_.-]*$ ]] || return 1
+    [[ "$seg" != "." && "$seg" != ".." ]] || return 1
+  done
+  return 0
+}
+
 _pick_bundle_manifest_pair() {
   local list="$1" member dir rest depth best="" best_depth=999 ties=0
   declare -A has_txt=() has_sha=()
   while IFS= read -r member || [[ -n "$member" ]]; do
     member="${member#./}"
+    # 檔名會當成 tar 的參數。任何一段以 - 開頭、或含有安全字元以外的字，一律不理，
+    # 否則 --to-command=… 這種名字會在核對清單之前以 root 執行。
+    _safe_member_path "$member" || continue
     case "$member" in
       */manifest.txt) has_txt["${member%/manifest.txt}"]=1 ;;
       manifest.txt) has_txt["."]=1 ;;
@@ -113,7 +128,7 @@ _entry_manifest_sha256() {
     printf '出貨包缺少清單，拒絕更新。\n' >&2
     return 1
   fi
-  if ! tar -xzf "$spec" -C "$tmp" "$txt" "$sha"; then
+  if ! tar -xzf "$spec" -C "$tmp" -- "$txt" "$sha"; then
     rm -rf "$tmp"
     printf '無法讀取出貨包清單，拒絕更新。\n' >&2
     return 1

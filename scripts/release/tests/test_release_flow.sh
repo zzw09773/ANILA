@@ -4112,6 +4112,66 @@ test_handoff_refuses_unwritable_and_sweeps_stale_stages() {
   _cleanup_test_runner_extracts
 }
 
+test_tar_member_names_cannot_inject_options() {
+  local work evil tar out rc
+  work="$tmp/opt-inject"
+  rm -rf "$work"
+  mkdir -p "$work/src" "$work/run"
+  # 資料夾名稱就是一個 tar 選項。舊程式會把它當參數，以 root 執行 touch。
+  # 指令從環境變數拿絕對路徑，不管 tar 當下在哪個目錄都能留下記號。
+  evil='--to-command=touch "$PWNMARK"; true '
+  export PWNMARK="$work/PWNED"
+  mkdir -p "$work/src/$evil"
+  printf 'version 2026.10.02-9\n' > "$work/src/$evil/manifest.txt"
+  (cd "$work/src/$evil" && sha256sum manifest.txt > manifest.sha256)
+  tar="$work/evil.tar.gz"
+  tar -C "$work/src" -czf "$tar" -- "$evil"
+  if ! tar -tzf "$tar" | grep -q -- '--to-command'; then
+    echo "沒做出含選項名稱的出貨包" >&2
+    return 1
+  fi
+  (cd "$work/run" && release_peek_bundle_version "$tar" >/dev/null) || true
+  if [[ -e "$work/PWNED" ]]; then
+    echo "讀版本時把檔名當成 tar 選項執行了" >&2
+    return 1
+  fi
+  out="$tmp/opt-inject.out"
+  set +e
+  (cd "$work/run" && env \
+      ANILA_INSTALL_ROOT="$tmp/opt-inject-root" \
+      COMPOSE_PROJECT_NAME="$TEST_PROJECT" \
+      DOCKER_LOG="$tmp/opt-inject-docker.log" \
+      PWNMARK="$PWNMARK" \
+      bash "$ROOT/scripts/release/anila-update.sh" "$tar" >"$out" 2>&1)
+  rc=$?
+  set -e
+  if [[ -e "$work/PWNED" ]]; then
+    echo "更新程式核對清單前把檔名當成 tar 選項執行了" >&2
+    return 1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    echo "含選項名稱的出貨包居然沒被拒絕" >&2
+    cat "$out" >&2
+    return 1
+  fi
+  # 要在 tar 看到這個名字之前就被忽略：拒絕理由是「缺少清單」，不是 tar 自己的參數錯誤。
+  if ! grep -q "出貨包缺少清單" "$out" || grep -q -- "--to-command" "$out"; then
+    echo "含選項名稱的路徑被交給 tar 了" >&2
+    cat "$out" >&2
+    return 1
+  fi
+  # 從出貨包讀出的成員名稱，一律放在 -- 之後交給 tar。
+  if grep -nE 'tar -x[A-Za-z]*f "\$spec"( -C "[^"]*")? "\$' "$ROOT/scripts/release/anila-update.sh" "$ROOT/scripts/release/release-lib.sh"; then
+    echo "還有成員名稱沒放在 -- 之後" >&2
+    return 1
+  fi
+  release_safe_member_path "anila-2026.10.02-1/manifest.txt" || { echo "正常路徑被拒絕" >&2; return 1; }
+  ! release_safe_member_path "-x/manifest.txt" || { echo "- 開頭的路徑沒被拒絕" >&2; return 1; }
+  ! release_safe_member_path "a/../manifest.txt" || { echo ".. 沒被拒絕" >&2; return 1; }
+  unset PWNMARK
+  _cleanup_test_runner_extracts
+}
+
 test_https_port_rejects_other_anila_ports() {
   local root file
   root="$tmp/port-reserved"
@@ -4326,6 +4386,7 @@ check "不會刪掉環境變數給的解壓路徑" test_cleanup_ignores_caller_e
 check "交接用 bash 執行，noexec 也能跑" test_handoff_runs_runner_with_bash
 check "沒有 HOME 時仍能解開出貨包" test_handoff_extract_without_home
 check "交接途中被中斷也清掉解壓目錄" test_interrupted_handoff_cleans_stage
+check "出貨包裡的檔名不能變成 tar 選項" test_tar_member_names_cannot_inject_options
 check "壓縮檔交接通過專案 anila 的破壞性檢查" test_tar_handoff_passes_destructive_guard
 check "根目錄不可寫就拒絕，並清掉超過一天的交接暫存" test_handoff_refuses_unwritable_and_sweeps_stale_stages
 check "HTTPS 埠不能跟其他 ANILA 埠相同" test_https_port_rejects_other_anila_ports

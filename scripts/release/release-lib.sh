@@ -545,6 +545,19 @@ release_installed_version() {
 }
 
 # 只讀清單上的版本，不解到安裝根目錄。目錄或 tar.gz。讀不到就印空字串。
+# 出貨包裡的路徑會當成 tar 的參數。每一段只能是英數、點、底線、連字號，
+# 而且不能以 - 開頭（擋 --to-command=… 之類的選項注入），也不能是 . 或 ..。
+release_safe_member_path() {
+  local path="$1" seg
+  [[ -n "$path" && "$path" != /* ]] || return 1
+  local IFS=/
+  for seg in $path; do
+    [[ "$seg" =~ ^[A-Za-z0-9_.][A-Za-z0-9_.-]*$ ]] || return 1
+    [[ "$seg" != "." && "$seg" != ".." ]] || return 1
+  done
+  return 0
+}
+
 release_peek_bundle_version() {
   local spec="$1" member ver=""
   if [[ -d "$spec" && -f "$spec/manifest.txt" ]]; then
@@ -552,9 +565,11 @@ release_peek_bundle_version() {
     return 0
   fi
   [[ -f "$spec" ]] || return 0
-  member="$(tar -tzf "$spec" 2>/dev/null | awk '/(^|\/)manifest\.txt$/ { print; exit }' || true)"
+  member="$(tar -tzf "$spec" 2>/dev/null | awk '/(^|\/)manifest\.txt$/ { print }' | while IFS= read -r m; do
+    release_safe_member_path "${m#./}" && { printf '%s\n' "$m"; break; }
+  done || true)"
   [[ -n "$member" ]] || return 0
-  ver="$(tar -xOzf "$spec" "$member" 2>/dev/null | awk '$1=="version" { print $2; exit }' || true)"
+  ver="$(tar -xOzf "$spec" -- "$member" 2>/dev/null | awk '$1=="version" { print $2; exit }' || true)"
   printf '%s' "$ver"
 }
 
