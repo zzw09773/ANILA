@@ -5,6 +5,7 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
+import { appendRemoteHits, moveFolderOptions, positiveUserId } from "./runtime/bulkActions.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { classifiedCopyDenial } from "./uxCopy.js";
@@ -3950,6 +3951,30 @@ export const Composer = ({
   );
 };
 
+const bulkSrOnly = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
+
+const bulkChipButton = {
+  fontSize: 11,
+  padding: "3px 8px",
+  background: "var(--bg-elev)",
+  color: "var(--fg)",
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  cursor: "pointer",
+  fontFamily: "var(--font-mono)",
+  flex: "0 0 auto",
+};
+
 // ---- Sidebar ----
 export const Sidebar = ({
   conversations,
@@ -3977,6 +4002,9 @@ export const Sidebar = ({
   onDeleteConv,
   onServerSearch,
   onExportConv,
+  onBulkDelete,
+  onBulkMove,
+  busyConversationIds,
 }) => {
   const confirm = useConfirm();
   const [query, setQuery] = useState("");
@@ -3987,6 +4015,22 @@ export const Sidebar = ({
   // 非 tag: 搜尋時,debounce 打後端 /search(比對內文),把命中但本地清單沒有的
   // 對話補進來(附 snippet)。
   const [serverHits, setServerHits] = useState([]);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkStatus, setBulkStatus] = useState("");
+  const [moveTarget, setMoveTarget] = useState("all");
+  const [acting, setActing] = useState(false);
+  const actingRef = useRef(false);
+  const userId = user?.id ?? null;
+  const convBulkReady = positiveUserId(user?.id) != null;
+  const busyIds = useMemo(
+    () => new Set(busyConversationIds || []),
+    [busyConversationIds],
+  );
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setBulkStatus("");
+  }, [query, folder, userId]);
   useEffect(() => {
     const q = query.trim();
     if (!q || q.startsWith("tag:") || typeof onServerSearch !== "function") {
@@ -4025,6 +4069,45 @@ export const Sidebar = ({
     }
     return matchFuzzy(c, q);
   });
+  const visibleRows = [...filtered, ...appendRemoteHits(conversations, filtered, serverHits)].sort((a, b) => {
+    const ta = new Date(a.updatedAt || a.createdAt || 0).getTime();
+    const tb = new Date(b.updatedAt || b.createdAt || 0).getTime();
+    return tb - ta;
+  });
+  const moveOptions = moveFolderOptions(folders);
+  const selectableRows = visibleRows.filter((row) => !busyIds.has(row.id));
+  // 已勾的等待列仍算進已選；刪除與移入只送目前沒在串流的列。
+  const checkedVisible = visibleRows.filter((row) => selectedIds.has(row.id));
+  const selectedVisibleCount = checkedVisible.length;
+  const waitingSelectedCount = checkedVisible.filter((row) => busyIds.has(row.id)).length;
+  const operableSelectedCount = selectedVisibleCount - waitingSelectedCount;
+  const allVisibleSelected = selectableRows.length > 0
+    && selectableRows.every((row) => selectedIds.has(row.id));
+
+  async function runBulk(action) {
+    if (actingRef.current) return;
+    const rows = selectableRows.filter((row) => selectedIds.has(row.id));
+    if (rows.length === 0) return;
+    actingRef.current = true;
+    setActing(true);
+    try {
+      const result = await action(rows);
+      if (!result || result.cancelled) return;
+      const gone = new Set(result.succeeded || []);
+      if (gone.size > 0) {
+        setServerHits((hits) => hits.filter((hit) => !gone.has(hit.id)));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of gone) next.delete(id);
+          return next;
+        });
+      }
+      if (result.message) setBulkStatus(result.message);
+    } finally {
+      actingRef.current = false;
+      setActing(false);
+    }
+  }
 
   if (collapsed) {
     const railBtn = { width: 36, height: 36 };
@@ -4051,7 +4134,7 @@ export const Sidebar = ({
           <AnilaLogoImg variant="logo" width={28} height={28} />
         </button>
         <IconButton onClick={onToggleCollapsed} title="展開側邊" style={railBtn}><IconChevRight /></IconButton>
-        <IconButton onClick={onNewChat} title="新對話" style={railBtn}><IconPlus /></IconButton>
+        <IconButton onClick={onNewChat} title="新對話" disabled={acting} style={railBtn}><IconPlus /></IconButton>
         <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} />
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} currentId={currentNavId} />
         <div style={{ flex: 1 }} />
@@ -4081,14 +4164,14 @@ export const Sidebar = ({
       </div>
 
       <div style={{ padding: "0 10px 10px" }}>
-        <button onClick={onNewChat} style={{
+        <button type="button" onClick={onNewChat} disabled={acting} style={{
           display: "flex", alignItems: "center", gap: 8, width: "100%",
           padding: "8px 10px", fontSize: 13, fontWeight: 500,
           background: "var(--bg-elev)",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius)",
           color: "var(--fg)",
-          cursor: "pointer",
+          cursor: acting ? "default" : "pointer",
         }}>
           <IconPlus size={14} /> 新對話
           <div style={{ flex: 1 }} />
@@ -4148,7 +4231,9 @@ export const Sidebar = ({
                   {deletable && (
                     <button
                       title={`刪除「${f.name}」資料夾（連同內部對話）`}
+                      disabled={acting}
                       onClick={async () => {
+                        if (acting) return;
                         const count = conversations.filter((c) => c.folder === f.id).length;
                         const msg = count > 0
                           ? `確定刪除「${f.name}」？資料夾內的 ${count} 則對話也會一併移除（後端紀錄不受影響）。`
@@ -4276,35 +4361,122 @@ export const Sidebar = ({
             </div>
           </div>
 
+          <div style={{ padding: "0 10px 6px" }}>
+            {!convBulkReady && (
+              <div
+                data-testid="conv-bulk-relogin"
+                role="status"
+                style={{ fontSize: 11, color: "var(--danger)", lineHeight: 1.45, marginBottom: 6 }}
+              >
+                請重新登入或重新整理後再操作。
+              </div>
+            )}
+            {!selectMode ? (
+              <button
+                type="button"
+                disabled={!convBulkReady}
+                onClick={() => { setSelectMode(true); setBulkStatus(""); }}
+                style={bulkChipButton}
+              >
+                多選
+              </button>
+            ) : (
+              <div
+                data-testid="conv-bulk-bar"
+                style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, minWidth: 0 }}
+              >
+                <button
+                  type="button"
+                  onClick={() => { setSelectMode(false); setSelectedIds(new Set()); setBulkStatus(""); }}
+                  style={bulkChipButton}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={acting || selectableRows.length === 0}
+                  onClick={() => {
+                    setSelectedIds((prev) => {
+                      if (allVisibleSelected) return new Set();
+                      const next = new Set(selectableRows.map((row) => row.id));
+                      for (const id of prev) {
+                        if (busyIds.has(id)) next.add(id);
+                      }
+                      return next;
+                    });
+                  }}
+                  style={bulkChipButton}
+                >
+                  {allVisibleSelected ? "取消全選" : "全選"}
+                </button>
+                <span data-testid="conv-bulk-count" style={{ fontSize: 11, color: "var(--fg-muted)", flex: "0 0 auto" }}>
+                  已選 {selectedVisibleCount}
+                </span>
+                {waitingSelectedCount > 0 && (
+                  <span data-testid="conv-bulk-waiting" style={{ fontSize: 11, color: "var(--fg-muted)", flex: "0 0 auto" }}>
+                    {waitingSelectedCount} 則請等待完成
+                  </span>
+                )}
+                <button
+                  type="button"
+                  disabled={!convBulkReady || acting || operableSelectedCount === 0}
+                  onClick={() => { void runBulk((rows) => onBulkDelete?.(rows)); }}
+                  style={bulkChipButton}
+                >
+                  刪除
+                </button>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-muted)", flex: "0 0 auto" }}>
+                  移到群組
+                  <select
+                    aria-label="移到群組"
+                    value={moveOptions.some((opt) => opt.value === moveTarget) ? moveTarget : "all"}
+                    disabled={!convBulkReady || acting}
+                    onChange={(e) => setMoveTarget(e.target.value)}
+                    style={{ fontSize: 11, maxWidth: 120 }}
+                  >
+                    {moveOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  disabled={!convBulkReady || acting || operableSelectedCount === 0}
+                  onClick={() => {
+                    const target = moveOptions.some((opt) => opt.value === moveTarget) ? moveTarget : "all";
+                    void runBulk((rows) => onBulkMove?.(rows, target));
+                  }}
+                  style={bulkChipButton}
+                >
+                  移入
+                </button>
+                {bulkStatus && (
+                  <div
+                    data-testid="conv-bulk-status"
+                    role="status"
+                    style={{ flexBasis: "100%", fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.45 }}
+                  >
+                    {bulkStatus}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div style={{ flex: 1, overflowY: "auto", padding: "4px 6px 10px" }}>
-            {filtered.length === 0 && (
+            {visibleRows.length === 0 && (
               <div style={{ padding: "24px 14px", textAlign: "center", color: "var(--fg-subtle)", fontSize: 12 }}>
                 沒有符合的對話
               </div>
             )}
             {(() => {
-              // 合併伺服器全文搜尋命中(本地清單沒有的舊對話),映射成側欄列形狀。
-              const localIds = new Set(filtered.map((c) => c.id));
-              const extraFromServer = serverHits
-                .filter((h) => !localIds.has(h.id) && !conversations.some((c) => c.id === h.id))
-                .map((h) => ({
-                  id: h.id, title: h.title, agentId: h.agent_id,
-                  updatedAt: h.updated_at, createdAt: h.created_at,
-                  classified: h.classified, snippet: h.snippet,
-                }));
-              // 時間分組:依 updatedAt 降冪排序,bucket 變動時插入標頭
-              // (今天/昨天/前 7 天/更早)。star/folder 篩選後維持時間序。
-              const sorted = [...filtered, ...extraFromServer].sort((a, b) => {
-                const ta = new Date(a.updatedAt || a.createdAt || 0).getTime();
-                const tb = new Date(b.updatedAt || b.createdAt || 0).getTime();
-                return tb - ta;
-              });
               let lastBucket = null;
-              return sorted.map((c) => {
+              return visibleRows.map((c) => {
               const agent = agents.find((a) => a.id === c.agent || a.id === c.agentId);
               const bucket = timeBucket(c.updatedAt || c.createdAt);
               const showHeader = bucket !== lastBucket;
               lastBucket = bucket;
+              const busy = busyIds.has(c.id);
               return (
                 <React.Fragment key={c.id}>
                 {showHeader && (
@@ -4314,7 +4486,30 @@ export const Sidebar = ({
                     letterSpacing: 0.5, textTransform: "uppercase",
                   }}>{bucket}</div>
                 )}
-                <div style={{ position: "relative" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 4, minWidth: 0 }}>
+                  {selectMode && (
+                    <label style={{ position: "relative", display: "inline-flex", flex: "0 0 auto", paddingTop: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(c.id)}
+                        disabled={busy || acting}
+                        onChange={() => {
+                          if (busy) return;
+                          setSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(c.id)) next.delete(c.id);
+                            else next.add(c.id);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span style={bulkSrOnly}>選取對話 {c.title}</span>
+                    </label>
+                  )}
+                  {selectMode && busy && (
+                    <span style={{ flex: "0 0 auto", fontSize: 10, color: "var(--fg-muted)", paddingTop: 10 }}>請等待完成</span>
+                  )}
+                <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0 }}>
                   <button onClick={() => onSelectConv(c.id)} style={{
                     display: "block", width: "100%",
                     padding: "8px 10px", marginBottom: 1,
@@ -4378,7 +4573,7 @@ export const Sidebar = ({
                   </button>
                   <div style={{ position: "absolute", right: 4, top: 5, display: "flex", gap: 2 }}>
                     <Dropdown align="right" width={260} trigger={() => (
-                      <IconButton title="標籤 / 資料夾" style={{ width: 22, height: 22, opacity: 0.65 }}>
+                      <IconButton title="標籤 / 資料夾" disabled={acting} style={{ width: 22, height: 22, opacity: acting ? 0.35 : 0.65 }}>
                         <IconTag size={11} />
                       </IconButton>
                     )}>
@@ -4392,7 +4587,7 @@ export const Sidebar = ({
                       )}
                     </Dropdown>
                     <Dropdown align="right" width={160} trigger={() => (
-                      <IconButton title="更多" style={{ width: 22, height: 22, opacity: 0.65 }}>
+                      <IconButton title="更多" disabled={acting} style={{ width: 22, height: 22, opacity: acting ? 0.35 : 0.65 }}>
                         <IconMore size={11} />
                       </IconButton>
                     )}>
@@ -4401,6 +4596,7 @@ export const Sidebar = ({
                           <MenuItem
                             leftIcon={<IconPencil size={12} />}
                             onClick={() => {
+                              if (acting) return;
                               close();
                               const next = window.prompt("新的對話名稱", c.title);
                               if (next !== null) onRenameConv?.(c.id, next);
@@ -4415,6 +4611,7 @@ export const Sidebar = ({
                           <MenuItem
                             leftIcon={<IconTrash size={12} style={{ color: "var(--danger)" }} />}
                             onClick={() => {
+                              if (acting) return;
                               close();
                               onDeleteConv?.(c.id);
                             }}
@@ -4425,6 +4622,7 @@ export const Sidebar = ({
                       )}
                     </Dropdown>
                   </div>
+                </div>
                 </div>
                 </React.Fragment>
               );

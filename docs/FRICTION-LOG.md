@@ -229,3 +229,22 @@
 測試 `test_early_reject_logs_peeked_bundle_version`、`test_early_reject_logs_unread_version` 在初版舊程式上失敗。`test_early_reject_logs_tar_root_pair_not_nested_manifest` 在把第一個 manifest.txt 當成出貨版本的程式上失敗。`test_cli_worktree_reject_logs_shipping_version` 走正式入口 `bash anila-update.sh <包>`。
 
 日誌專用的版本 fallback 不傳入資料庫稽核，稽核仍使用原本的目標值。測試 `test_early_log_fallback_does_not_change_db_audit` 用 shell 函式替身，確認 operations.log 記出貨版本、稽核目標維持 none，且 EXIT 保留失敗狀態；修正前會失敗。
+
+
+## 2026-10-03　對話與記憶摘要的批次整理
+
+**F-30　對話清單只能一則一則刪除或移入群組**
+在哪：ANILA 對話側欄，包括搜尋找到的舊對話。
+發生：整理多則對話時，每一則都要重複打開選單、刪除或指定群組。
+反直覺：同一次整理的對話無法一起選取，操作次數隨對話數量增加。
+建議：✅ 已改（commit 待補）：新增多選、目前可見項目全選、一次確認後批次刪除或移入同一群組。部分失敗保留失敗項並顯示數量；正在產生回覆的對話等待完成後再刪除。
+
+**F-31　記憶頁的對話摘要只能逐筆刪除，不能一次清空**
+在哪：設定／記憶的「對話摘要」清單。
+發生：摘要只能按每一列的刪除按鈕，無法多選或全部刪除。
+反直覺：使用者想整理或清除過往對話摘要，卻必須逐筆操作。
+建議：✅ 已改（commit 待補）：新增摘要多選刪除與全部刪除。確認文字說明只刪摘要，原始對話、事實、對話片段與回覆偏好保留；僅處理本人摘要，每筆留下既有的刪除紀錄，避免相同舊逐字稿重新產生摘要。
+
+新批次操作會比對操作開始時的畫面帳號與實際登入帳號；另一分頁換了登入時，拒絕寫入並提示重新整理，失敗項目保留。既有 API 未帶此操作帳號時維持原行為。對話摘要每批最多 200 筆並依序處理，批內全部成功或全部不刪；不同批次的部分成功會顯示成功與失敗數。
+
+回歸測試：`conversationBulkActions.test.jsx`、`conversationBulkAcceptance.test.jsx`、`memoryBulkActions.test.jsx`、`test_memory_summary_bulk.py`、`test_bulk_expected_identity.py`。新增批次功能、確認期間的操作邊界與帳號一致性都有修正前失敗證據；證據與審查紀錄保存在 repo 外的 harness 目錄。

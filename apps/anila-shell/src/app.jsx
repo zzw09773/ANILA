@@ -49,6 +49,13 @@ import { MemoryTab } from "./memory.jsx";
 import { SkillManager } from "./skills.jsx";
 import { listSkills } from "./runtime/skills.js";
 import {
+  BULK_CONCURRENCY,
+  bindExpectedUser,
+  mapLimited,
+  positiveUserId,
+  streamingConversationIds,
+} from "./runtime/bulkActions.js";
+import {
   listConversations as apiListConversations,
   listRouterModels as apiListRouterModels,
   setConversationRouterModel as apiSetConversationRouterModel,
@@ -377,6 +384,48 @@ function makeId(prefix) {
   return `${prefix}-${Math.random().toString(16).slice(2, 10)}-${Date.now().toString(36)}`;
 }
 
+function streamBusyError() {
+  const err = new Error("對話正在產生回覆，請等待完成");
+  err.code = "stream-busy";
+  return err;
+}
+
+function bulkAccountNote(errors) {
+  for (const error of errors || []) {
+    if (!error) continue;
+    const message = typeof error.message === "string" ? error.message : "";
+    if (error.status === 409 && message.includes("登入帳號已變更")) return message;
+    if (error.code === "expected-user-missing" && message) return message;
+  }
+  return "";
+}
+
+function bulkDeleteStatus({ succeeded, apiFailed, waiting, accountNote = "" }) {
+  const ok = succeeded.length;
+  const bad = apiFailed.length;
+  const wait = waiting.length;
+  let text;
+  if (bad === 0 && wait === 0) text = `已刪除 ${ok} 則對話。`;
+  else if (bad === 0) {
+    text = ok === 0
+      ? "選取的對話正在產生回覆，請等待完成後再刪除。"
+      : `已刪除 ${ok} 則，${wait} 則正在產生回覆，請等待完成。尚未完成的對話仍保留。`;
+  } else if (wait === 0) {
+    text = `已刪除 ${ok} 則，${bad} 則失敗。失敗的對話仍保留，可以再試一次。`;
+  } else {
+    text = `已刪除 ${ok} 則，${bad} 則失敗，${wait} 則正在產生回覆，請等待完成。失敗的對話仍保留，可以再試一次。`;
+  }
+  return accountNote ? `${text}${accountNote}` : text;
+}
+
+function staleAccountError() {
+  const err = new Error("登入帳號已變更，請重新整理後再操作");
+  err.status = 409;
+  return err;
+}
+
+const BULK_RELOGIN_MESSAGE = "請重新登入或重新整理後再操作。";
+
 function makeConversationTitle(text) {
   const t = (text || "").trim();
   if (!t) return "新對話";
@@ -612,6 +661,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 而 442 個測試沒有一個抓得到。鏡像寫在 updater 裡面(不是 useEffect),
   // 所以它與 state 完全同步,不會落後一個 commit。
   const messagesRef = useRef({});
+  const convBulkRef = useRef(false);
+  const bulkEpochRef = useRef(0);
+  const bulkMountedRef = useRef(true);
+  const bulkUserIdRef = useRef(user?.id);
+  if (bulkUserIdRef.current !== user?.id) {
+    bulkUserIdRef.current = user?.id;
+    bulkEpochRef.current += 1;
+  }
+  useEffect(() => {
+    bulkMountedRef.current = true;
+    return () => {
+      bulkMountedRef.current = false;
+      bulkEpochRef.current += 1;
+    };
+  }, []);
+  function bulkViewCurrent(epoch) {
+    return bulkMountedRef.current && epoch === bulkEpochRef.current;
+  }
   const conversationsRef = useRef([]);
   conversationsRef.current = conversations;
   const selectedConvIdRef = useRef(selectedConvId);
@@ -622,6 +689,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const compactPersistInFlightRef = useRef(new Map());
   const [compacting, setCompacting] = useState(false);
   const messagesByConv = messagesByConvState;
+  const busyConversationIds = useMemo(
+    () => [...streamingConversationIds(messagesByConv)],
+    [messagesByConv],
+  );
   const setMessagesByConv = useCallback((update) => {
     setMessagesByConvState((prev) => {
       const next = typeof update === "function" ? update(prev) : update;
@@ -911,6 +982,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }, [markUiSettingsUserEdited]);
 
   const deleteFolder = useCallback((id) => {
+    if (convBulkRef.current) return;
     if (BUILTIN_FOLDER_IDS.has(id)) return;
     markUiSettingsUserEdited("folders");
     setFolders((prev) => prev.filter((f) => f.id !== id));
@@ -2006,6 +2078,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // Persist star / folder / user-tags (same optimistic+rollback pattern as rename).
   // The derived ``classified`` tag is never sent — server strips it and re-derives.
   async function handleUpdateConvMeta(convId, patch) {
+    if (convBulkRef.current) return;
     const prev = conversations.find((c) => c.id === convId);
     if (!prev) return;
     const next = { ...patch };
@@ -2035,6 +2108,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   // ---- rename / delete a conversation from the sidebar ----
   async function handleRenameConv(convId, nextTitle) {
+    if (convBulkRef.current) return;
     const trimmed = (nextTitle || "").trim();
     if (!trimmed) return;
     // Optimistic local update for instant UI; rollback on backend failure.
@@ -2049,30 +2123,200 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
   }
 
-  async function handleDeleteConv(convId) {
-    const target = conversations.find((c) => c.id === convId);
-    if (!target) return;
-    if (!(await confirm({
-      title: "刪除對話",
-      message: `確定要刪除「${target.title}」？此動作無法復原。`,
-      confirmText: "刪除",
-      tone: "danger",
-    }))) return;
-    const prev = conversations;
-    setConversations((cs) => cs.filter((c) => c.id !== convId));
-    if (selectedConvId === convId) {
-      setSelectedConvId(null);
-    }
-    setMessagesByConv((prev2) => {
-      const { [convId]: _, ...rest } = prev2;
-      return rest;
+  function dropConversation(id) {
+    setConversations((cs) => cs.filter((c) => c.id !== id));
+    setMessagesByConv((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, id)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
     });
-    if (typeof convId !== "number") return;
+    setSelectedConvId((cur) => (cur === id ? null : cur));
+  }
+
+  async function handleDeleteConv(convId) {
+    if (convBulkRef.current) return;
+    const target = conversationsRef.current.find((c) => c.id === convId);
+    if (!target) return;
+    convBulkRef.current = true;
     try {
-      await apiDeleteConversation(authRequest, convId);
-    } catch (err) {
-      setConversations(prev);
-      setRuntimeError(err.message || "刪除對話失敗");
+      if (!(await confirm({
+        title: "刪除對話",
+        message: `確定要刪除「${target.title}」？此動作無法復原。`,
+        confirmText: "刪除",
+        tone: "danger",
+      }))) return;
+      const snapshot = conversationsRef.current.find((c) => c.id === convId);
+      if (!snapshot) return;
+      dropConversation(convId);
+      if (typeof convId !== "number") return;
+      try {
+        await apiDeleteConversation(authRequest, convId);
+      } catch (err) {
+        setConversations((cs) => (cs.some((c) => c.id === convId) ? cs : [snapshot, ...cs]));
+        setRuntimeError(err.message || "刪除對話失敗");
+      }
+    } finally {
+      convBulkRef.current = false;
+    }
+  }
+
+  function rememberMovedConversation(prev, id, folderId, row) {
+    let found = false;
+    const next = prev.map((c) => {
+      if (c.id !== id) return c;
+      found = true;
+      return { ...c, folder: folderId };
+    });
+    if (found) return next;
+    next.push({
+      id,
+      title: row?.title || "對話",
+      folder: folderId,
+      tags: Array.isArray(row?.tags) ? row.tags : [],
+      starred: Boolean(row?.starred),
+      classified: Boolean(row?.classified),
+      updatedAt: row?.updatedAt || row?.updated_at || new Date().toISOString(),
+      createdAt: row?.createdAt || row?.created_at,
+      agentId: row?.agentId ?? row?.agent_id ?? null,
+      agent: row?.agent ?? null,
+    });
+    return next;
+  }
+
+  async function handleBulkDelete(rows) {
+    if (convBulkRef.current) return { succeeded: [], failed: [], busy: true };
+    // 沒有正整數使用者 id 時，本機字串 id 也不能改，而且不開確認框。
+    const lockedUserId = positiveUserId(user?.id);
+    if (lockedUserId == null) {
+      return { succeeded: [], failed: [], message: BULK_RELOGIN_MESSAGE };
+    }
+    const ids = [];
+    const seen = new Set();
+    for (const row of rows || []) {
+      if (!row || row.id == null || seen.has(row.id)) continue;
+      seen.add(row.id);
+      ids.push(row.id);
+    }
+    const busy = streamingConversationIds(messagesRef.current);
+    const blocked = ids.filter((id) => busy.has(id));
+    const targets = ids.filter((id) => !busy.has(id));
+    if (targets.length === 0) {
+      return {
+        succeeded: [],
+        failed: blocked,
+        message: blocked.length
+          ? "選取的對話正在產生回覆，請等待完成後再刪除。"
+          : "沒有可刪除的對話。",
+      };
+    }
+    const epoch = bulkEpochRef.current;
+    const request = bindExpectedUser(authRequest, lockedUserId);
+    convBulkRef.current = true;
+    try {
+      const ok = await confirm({
+        title: "刪除對話",
+        message: `確定刪除 ${targets.length} 則對話？此動作無法復原。`,
+        confirmText: "刪除",
+        tone: "danger",
+      });
+      if (!ok) return { succeeded: [], failed: targets, cancelled: true };
+      if (!bulkViewCurrent(epoch)) return { succeeded: [], failed: targets, stale: true };
+      const { succeeded, failed } = await mapLimited(targets, async (id) => {
+        if (!bulkViewCurrent(epoch)) throw staleAccountError();
+        if (streamingConversationIds(messagesRef.current).has(id)) throw streamBusyError();
+        if (typeof id !== "number") {
+          dropConversation(id);
+          return;
+        }
+        await apiDeleteConversation(request, id);
+        if (!bulkViewCurrent(epoch)) throw staleAccountError();
+        dropConversation(id);
+      }, BULK_CONCURRENCY);
+      if (!bulkViewCurrent(epoch)) return { succeeded: [], failed: targets, stale: true };
+      const waiting = [...blocked];
+      const apiFailed = [];
+      const apiErrors = [];
+      for (const row of failed) {
+        if (row.error && row.error.code === "stream-busy") waiting.push(row.item);
+        else {
+          apiFailed.push(row.item);
+          apiErrors.push(row.error);
+        }
+      }
+      return {
+        succeeded,
+        failed: [...apiFailed, ...waiting],
+        message: bulkDeleteStatus({
+          succeeded,
+          apiFailed,
+          waiting,
+          accountNote: bulkAccountNote(apiErrors),
+        }),
+      };
+    } finally {
+      convBulkRef.current = false;
+    }
+  }
+
+  async function handleBulkMove(rows, folderId) {
+    if (convBulkRef.current) return { succeeded: [], failed: [], busy: true };
+    const lockedUserId = positiveUserId(user?.id);
+    if (lockedUserId == null) {
+      return { succeeded: [], failed: [], message: BULK_RELOGIN_MESSAGE };
+    }
+    const custom = foldersRef.current.some(
+      (f) => f && f.id === folderId && !BUILTIN_FOLDER_IDS.has(f.id),
+    );
+    if (folderId === "starred" || (folderId !== "all" && !custom)) {
+      return { succeeded: [], failed: [], message: "不能移入這個群組。" };
+    }
+    const ids = [];
+    const seen = new Set();
+    const byId = new Map();
+    for (const row of rows || []) {
+      if (!row || row.id == null || seen.has(row.id)) continue;
+      seen.add(row.id);
+      ids.push(row.id);
+      byId.set(row.id, row);
+    }
+    if (ids.length === 0) return { succeeded: [], failed: [] };
+    const folderName = folderId === "all"
+      ? "取消群組"
+      : (foldersRef.current.find((f) => f.id === folderId)?.name || folderId);
+    const epoch = bulkEpochRef.current;
+    const request = bindExpectedUser(authRequest, lockedUserId);
+    convBulkRef.current = true;
+    try {
+      const ok = await confirm({
+        title: "移入群組",
+        message: folderId === "all"
+          ? `將 ${ids.length} 則對話取消群組？`
+          : `將 ${ids.length} 則對話移入「${folderName}」？`,
+        confirmText: "移入",
+      });
+      if (!ok) return { succeeded: [], failed: ids, cancelled: true };
+      if (!bulkViewCurrent(epoch)) return { succeeded: [], failed: ids, stale: true };
+      const { succeeded, failed } = await mapLimited(ids, async (id) => {
+        if (!bulkViewCurrent(epoch)) throw staleAccountError();
+        if (typeof id !== "number") {
+          setConversations((prev) => rememberMovedConversation(prev, id, folderId, byId.get(id)));
+          return;
+        }
+        await apiUpdateConversation(request, id, { folder: folderId });
+        if (!bulkViewCurrent(epoch)) throw staleAccountError();
+        setConversations((prev) => rememberMovedConversation(prev, id, folderId, byId.get(id)));
+      }, BULK_CONCURRENCY);
+      if (!bulkViewCurrent(epoch)) return { succeeded: [], failed: ids, stale: true };
+      const accountNote = bulkAccountNote(failed.map((row) => row.error));
+      const message = failed.length === 0
+        ? (folderId === "all"
+          ? `已取消 ${succeeded.length} 則對話的群組。`
+          : `已移入 ${succeeded.length} 則對話。`)
+        : `已移入 ${succeeded.length} 則，${failed.length} 則失敗。失敗的對話仍留在原處。${accountNote}`;
+      return { succeeded, failed: failed.map((row) => row.item), message };
+    } finally {
+      convBulkRef.current = false;
     }
   }
 
@@ -4425,6 +4669,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   // ---- misc handlers ----
   function newChat() {
+    if (convBulkRef.current) return;
     setSelectedConvId(null);
     setCitationsOpen(false);
     setArtifact(null);
@@ -4602,6 +4847,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         onOpenTagEditor={(id, patch) => handleUpdateConvMeta(id, patch)}
         onRenameConv={handleRenameConv}
         onDeleteConv={handleDeleteConv}
+        onBulkDelete={handleBulkDelete}
+        onBulkMove={handleBulkMove}
+        busyConversationIds={busyConversationIds}
       />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -5383,7 +5631,11 @@ function SettingsModal({
           )}
 
           {tab === "memory" && (
-            <MemoryTab authRequest={authRequest} onOpenConversation={onOpenConversation} />
+            <MemoryTab
+              authRequest={authRequest}
+              onOpenConversation={onOpenConversation}
+              userId={user?.id}
+            />
           )}
 
           {tab === "skills" && (
@@ -5469,6 +5721,7 @@ export default function App() {
 
   return (
     <ChatRuntime
+      key={user?.id ?? "anon"}
       user={user}
       tweaks={tweaks}
       setTweaks={setTweaks}

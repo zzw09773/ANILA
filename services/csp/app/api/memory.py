@@ -21,10 +21,10 @@ the DB directly.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.conversation import Conversation
 from app.models.user_memory import ConversationMemoryChunk, ConversationSummary, UserFact
+from app.api.bulk_identity import ExpectedUserId, reject_if_expected_user_mismatch
 from app.services.auth_service import get_current_user
 from app.schemas.base import ApiResponseModel
 from app.services.memory_service import (
@@ -57,6 +58,8 @@ _CHUNK_LIMIT_MAX = 500
 # turn often runs 1-3 KB; an unbounded list of those drives the
 # settings dialog into a janky scroll.
 _PREVIEW_CHARS = 240
+_SUMMARY_BULK_LIMIT = 200
+_SUMMARY_NOT_FOUND = "摘要不存在"
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -99,6 +102,16 @@ class ChunkListResponse(BaseModel):
 
 class DeleteResponse(BaseModel):
     deleted: int
+
+
+class SummaryBulkDeleteBody(BaseModel):
+    """批次刪除自己的對話摘要。ids 為 1 到 200 個嚴格正整數。"""
+
+    model_config = ConfigDict(strict=True)
+    ids: list[Annotated[int, Field(gt=0)]] = Field(
+        min_length=1,
+        max_length=_SUMMARY_BULK_LIMIT,
+    )
 
 
 class FactUpdateBody(BaseModel):
@@ -323,6 +336,20 @@ def clear_facts(
 # ── 對話摘要 ─────────────────────────────────────────────────────────────────
 
 
+def _delete_summaries(db: Session, rows: list[ConversationSummary]) -> int:
+    """每一列先記墓碑再刪，最後才 commit。
+
+    SessionLocal 關掉 autoflush。SQLite 墓碑主鍵用 max(id)+1，
+    同一交易裡不 flush 的話下一筆會拿到同一個 id。
+    """
+    for row in rows:
+        remember_summary_deleted(db, row)
+        db.delete(row)
+        db.flush()
+    db.commit()
+    return len(rows)
+
+
 @router.get("/summaries", response_model=SummaryListResponse)
 def list_summaries(
     current_user: User = Depends(get_current_user),
@@ -340,6 +367,47 @@ def list_summaries(
     )
 
 
+@router.post("/summaries/bulk-delete", response_model=DeleteResponse)
+def bulk_delete_summaries(
+    body: SummaryBulkDeleteBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    expected_user_id: ExpectedUserId = None,
+):
+    """刪掉列出的摘要。任一筆不是本人的或不存在，整批不動、也不寫墓碑。"""
+    reject_if_expected_user_mismatch(current_user, expected_user_id)
+    distinct_ids = list(dict.fromkeys(body.ids))
+    rows = (
+        db.query(ConversationSummary)
+        .filter(
+            ConversationSummary.user_id == current_user.id,
+            ConversationSummary.id.in_(distinct_ids),
+        )
+        .all()
+    )
+    if len(rows) != len(distinct_ids):
+        raise HTTPException(status_code=404, detail=_SUMMARY_NOT_FOUND)
+    by_id = {int(row.id): row for row in rows}
+    ordered = [by_id[summary_id] for summary_id in distinct_ids]
+    return DeleteResponse(deleted=_delete_summaries(db, ordered))
+
+
+@router.delete("/summaries", response_model=DeleteResponse)
+def clear_summaries(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    expected_user_id: ExpectedUserId = None,
+):
+    """刪掉目前使用者的全部對話摘要。沒有摘要時回 deleted 0。"""
+    reject_if_expected_user_mismatch(current_user, expected_user_id)
+    rows = (
+        db.query(ConversationSummary)
+        .filter(ConversationSummary.user_id == current_user.id)
+        .all()
+    )
+    return DeleteResponse(deleted=_delete_summaries(db, rows))
+
+
 @router.delete("/summaries/{summary_id}", response_model=DeleteResponse)
 def delete_summary(
     summary_id: int,
@@ -355,7 +423,7 @@ def delete_summary(
         .first()
     )
     if row is None:
-        raise HTTPException(status_code=404, detail="摘要不存在")
+        raise HTTPException(status_code=404, detail=_SUMMARY_NOT_FOUND)
     remember_summary_deleted(db, row)
     db.delete(row)
     db.commit()

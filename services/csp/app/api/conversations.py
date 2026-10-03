@@ -10,6 +10,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session, object_session
 
 from app.api.auth import get_current_user
+from app.api.bulk_identity import ExpectedUserId, reject_if_expected_user_mismatch
 from app.database import get_db
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
@@ -937,7 +938,9 @@ def update_conversation(
     body: ConversationUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    expected_user_id: ExpectedUserId = None,
 ):
+    reject_if_expected_user_mismatch(current_user, expected_user_id)
     conv = svc.update_conversation(
         db,
         conv_id,
@@ -955,7 +958,9 @@ def delete_conversation(
     conv_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    expected_user_id: ExpectedUserId = None,
 ):
+    reject_if_expected_user_mismatch(current_user, expected_user_id)
     svc.delete_conversation(db, conv_id, current_user)
 
 

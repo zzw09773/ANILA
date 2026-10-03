@@ -41,6 +41,17 @@ export function deleteSummary(authRequest, summaryId) {
   return authRequest(`/api/memory/summaries/${summaryId}`, { method: "DELETE" });
 }
 
+export function bulkDeleteSummaries(authRequest, ids) {
+  return authRequest("/api/memory/summaries/bulk-delete", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export function clearSummaries(authRequest) {
+  return authRequest("/api/memory/summaries", { method: "DELETE" });
+}
+
 export function clearFacts(authRequest) {
   return authRequest("/api/memory/facts", { method: "DELETE" });
 }
