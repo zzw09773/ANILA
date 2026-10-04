@@ -174,12 +174,17 @@ onUnmounted(() => {
 }
 .shell__resizer:hover,
 .shell__resizer:focus-visible {
-  background-color: var(--c-accent);
+  background-color: transparent;
+  background-image: linear-gradient(var(--c-accent), var(--c-accent));
+  background-size: 2px 100%;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 @media (forced-colors: active) {
   .shell__resizer:hover,
   .shell__resizer:focus-visible {
     background-color: Highlight;
+    background-image: none;
     outline: 2px solid Highlight;
   }
 }

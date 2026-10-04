@@ -137,6 +137,42 @@ describe('applyPanelDelta', () => {
 })
 
 describe('PanelResizeHandle', () => {
+  it('paints a centered 2px stripe and keeps the 6px hit box', () => {
+    render(
+      <HandleProbe
+        label="調整來源側欄寬度"
+        value={300}
+        min={220}
+        max={420}
+        sign={1}
+        onChange={() => {}}
+      />,
+    )
+    const handle = screen.getByRole('separator', { name: '調整來源側欄寬度' })
+    expect(handle.style.width).toBe(`${HANDLE_TRACK_PX}px`)
+    expect(handle.style.flex).toBe(`0 0 ${HANDLE_TRACK_PX}px`)
+    expect(handle.style.backgroundImage).toBe('')
+
+    fireEvent.mouseEnter(handle)
+    expect(handle.style.backgroundSize).toBe('2px 100%')
+    expect(handle.style.backgroundPosition).toContain('center')
+    expect(handle.style.backgroundRepeat).toBe('no-repeat')
+    expect(handle.style.backgroundImage).toContain('linear-gradient')
+    expect(handle.style.backgroundColor).toBe('transparent')
+    expect(handle.style.width).toBe(`${HANDLE_TRACK_PX}px`)
+
+    fireEvent.mouseLeave(handle)
+    expect(handle.style.backgroundImage).toBe('')
+
+    handle.focus()
+    expect(document.activeElement).toBe(handle)
+    expect(handle.style.backgroundImage).toContain('linear-gradient')
+    fireEvent.mouseLeave(handle)
+    expect(handle.style.backgroundImage).toContain('linear-gradient')
+    fireEvent.blur(handle)
+    expect(handle.style.backgroundImage).toBe('')
+  })
+
   it('drags left wider and right narrower, and only with the primary button', () => {
     const onLeft = vi.fn()
     const onRight = vi.fn()

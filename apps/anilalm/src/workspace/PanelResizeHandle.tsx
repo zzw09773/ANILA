@@ -2,6 +2,18 @@ import { useTheme } from '../theme/ThemeContext'
 import type { PanelResizeBind } from './useVerticalPanelResize'
 import { HANDLE_TRACK_PX } from './useVerticalPanelResize'
 
+function showResizeStripe(el: HTMLElement, color: string) {
+  el.style.backgroundColor = 'transparent'
+  el.style.backgroundImage = `linear-gradient(${color}, ${color})`
+  el.style.backgroundSize = '2px 100%'
+  el.style.backgroundPosition = 'center'
+  el.style.backgroundRepeat = 'no-repeat'
+}
+
+function hideResizeStripe(el: HTMLElement) {
+  el.style.backgroundImage = ''
+}
+
 export function PanelResizeHandle(bind: PanelResizeBind) {
   const { t } = useTheme()
   return (
@@ -30,18 +42,18 @@ export function PanelResizeHandle(bind: PanelResizeBind) {
         boxSizing: 'border-box',
       }}
       onMouseEnter={(event) => {
-        event.currentTarget.style.background = t.accent
+        showResizeStripe(event.currentTarget, t.accent)
       }}
       onMouseLeave={(event) => {
         if (event.currentTarget !== document.activeElement) {
-          event.currentTarget.style.background = 'transparent'
+          hideResizeStripe(event.currentTarget)
         }
       }}
       onFocus={(event) => {
-        event.currentTarget.style.background = t.accent
+        showResizeStripe(event.currentTarget, t.accent)
       }}
       onBlur={(event) => {
-        event.currentTarget.style.background = 'transparent'
+        hideResizeStripe(event.currentTarget)
       }}
     />
   )

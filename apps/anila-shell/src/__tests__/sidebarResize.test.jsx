@@ -1,5 +1,7 @@
 // 桌面側欄右緣可拖曳／鍵盤調整寬度。寬度只活在元件狀態，窄視窗與收合不出現手把。
 import React from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -113,6 +115,24 @@ describe("Sidebar resize handle", () => {
     cascade.remove();
     expect(columnOf(handle).style.width).toBe("272px");
     expect(columnOf(handle).style.position).toBe("relative");
+  });
+
+  it("paints a centered 2px stripe and leaves the 6px hit box unchanged", () => {
+    const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
+    const base = html.match(/\.anila-sidebar-resizer\s*\{[^}]*\}/);
+    expect(base?.[0]).toMatch(/width:\s*6px/);
+    expect(base?.[0]).toMatch(/padding:\s*0 9px/);
+    expect(base?.[0]).toMatch(/right:\s*-12px/);
+    const hover = html.match(
+      /\.anila-sidebar-resizer:hover,\s*\.anila-sidebar-resizer:focus-visible\s*\{[^}]*\}/,
+    );
+    expect(hover?.[0]).toMatch(/background-image:\s*linear-gradient\(var\(--accent\), var\(--accent\)\)/);
+    expect(hover?.[0]).toMatch(/background-size:\s*2px 100%/);
+    expect(hover?.[0]).toMatch(/background-position:\s*center/);
+    expect(hover?.[0]).toMatch(/background-repeat:\s*no-repeat/);
+    expect(hover?.[0]).not.toMatch(/background-color:\s*var\(--accent\)/);
+    expect(html).toMatch(/background-color:\s*Highlight/);
+    expect(html).toMatch(/outline:\s*2px solid Highlight/);
   });
 
   it("does not render a resizer when collapsed or when the viewport is ≤900", () => {
