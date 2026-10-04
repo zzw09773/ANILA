@@ -543,6 +543,31 @@
     pointer-events: none;
     color: var(--fg-muted);
   }
+  .anila-sidebar-resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -12px;
+    z-index: 2;
+    box-sizing: content-box;
+    width: 6px;
+    padding: 0 9px;
+    background-clip: content-box;
+    background-color: transparent;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .anila-sidebar-resizer:hover,
+  .anila-sidebar-resizer:focus-visible {
+    background-color: var(--accent);
+  }
+  @media (forced-colors: active) {
+    .anila-sidebar-resizer:hover,
+    .anila-sidebar-resizer:focus-visible {
+      background-color: Highlight;
+      outline: 2px solid Highlight;
+    }
+  }
   @media (forced-colors: active) {
     .anila-bulk-check {
       appearance: auto;

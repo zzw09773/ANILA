@@ -26,7 +26,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '失敗',
 }
 
-export function WSSidebar() {
+export function WSSidebar({ width = 300 }: { width?: number }) {
   const { t } = useTheme()
   const navigate = useNavigate()
   const collection = useWorkspaceStore((s) => s.collection)
@@ -149,7 +149,8 @@ export function WSSidebar() {
   return (
     <aside
       style={{
-        width: 300,
+        width,
+        minWidth: 0,
         height: '100%',
         background: t.surface,
         borderRight: `1px solid ${t.border}`,

@@ -13,6 +13,22 @@ const sidebar = readFileSync(resolve(ROOT, 'src/components/layout/AppSidebar.vue
 const nav = readFileSync(resolve(ROOT, 'src/composables/useShellNav.js'), 'utf8')
 const css = readFileSync(resolve(ROOT, 'src/assets/styles/main.css'), 'utf8')
 
+test('desktop sidebar boundary is a separate resizer, not a drawer control', () => {
+  assert.match(layout, /role="separator"/)
+  assert.match(layout, /aria-label="調整側欄寬度"/)
+  assert.match(layout, /v-if="!narrow"/)
+  assert.match(layout, /shell__resizer/)
+  assert.match(layout, /width:\s*6px/)
+  assert.match(layout, /box-sizing:\s*content-box/)
+  assert.match(layout, /flush:\s*'sync'/)
+  assert.match(layout, /shouldEndSidebarDrag\(next\)/)
+  assert.match(layout, /if \(shouldEndSidebarDrag\(next\)\) unbindPointer\.release\?\.\(\)/)
+  assert.match(layout, /--c-accent/)
+  assert.match(layout, /forced-colors:\s*active/)
+  assert.match(layout, /Highlight/)
+  assert.doesNotMatch(layout, /localStorage|sessionStorage/)
+})
+
 test('narrow layout uses an overlay drawer, not a stacked sidebar row', () => {
   assert.match(layout, /provideShellNav/)
   assert.match(layout, /shell__backdrop/)

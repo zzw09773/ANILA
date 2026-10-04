@@ -1,13 +1,27 @@
 <template>
   <div class="shell">
     <AppHeader />
-    <div class="shell__body">
+    <div class="shell__body" :style="bodyStyle">
       <div
         v-if="narrow && open"
         class="shell__backdrop"
         @click="close()"
       />
       <AppSidebar />
+      <div
+        v-if="!narrow"
+        ref="resizerEl"
+        class="shell__resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="調整側欄寬度"
+        :aria-valuemin="bounds.min"
+        :aria-valuemax="bounds.max"
+        :aria-valuenow="sidebarWidth"
+        tabindex="0"
+        @keydown="onResizerKey"
+        @dblclick="resetSidebarWidth"
+      />
       <main id="gov-main" class="shell__main" tabindex="-1">
         <OpenAlertBanner v-if="isSteward" />
         <UnreadFeedbackBanner v-if="isSteward" />
@@ -27,7 +41,7 @@
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
@@ -37,6 +51,14 @@ import UnreadFeedbackBanner from './UnreadFeedbackBanner.vue'
 import InactivityNoticeBanner from './InactivityNoticeBanner.vue'
 import { ErrorPanel } from '../errorPanel.js'
 import { provideShellNav } from '../../composables/useShellNav.js'
+import {
+  SIDEBAR_DEFAULT,
+  bindSidebarPointer,
+  clampSidebarWidth,
+  shouldEndSidebarDrag,
+  sidebarWidthBounds,
+  sidebarWidthFromKey,
+} from '../../composables/sidebarWidth.js'
 import { useAuthStore } from '../../stores/auth'
 
 const auth = useAuthStore()
@@ -44,6 +66,61 @@ const isSteward = computed(() => auth.isSteward)
 const { open, narrow, close } = provideShellNav()
 const route = useRoute()
 watch(() => route.fullPath, () => close())
+
+const viewportWidth = () => (typeof window === 'undefined' ? 1280 : window.innerWidth)
+const viewport = ref(viewportWidth())
+const sidebarWidth = ref(clampSidebarWidth(SIDEBAR_DEFAULT, viewport.value))
+const preferredWidth = ref(SIDEBAR_DEFAULT)
+const bounds = computed(() => sidebarWidthBounds(viewport.value))
+const bodyStyle = computed(() => (
+  narrow.value ? null : { '--shell-sidebar': `${sidebarWidth.value}px` }
+))
+const resizerEl = ref(null)
+let unbindPointer = () => {}
+
+function applyViewport() {
+  const next = viewportWidth()
+  if (shouldEndSidebarDrag(next)) unbindPointer.release?.()
+  viewport.value = next
+  sidebarWidth.value = clampSidebarWidth(preferredWidth.value, viewport.value)
+}
+function resetSidebarWidth() {
+  preferredWidth.value = SIDEBAR_DEFAULT
+  sidebarWidth.value = clampSidebarWidth(SIDEBAR_DEFAULT, viewportWidth())
+}
+function onResizerKey(event) {
+  const next = sidebarWidthFromKey(event.key, sidebarWidth.value, viewportWidth())
+  if (next == null) return
+  event.preventDefault()
+  preferredWidth.value = next
+  sidebarWidth.value = next
+}
+
+onMounted(() => {
+  applyViewport()
+  window.addEventListener('resize', applyViewport)
+})
+watch(resizerEl, (el, prev) => {
+  if (prev) unbindPointer()
+  unbindPointer = () => {}
+  if (!el) return
+  unbindPointer = bindSidebarPointer(el, {
+    getWidth: () => sidebarWidth.value,
+    setWidth: (next) => {
+      preferredWidth.value = next
+      sidebarWidth.value = next
+    },
+    viewportWidth,
+  })
+})
+watch(narrow, (isNarrow) => {
+  if (isNarrow) unbindPointer.release?.()
+  else applyViewport()
+}, { flush: 'sync' })
+onUnmounted(() => {
+  window.removeEventListener('resize', applyViewport)
+  unbindPointer()
+})
 </script>
 
 <style scoped>
@@ -79,6 +156,32 @@ watch(() => route.fullPath, () => close())
 
 .shell__backdrop {
   display: none;
+}
+
+.shell__resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--shell-sidebar) - 12px);
+  z-index: 5;
+  box-sizing: content-box;
+  width: 6px;
+  padding: 0 9px;
+  background-clip: content-box;
+  background-color: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+.shell__resizer:hover,
+.shell__resizer:focus-visible {
+  background-color: var(--c-accent);
+}
+@media (forced-colors: active) {
+  .shell__resizer:hover,
+  .shell__resizer:focus-visible {
+    background-color: Highlight;
+    outline: 2px solid Highlight;
+  }
 }
 
 @media (max-width: 900px) {

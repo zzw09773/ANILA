@@ -81,9 +81,17 @@ const SHARED_CONV = {
 afterEach(() => {
   cleanup()
   useWorkspaceStore.getState().reset()
+  vi.unstubAllGlobals()
 })
 
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   vi.mocked(getCollection).mockRejectedValue(forbidden('/api/ingestion/collections/3'))
   vi.mocked(listDocuments).mockRejectedValue(
     forbidden('/api/ingestion/collections/3/documents'),

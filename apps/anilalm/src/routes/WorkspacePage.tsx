@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
@@ -12,6 +12,16 @@ import { WSSidebar } from '../workspace/WSSidebar'
 import { WSChat } from '../workspace/WSChat'
 import { WSStudio } from '../workspace/WSStudio'
 import { useJobStream } from '../workspace/useJobStream'
+import { PanelResizeHandle } from '../workspace/PanelResizeHandle'
+import {
+  DESKTOP_DRAG_MIN_PX,
+  LEFT_PANEL,
+  RIGHT_PANEL,
+  clampPanelPair,
+  panelAriaBounds,
+  releasePanelDrags,
+  useVerticalPanelResize,
+} from '../workspace/useVerticalPanelResize'
 
 export function WorkspacePage() {
   const { collectionId, conversationId: conversationIdParam } = useParams<{
@@ -33,11 +43,114 @@ export function WorkspacePage() {
   const reset = useWorkspaceStore((s) => s.reset)
   const upsertDoc = useWorkspaceStore((s) => s.upsertDoc)
   const studioOpen = useWorkspaceStore((s) => s.studioOpen)
-
+  const frameRef = useRef<HTMLDivElement | null>(null)
+  const [leftPref, setLeftPref] = useState<number>(LEFT_PANEL.default)
+  const [rightPref, setRightPref] = useState<number>(RIGHT_PANEL.default)
+  const [changedSide, setChangedSide] = useState<'left' | 'right' | null>(null)
+  const [containerWidth, setContainerWidth] = useState(0)
+  const [dragEnabled, setDragEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [collectionDenied, setCollectionDenied] = useState<string | null>(null)
   const collection = useWorkspaceStore((s) => s.collection)
+  const layoutReady = !loading && !err
+
+  const container = () => {
+    const measured = frameRef.current?.clientWidth ?? 0
+    return measured > 0 ? measured : containerWidth || window.innerWidth
+  }
+
+  useEffect(() => {
+    if (!layoutReady) return
+    const measure = () => {
+      const frame = frameRef.current
+      const measured = frame?.clientWidth ?? 0
+      const next = measured > 0 ? measured : window.innerWidth
+      const desktop = next >= DESKTOP_DRAG_MIN_PX
+      setDragEnabled(desktop)
+      if (!desktop) releasePanelDrags()
+      setChangedSide(null)
+      setContainerWidth((prev) => (prev === next ? prev : next))
+    }
+    measure()
+    const frame = frameRef.current
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null
+    if (frame && observer) observer.observe(frame)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [layoutReady])
+
+  useEffect(() => {
+    setChangedSide(null)
+  }, [studioOpen, containerWidth])
+
+  const widthRef = useRef<{ left: number; right: number }>({
+    left: LEFT_PANEL.default,
+    right: RIGHT_PANEL.default,
+  })
+  const fitted = clampPanelPair({
+    container: container(),
+    left: leftPref,
+    right: rightPref,
+    rightVisible: studioOpen,
+    changed: studioOpen ? changedSide ?? undefined : undefined,
+    otherRendered: changedSide === 'left' ? widthRef.current.right : widthRef.current.left,
+  })
+  const leftWidth = fitted.left
+  const rightWidth = fitted.right
+  widthRef.current = { left: leftWidth, right: rightWidth }
+
+  useEffect(() => {
+    if (containerWidth < DESKTOP_DRAG_MIN_PX || !studioOpen) return
+    setLeftPref(widthRef.current.left)
+    setRightPref(widthRef.current.right)
+  }, [containerWidth, studioOpen])
+  const leftBounds = panelAriaBounds({
+    container: container(),
+    rendered: leftWidth,
+    otherRendered: rightWidth,
+    otherVisible: studioOpen,
+    floor: LEFT_PANEL.min,
+    cap: LEFT_PANEL.max,
+  })
+  const rightBounds = panelAriaBounds({
+    container: container(),
+    rendered: rightWidth,
+    otherRendered: leftWidth,
+    otherVisible: true,
+    floor: RIGHT_PANEL.min,
+    cap: RIGHT_PANEL.max,
+  })
+
+  const leftHandle = useVerticalPanelResize({
+    label: '調整來源側欄寬度',
+    value: leftWidth,
+    min: leftBounds.min,
+    max: leftBounds.max,
+    defaultValue: LEFT_PANEL.default,
+    sign: 1,
+    active: layoutReady,
+    onChange: (next) => {
+      setChangedSide('left')
+      setLeftPref(next)
+    },
+  })
+  const rightHandle = useVerticalPanelResize({
+    label: '調整製作台寬度',
+    value: rightWidth,
+    min: rightBounds.min,
+    max: rightBounds.max,
+    defaultValue: RIGHT_PANEL.default,
+    sign: -1,
+    active: layoutReady && studioOpen,
+    onChange: (next) => {
+      setChangedSide('right')
+      setRightPref(next)
+    },
+  })
   useEffect(() => {
     const name = collection?.name ? String(collection.name) : '工作區'
     document.title = `${name} · ANILA LM`
@@ -272,6 +385,8 @@ export function WorkspacePage() {
 
   return (
     <div
+      ref={frameRef}
+      data-workspace-frame="1"
       style={{
         height: '100dvh',
         background: t.bg,
@@ -306,9 +421,14 @@ export function WorkspacePage() {
           {collectionDenied}
         </div>
       )}
-      <WSSidebar />
+      <WSSidebar width={leftWidth} />
+      {dragEnabled && <PanelResizeHandle {...leftHandle} />}
       <WSChat flex={studioOpen ? 1.4 : 1} />
       <Outlet />
+      {/* Separator stays outside the hidden studio wrapper. Closing the
+          studio unmounts the handle so it leaves the accessibility tree,
+          while WSStudio itself stays mounted for in-flight pollers. */}
+      {studioOpen && dragEnabled && <PanelResizeHandle {...rightHandle} />}
       {/* Keep WSStudio mounted while closed so in-flight job pollers
           keep running. Unmounting used to freeze pending artifacts at
           "鑄造中" until the user reopened the panel. */}
@@ -318,7 +438,7 @@ export function WorkspacePage() {
         }}
         aria-hidden={!studioOpen}
       >
-        <WSStudio />
+        <WSStudio width={rightWidth} />
       </div>
     </div>
   )

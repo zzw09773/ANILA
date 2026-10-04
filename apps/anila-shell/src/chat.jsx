@@ -6,6 +6,12 @@ import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallba
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { appendRemoteHits, moveFolderOptions, positiveUserId } from "./runtime/bulkActions.js";
+import {
+  SIDEBAR_DEFAULT,
+  clampSidebarWidth,
+  sidebarWidthBounds,
+  sidebarWidthFromKey,
+} from "./runtime/sidebarWidth.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { classifiedCopyDenial } from "./uxCopy.js";
@@ -4024,8 +4030,149 @@ export const Sidebar = ({
   onBulkDelete,
   onBulkMove,
   busyConversationIds,
+  viewportWidth: viewportWidthProp,
 }) => {
   const confirm = useConfirm();
+  const viewportWidth = () => (
+    typeof viewportWidthProp === "function"
+      ? viewportWidthProp()
+      : (typeof window === "undefined" ? 1280 : window.innerWidth)
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(SIDEBAR_DEFAULT, viewportWidth()));
+  const [viewportTick, setViewportTick] = useState(0);
+  const preferredWidthRef = useRef(SIDEBAR_DEFAULT);
+  const sidebarWidthRef = useRef(sidebarWidth);
+  const dragRef = useRef(null);
+  const resizerRef = useRef(null);
+  const bodyCursorRef = useRef("");
+  const bodySelectRef = useRef("");
+  sidebarWidthRef.current = sidebarWidth;
+
+  const releaseSidebarDrag = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    const el = resizerRef.current;
+    if (el && typeof el.releasePointerCapture === "function") {
+      try {
+        if (typeof el.hasPointerCapture !== "function" || el.hasPointerCapture(drag.id)) {
+          el.releasePointerCapture(drag.id);
+        }
+      } catch {
+        /* capture already gone */
+      }
+    }
+    document.body.style.cursor = bodyCursorRef.current;
+    document.body.style.userSelect = bodySelectRef.current;
+  }, []);
+
+  useEffect(() => {
+    const apply = () => {
+      if (viewportWidth() <= 900) releaseSidebarDrag();
+      setViewportTick((n) => n + 1);
+      setSidebarWidth(clampSidebarWidth(preferredWidthRef.current, viewportWidth()));
+    };
+    window.addEventListener("resize", apply);
+    return () => {
+      window.removeEventListener("resize", apply);
+      releaseSidebarDrag();
+    };
+  }, [releaseSidebarDrag]);
+
+  useEffect(() => {
+    if (collapsed || viewportWidth() <= 900) releaseSidebarDrag();
+  }, [collapsed, viewportTick, releaseSidebarDrag]);
+
+  const showResizer = viewportTick >= 0 && !collapsed && viewportWidth() > 900;
+
+  useEffect(() => {
+    const el = resizerRef.current;
+    if (!el) return undefined;
+    let windowed = false;
+    const samePointer = (event) => (
+      dragRef.current && typeof event.pointerId === "number" && event.pointerId === dragRef.current.id
+    );
+    const disarmWindow = () => {
+      if (!windowed) return;
+      windowed = false;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+    const armWindow = () => {
+      if (windowed) return;
+      windowed = true;
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onEnd);
+      window.addEventListener("pointercancel", onEnd);
+    };
+    const onDown = (event) => {
+      if (event.button !== 0 || dragRef.current) return;
+      if (typeof event.pointerId !== "number") return;
+      if (event.cancelable) event.preventDefault();
+      const pointerId = event.pointerId;
+      const originX = Number.isFinite(event.clientX) ? event.clientX : 0;
+      dragRef.current = { id: pointerId, x: originX, width: sidebarWidthRef.current };
+      bodyCursorRef.current = document.body.style.cursor;
+      bodySelectRef.current = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      if (typeof el.setPointerCapture !== "function") {
+        armWindow();
+        return;
+      }
+      // Defer capture. jsdom re-dispatches this pointerdown synchronously,
+      // which would otherwise restart the drag at clientX 0.
+      queueMicrotask(() => {
+        if (dragRef.current?.id !== pointerId) return;
+        try {
+          el.setPointerCapture(pointerId);
+        } catch {
+          armWindow();
+        }
+      });
+    };
+    const onMove = (event) => {
+      const drag = dragRef.current;
+      if (!samePointer(event) || !Number.isFinite(event.clientX)) return;
+      if (event.currentTarget === window && event.target === el) return;
+      const next = clampSidebarWidth(drag.width + (event.clientX - drag.x), viewportWidth());
+      preferredWidthRef.current = next;
+      setSidebarWidth(next);
+    };
+    const onEnd = (event) => {
+      if (!samePointer(event)) return;
+      if (event.currentTarget === window && event.target === el) return;
+      disarmWindow();
+      releaseSidebarDrag();
+    };
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onEnd);
+    el.addEventListener("pointercancel", onEnd);
+    el.addEventListener("lostpointercapture", onEnd);
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onEnd);
+      el.removeEventListener("pointercancel", onEnd);
+      el.removeEventListener("lostpointercapture", onEnd);
+      disarmWindow();
+      releaseSidebarDrag();
+    };
+  }, [releaseSidebarDrag, showResizer]);
+  const onSidebarKeyDown = (event) => {
+    const next = sidebarWidthFromKey(event.key, sidebarWidth, viewportWidth());
+    if (next == null) return;
+    event.preventDefault();
+    preferredWidthRef.current = next;
+    setSidebarWidth(next);
+  };
+  const resetSidebarWidth = () => {
+    preferredWidthRef.current = SIDEBAR_DEFAULT;
+    setSidebarWidth(clampSidebarWidth(SIDEBAR_DEFAULT, viewportWidth()));
+  };
+
   const [query, setQuery] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -4163,13 +4310,30 @@ export const Sidebar = ({
     );
   }
 
+  const bounds = sidebarWidthBounds(viewportWidth());
   return (
     <div style={{
-      width: 272, flexShrink: 0,
+      width: sidebarWidth, flexShrink: 0, position: "relative",
       borderRight: "1px solid var(--border)",
       background: "var(--bg-subtle)",
       display: "flex", flexDirection: "column",
     }}>
+      {showResizer && (
+        <div
+          ref={resizerRef}
+          className="anila-sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="調整側欄寬度"
+          aria-valuemin={bounds.min}
+          aria-valuemax={bounds.max}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          style={{ boxSizing: "content-box", width: 6, padding: "0 9px" }}
+          onKeyDown={onSidebarKeyDown}
+          onDoubleClick={resetSidebarWidth}
+        />
+      )}
       <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
         <button
           type="button"

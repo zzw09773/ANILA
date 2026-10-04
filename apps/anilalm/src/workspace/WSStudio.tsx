@@ -162,7 +162,7 @@ const POLL_WARN_AFTER = 5
  *  enough that the user isn't staring at a spinner forever. */
 const POLL_FAIL_AFTER = 30
 
-export function WSStudio() {
+export function WSStudio({ width = 380 }: { width?: number }) {
   const { t } = useTheme()
   const collection = useWorkspaceStore((s) => s.collection)
   const setStudioOpen = useWorkspaceStore((s) => s.setStudioOpen)
@@ -459,7 +459,8 @@ export function WSStudio() {
   return (
     <aside
       style={{
-        width: 380,
+        width,
+        minWidth: 0,
         height: '100%',
         background: t.surface,
         borderLeft: `1px solid ${t.border}`,
