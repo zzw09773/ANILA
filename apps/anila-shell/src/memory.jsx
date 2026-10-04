@@ -727,8 +727,9 @@ export function MemoryTab({ authRequest, onOpenConversation, userId }) {
                 minWidth: 0,
               }}>
                 {summarySelectMode && (
-                  <label style={{ position: "relative", display: "inline-flex", flex: "0 0 auto" }}>
+                  <label className="anila-bulk-check-hit" style={{ position: "relative", display: "inline-flex", flex: "0 0 auto" }}>
                     <input
+                      className="anila-bulk-check"
                       type="checkbox"
                       checked={summarySelected.has(item.id)}
                       disabled={summaryBusy}

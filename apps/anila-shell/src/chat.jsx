@@ -3239,6 +3239,7 @@ export const Composer = ({
         if (e.target.closest("button, input, textarea, a, [role='menu']")) return;
         taRef.current?.focus();
       }}
+      className="anila-inset-surface"
       style={{
         position: "relative",
         display: "flex",
@@ -3756,6 +3757,7 @@ export const Composer = ({
         <div style={{ flex: 1, minWidth: 0, padding: "5px 8px 5px 4px" }}>
           <textarea
             ref={taRef}
+            className="anila-inset-field"
             aria-label="傳訊息給 ANILA"
             value={text}
             onChange={(e) => {
@@ -4259,7 +4261,9 @@ export const Sidebar = ({
             })}
             {typeof onCreateFolder === "function" && (
               newFolderOpen ? (
-                <span style={{
+                <span
+                  className="anila-inset-surface"
+                  style={{
                   display: "inline-flex", alignItems: "center", gap: 2,
                   background: "var(--bg-elev)",
                   border: "1px solid var(--accent)",
@@ -4268,6 +4272,7 @@ export const Sidebar = ({
                   fontFamily: "var(--font-mono)",
                 }}>
                   <input
+                    className="anila-inset-field"
                     autoFocus
                     value={newFolderName}
                     onChange={(e) => setNewFolderName(e.target.value)}
@@ -4327,7 +4332,9 @@ export const Sidebar = ({
           </div>
 
           <div style={{ padding: "0 10px 6px" }}>
-            <div style={{
+            <div
+              className="anila-inset-surface"
+              style={{
               display: "flex", alignItems: "center", gap: 6,
               padding: "5px 9px",
               background: "var(--bg-elev)", border: "1px solid var(--border)",
@@ -4335,12 +4342,13 @@ export const Sidebar = ({
             }}>
               <IconSearch size={13} style={{ color: "var(--fg-subtle)" }} />
               <input
+                className="anila-inset-field"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); } }}
                 placeholder="搜尋… (tag:hr 特休 / 支援同義詞)"
                 aria-label="搜尋對話"
-                style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "var(--fg)" }}
+                style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "var(--fg)" }}
               />
               {query && (
                 <button
@@ -4425,19 +4433,25 @@ export const Sidebar = ({
                 >
                   刪除
                 </button>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-muted)", flex: "0 0 auto" }}>
+                <label className="anila-bulk-select-label" style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: 4, fontSize: 11, color: "var(--fg-muted)", flex: "1 1 10rem", minWidth: 0, maxWidth: "100%" }}>
                   移到群組
-                  <select
-                    aria-label="移到群組"
-                    value={moveOptions.some((opt) => opt.value === moveTarget) ? moveTarget : "all"}
-                    disabled={!convBulkReady || acting}
-                    onChange={(e) => setMoveTarget(e.target.value)}
-                    style={{ fontSize: 11, maxWidth: 120 }}
-                  >
-                    {moveOptions.map((opt) => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
+                  <span className="anila-bulk-select-wrap" style={{ minWidth: 0, maxWidth: 120, flex: "1 1 72px" }}>
+                    <select
+                      className="anila-bulk-select"
+                      aria-label="移到群組"
+                      value={moveOptions.some((opt) => opt.value === moveTarget) ? moveTarget : "all"}
+                      disabled={!convBulkReady || acting}
+                      onChange={(e) => setMoveTarget(e.target.value)}
+                      style={{ fontSize: 11, minWidth: 0, maxWidth: 120 }}
+                    >
+                      {moveOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <span className="anila-bulk-select-chevron" aria-hidden="true" style={{ pointerEvents: "none" }}>
+                      <IconChevDown size={12} />
+                    </span>
+                  </span>
                 </label>
                 <button
                   type="button"
@@ -4488,8 +4502,9 @@ export const Sidebar = ({
                 )}
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 4, minWidth: 0 }}>
                   {selectMode && (
-                    <label style={{ position: "relative", display: "inline-flex", flex: "0 0 auto", paddingTop: 8 }}>
+                    <label className="anila-bulk-check-hit" style={{ position: "relative", display: "inline-flex", flex: "0 0 auto", paddingTop: 8 }}>
                       <input
+                        className="anila-bulk-check"
                         type="checkbox"
                         checked={selectedIds.has(c.id)}
                         disabled={busy || acting}

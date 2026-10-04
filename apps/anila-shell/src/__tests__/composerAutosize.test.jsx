@@ -175,3 +175,16 @@ describe("Composer 高度上限", () => {
     expect(h).toBeGreaterThanOrEqual(ta.scrollHeight);
   });
 });
+
+describe("Composer 外框焦點", () => {
+  it("文字區與外框成一組，送出鈕不進這組", () => {
+    const { ta } = renderComposer();
+    expect(ta.classList.contains("anila-inset-field")).toBe(true);
+    const shell = ta.closest(".anila-inset-surface");
+    expect(shell).not.toBeNull();
+    expect(shell.style.borderRadius).toBe("24px");
+    const send = screen.getByRole("button", { name: "送出" });
+    expect(shell.contains(send)).toBe(true);
+    expect(send.classList.contains("anila-inset-field")).toBe(false);
+  });
+});

@@ -97,15 +97,29 @@
   input, textarea { font-family: inherit; }
   ::selection { background: var(--accent-soft); color: var(--fg); }
 
-  /* Keyboard-only focus ring (a11y). Many inline-styled inputs set
-     `outline: none` for the mouse aesthetic; :focus-visible only fires on
-     keyboard navigation, so this restores a visible focus indicator for
-     keyboard users without affecting mouse interaction. !important is the
-     standard escape hatch to win over those inline outline:none values. */
+  /* 文字欄位的 :focus-visible 在滑鼠點進去時也會亮。!important 壓過 inline outline:none。 */
   :focus-visible {
     outline: 2px solid var(--accent) !important;
     outline-offset: 2px;
     border-radius: var(--radius-sm);
+  }
+  /* 沒有 :has() 就留著上面那圈。box-shadow 要 !important，否則 composer 的 inline 陰影蓋過，內層拿掉後只剩 1px 邊。 */
+  @supports selector(:has(*)) {
+    .anila-inset-surface:has(.anila-inset-field:focus-visible) {
+      border-color: var(--accent) !important;
+      box-shadow: inset 0 0 0 2px var(--accent) !important;
+    }
+    .anila-inset-surface .anila-inset-field:focus-visible {
+      outline: none !important;
+    }
+  }
+  @media (forced-colors: active) {
+    @supports selector(:has(*)) {
+      .anila-inset-surface:has(.anila-inset-field:focus-visible) {
+        outline: 2px solid Highlight;
+        outline-offset: 2px;
+      }
+    }
   }
   .skip-link {
     position: absolute;
@@ -434,6 +448,132 @@
     .composer-toolbar { gap: 2px; }
   }
   .anila-md-table { max-width: 100%; }
+
+  .anila-bulk-check-hit {
+    min-width: 24px;
+    min-height: 24px;
+    align-items: center;
+    justify-content: center;
+  }
+  .anila-bulk-check {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex: 0 0 auto;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elev);
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .anila-bulk-check:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+  .anila-bulk-check:checked {
+    background-color: var(--accent);
+    border-color: var(--accent);
+  }
+  .anila-bulk-check:checked::after {
+    content: "";
+    display: block;
+    width: 12px;
+    height: 12px;
+    margin: 1px;
+    background-color: var(--accent-fg);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  .anila-bulk-check:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .anila-bulk-select-label {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    flex: 1 1 10rem;
+  }
+  .anila-bulk-select-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 120px;
+    flex: 1 1 72px;
+  }
+  .anila-bulk-select {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 120px;
+    min-width: 0;
+    margin: 0;
+    height: 22px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    line-height: 1.2;
+    padding: 3px 22px 3px 8px;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    color-scheme: light;
+  }
+  [data-theme="dark"] .anila-bulk-select {
+    color-scheme: dark;
+  }
+  .anila-bulk-select:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .anila-bulk-select:disabled + .anila-bulk-select-chevron {
+    opacity: 0.45;
+  }
+  .anila-bulk-select-chevron {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    pointer-events: none;
+    color: var(--fg-muted);
+  }
+  @media (forced-colors: active) {
+    .anila-bulk-check {
+      appearance: auto;
+      -webkit-appearance: auto;
+      background-image: none;
+      background-color: ButtonFace;
+      border-color: ButtonText;
+      forced-color-adjust: auto;
+    }
+    .anila-bulk-check:checked {
+      background-color: ButtonFace;
+    }
+    .anila-bulk-check:checked::after {
+      content: none;
+      background-color: transparent;
+      -webkit-mask: none;
+      mask: none;
+    }
+    .anila-bulk-select {
+      appearance: auto;
+      -webkit-appearance: auto;
+      padding-right: 16px;
+      background: ButtonFace;
+      color: ButtonText;
+      border-color: ButtonText;
+      forced-color-adjust: auto;
+    }
+    .anila-bulk-select-chevron {
+      display: none;
+    }
+  }
 </style>
 </head>
 <body>

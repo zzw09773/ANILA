@@ -574,4 +574,25 @@ describe("對話摘要多選與全部刪除", () => {
     expect(screen.getByText("摘要1")).toBeInTheDocument();
     expect(screen.getByText("摘要9000")).toBeInTheDocument();
   });
+
+  it("摘要方塊接上同一套平台樣式，原生名稱與停用仍在", async () => {
+    const { authRequest } = createAuth([summary(1), summary(2)]);
+    renderTab(authRequest);
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    const first = box(1);
+    expect(first.tagName).toBe("INPUT");
+    expect(first.getAttribute("type")).toBe("checkbox");
+    expect(first.classList.contains("anila-bulk-check")).toBe(true);
+    expect(first.closest("label")?.classList.contains("anila-bulk-check-hit")).toBe(true);
+    first.focus();
+    expect(document.activeElement).toBe(first);
+    fireEvent.click(first);
+    expect(first.checked).toBe(true);
+    expect(screen.getByTestId("memory-summary-count").textContent).toMatch(/已選 1/);
+    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    expect(box(2)).toBeDisabled();
+    expect(box(2).classList.contains("anila-bulk-check")).toBe(true);
+    expect(box(2).closest("label")?.classList.contains("anila-bulk-check-hit")).toBe(true);
+  });
 });

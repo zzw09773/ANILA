@@ -1189,4 +1189,85 @@ describe("側欄多選的鍵盤、窄列與帳號切換", () => {
     expect(screen.getByTestId("conv-bulk-count").textContent).toMatch(/已選 0/);
     expect(screen.queryByTestId("conv-bulk-waiting")).toBeNull();
   });
+
+  it("多選方塊與移到群組接上平台樣式，原生名稱與選項不變", () => {
+    renderSidebar({
+      conversations: [
+        { id: 55, title: "對話甲", updatedAt: "2026-10-02T00:00:00Z", folder: "all", tags: [] },
+        { id: 66, title: "很長很長的群組名稱對話", updatedAt: "2026-10-01T00:00:00Z", folder: "all", tags: [] },
+      ],
+      busyConversationIds: [66],
+      folders: FOLDERS,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    const box = convBox("對話甲");
+    expect(box.tagName).toBe("INPUT");
+    expect(box.getAttribute("type")).toBe("checkbox");
+    expect(box.classList.contains("anila-bulk-check")).toBe(true);
+    const label = box.closest("label");
+    expect(label?.classList.contains("anila-bulk-check-hit")).toBe(true);
+    box.focus();
+    expect(document.activeElement).toBe(box);
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+    expect(screen.getByTestId("conv-bulk-count").textContent).toMatch(/已選 1/);
+
+    const blocked = convBox("很長很長的群組名稱對話");
+    expect(blocked).toBeDisabled();
+    expect(blocked.classList.contains("anila-bulk-check")).toBe(true);
+
+    const bar = screen.getByTestId("conv-bulk-bar");
+    expect(bar.style.flexWrap).toBe("wrap");
+    const select = within(bar).getByLabelText("移到群組");
+    expect(select.tagName).toBe("SELECT");
+    expect(select.getAttribute("aria-label")).toBe("移到群組");
+    expect(select.classList.contains("anila-bulk-select")).toBe(true);
+    expect(select.style.maxWidth).toBe("120px");
+    expect(parseFloat(select.style.minWidth)).toBe(0);
+    expect([...select.options].map((option) => option.tagName)).toEqual(["OPTION", "OPTION"]);
+    fireEvent.change(select, { target: { value: "proj" } });
+    expect(select.value).toBe("proj");
+    const wrap = select.parentElement;
+    expect(wrap?.classList.contains("anila-bulk-select-wrap")).toBe(true);
+    expect(parseFloat(wrap?.style.minWidth)).toBe(0);
+    expect(wrap?.style.maxWidth).toBe("120px");
+    expect(wrap?.style.flex).toBe("1 1 72px");
+    expect(select.nextElementSibling).toBe(wrap?.querySelector(".anila-bulk-select-chevron"));
+    const chevron = select.nextElementSibling;
+    expect(chevron?.getAttribute("aria-hidden")).toBe("true");
+    expect(chevron?.style.pointerEvents).toBe("none");
+    const moveLabel = select.closest("label");
+    expect(moveLabel?.classList.contains("anila-bulk-select-label")).toBe(true);
+    expect(moveLabel?.style.flexWrap).toBe("wrap");
+    expect(moveLabel?.style.maxWidth).toBe("100%");
+    expect(parseFloat(moveLabel?.style.minWidth)).toBe(0);
+    expect(moveLabel?.style.flex).toBe("1 1 10rem");
+  });
+
+  it("搜尋與新資料夾只把文字框算進外框焦點，旁邊按鈕不算", () => {
+    renderSidebar({ onCreateFolder: vi.fn() });
+    const search = screen.getByRole("textbox", { name: "搜尋對話" });
+    expect(search.classList.contains("anila-inset-field")).toBe(true);
+    expect(parseFloat(search.style.minWidth)).toBe(0);
+    const searchSurface = search.closest(".anila-inset-surface");
+    expect(searchSurface).not.toBeNull();
+    fireEvent.change(search, { target: { value: "甲" } });
+    expect(search.value).toBe("甲");
+    const clear = screen.getByRole("button", { name: "清除搜尋" });
+    expect(searchSurface.contains(clear)).toBe(true);
+    expect(clear.classList.contains("anila-inset-field")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    expect(screen.getByRole("checkbox", { name: "選取對話 對話甲" }).classList.contains("anila-inset-field")).toBe(false);
+
+    fireEvent.click(screen.getByTitle("新增資料夾"));
+    const folder = screen.getByPlaceholderText("資料夾名稱");
+    expect(folder.classList.contains("anila-inset-field")).toBe(true);
+    expect(document.activeElement).toBe(folder);
+    const pill = folder.closest(".anila-inset-surface");
+    expect(pill).not.toBeNull();
+    expect(pill).not.toBe(searchSurface);
+    const cancel = screen.getByTitle("取消");
+    expect(pill.contains(cancel)).toBe(true);
+    expect(cancel.classList.contains("anila-inset-field")).toBe(false);
+  });
 });
