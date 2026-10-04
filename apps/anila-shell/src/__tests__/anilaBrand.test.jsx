@@ -1,7 +1,7 @@
 // 品牌資產上線：側欄靜態 logo、空狀態英雄影片、路徑吃 BASE_URL。
 import React from "react";
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import {
   ANILA_LOGO_MP4,
@@ -65,10 +65,11 @@ describe("Sidebar brand", () => {
     selectedConvId: null,
     onSelectConv: noop,
     onNewChat: noop,
+    onHome: noop,
     agents: [],
     onOpenServices: noop,
     onTaskCenter: noop,
-    user: { username: "tester", role: "user" },
+    user: { id: 1, username: "tester", role: "user" },
     onLogout: noop,
     onOpenSettings: noop,
     collapsed: false,
@@ -97,6 +98,78 @@ describe("Sidebar brand", () => {
     );
     const img = screen.getByRole("img", { name: "ANILA" });
     expect(img.getAttribute("src")).toContain("brand/anila-logo.png");
+  });
+
+  it("expanded mark and ANILA are one 回到首頁 button that calls onHome, not toggle", () => {
+    const onHome = vi.fn();
+    const onToggleCollapsed = vi.fn();
+    const onNewChat = vi.fn();
+    render(
+      <ConfirmProvider>
+        <Sidebar {...props} onHome={onHome} onToggleCollapsed={onToggleCollapsed} onNewChat={onNewChat} />
+      </ConfirmProvider>,
+    );
+    const home = screen.getByRole("button", { name: "回到首頁" });
+    expect(home.querySelector("img")?.getAttribute("src")).toContain("brand/anila-mark.png");
+    expect(home.textContent).toContain("ANILA");
+    expect(home.style.background).toBe("transparent");
+    expect(home.style.borderWidth).toBe("0px");
+    expect(parseFloat(home.style.minWidth) || 0).toBeGreaterThanOrEqual(24);
+    expect(parseFloat(home.style.minHeight) || 0).toBeGreaterThanOrEqual(24);
+    fireEvent.click(home);
+    expect(onHome).toHaveBeenCalledTimes(1);
+    expect(onToggleCollapsed).not.toHaveBeenCalled();
+    expect(onNewChat).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /新對話/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "收合側邊" })).toBeTruthy();
+  });
+
+  it("collapsed brand is 回到首頁 and the adjacent chevron still expands", () => {
+    const onHome = vi.fn();
+    const onToggleCollapsed = vi.fn();
+    render(
+      <ConfirmProvider>
+        <Sidebar {...props} collapsed onHome={onHome} onToggleCollapsed={onToggleCollapsed} />
+      </ConfirmProvider>,
+    );
+    const home = screen.getByRole("button", { name: "回到首頁" });
+    expect(home.querySelector("img")?.getAttribute("src")).toContain("brand/anila-logo.png");
+    const expand = screen.getByRole("button", { name: "展開側邊" });
+    expect(expand).not.toBe(home);
+    fireEvent.click(home);
+    expect(onHome).toHaveBeenCalledTimes(1);
+    expect(onToggleCollapsed).not.toHaveBeenCalled();
+    fireEvent.click(expand);
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+    expect(onHome).toHaveBeenCalledTimes(1);
+  });
+
+  it("brand home is disabled while a bulk action is in progress, same as 新對話", async () => {
+    let release;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    render(
+      <ConfirmProvider>
+        <Sidebar
+          {...props}
+          conversations={[{ id: 55, title: "對話甲", updatedAt: "2026-10-02T00:00:00Z", folder: "all", tags: [] }]}
+          onBulkDelete={() => pending}
+        />
+      </ConfirmProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "選取對話 對話甲" }));
+    fireEvent.click(screen.getByRole("button", { name: "刪除" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "回到首頁" }).disabled).toBe(true);
+      expect(screen.getByRole("button", { name: /新對話/ }).disabled).toBe(true);
+    });
+    release({ succeeded: [], failed: [] });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "回到首頁" }).disabled).toBe(false);
+      expect(screen.getByRole("button", { name: /新對話/ }).disabled).toBe(false);
+    });
   });
 
   it("keeps the 對話 list and does not render an Agents tab", () => {

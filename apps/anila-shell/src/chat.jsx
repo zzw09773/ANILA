@@ -2719,6 +2719,17 @@ export const Composer = ({
   useEffect(() => {
     const previous = draftKeyWas.current;
     draftKeyWas.current = draftKey;
+    // 250ms 存檔還沒跑到就切走時，先把這一則當下的字寫進原本的鍵，再載入下一則。
+    // 送出時 textRef 已經是空的，這裡只會清掉鍵，不會把送出的原文寫回去。
+    if (
+      previous
+      && previous !== draftKey
+      && typeof sessionStorage !== "undefined"
+    ) {
+      const leaving = textRef.current || "";
+      if (leaving) sessionStorage.setItem(previous, leaving);
+      else sessionStorage.removeItem(previous);
+    }
     if (!draftKey || typeof sessionStorage === "undefined") return;
     const stored = sessionStorage.getItem(draftKey);
     // 新對話是上傳當下才建出來的。這個鍵還是空的，不能把正在打的字清成空白。
@@ -2764,10 +2775,15 @@ export const Composer = ({
 
   // 草稿存檔:text 變動時 debounce 寫回 sessionStorage(空字串則清掉)。
   useEffect(() => {
-    if (!draftKey || typeof sessionStorage === "undefined") return;
+    if (!draftKey || typeof sessionStorage === "undefined") return undefined;
+    const key = draftKey;
+    const snapshot = text;
     const t = setTimeout(() => {
-      if (text) sessionStorage.setItem(draftKey, text);
-      else sessionStorage.removeItem(draftKey);
+      // 已經換到別的對話，或送出／還原改過字，就不要用這份舊快照蓋回去。
+      if (draftKeyWas.current !== key) return;
+      if ((textRef.current || "") !== snapshot) return;
+      if (snapshot) sessionStorage.setItem(key, snapshot);
+      else sessionStorage.removeItem(key);
     }, 250);
     return () => clearTimeout(t);
   }, [text, draftKey]);
@@ -3983,6 +3999,7 @@ export const Sidebar = ({
   selectedConvId,
   onSelectConv,
   onNewChat,
+  onHome,
   agents,
   onOpenServices,
   onOpenUsage,
@@ -4123,13 +4140,14 @@ export const Sidebar = ({
       }}>
         <button
           type="button"
-          onClick={onToggleCollapsed}
-          title="展開側邊"
-          aria-label="展開側邊"
+          onClick={onHome}
+          title="回到首頁"
+          aria-label="回到首頁"
+          disabled={acting}
           style={{
-            width: 36, height: 36, padding: 0,
+            width: 36, height: 36, minWidth: 24, minHeight: 24, padding: 0,
             display: "grid", placeItems: "center",
-            background: "transparent", border: "none", cursor: "pointer",
+            background: "transparent", border: "none", cursor: acting ? "default" : "pointer",
             borderRadius: "var(--radius)",
           }}
         >
@@ -4153,14 +4171,30 @@ export const Sidebar = ({
       display: "flex", flexDirection: "column",
     }}>
       <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-        <AnilaLogoImg variant="mark" height={28} />
-        <span style={{
-          fontSize: 15,
-          fontWeight: 700,
-          letterSpacing: "0.18em",
-          color: "var(--fg)",
-          lineHeight: 1,
-        }}>ANILA</span>
+        <button
+          type="button"
+          onClick={onHome}
+          title="回到首頁"
+          aria-label="回到首頁"
+          disabled={acting}
+          style={{
+            display: "flex", alignItems: "center", gap: 8,
+            minWidth: 24, minHeight: 24, padding: 0,
+            background: "transparent", borderWidth: 0,
+            color: "inherit", font: "inherit",
+            cursor: acting ? "default" : "pointer",
+            borderRadius: "var(--radius)",
+          }}
+        >
+          <AnilaLogoImg variant="mark" height={28} />
+          <span style={{
+            fontSize: 15,
+            fontWeight: 700,
+            letterSpacing: "0.18em",
+            color: "var(--fg)",
+            lineHeight: 1,
+          }}>ANILA</span>
+        </button>
         <div style={{ flex: 1 }} />
         <IconButton onClick={onToggleCollapsed} title="收合側邊"><IconPanelR /></IconButton>
       </div>

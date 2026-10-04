@@ -4678,6 +4678,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setShareOpen(false);
   }
 
+  function goHome() {
+    if (convBulkRef.current) return;
+    newChat();
+    setServicesOpen(false);
+    setUsageOpen(false);
+    setSettingsOpen(false);
+  }
+
   function onOpenCitation(c) {
     const msg = [...currentMsgs]
       .reverse()
@@ -4809,6 +4817,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setCompareMode(false);
         }}
         onNewChat={newChat}
+        onHome={goHome}
         agents={agents}
         user={user}
         onLogout={logoutAndRedirect}

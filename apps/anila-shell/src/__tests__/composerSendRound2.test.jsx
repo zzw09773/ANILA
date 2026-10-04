@@ -125,3 +125,64 @@ describe("比較模式送出", () => {
     expect(screen.getAllByText("比較這題").length).toBeGreaterThan(0);
   });
 });
+
+describe("品牌回到首頁", () => {
+  it("打到一半回首頁再進原對話，250ms 內原文還在且沒有送出，並關掉用量與專案入口", async () => {
+    const backend = createFakeBackend({
+      conversations: [
+        { id: 55, title: "既有對話甲", agent_id: null, classified: false, tags: [], starred: false, folder: "all" },
+      ],
+    });
+    backend.disableTitleGeneration();
+    backend.route("GET", /^\/api\/conversations\/55$/, (_r, { jsonResponse }) =>
+      jsonResponse({
+        id: 55,
+        title: "既有對話甲",
+        active_leaf_message_id: 2,
+        messages: [
+          { id: 1, role: "user", content: "甲的舊問題", parent_id: null, sibling_index: 0, sibling_count: 1, sibling_ids: [1] },
+          { id: 2, role: "assistant", content: "甲的舊回答", parent_id: 1, sibling_index: 0, sibling_count: 1, sibling_ids: [2] },
+        ],
+      }),
+    );
+    await mountOrchestrator({ backend });
+
+    const row = await screen.findByTitle("既有對話甲");
+    await act(async () => {
+      fireEvent.click(row.closest("button"));
+    });
+    await waitFor(() => {
+      expect(screen.getByText("甲的舊回答")).toBeTruthy();
+    });
+
+    const box = composerBox();
+    fireEvent.change(box, { target: { value: "寫到一半先回首頁" } });
+    expect(window.sessionStorage.getItem("anila-draft:55")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
+    fireEvent.click(await screen.findByText("用量"));
+    await screen.findByRole("dialog", { name: "我的用量" });
+
+    const home = screen.getByRole("button", { name: "回到首頁" });
+    expect(home).not.toBe(screen.getByRole("button", { name: "收合側邊" }));
+    await act(async () => {
+      fireEvent.click(home);
+    });
+
+    expect(composerBox().value).toBe("寫到一半先回首頁");
+    expect(screen.queryByText("甲的舊回答")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "我的用量" })).toBeNull();
+    expect(screen.getByText("你今天想問 ANILA 什麼？")).toBeTruthy();
+    expect(window.sessionStorage.getItem("anila-draft:55")).toBe("寫到一半先回首頁");
+    expect(backend.chatPayloads).toHaveLength(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("既有對話甲").closest("button"));
+    });
+    await waitFor(() => {
+      expect(composerBox().value).toBe("寫到一半先回首頁");
+    });
+    expect(screen.getByText("甲的舊回答")).toBeTruthy();
+    expect(backend.chatPayloads).toHaveLength(0);
+  });
+});

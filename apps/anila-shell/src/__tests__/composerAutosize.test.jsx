@@ -176,6 +176,39 @@ describe("Composer 高度上限", () => {
   });
 });
 
+describe("Composer 切回對話前先把未存檔的草稿寫下去", () => {
+  it("250ms 內從對話切到首頁再切回來，原文還在，而且沒有送出", () => {
+    const onSend = vi.fn();
+    const { ta, rerender } = renderComposer({ conversationId: 7, onSend });
+    fireEvent.change(ta, { target: { value: "寫到一半的報告" } });
+    expect(sessionStorage.getItem("anila-draft:7")).toBeNull();
+
+    act(() => { rerender({ conversationId: null }); });
+    expect(sessionStorage.getItem("anila-draft:7")).toBe("寫到一半的報告");
+    expect(onSend).not.toHaveBeenCalled();
+
+    act(() => { rerender({ conversationId: 7 }); });
+    expect(ta.value).toBe("寫到一半的報告");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("送出清掉的草稿，不會在切走時被舊字寫回去", () => {
+    const onSend = vi.fn();
+    const { ta, rerender } = renderComposer({ conversationId: 7, onSend });
+    fireEvent.change(ta, { target: { value: "這則要送出" } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(ta.value).toBe("");
+    expect(sessionStorage.getItem("anila-draft:7")).toBeNull();
+
+    act(() => { rerender({ conversationId: null }); });
+    expect(sessionStorage.getItem("anila-draft:7")).toBeNull();
+
+    act(() => { rerender({ conversationId: 7 }); });
+    expect(ta.value).toBe("");
+  });
+});
+
 describe("Composer 外框焦點", () => {
   it("文字區與外框成一組，送出鈕不進這組", () => {
     const { ta } = renderComposer();

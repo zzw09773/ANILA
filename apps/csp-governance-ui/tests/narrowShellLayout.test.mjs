@@ -29,6 +29,23 @@ test('header keeps action labels on one line and exposes a menu button', () => {
   assert.match(header, /useShellNav/)
 })
 
+test('brand mark is a native dashboard link named 回到儀表板', () => {
+  const brand = header.match(/<RouterLink\b[\s\S]*?<\/RouterLink>/)
+  assert.ok(brand, 'TermLogo must sit inside a RouterLink')
+  assert.match(brand[0], /class="topbar__brand"/)
+  assert.match(brand[0], /:to="\{ name: 'Dashboard' \}"/)
+  assert.match(brand[0], /aria-label="回到儀表板"/)
+  assert.match(brand[0], /<TermLogo/)
+  assert.match(brand[0], /@click="nav\.close\(\)"/)
+  assert.doesNotMatch(brand[0], /preventDefault|stopPropagation|metaKey|ctrlKey|shiftKey|altKey|href=/)
+  const style = header.match(/\.topbar__brand\s*\{[^}]*\}/)
+  assert.ok(style, 'brand link needs its own hit area')
+  assert.match(style[0], /min-width:\s*24px/)
+  assert.match(style[0], /min-height:\s*24px/)
+  assert.match(style[0], /white-space:\s*nowrap/)
+  assert.doesNotMatch(style[0], /background:|border:|box-shadow:/)
+})
+
 test('sidebar can slide open and closes on navigate', () => {
   assert.match(sidebar, /gov-sidenav/)
   assert.match(sidebar, /is-open/)

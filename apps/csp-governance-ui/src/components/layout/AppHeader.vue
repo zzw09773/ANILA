@@ -15,7 +15,14 @@
           <span /><span /><span />
         </span>
       </button>
-      <TermLogo :size="18" :compact="narrow" subtitle="治理中心" />
+      <RouterLink
+        class="topbar__brand"
+        :to="{ name: 'Dashboard' }"
+        aria-label="回到儀表板"
+        @click="nav.close()"
+      >
+        <TermLogo :size="18" :compact="narrow" subtitle="治理中心" />
+      </RouterLink>
       <span class="topbar__crumb" aria-current="page">{{ currentPageLabel }}</span>
     </div>
 
@@ -105,7 +112,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { roleLabel } from '../../utils/roleLabel'
 import { changePassword } from '../../api/auth'
@@ -248,6 +255,16 @@ function handleLogout() {
   align-items: center;
   gap: var(--gap-4);
   min-width: 0;
+}
+.topbar__brand {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 24px;
+  min-height: 24px;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
 }
 .topbar__menu {
   display: none;
