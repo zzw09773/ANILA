@@ -1,4 +1,4 @@
-"""Pure target-resolution policy for cross-document relations (design v2 §6).
+"""Pure target-resolution policy for cross-document relations (document-relations design v2 §6).
 
 Given a cited regulation NAME and the candidate documents in a collection,
 decide which document a citation resolves to — or that it is *unresolved* /

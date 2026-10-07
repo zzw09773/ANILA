@@ -11,7 +11,7 @@ partial unique index over active grants (``revoked_at IS NULL``) lets us
 re-grant after a revoke without manual cleanup.
 
 See ``migrations/versions/0012_add_service_access_control.py`` for the schema
-and ``docs/platform/multi-service-integration-plan.md`` §7.5 for the access-decision
+and ``the multi-service integration plan`` §7.5 for the access-decision
 algorithm this table powers.
 """
 
@@ -55,7 +55,7 @@ class ServiceAccessGrant(Base):
     # Slice 7 preserve-history FK: ``ON DELETE SET NULL`` so a grant's audit
     # row (granted_by / granted_at / revoked_at) SURVIVES deletion of the
     # RegisteredService it targeted — replacing the old CASCADE purge that
-    # silently erased grant history (doc 07 §14 / §15.1 blocker).
+    # silently erased grant history (Service Registry §14 / §15.1 blocker).
     service_id = Column(
         Integer,
         ForeignKey("registered_services.id", ondelete="SET NULL"),

@@ -79,7 +79,7 @@ class MessageOut(ApiResponseModel):
     id: int
     role: str
     content: str
-    # OW-1 tree fields (docs/plans/ow1-message-tree-blueprint.md).
+    # OW-1 tree fields (``app/services/message_tree.py``).
     parent_id: Optional[int] = None
     sibling_index: int = 0
     sibling_count: int = 1
@@ -185,7 +185,7 @@ class ConversationOut(ApiResponseModel):
     # vs the existing "此對話為列管"). Always FALSE on rows pre-dating
     # migration 0031, so old data renders as before.
     classification_inherited: bool = False
-    # Slice 3b: four-level classification (SYSTEM-MAP §8). Additive — the legacy
+    # Slice 3b: four-level classification (四級分類契約). Additive — the legacy
     # ``classified`` bool is retained as a compatibility read model for older
     # UI (mirror rule: classified = classification_level >= 密 / RESTRICTED;
     # preserves old rank-2 controlled-set semantics). Defaults to
@@ -858,7 +858,7 @@ def search_conversations(
     for c in convs:
         snippet = None
         # OE-4: snippet redaction follows outbound block line (level >=
-        # RESTRICTED / 密); SYSTEM-MAP §8 L241. Boolean is display-only.
+        # RESTRICTED / 密); 四級分類契約 L241，原 SYSTEM-MAP §8. Boolean is display-only.
         level = ClassificationLevel.from_storage(c.classification_level)
         if outbound_action_allowed(level):
             msg = (
@@ -914,7 +914,7 @@ def get_conversation(
     )
 
     conv = svc.get_conversation(db, conv_id, current_user, for_write=False)
-    # SYSTEM-MAP §8 L242:要落稽核 = 密等 ≥ 營業秘密 (read-audit).
+    # 四級分類契約 L242:要落稽核 = 密等 ≥ 營業秘密 (read-audit).
     level = ClassificationLevel.from_storage(conv.classification_level)
     if classification_audit_required(level):
         svc.log_classified_access(db, conv_id, current_user)

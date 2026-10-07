@@ -4,7 +4,7 @@
 
 > English version：[`README.en.md`](./README.en.md)
 
-> 🧭 **本檔對齊 redesign 後現況**（`anila-redesign` 分支）：`services/ apps/ packages/ infra/` 四分頂層結構、根目錄 compose shim（`compose.yaml` → `infra/compose/platform.yml`）、部署腳本落在 `infra/deployment/{scripts,intranet}/`，以及與 CSP 相關的 Slice 2–9 能力（Task 主脊椎、Full Trace、四級分類、Agent Registry、Model Gateway、Service Registry、Artifact 契約）。設計沿革（收斂紀錄）在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)：憲章 [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) 與本服務主文件 [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 
 ---
 
@@ -54,7 +54,7 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 文字後處理 | opencc-python-reimplemented 0.1.7 |
 | 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`），而且**只有這一份**——曾經另有一份 compose 從不建的 `services/csp/Dockerfile`，已於 2026-08-06 刪除（[FAKE-CONTROLS](../../docs/FAKE-CONTROLS.md) #50）。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
+> 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`），而且**只有這一份**——曾經另有一份 compose 從不建的 `services/csp/Dockerfile`，已於 2026-08-06 刪除。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
 >
 > 容器以 **uid 10001（非 root）** 跑。映像裡只有 `/app/logs` 是可寫的；上傳、附件、`share/pki`、`secrets/` 四個都在 bind mount 上，所有權由 host 決定 → 部署前要跑 [`infra/deployment/scripts/fix-runtime-ownership.sh`](../../infra/deployment/scripts/fix-runtime-ownership.sh)（deploy-prod.sh 的 `deploy`/`up`/`rebuild` 與 intranet-deploy.sh `[4c]` 都已接進去）。
 >
@@ -68,9 +68,9 @@ redesign 把四個 MVP 核心切成**互不相依**的 module，並以 import-li
 
 | Module | 檔案 | 職責 |
 |--------|------|------|
-| `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun 生命週期（十值狀態機）、SourceSnapshot 三規則、`trace_id` 必產生（doc 01 / doc 03）。 |
+| `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun 生命週期（十值狀態機）、SourceSnapshot 三規則、`trace_id` 必產生（領域模型／控制面）。 |
 | `app.modules.policy` | `router.py` · `service.py` | PolicyDecision **append-only** 裁決紀錄（fail-closed，deny 必附 reason）、ceiling 純函式、四級分類 latch core（`apply_classification` 單向閂鎖；無機密＜營業秘密＜密＜機密）。 |
-| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway 原語：`service_launches` 落列、啟動 URL、RS256 launch token（doc 07 §6）。**零** policy/task/api 耦合，存取控制由 orchestrator（`app.api.services`）圍事。 |
+| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway 原語：`service_launches` 落列、啟動 URL、RS256 launch token（Service Registry §6）。**零** policy/task/api 耦合，存取控制由 orchestrator（`app.api.services`）圍事。 |
 | `app.modules.artifacts` | `service.py` | Artifact 四表持久化、binding fail-closed、owner-scope 讀面。分類閂鎖與 PolicyDecision 由 orchestrator（`app.api.artifacts`）呼叫 policy 完成。 |
 
 ---
@@ -145,7 +145,7 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 - **JWT / JWKS**：RS256（access + refresh，`tv` token-version 撤銷 claim），`GET /.well-known/jwks.json` 公開驗章。Launch token 共用同一 RS256 keypair / `kid`，registered service 以 JWKS **本地**驗（`aud` / `iss` / `exp` / 簽章）；TTL 10 分、**絕不**內嵌模型金鑰或長效 user JWT。
 - **CSRF**：cookie 認證的變更請求走 double-submit（`X-CSRF-Token`，constant-time 比對，`CsrfMiddleware`）。
 - **RLS / `csp_app`**：runtime 用非特權 `csp_app` role（RLS 才會生效）；migration 才用升權 `csp` superuser（見 §7）。
-- **SSRF url_guard 分域（Slice 6a，doc 04 §8）**：`anila_core.security.validate_outbound_url(url, endpoint_kind=...)` 把 http 旗標按 `model` / `agent` / `generic` 分域——model endpoint 預設拒 http，**由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（PLAN.md P0.2，2026-07-29 拍板：production 與 dev 同準，內網模型 gateway 走 http）**；agent endpoint 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` 放行（legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 fallback 但帶 deprecation 警告，供內網 MLSteam 純 http NodePort agent）。allow-list = `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env；`host.docker.internal` 為結構性拒絕，allow-list 解不開。
+- **SSRF url_guard 分域（Slice 6a，Model Gateway §8）**：`anila_core.security.validate_outbound_url(url, endpoint_kind=...)` 把 http 旗標按 `model` / `agent` / `generic` 分域——model endpoint 預設拒 http，**由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（2026-07-29 拍板：production 與 dev 同準，內網模型 gateway 走 http）**；agent endpoint 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` 放行（legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 fallback 但帶 deprecation 警告，供內網 MLSteam 純 http NodePort agent）。allow-list = `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env；`host.docker.internal` 為結構性拒絕，allow-list 解不開。
 - **Credential 加密**：AES-256-GCM（`anila-core` `credential_crypto` / `service_token_envelope`；涵蓋 per-model `api_key_secret_ref`、`csk-` agent 憑證、ingestion 憑證）。
 - **Token 撤銷**：持久 `token_revocations` 表 + JWT `tv` 強制 + Redis fan-out；`/api/auth/revocations` cold-start sync。
 - **startup_security**：prod 對 `SECRET_KEY` / `ADMIN_PASSWORD` / DB 密碼等 dev 預設值拒絕啟動（空 `SECRET_KEY` 永遠 fatal；`ANILA_ALLOW_DEV_SECRET=1` 降為 warn）。入站另有 CORS allowlist（無 `*` fallback）、選用 TrustedHostMiddleware、SPA 路徑遍歷防護、nginx 安全 header + rate-limit。
@@ -171,7 +171,7 @@ cd services/csp && python -m pytest -q   # 或從這裡；兩者結果必須一�
 
 - **`r1_` 命名空間**：redesign migration 以 `r1_` 前綴、線性接在 legacy 數字鏈之後（`r1_0001` `Revises: 0046`）。新增 module / 表時同步補 `.importlinter` 契約與 `app/schemas/contracts/`。
 - **`MIGRATION_DATABASE_URL`（升權，僅 alembic 讀）**：migration 需 superuser 級連線（`0014` 要 `CREATE EXTENSION` / `CREATE ROLE csp_app`）。runtime `DATABASE_URL` 指非特權 `csp_app`（RLS 才會 fire）；`MIGRATION_DATABASE_URL` 是 alembic 專用的升權替身，未設時退回 `DATABASE_URL`（`migrations/env.py`）。compose 兩者拆開：runtime `csp_app:...`、migration `csp:...`。
-- **啟動自動升級**：`app/main.py` lifespan 以 `command.upgrade(cfg, "head")` 程式化跑 `alembic upgrade head`。空庫也走 alembic（`MIGRATION_DATABASE_URL`／superuser）；失敗則拒絕啟動，不再 fallback `create_all`。`ANILA_SKIP_STARTUP_MIGRATIONS=1`（compose 預設 `0`）＝起服務但不遷移。
+- **啟動自動升級**：`app/main.py` lifespan 以 `command.upgrade(cfg, "head")` 程式化跑 `alembic upgrade head`。空庫也走 alembic（`MIGRATION_DATABASE_URL`／superuser）；失敗則拒絕啟動。`create_all` 只在 pytest 的 sqlite、且檔案是空的時當逃生口（見 `_apply_startup_schema`）。`ANILA_SKIP_STARTUP_MIGRATIONS=1`（compose 預設 `0`）＝起服務但不遷移。
 
 ---
 
@@ -195,7 +195,7 @@ CSP 只在 compose 的 default network。模型在遠端，由治理中心登記
 
 ## 10. 相關文件
 
-- 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — 憲章 [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、CSP 治理控制面 [`03`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、Agent Registry [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、Service Platform [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md)、分類閂鎖與政策引擎 [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、API / 事件契約 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、遷移與開發護欄 [`10`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 - 平台整體：[`../../README.md`](../../README.md)。
 - 模組邊界契約：[`.importlinter`](./.importlinter)（`infra/ci/lint-boundaries.sh`）。
 

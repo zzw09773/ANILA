@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """Slice 3a — 四級分類 schema 升級 + latch core 測試。
 
-依 SYSTEM-MAP §8(四級排序、單向閂鎖)與既有降級/權責流程:
+依 四級分類契約(四級排序、單向閂鎖)與既有降級/權責流程:
 ClassificationEvent reason enum、DeclassificationRequest status +
 approved_via、舊 boolean latch 不破。
 
 涵蓋:
-- doc 08 enum 逐字驗證(reason 7 值、status 5 值、approved_via 2 值)
+- 四級分類 enum 逐字驗證(reason 7 值、status 5 值、approved_via 2 值)
 - apply_classification 單向閂鎖:升級寫 event、降級嘗試 no-op 不寫 event
-  (doc 08 未規定降級嘗試要記 event → 依指示採「無 event、回 None」)
+  (四級分類 未規定降級嘗試要記 event → 依指示採「無 event、回 None」)
 - max 傳遞、legacy boolean 鏡射(classified = level >= 密 / RESTRICTED)雙向一致
 - 降級申請:僅 Admin 可申請、申請人 ≠ 核准人、無權責 fail-closed 停留
   pending + audit supervisor_missing、紙本代錄必附文號/官職姓名、
@@ -86,7 +86,7 @@ def latch_secret(db, conv, actor) -> ClassificationEvent:
     )
 
 
-# ── doc 08 enum 逐字驗證 ──────────────────────────────────────────────────────
+# ── 四級分類 enum 逐字驗證 ──────────────────────────────────────────────────────
 
 
 class TestDoc08EnumsVerbatim:
@@ -117,7 +117,7 @@ class TestDoc08EnumsVerbatim:
         ]
 
     def test_backfill_mapping_from_legacy_boolean(self):
-        # doc 08 §3 migration bridge → SYSTEM-MAP §8:false → 無機密、
+        # 四級分類 §3 migration bridge → 四級分類契約:false → 無機密、
         # true → 機密(SECRET,最高級,保守 floor)
         assert (
             ClassificationLevel.from_legacy_classified(False)
@@ -341,7 +341,7 @@ class TestApplyClassification:
             effective_level(db, resource_type="starship", resource_id="1")
 
 
-# ── 降級申請 + 核准(doc 08 §7 變體 A、§8、§12)────────────────────────────────
+# ── 降級申請 + 核准(四級分類 §7 變體 A、§8、§12)────────────────────────────────
 
 
 class TestDeclassification:

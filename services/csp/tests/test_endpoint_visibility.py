@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Endpoint visibility relaxation (SYSTEM-MAP §6 / epvis).
+"""Endpoint visibility relaxation (模型閘道 §6 / epvis).
 
 Acceptance tests that fail if the single visibility predicate is removed
 or if any face regresses to owner-only / always-redact.

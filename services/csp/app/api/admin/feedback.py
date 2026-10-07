@@ -13,7 +13,7 @@ model 篩。維運者據此決定要不要調 prompt、換模型,或拿 ``conver
 訊息正文(``Message.content``)是受控對話內容。既有讀取路徑是
 ``GET /api/conversations/{id}``:admin-tier 可讀,且密等 ≥ 營業秘密時會落
 ``access_classified_conversation`` 稽核;單位管理員明確**看不到對話明文**
-(PLAN P1.3)。
+(舊 PLAN P1.3)。
 
 因此本列表端點:
 

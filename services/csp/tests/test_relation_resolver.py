@@ -1,5 +1,5 @@
 """Tests for ``app.services.relation_resolver`` — resolution + reconciliation
-of cross-document relations (design v2 §6, test plan §12).
+of cross-document relations (document-relations design v2 §6, test plan §12).
 
 Runs against the SQLite ``db`` fixture (create_all). Covers: out-going
 hit/miss, in-going back-fill (order-independent — supplement-first AND

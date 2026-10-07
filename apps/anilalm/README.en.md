@@ -6,7 +6,7 @@
 
 > 🌿 **Branch note**: This subproject exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`; the slim **`trial-military`** build does **not** include it. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
 >
-> Design lineage (convergence record): [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`01-domain-model.md`](../../docs/anila-redesign-docs/01-domain-model.md) (Task domain), [`09-api-event-contracts.md`](../../docs/anila-redesign-docs/09-api-event-contracts.md) (Task / artifact contracts). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 
 ---
 
@@ -14,15 +14,15 @@
 
 The SPA delivers a "documents → conversation → output" flow: upload to build a knowledge base → query by chat → generate artifacts. It is **frontend only**, wiring into [`services/csp`](../../services/csp/) (CSP) for auth / ingestion / conversation / LLM proxy, and [`services/anila-studio`](../../services/anila-studio/) for artifact generation.
 
-In the ANILA product constitution (doc 00 §2) this SPA implements two first-class user entries at once — "My Knowledge Base" and "Output Center"; ANILA Shell's sidebar enters via the origin-absolute path `/anilalm`.
+In the ANILA product constitution (product constitution §2) this SPA implements two first-class user entries at once — "My Knowledge Base" and "Output Center"; ANILA Shell's sidebar enters via the origin-absolute path `/anilalm`.
 
 ---
 
 ## 2. Task-first output (redesign slice 8b)
 
-**Before every Studio output job, a CSP Task is created first**, so the resulting artifact-job / artifact / trace all bind to one governance unit (doc 09 §2 Task API).
+**Before every Studio output job, a CSP Task is created first**, so the resulting artifact-job / artifact / trace all bind to one governance unit (API contract §2 Task API).
 
-- `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks` (`task_type:'generate_artifact'`, `source_scope` defaults to `'project'`, `selected_collection_ids`, `requested_output_type`). Returns `TaskBinding { taskId, sourceSnapshotId?, traceId? }`, threaded into the Studio job body. Types mirror `services/csp/app/schemas/contracts/tasks.py` and doc 01 (`TaskType` / `SourceScope` / `RequestedOutputType`).
+- `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks` (`task_type:'generate_artifact'`, `source_scope` defaults to `'project'`, `selected_collection_ids`, `requested_output_type`). Returns `TaskBinding { taskId, sourceSnapshotId?, traceId? }`, threaded into the Studio job body. Types mirror `services/csp/app/schemas/contracts/tasks.py` and the domain model (`TaskType` / `SourceScope` / `RequestedOutputType`).
 - **Resilience contract**: any failure (endpoint not yet deployed / auth / network) returns `null` + a zh-TW `console.warn`; generation **proceeds without a task binding** — it must never break because governance metadata could not attach.
 - Call sites: `src/workspace/CommandModal.tsx` (slides) and `src/studio/generators.ts` (report / mindmap / infographic / datatable) — all five kinds create a Task first.
 
@@ -128,7 +128,7 @@ npm run build          # tsc -b && vite build (the real gate; not tsc alone)
 
 ## 7. Related docs
 
-- Design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / domain 01 / contracts 09). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - Backend services: CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
 - Adjacent entries: task center [`../anila-shell/README.en.md`](../anila-shell/README.en.md) · governance [`../csp-governance-ui/README.en.md`](../csp-governance-ui/README.en.md)
 - Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

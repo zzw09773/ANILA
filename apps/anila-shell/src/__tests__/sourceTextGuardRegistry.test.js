@@ -49,6 +49,7 @@ const KNOWN_SOURCE_TEXT_GUARDS = [
   "guards/noProjectEntryButton.test.js",
   "guards/quotaExceeded.test.js",
   "mermaidVersionGuard.test.js",
+  "sidebarResize.test.jsx",
   "uxCopy.test.jsx",
 ];
 

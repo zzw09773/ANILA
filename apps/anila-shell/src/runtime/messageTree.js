@@ -1,6 +1,6 @@
 // OW-1 message-tree helpers (server-truth sibling nav + path merge).
-// Pure / unit-testable — no React, no network. See
-// docs/plans/ow1-message-tree-blueprint.md §1 Q9 / §2 Create / §5 frontend.
+// Pure / unit-testable — no React, no network. Server truth:
+// services/csp/app/services/message_tree.py.
 
 import { mergeMessageAttachments } from "./messageAttachments.js";
 import { shouldKeepLiveReasoning } from "./reasoningPersist.js";

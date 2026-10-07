@@ -3,7 +3,7 @@ import { client, explainError } from './client'
 // CSP Task API client (Slice 8b).
 //
 // Before launching a studio generation, ANILA LM creates a CSP Task so the
-// resulting artifact-job / artifact / trace all bind to it (doc 09 §2 Task
+// resulting artifact-job / artifact / trace all bind to it (已刪的 doc 09 §2 Task
 // API; contract mirror of services/csp/app/schemas/contracts/tasks.py).
 //
 // Kept as a small pure module (no React/store deps) so it's unit-testable in
@@ -12,7 +12,7 @@ import { client, explainError } from './client'
 // task binding — generation must never break because governance metadata
 // couldn't be attached.
 
-/** doc 01 Task.task_type. */
+/** 舊 doc 01 Task.task_type. */
 export type TaskType =
   | 'query'
   | 'summarize'
@@ -23,7 +23,7 @@ export type TaskType =
   | 'launch_service'
   | 'governance'
 
-/** doc 01 Task.source_scope. */
+/** 舊 doc 01 Task.source_scope. */
 export type SourceScope =
   | 'none'
   | 'personal'
@@ -31,7 +31,7 @@ export type SourceScope =
   | 'organization'
   | 'registered_service'
 
-/** doc 01 Task.requested_output_type. */
+/** 舊 doc 01 Task.requested_output_type. */
 export type RequestedOutputType =
   | 'answer'
   | 'report'

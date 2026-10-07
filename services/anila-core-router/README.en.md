@@ -128,9 +128,7 @@ router (:9000)
 ## Related docs
 
 - Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
-- Redesign design lineage (historical): constitution [`../../docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) · runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) · API/event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md). Span upload is not part of the current router.
-- Multi-service integration (incl. Router role): [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
-- Agent framework architecture: [`../../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../../docs/archive/agent-framework/anila-agent-framework-architecture.md)
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - Runtime foundation (SDK): [`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP: [`../csp/README.md`](../csp/README.md) · Shell: [`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)
 
 ---

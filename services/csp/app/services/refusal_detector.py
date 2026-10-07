@@ -5,7 +5,7 @@
 **保守：寧可漏報，不要誤報。**
 
 院內合法國防／技術 QA 被模型過度拒答是真實風險（見
-``docs/designs/ncsist-prompt-localization-and-harness.md`` §6-9），但
+````packages/anila-core/src/anila_core/prompts/```` §6-9），但
 「資料中查無／段落不足」這類 grounding 誠實回答**不是**拒答——若把它們
 算進去，監測面板會充滿噪音，反而沒人看。
 

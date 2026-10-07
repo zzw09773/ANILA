@@ -47,7 +47,7 @@ source "$REPO_ROOT/infra/deployment/scripts/prod-env-guard.sh"
 
 # 與 build-and-export-for-intranet.sh 對齊:bundle 的 image tag 是以這個 project name
 # 產出的。INCLUDE_ASR 預設 0——平台開機沒語音;要開是開機後第二步
-# (docs/runbooks/intranet-image-bundle.md §5.1)。設 1 才帶 --profile asr。
+# (docs/deploy/UPDATE.md §5.1)。設 1 才帶 --profile asr。
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila}"
 INCLUDE_ASR="${INCLUDE_ASR:-0}"
 # 本機 decoder 與 cpu/gpu overlay 已移除。語音解碼位址在治理中心「外部服務」。
@@ -151,7 +151,7 @@ preflight_share_dirs() {
 # 行尾註解由 compose 拆掉(見 get_env 上方的實測),app 端的 ``_env_flag`` 只
 # 再 ``.strip() == "1"``。所以 `KEY="1"`、`KEY="1" # 註解` 都會被警示。
 # ⚠ 舊註解寫「ANILA_ENV=production → 模型 http 一律 fail-closed,不受任何旗標
-#    放行」——那句自 2026-07-29(PLAN P0.2)起就不成立了:model kind 的 http
+#    放行」——那句自 2026-07-29 拍板起就不成立了:model kind 的 http
 #    改成純由 ANILA_ALLOW_HTTP_ENDPOINT 決定、與 env 無關,所以那一行真的會把
 #    §3.1b 的本機模型組態關掉。
 preserve_flag() {  # preserve_flag KEY 提醒字串
@@ -456,7 +456,7 @@ echo "============================================================"
 ok "內網部署完成"
 echo "  • 登入:員工從瀏覽器插卡 + HiPKI(localhost:16888)走卡片登入"
 echo "  • 日常:infra/deployment/scripts/deploy-prod.sh {status | logs <svc> | restart | down}"
-echo "  • 語音／docling 預設沒開(麥克風不出現、匯入走 native)。要開是開機後第二步,見 docs/runbooks/intranet-image-bundle.md §5.1"
+echo "  • 語音／docling 預設沒開(麥克風不出現、匯入走 native)。要開是開機後第二步,見 docs/deploy/UPDATE.md §5.1"
 [ -z "${MGK:-}" ] && echo "  • $(c '1;33' '待辦'):MODEL_GATEWAY_API_KEY 拿到後填 .env → docker compose up -d csp"
 echo "  • DNS:確認 anila.ai.ncsist.org.tw → 本機、aiagent2.ai.ncsist.org.tw → .12"
 echo "============================================================"

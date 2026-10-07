@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 
-// 版本字只有一個來源：package.json（v1.0.0 起照 docs/VERSIONING.md 走語意版本）。
+// 版本字只有一個來源：package.json（v1.0.0 起走語意版本）。
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 // BASE_PATH: serving prefix。本機 dev = '/'(預設);正式部署走 ANILA 反向

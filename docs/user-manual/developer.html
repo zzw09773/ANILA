@@ -66,11 +66,16 @@
     font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--ink-2);
   }
   .scroll{overflow-x:auto}
+  figure{margin:1.2rem 0; counter-increment:fig}
+  figure img{display:block; max-width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:#fff}
+  figcaption{color:var(--ink-3); font-size:.88rem; margin-top:.45rem}
+  figcaption::before{content:"圖 " counter(fig) "　"; color:var(--accent); font-weight:600}
   footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--line); color:var(--ink-3); font-size:.9rem}
   @media print{
     body{background:#fff; color:#000; font-size:11pt}
     .wrap{max-width:none; padding:0}
-    h2{page-break-after:avoid} table,.box{page-break-inside:avoid}
+    h2{page-break-after:avoid} table,.box,figure{page-break-inside:avoid}
+    figure img{border-color:#999}
     nav.toc{page-break-after:always}
   }
 </style>
@@ -134,6 +139,7 @@
 <p><strong>網址要完整，包含通訊協定。</strong> 填 <code>172.16.x.x:8043</code> 會被擋下來，
 要填 <code>http://172.16.x.x:8043</code>。表單會告訴你，但很多人第一次都卡在這裡。</p>
 </div>
+<figure><img src="img/gov-developer-agents.png" alt="治理中心 Agent 頁：下載快速起步、進階範例、平台 CA，以及註冊助手"><figcaption>治理中心 → 開發者 → Agent。先下載快速起步，在自己的機器上跑起來，再按右上「註冊助手」。</figcaption></figure>
 
 <h2 id="d3"><span class="num">3</span>憑證與連線</h2>
 
@@ -147,6 +153,7 @@
 <p><strong>先用驗證工具跑一次，再改你的程式。</strong>
 連線問題有一半分不清是「憑證不對」還是「網路不通」，工具會直接告訴你是哪一種。</p>
 </div>
+<figure><img src="img/gov-developer-guide.png" alt="治理中心開發指南：快速起步步驟與健康檢查的 reason 對照"><figcaption>治理中心 → 開發者 → 開發指南。步驟、旗標與健康檢查對照都在這一頁，跟著平台版本走，不要抄到別的文件。</figcaption></figure>
 
 <h2 id="d4"><span class="num">4</span>你的 agent 會收到什麼、不會收到什麼</h2>
 
@@ -183,7 +190,7 @@
 
 <footer>
   <p>ANILA 開發者手冊 · 中科院院內 AI 平台</p>
-  <p>實作步驟請看治理中心的「開發者 → 開發指南」。畫面截圖將於系統就緒後補上。</p>
+  <p>實作步驟以治理中心「開發者 → 開發指南」那一頁為準。上圖攝於本機已啟用的治理中心。</p>
 </footer>
 
 </div>

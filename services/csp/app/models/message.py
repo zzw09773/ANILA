@@ -12,7 +12,7 @@ JSONValue = JSON().with_variant(JSONB, "postgresql")
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
-        # OW-1 / docs/plans/ow1-message-tree-blueprint.md — tree lookup by fork point.
+        # OW-1 / ``app/services/message_tree.py`` — tree lookup by fork point.
         Index("ix_messages_conversation_parent", "conversation_id", "parent_id"),
         CheckConstraint(
             "parent_id IS NULL OR parent_id <> id",
@@ -34,7 +34,7 @@ class Message(Base):
         Integer, ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
-    # OW-1 message tree (SYSTEM-MAP:46): nullable self-FK; NULL = root.
+    # OW-1 message tree (訊息樹 §46): nullable self-FK; NULL = root.
     # created_at alone is no longer a total order once siblings share a parent.
     parent_id = Column(
         Integer,
@@ -60,7 +60,7 @@ class Message(Base):
     rating_score = Column(Integer, nullable=True)
     # 這次評分寫入的時間。NULL＝遷移前的舊列，未讀通知不把它算進去。
     rated_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
+    # ── 四級分類共通欄位(四級分類 §5,Slice 3a)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )

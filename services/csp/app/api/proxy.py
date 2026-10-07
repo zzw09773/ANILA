@@ -206,13 +206,13 @@ def _require_conversation_access(
 
 
 def _agent_policy_level(agent) -> ClassificationLevel:
-    """The agent's own four-level classification floor (SYSTEM-MAP §8).
+    """The agent's own four-level classification floor (四級分類契約).
 
     ``default_classification_level`` (set by the 3a migration bridge / manual
     inventory) is the source of truth; a ``requires_encryption=true`` agent
     without a manual level still floors at RESTRICTED(密) — preserves the old
     rank-2 floor that previously was 機密 in the five-level set
-    (SYSTEM-MAP §8), so the legacy boolean stays byte-compatible.
+    (四級分類契約), so the legacy boolean stays byte-compatible.
     """
     level = ClassificationLevel.from_storage(
         getattr(agent, "default_classification_level", None) or "無機密"
@@ -233,7 +233,7 @@ def _latch_agent_classification(
     (``apply_classification`` reason=``agent_policy``) instead of the old raw
     ``UPDATE ... SET classified=TRUE``. The core mirrors the legacy boolean
     (``classified = level >= 密`` / RESTRICTED; old rank-2 floor,
-    SYSTEM-MAP §8) so a hard refresh still latches the UI back into encrypted
+    四級分類契約) so a hard refresh still latches the UI back into encrypted
     mode; it never lowers (single-direction), and leaves
     ``classification_inherited`` untouched (the source is agent policy, not
     memory inheritance — that path is handled separately below).
@@ -256,7 +256,7 @@ def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
 
     Slice 3b: routes through the four-level one-way core
     (``apply_classification`` reason=``memory_inherited``), which floors the
-    row at RESTRICTED(密) — preserves the old rank-2 floor (SYSTEM-MAP §8),
+    row at RESTRICTED(密) — preserves the old rank-2 floor (四級分類契約),
     mirrors the legacy boolean AND flips ``classification_inherited=TRUE``
     on the raising event. One-way — never lowers a row already at 密 or higher.
     """
@@ -277,10 +277,10 @@ def _propagate_conversation_level_to_task(
     db: Session, task_id: int, conversation_id: int
 ) -> None:
     """Slice 3b: carry the conversation's effective level onto the linked
-    task so later ceiling checks (doc 08 §4/§10) see it.
+    task so later ceiling checks (四級分類 §4/§10) see it.
 
     reason=``source_selected`` — the runtime conversation is the selected
-    source context feeding the task (doc 08 §4 task.level = max(...,
+    source context feeding the task (四級分類 §4 task.level = max(...,
     source_snapshot.level, ...)). One-way core → never lowers the task.
     No-op when the conversation is unclassified (nothing to raise to).
     """
@@ -289,7 +289,7 @@ def _propagate_conversation_level_to_task(
         db, resource_type="conversation", resource_id=str(conversation_id)
     )
     # Not an OE-4 outbound gate: one-way latch/propagation skip when there
-    # is nothing above 無機密 to raise the task to (SYSTEM-MAP §8 latch).
+    # is nothing above 無機密 to raise the task to (四級分類契約 latch).
     if conv_level <= ClassificationLevel.UNCLASSIFIED:
         return
     apply_classification(
@@ -378,10 +378,10 @@ def _memory_confined_to_conversation(
 ) -> int | None:
     """P4.5 — return the conversation memory recall may not leave, else None.
 
-    Owner rule (PLAN.md §4.4/4.5, 2026-07-30):「ANILALM 的「同一 session」=
+    Owner rule (擁有者裁定, 2026-07-30):「ANILALM 的「同一 session」=
     **同一個對話框**;不是關分頁,也不是登出。」So an ANILALM conversation
     recalls from itself and from nowhere else, while ANILA keeps the
-    cross-conversation long-term memory SYSTEM-MAP §5 grants it (L51:
+    cross-conversation long-term memory 記憶 §5 grants it (L51:
     長期記憶 ANILA ✓ / ANILALM 只在同一 session 內).
 
     ``origin`` on the conversation row is the only signal that says which
@@ -794,7 +794,7 @@ async def _sse_with_attachment_trace(
         yield buf
 
 
-# ── 院內規章檢索與注入（SYSTEM-MAP §3 的「不需要 agent」那條路，Q39）─────────
+# ── 院內規章檢索與注入（規章檢索 §3 的「不需要 agent」那條路，Q39）─────────
 #
 # 觸發條件是 **``X-ANILA-Route`` 這個 header 在**，不是「router 已經決定直答」
 # ——那個判定在時序上晚於這通呼叫（task-5-report.md §1：判定就是從這通呼叫的
@@ -2179,7 +2179,7 @@ async def chat_completions(
         # Slice 3b: latch the agent's OWN four-level classification onto the
         # conversation (reason=agent_policy) through the one-way core. Uses
         # the agent's default level, floored at RESTRICTED(密) when
-        # requires_encryption — old rank-2 floor preserved (SYSTEM-MAP §8).
+        # requires_encryption — old rank-2 floor preserved (四級分類契約).
         # The OR'd ``agent_requires_encryption`` still drives the wire meta
         # below; the memory-inheritance contribution is latched separately.
         if conv_id_int is not None:
@@ -2240,7 +2240,7 @@ async def chat_completions(
             )
         # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
         # contract); a task-linked call without one falls back to the
-        # task row's trace id (doc 04 AC10 歸戶).
+        # task row's trace id (Model Gateway AC10 歸戶).
         usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
         # 逾時／重試在 handler 期解一次。⚠ 串流那條路是 async generator，
         # **在 handler 回傳之後才被抽乾**，那時 request scope 的 session 可能
@@ -2334,7 +2334,7 @@ async def chat_completions(
             user_id=user.id,
             department=department_id,
             agent_id=agent.id,
-            # Slice 2b-C (doc 05 §4): task/trace ids ride on agent dispatch.
+            # Slice 2b-C (Agent Registry §4): task/trace ids ride on agent dispatch.
             task_id=task_ctx.task_id if task_ctx else None,
             trace_id=task_ctx.trace_id if task_ctx else None,
             conversation_id=conversation_id,
@@ -2465,7 +2465,7 @@ async def chat_completions(
     inherited_encryption = bool(memory_read and memory_read.encryption_inherited)
     # Slice 2b-C: optional X-ANILA-Task-Id — same wiring as the agent
     # branch, dispatch_target/resource_type = "model". Outbound headers to
-    # the model gateway stay minimal (doc 04 §3/AC5) — the task ids below
+    # the model gateway stay minimal (Model Gateway §3/AC5) — the task ids below
     # only reach the usage row + run lifecycle, never the gateway headers.
     task_ctx = begin_task_run(
         db,
@@ -2489,7 +2489,7 @@ async def chat_completions(
                 "task classification propagation failed task_id=%s",
                 task_ctx.task_id,
             )
-    # Slice 6a (doc 04 §5/§8) + OE-4/G4: classification ceiling check BEFORE
+    # Slice 6a (Model Gateway §5/§8) + OE-4/G4: classification ceiling check BEFORE
     # the outbound model call. Covers task-linked AND legacy traffic. A
     # violation raises 403 + records a model.invoke deny row and never
     # dispatches upstream; a pass records an allow row when task-linked OR

@@ -2,7 +2,9 @@
 
 > This project illustrates how to combine OpenAI Agents SDK v0.17.5 with tools, retrieval, memory, and a serving wrapper. It is not the shortest onboarding path: use the separately downloadable quickstart scaffold for a first agent. Air-gapped deployment still requires prepared dependencies, model access, and appropriate trust configuration.
 
-[繁體中文](README.md) · English · Full rebuild blueprint: [REBUILD_PLAN.md](REBUILD_PLAN.md).
+[繁體中文](README.md) · English. This package is the advanced example. The short path onto the platform is `packages/anila-agent-quickstart`; the steps live on the governance「開發指南」page.
+
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 
 ## Where it sits in the redesign
 
@@ -84,7 +86,7 @@ ANILA_OUTPUT_STYLE=zh-tw-formal
 > `extra="ignore"`, so the field is **neither rejected nor read** and the query
 > is still embedded as a document. To actually get the split, point this at
 > **CSP**'s `/v1` (e.g. `https://<platform>/v1`) and register the embedder with
-> `protocol=triton_grpc`. See `docs/FAKE-CONTROLS.md` #35.
+> `protocol=triton_grpc`.
 
 CLI commands: `/help`, `/memory [query]`, `/style`, `/clear`, `/deep-research <question>`, plus a
 `/<name>` per file in `configs/commands/*.md` (example: `/summarize`).
@@ -141,8 +143,7 @@ Full flow: see [DOCKER.md](DOCKER.md).
 
 P0–P5 complete and verified end-to-end against local gpt-oss-20b / NV-embed-V2 (memdir hybrid recall,
 deny-all policy, multi-turn session, deep-research, service wrapper). `make test` collects
-**198** unit tests (plus 1 `live`-marked test that needs a real endpoint, 199 total). See
-[REBUILD_PLAN.md](REBUILD_PLAN.md).
+**198** unit tests (plus 1 `live`-marked test that needs a real endpoint, 199 total).
 
 ## License
 

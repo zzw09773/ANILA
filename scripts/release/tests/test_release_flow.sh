@@ -2945,7 +2945,7 @@ test_unready_install_dirs_order() {
   fi
 }
 
-# 只有第一次安裝、埠被別人佔住才問。空回答就是 8443。沒有終端機要說明怎麼寫 .env。
+# 443 被別人佔住就自動改 8443，不詢問。443 空出來後改回 443。
 test_first_install_https_port_saved() {
   local root file mode
   root="$tmp/port-root"
@@ -2953,8 +2953,8 @@ test_first_install_https_port_saved() {
   arm_test_install "$root"
   export STUB_LISTEN_PORTS=443
   export STUB_DOCKER_PS_PORTS=""
-  ensure_first_install_https_port "" >"$tmp/port.out" 2>"$tmp/port.err" || {
-    echo "空回答沒有改用 8443" >&2
+  ensure_https_port >"$tmp/port.out" 2>"$tmp/port.err" || {
+    echo "443 被佔用時沒有自動改埠" >&2
     cat "$tmp/port.err" >&2
     return 1
   }
@@ -2966,11 +2966,27 @@ test_first_install_https_port_saved() {
   }
   mode="$(stat -c %a "$file")"
   [[ "$mode" == "600" ]] || { echo "state/.env 權限是 $mode" >&2; return 1; }
-  grep -q 'HTTPS 埠改為 8443' "$tmp/port.err" || { echo "沒有說明埠已改" >&2; return 1; }
-  # 已寫好的埠沒被佔用，就不再問，也不改檔。
-  export STUB_LISTEN_PORTS=443
-  ensure_first_install_https_port "99999" >"$tmp/port-keep.out" 2>"$tmp/port-keep.err" || return 1
-  grep -qx 'NGINX_HTTPS_PORT=8443' "$file" || { echo "已設的埠被改掉" >&2; return 1; }
+  grep -q 'HTTPS 埠自動改為 8443' "$tmp/port.err" || { echo "沒有說明埠已改" >&2; return 1; }
+  if grep -q '要改用哪個 HTTPS 埠' "$tmp/port.err"; then
+    echo "自動改埠時仍在詢問" >&2
+    return 1
+  fi
+  # 443 仍被佔、備用埠沒被佔，再跑一次不改檔。
+  ensure_https_port >"$tmp/port-keep.out" 2>"$tmp/port-keep.err" || return 1
+  grep -qx 'NGINX_HTTPS_PORT=8443' "$file" || { echo "已設的備用埠被改掉" >&2; return 1; }
+  # 443 空出來就改回 443。
+  export STUB_LISTEN_PORTS=""
+  ensure_https_port >"$tmp/port-back.out" 2>"$tmp/port-back.err" || {
+    echo "443 空出來沒有改回" >&2
+    cat "$tmp/port-back.err" >&2
+    return 1
+  }
+  grep -qx 'NGINX_HTTPS_PORT=443' "$file" || {
+    echo "沒有改回 443" >&2
+    cat "$file" >&2
+    return 1
+  }
+  grep -q 'HTTPS 埠改回 443' "$tmp/port-back.err" || { echo "沒有說明改回 443" >&2; return 1; }
   unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
 }
 
@@ -2982,37 +2998,60 @@ test_https_port_no_tty_explains_env() {
   err="$tmp/port-notty.err"
   export STUB_LISTEN_PORTS=443
   export STUB_DOCKER_PS_PORTS=$'other-nginx 0.0.0.0:443->443/tcp'
-  if ( trap - EXIT; ensure_first_install_https_port ) </dev/null >"$tmp/port-notty.out" 2>"$err"; then
+  if ! ensure_https_port </dev/null >"$tmp/port-notty.out" 2>"$err"; then
     unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有終端機仍繼續" >&2
-    return 1
-  fi
-  grep -F "請在 ${root}/state/.env 寫入 NGINX_HTTPS_PORT=<另一個埠>（例如 8443），chmod 600，然後再執行一次。" "$err" >/dev/null || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有說明怎麼在 state/.env 換埠" >&2
+    echo "沒有終端機時自動改埠失敗" >&2
     cat "$err" >&2
     return 1
+  fi
+  grep -qx 'NGINX_HTTPS_PORT=8443' "$root/state/.env" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有終端機時沒有寫入 8443" >&2
+    return 1
   }
-  [[ ! -e "$root/state/.env" ]] || { echo "拒絕之後仍寫了 .env" >&2; return 1; }
-  # 不是數字、或建議的埠也被佔，都不寫。
-  if ( trap - EXIT; ensure_first_install_https_port abc ) >"$tmp/port-abc.out" 2>"$tmp/port-abc.err"; then
+  if grep -q '要改用哪個 HTTPS 埠' "$err"; then
     unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "不是數字仍接受" >&2
+    echo "沒有終端機仍在詢問" >&2
     return 1
   fi
-  grep -q '1 到 65535' "$tmp/port-abc.err" || { echo "沒有拒絕非整數埠" >&2; return 1; }
+  # 8443 也被佔，就再往下一個空埠，不停下問人。
   export STUB_LISTEN_PORTS=443,8443
-  if ( trap - EXIT; ensure_first_install_https_port 8443 ) >"$tmp/port-taken.out" 2>"$tmp/port-taken.err"; then
+  ensure_https_port >"$tmp/port-next.out" 2>"$tmp/port-next.err" || {
     unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "被佔用的埠仍接受" >&2
+    echo "8443 被佔時沒有改走 8444" >&2
+    cat "$tmp/port-next.err" >&2
+    return 1
+  }
+  grep -qx 'NGINX_HTTPS_PORT=8444' "$root/state/.env" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有把 8444 寫進 state/.env" >&2
+    return 1
+  }
+  # 備用埠全被佔才拒絕，而且不寫新值。
+  export STUB_LISTEN_PORTS=443,8443,8444,8445,8446,8447,8448,8449,8450
+  if ( trap - EXIT; ensure_https_port ) >"$tmp/port-taken.out" 2>"$tmp/port-taken.err"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "備用埠全被佔仍繼續" >&2
     return 1
   fi
-  grep -q '也被佔用' "$tmp/port-taken.err" || { echo "沒有說建議埠也被佔" >&2; return 1; }
-  [[ ! -e "$root/state/.env" ]] || { echo "不合法的埠寫進了 .env" >&2; return 1; }
-  # anila-nginx 自己聽 443 就不問。
+  grep -q '8443-8450 都無法使用' "$tmp/port-taken.err" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有說明備用埠都無法使用" >&2
+    cat "$tmp/port-taken.err" >&2
+    return 1
+  }
+  grep -qx 'NGINX_HTTPS_PORT=8444' "$root/state/.env" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "拒絕之後改寫了原本的埠" >&2
+    return 1
+  }
+  # anila-nginx 自己聽 443 就維持 443，不另寫檔。
+  root="$tmp/port-own"
+  mkdir -p "$root"
+  arm_test_install "$root"
   export STUB_LISTEN_PORTS=443
   export STUB_DOCKER_PS_PORTS=$'anila-nginx 0.0.0.0:443->443/tcp'
-  ensure_first_install_https_port >"$tmp/port-own.out" 2>"$tmp/port-own.err" || {
+  ensure_https_port >"$tmp/port-own.out" 2>"$tmp/port-own.err" || {
     unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
     echo "ANILA 自己的入口被當成衝突" >&2
     cat "$tmp/port-own.err" >&2
@@ -4178,65 +4217,44 @@ test_https_port_rejects_other_anila_ports() {
   mkdir -p "$root/state"
   arm_test_install "$root"
   file="$root/state/.env"
-  export STUB_LISTEN_PORTS=443
+  export STUB_LISTEN_PORTS=""
   export STUB_DOCKER_PS_PORTS=""
-  if ( trap - EXIT; ensure_first_install_https_port 80 ) >"$tmp/port-80.out" 2>"$tmp/port-80.err"; then
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "預設 HTTP 埠 80 被接受當 HTTPS" >&2
-    return 1
-  fi
-  grep -F '埠 80 與 NGINX_HTTP_PORT 相同' "$tmp/port-80.err" >/dev/null || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有說明撞到 NGINX_HTTP_PORT" >&2
-    cat "$tmp/port-80.err" >&2
-    return 1
-  }
-  if ( trap - EXIT; ensure_first_install_https_port 4443 ) >"$tmp/port-4443.out" 2>"$tmp/port-4443.err"; then
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "預設 UI 埠 4443 被接受當 HTTPS" >&2
-    return 1
-  fi
-  grep -F '埠 4443 與 ANILA_UI_HTTPS_PORT 相同' "$tmp/port-4443.err" >/dev/null || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有說明撞到 ANILA_UI_HTTPS_PORT" >&2
-    cat "$tmp/port-4443.err" >&2
-    return 1
-  }
-  printf 'NGINX_HTTP_PORT=8080\nANILA_UI_HTTPS_PORT=9443\n' > "$file"
+  # 443 被設成 HTTP 入口時不能拿來聽 HTTPS，自動改走 8443。
+  printf 'NGINX_HTTP_PORT=443\n' > "$file"
   chmod 600 "$file"
-  if ( trap - EXIT; ensure_first_install_https_port 8080 ) >"$tmp/port-8080.out" 2>"$tmp/port-8080.err"; then
+  ensure_https_port >"$tmp/port-http.out" 2>"$tmp/port-http.err" || {
     unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "state/.env 的 HTTP 埠被接受當 HTTPS" >&2
-    return 1
-  fi
-  grep -F '埠 8080 與 NGINX_HTTP_PORT 相同' "$tmp/port-8080.err" >/dev/null || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有讀 state/.env 的 NGINX_HTTP_PORT" >&2
-    cat "$tmp/port-8080.err" >&2
+    echo "443 與 HTTP 入口相同時沒有改走備用埠" >&2
+    cat "$tmp/port-http.err" >&2
     return 1
   }
-  if ( trap - EXIT; ensure_first_install_https_port 9443 ) >"$tmp/port-9443.out" 2>"$tmp/port-9443.err"; then
+  grep -qx 'NGINX_HTTPS_PORT=8443' "$file" || {
     unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "state/.env 的 UI 埠被接受當 HTTPS" >&2
-    return 1
-  fi
-  grep -F '埠 9443 與 ANILA_UI_HTTPS_PORT 相同' "$tmp/port-9443.err" >/dev/null || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有讀 state/.env 的 ANILA_UI_HTTPS_PORT" >&2
-    return 1
-  }
-  ensure_first_install_https_port 80 >"$tmp/port-80-ok.out" 2>"$tmp/port-80-ok.err" || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "覆寫預設後，空著的 80 仍被拒絕" >&2
-    cat "$tmp/port-80-ok.err" >&2
-    return 1
-  }
-  grep -qx 'NGINX_HTTPS_PORT=80' "$file" || {
-    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
-    echo "沒有把 80 寫進 state/.env" >&2
+    echo "沒有避開 NGINX_HTTP_PORT=443" >&2
     cat "$file" >&2
     return 1
   }
+  # 8443 被設成 UI 入口、443 又被佔，就跳過這兩個，改走 8444。
+  printf 'ANILA_UI_HTTPS_PORT=8443\n' > "$file"
+  chmod 600 "$file"
+  export STUB_LISTEN_PORTS=443
+  ensure_https_port >"$tmp/port-ui.out" 2>"$tmp/port-ui.err" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "8443 與 UI 入口相同時沒有再往下找" >&2
+    cat "$tmp/port-ui.err" >&2
+    return 1
+  }
+  grep -qx 'NGINX_HTTPS_PORT=8444' "$file" || {
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "沒有避開 ANILA_UI_HTTPS_PORT=8443" >&2
+    cat "$file" >&2
+    return 1
+  }
+  if grep -qxE 'NGINX_HTTPS_PORT=(80|4443)$' "$file"; then
+    unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
+    echo "自動改埠選到了其他 ANILA 入口" >&2
+    return 1
+  fi
   unset STUB_LISTEN_PORTS STUB_DOCKER_PS_PORTS
 }
 
@@ -4368,8 +4386,8 @@ test_resume_note_matches_action() {
 
 check "第一次安裝目錄不可寫就印出 sudo" test_first_install_refuses_missing_root_with_sudo
 check "安裝目錄檢查順序與 root 可建立" test_unready_install_dirs_order
-check "第一次安裝把空著的 HTTPS 埠寫成 8443" test_first_install_https_port_saved
-check "沒有終端機時說明怎麼寫 HTTPS 埠" test_https_port_no_tty_explains_env
+check "443 被佔用就自動改備用埠，空出來改回 443" test_first_install_https_port_saved
+check "沒有終端機也自動改 HTTPS 埠" test_https_port_no_tty_explains_env
 check "更新不問 HTTPS 埠" test_update_does_not_ask_https_port
 check "產生的密鑰不出現在安裝輸出" test_generated_secrets_absent_from_installer_output
 check "接續未完成的安裝會寫進成功紀錄" test_success_log_notes_unfinished_install

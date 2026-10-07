@@ -1,9 +1,9 @@
-"""Service-level access control for the Service Registry (doc 07 §12).
+"""Service-level access control for the Service Registry (Service Registry §12).
 
 Single source of truth for "can this user see / launch this service?". All API
 endpoints that surface or gate on a RegisteredService MUST go through this
 module — never reimplement the algorithm inline. The authoritative algorithm
-(doc 07 §12; steps 1–5 preserved from the legacy platform_links algorithm,
+(Service Registry §12; steps 1–5 preserved from the legacy platform_links algorithm,
 steps 6–8 added by Slice 7):
 
     1. Service must be active (``is_active = True``). Else: deny.
@@ -91,7 +91,7 @@ def can_access_service(
     *,
     context_level: str | None = None,
 ) -> bool:
-    """Return True iff user may see / launch this service (doc 07 §12)."""
+    """Return True iff user may see / launch this service (Service Registry §12)."""
     if not service.is_active:
         return False
     # Step 6 first so the hard classification ceiling binds every tier.

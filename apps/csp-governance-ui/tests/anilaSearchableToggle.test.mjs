@@ -70,7 +70,7 @@ const LEVELS = backendClassificationLevels()
 const UNCLASSIFIED = LEVELS[0]
 const CLASSIFIED_LEVELS = LEVELS.slice(1)
 
-test('後端列舉解析出來的樣子符合 SYSTEM-MAP §8 的四級契約', () => {
+test('後端列舉解析出來的樣子符合四級契約', () => {
   assert.deepEqual(LEVELS, ['無機密', '營業秘密', '密', '機密'])
   assert.equal(UNCLASSIFIED, '無機密')
 })

@@ -23,7 +23,7 @@ Postgres 裡 owner 隱含全部權限,而且 owner 可以 ``DROP TRIGGER`` —�
    (``app/api/users.py`` 原本手動做這件事)。欄位與值保留,歸屬不再被洗掉。
 4. 換主人 + 收權:owner → migration role;``csp_app`` 只剩 SELECT / INSERT。
 5. append-only 觸發器:UPDATE / TRUNCATE 一律 RAISE;DELETE 只放行超過
-   保留期(180 天,SYSTEM-MAP §8「留半年」)的列。
+   保留期(180 天,四級分類契約「留半年」)的列。
 
 **誠實標注**:owner 與 superuser 永遠繞得過觸發器。這一層防的是「持 runtime
 憑證的人」;對持有主機的人只能靠日級雜湊鏈 + 匯出檔外部錨點**事後查得出來**,
@@ -193,7 +193,7 @@ def upgrade() -> None:
         $fn$ LANGUAGE plpgsql
         """
     )
-    # ⚠ 保留期(SYSTEM-MAP §8「留半年」)目前**沒有執行者**:``csp_app`` 沒有
+    # ⚠ 保留期(四級分類契約「留半年」)目前**沒有執行者**:``csp_app`` 沒有
     # DELETE,平台裡也沒有任何清除工作。所以這個觸發器現在的作用是「把唯一
     # 合法的刪除形狀寫死成文件」,而不是在執行政策 —— 稽核列實際上會一直累積。
     # 這是刻意的:十萬級列數的 Postgres 無感,而一條半生不熟的刪除路徑貼在

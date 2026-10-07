@@ -1,4 +1,4 @@
-"""Resolution + reconciliation for cross-document relations (design v2 §6).
+"""Resolution + reconciliation for cross-document relations (document-relations design v2 §6).
 
 The *tested reference* for turning extracted citations into resolved
 ``document_relations`` edges. Order-independent and idempotent:

@@ -1,7 +1,7 @@
 // Service Registry 純邏輯：badge / label 映射與欄位鎖定判斷。
 // 抽成獨立模組，讓 PlatformLinksView 保持宣告式，並保留給未來單元測試。
 //
-// doc 07（registered-gui-service-platform）契約摘要：
+// 已刪的 doc 07（registered-gui-service-platform）契約摘要：
 //   - registered_services 是 platform_links 的超集（additive upgrade）。
 //   - config_source = 'env_seeded'（部署 env 播種）| 'db'（UI 為唯一事實來源）。
 //   - env_seeded 服務多數欄位唯讀鎖定，僅 db_editable_fields 白名單可由 admin 覆寫。

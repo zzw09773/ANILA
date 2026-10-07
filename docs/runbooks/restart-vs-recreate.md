@@ -77,7 +77,7 @@ grep -n 'docker compose up -d' infra/deployment/scripts/deploy-prod.sh
 2. **改的是 bind-mount 進去的單一檔案時,連 `up -d` 都不夠**。Docker 用 inode
    綁定,而 git 改檔是「建新檔取代舊檔」(新 inode),容器還抓著舊的那個 ——
    一樣沒有錯誤訊息。那種情況要 `up -d --force-recreate <svc>`
-   (nginx 設定檔就是這樣掛過的,見 `CLAUDE.md` §4 的操作陷阱)。
+   (nginx 設定檔就是這樣掛過的；現行說明見 `infra/nginx/anila.conf` 檔頭與 `infra/compose/platform.yml` 的 nginx 區塊註解)。
 
 ## 改的是程式碼:連 `up -d` 都不夠,要先 build
 
@@ -118,8 +118,7 @@ recreate 換掉的是**容器**,不是**映像**。程式碼是 build 當下拷�
   就會出現「router 已經用新規則、csp 還在用舊規則」的半新半舊狀態,兩邊都不報錯。
   `asr-gateway` 只搬 `security/` 子套件,所以動 `anila_core` 其他地方它不受影響;
   動 `security/` 則四張全要。
-- **`apps/anila-shell/` → 服務叫 `anila-ui`**:目錄名跟服務名對不上,
-  `docker compose build anila-shell` 會直接說沒這個服務(這種錯至少會報錯)。
+- **`apps/anila-shell/` → 服務叫 `anila-ui`**:目錄名跟服務名對不上。
 - **`infra/codeserver/`(反向)**:repo 是**掛**進 codeserver 的
   (`platform.yml:628` `${CODESERVER_WORKSPACE:-../..}:/home/coder/workspace`),
   所以改平台程式碼**永遠不需要**重建這張映像;要重建的只有 code-server 本身要換版時。
@@ -129,14 +128,13 @@ recreate 換掉的是**容器**,不是**映像**。程式碼是 build 當下拷�
 build 當下就編進 JS bundle 了。這兩個服務改到那幾個鍵,`up -d` 不夠,要先 build。
 
 **拉的、不是 build 的**(改 repo 不會動到它們;換版本或 digest 才要 `up -d`):
-`csp-db`(`platform.yml:33`)、`redis`(`:271`)、`nginx`(`:399`,tag＋digest 都釘死)、
-`n8n`。GitLab 已於 2026-09-26 從 compose 拿掉，不再是拉來的映像。平台服務裡有 `build:` 的仍是 11 個、
-共 10 張映像(`codeserver-init` 與 `codeserver` 共用 `anila-codeserver:local`)。
-nginx 的設定檔不在映像裡,是 bind mount(`platform.yml:406`)—— 那條路走上一節第 2 點。
+只剩 `redis`(`platform.yml:334`,pull digest 釘在 `build-release.sh` 與 `images.tsv`)。
+其餘平台服務都有 `build:` —— 共 16 個 build 區塊、14 張映像(`csp-db` 與 `backup` 共用 `anila-pgvector:local`,
+`codeserver-init` 與 `codeserver` 共用 `anila-codeserver:local`)。GitLab 已於 2026-09-26 從 compose 拿掉。
+nginx 的設定檔不在映像裡,是 bind mount(`platform.yml:472`)—— 那條路走上一節第 2 點。
 
-`infra/compose/dev.yml` 的 8 個 build 指向**同一組** context 與 Dockerfile
-(例:`dev.yml:61-63` = `platform.yml:56-58`),`asr-cpu.yml` / `asr-gpu.yml` 只改
-`asr-decoder` 的執行期設定、沒有 `build:` 區塊。所以這張表對 dev 棧一樣成立。
+`infra/compose/dev.yml` 的 11 個 build 指向**同一組** context 與 Dockerfile
+(例:`dev.yml:64-66` = `platform.yml:66-68`,pgbouncer),所以這張表對 dev 棧一樣成立。
 
 自己核對一遍(不必相信這張表)。這張表是兩條 grep 推出來的,同樣兩條可以重推:
 
@@ -155,8 +153,8 @@ grep -rnE '^[[:space:]]*(COPY|ADD)[[:space:]]' --include=Dockerfile --include='*
 
 ⚠ ② 會多撈到 `packages/anila-agent/Dockerfile:32`(同樣是 `COPY packages/anila-core`),
 但 `anila-agent` **不是這個棧的服務** —— `platform.yml` 裡沒有它,它跑在 MLSteam 的
-Lab(`CLAUDE.md` §1)。`services/flux2-dev*`(在 `infra/models/docker-compose.yml`)、
-`cht/`、`infra/loadtest/stub/` 同理:有 Dockerfile,但這個 compose 棧不 build 它們。
+Lab。`cht/`、`infra/loadtest/stub/` 同理:有 Dockerfile,但這個 compose 棧不 build
+它們(平台 compose 現在也沒有舊的 `flux2-dev*` 服務，見 `docs/CURRENT-STATUS.md`)。
 表上沒有它們不是漏列,是不同棧 —— **但 `anila-agent` 那一筆是真的跨界:
 動到 `packages/anila-core` 時,它在 MLSteam 上那張映像也是舊的**
 (其餘那幾個沒有 `COPY packages/…`,不受影響)。

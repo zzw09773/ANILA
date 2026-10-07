@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ServiceLaunch + ServiceAuditCallback — the launch-gateway audit trail.
 
-doc 07 §5/§6/§10. A ``service_launches`` row is created every time the Launch
+Service Registry §5/§6/§10. A ``service_launches`` row is created every time the Launch
 Gateway mints a launch token; it records who launched what, with which task /
 trace / classification, and the token's TTL window. ``consumed_at`` exists for
 future server-side one-time semantics — in this slice services verify the
@@ -10,7 +10,7 @@ gateway does not gate on it.
 
 ``service_audit_callbacks`` is append-only: registered services POST audit
 events back to CSP (``POST /api/services/{service_id}/audit-callbacks``) with a
-Service Client Token (doc 03 naming). Both FKs use ``ON DELETE SET NULL`` so
+Service Client Token (控制面 naming). Both FKs use ``ON DELETE SET NULL`` so
 the audit trail survives service deletion (doc §14 preserve-history blocker).
 """
 

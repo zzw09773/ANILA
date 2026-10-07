@@ -112,6 +112,10 @@
   <li><a href="#s15">API 金鑰、服務客戶端、信任主機</a></li>
   <li><a href="#s16">出事的時候</a></li>
   <li><a href="#s17">卡登壞掉時的後路（破窗）</a></li>
+  <li><a href="#s18">額度</a></li>
+  <li><a href="#s19">skill 審核</a></li>
+  <li><a href="#s20">群組</a></li>
+  <li><a href="#s21">外部服務</a></li>
 </ol>
 </nav>
 
@@ -130,16 +134,15 @@
 
 <h2 id="s2"><span class="num">2</span>治理中心怎麼進、怎麼看</h2>
 <p>治理中心是平台的管理介面，網址是平台根目錄（同仁的對話介面在 <code>/anila/</code>）。只有管理員與擁有者角色看得到；一般同仁登入後會被導到對話介面。</p>
-<figure><img src="img/gov-dashboard.png" alt="治理中心儀表板：上方四個指標，中間用量圖與快速操作，下方服務健康與告警"><figcaption>儀表板。下方「服務健康」是每天先看的地方：八個服務都要綠。</figcaption></figure>
+<figure><img src="img/gov-dashboard.png" alt="治理中心儀表板：服務健康全綠、告警摘要、最後一次備份"><figcaption>儀表板。先看「服務健康」：八個基礎服務都要綠（csp、csp-db、redis、nginx、router、ingestion-worker、anila-studio、pptx-renderer）。旁邊是尚未解決的告警，下面是最後一次備份。</figcaption></figure>
 <table>
 <tr><th>區塊</th><th>看什麼</th></tr>
-<tr><td>上方四格</td><td>近 24 小時請求數、token、使用中的模型與金鑰。剛上線都是 0，正常。</td></tr>
-<tr><td>用量圖</td><td>依模型分的請求量。第一筆請求後才有線。</td></tr>
-<tr><td>服務健康</td><td>控制平面、資料庫、佇列、反向代理、對話路由、文件匯入、簡報產生、簡報渲染。任何一個紅，先看第 16 節。</td></tr>
-<tr><td>告警</td><td>待處理的告警數。點「前往警報中心」處理。</td></tr>
-<tr><td>右上「深色／淺色」</td><td>只影響你自己的畫面。</td></tr>
+<tr><td>服務健康</td><td>控制平面、資料庫、佇列與快取、反向代理、對話路由、文件匯入、簡報產生、簡報渲染。任何一個不是綠，先看第 16 節。（背景探測的服務清單寫死在程式，不含 anilalm 與 asr-gateway。）</td></tr>
+<tr><td>告警</td><td>已確認但還沒解決的數量。點「前往警報中心」處理。</td></tr>
+<tr><td>最後一次備份</td><td>時間、結果、大小。失敗要當天看。</td></tr>
+<tr><td>右上「深色／淺色」</td><td>只影響你自己的畫面。版本號在儀表板右上。</td></tr>
 </table>
-<p>左側選單分三組：<strong>主要</strong>（儀表板、API 金鑰、模型、用量）、<strong>開發者</strong>（開發指南、Agent、知識庫、自訂動作）、<strong>管理</strong>（使用者、部門、警報、回饋、公告、稽核、盤點、平台連結、服務存取、服務客戶端、信任主機、平台設定）。</p>
+<p>左側選單分四組：<strong>主要</strong>（儀表板、API 金鑰、模型、用量）、<strong>開發者</strong>（開發指南、Agent、知識庫、自訂動作）、<strong>人員與單位</strong>（使用者、部門、群組）、<strong>管理</strong>（額度、skill 審核、警報、回饋、公告、稽核、平台連結、服務存取、服務客戶端、信任主機、外部服務、平台設定）。</p>
 
 <h2 id="s3"><span class="num">3</span>單位</h2>
 <p>治理中心 → 部門。單位是帳號的必填欄位：同仁完成註冊時一定要選一個，所以<strong>單位必須先存在</strong>。建議一開始就把單位建齊，而不是等人來申請再建。</p>
@@ -216,7 +219,7 @@
 
 <h2 id="s7"><span class="num">7</span>Agent（同仁掛上來的助手）</h2>
 <p>治理中心 → Agent。同仁可以把自己寫的 agent 掛上平台：他註冊 → 你核准 → 其他人才看得到。</p>
-<figure><img src="img/gov-developer-agents.png" alt="Agent 頁：已註冊的 agent 列表，狀態與操作"><figcaption>Agent 列表。待核准的會標出來。</figcaption></figure>
+<figure><img src="img/gov-developer-agents.png" alt="Agent 頁：下載快速起步與註冊助手，下方是待審核與已核准計數"><figcaption>Agent 頁。待審核不是 0 時，先核准再讓其他人用。右上可以下載快速起步、進階範例與平台 CA。</figcaption></figure>
 <figure><img src="img/gov-form-agent.png" alt="註冊 Agent 表單"><figcaption>「註冊 Agent」表單：名稱、端點、說明、預設分類等級。</figcaption></figure>
 <p>核准前確認兩件事：</p>
 <ol>
@@ -224,7 +227,7 @@
   <li><strong>它有沒有透過平台呼叫模型。</strong> 院內規矩是 agent 內部要用模型必須經由平台（用量才有歸屬、才有稽核）。</li>
 </ol>
 <div class="box ok"><p>使用者的長期記憶不會送給 agent，這是平台強制的。agent 的預設分類等級會決定使用它的對話被列管到哪一級，等級只升不降。</p></div>
-<p>「開發指南」頁是給要寫 agent 的同仁看的說明，內容由平台內建，不用維護。</p>
+<p>「開發指南」頁是給要寫 agent 的同仁看的說明，內容由平台內建，不用維護。畫面見<a href="developer.html">開發者手冊</a>。</p>
 
 <h2 id="s8"><span class="num">8</span>自訂動作</h2>
 <p>治理中心 → 自訂動作。這裡定義同仁在答案下方可以按的額外動作（例如「翻成英文」「改成公文語氣」），本質是一段固定的提示詞。</p>
@@ -276,7 +279,7 @@
 
 <h2 id="s14"><span class="num">14</span>平台連結與服務存取</h2>
 <p>治理中心 → 平台連結：登記給同仁使用的服務入口，就是同仁畫面上「專案入口」裡的那些卡片。每項服務可設角色門檻、授權名單、開啟方式（新分頁或內嵌）、分類上限與服務管理員。</p>
-<figure><img src="img/gov-platform-links.png" alt="平台連結頁：六個服務，各有網址、註冊資訊、狀態、編輯停用刪除"><figcaption>平台連結。「停用」的服務同仁看不到；例如目前 ANILA LM 是停用的。</figcaption></figure>
+<figure><img src="img/gov-platform-links.png" alt="平台連結頁：六個服務，各有網址、註冊資訊、狀態、編輯停用刪除"><figcaption>平台連結。「停用」的服務同仁看不到。</figcaption></figure>
 <figure><img src="img/gov-form-platform-link.png" alt="新增服務表單"><figcaption>「新增服務」表單。</figcaption></figure>
 <p>治理中心 → 服務存取：逐一授權哪些使用者或單位可以進入各項服務。角色門檻「開放」的服務不用在這裡授權。</p>
 <figure><img src="img/gov-service-access.png" alt="服務存取頁：每個服務一張卡，顯示角色門檻與有效授權數，右側 + 新增授權"><figcaption>服務存取。</figcaption></figure>
@@ -311,9 +314,30 @@
   <li><strong>平時那塊是刻意隱藏的。</strong> 如果你在沒有加參數的情況下看到帳號密碼欄位，表示這台不是「卡登唯一入口」模式，那在正式部署上是不對的，請檢查部署設定。</li>
 </ul>
 
+<h2 id="s18"><span class="num">18</span>額度</h2>
+<p>治理中心 → 額度。預設不限制。要限制時，選對象（使用者、單位或 API 金鑰）、期間、計量，再填上限。留空是不限，0 是立刻擋下。單位的額度含下層單位。</p>
+<figure><img src="img/gov-quotas.png" alt="額度頁：設定對象、期間、token 上限，目前沒有任何額度"><figcaption>額度。還沒建立任何一條時，呼叫不會被限制。</figcaption></figure>
+<ul>
+  <li>上限在呼叫開始前檢查。超過而且設成擋下時，同仁會看到用量已達上限。</li>
+  <li>提醒門檻是接近上限時發站內通知，預設 80%。</li>
+  <li>單位管理員只能看自己範圍內的額度。</li>
+</ul>
+
+<h2 id="s19"><span class="num">19</span>skill 審核</h2>
+<p>治理中心 → skill 審核。同仁可以把一段文字指示做成 skill，送出後出現在「待審」。單位管理員看自己單位的申請，管理員看全院與各單位。內容只是給模型的指示，平台不會執行。</p>
+<figure><img src="img/gov-skill-review.png" alt="skill 審核：待審是空的，下方有一則已發布的全院 skill"><figcaption>沒有待審時，這一頁就是這樣。已發布的 skill 會標範圍（全院或單位）。</figcaption></figure>
+
+<h2 id="s20"><span class="num">20</span>群組</h2>
+<p>治理中心 → 群組。跨部門名單，用來指定哪些人能在對話裡選到某個模型。不是組織編制。在模型列的「對話選單」把「可使用對象」設成這個群組，模型才會開放給群組成員。</p>
+<figure><img src="img/gov-model-access-groups.png" alt="群組頁：一個名為 test 的群組，尚無成員"><figcaption>群組。成員用帳號搜尋加入。</figcaption></figure>
+
+<h2 id="s21"><span class="num">21</span>外部服務</h2>
+<p>治理中心 → 外部服務。文件解析（Docling）與語音辨識的位址填在這裡。改完不用重編映像，也不用改環境變數。沒填時，匯入用內建解析器，麥克風不出現。</p>
+<figure><img src="img/gov-external-services.png" alt="外部服務頁：Docling 與語音辨識都已啟用，位址以內網主機代替"><figcaption>外部服務。圖中的位址已改成示意，正式機填實際主機。憑證留白表示不改已存的憑證。</figcaption></figure>
+
 <footer>
-  ANILA 管理員手冊 · 中科院院內 AI 平台 · v1.0.1 · 2026-09-02<br>
-  截圖為示範環境；治理中心可切換深色，手冊一律用淺色截圖。
+  ANILA 管理員手冊 · 中科院院內 AI 平台 · v1.0.1 · 2026-09-02；第 2、7、18–21 節畫面更新於 2026-10-06<br>
+  截圖為本機已啟用的示範環境；治理中心可切換深色，手冊一律用淺色截圖。外部服務圖的位址已遮成示意。
 </footer>
 
 </div>

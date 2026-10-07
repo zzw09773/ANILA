@@ -847,7 +847,7 @@ async def _proxy_request_impl(
     dashboards.
 
     Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
-    headers only (doc 05 §4; doc 04 AC5 forbids them toward the model
+    headers only (Agent Registry §4; Model Gateway AC5 forbids them toward the model
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_request``
     wrapper.
@@ -911,7 +911,7 @@ async def _proxy_request_impl(
     # correct for both. Preserve the api_version=="v2" embedding special case
     # (strip any trailing version segment first so …/v1 + v2 does not become
     # …/v1/v2/embeddings). api_version is a URL path prefix only — not a
-    # wire protocol (see docs/FAKE-CONTROLS.md).
+    # wire protocol (see FAKE-CONTROLS).
     if model.api_version == "v2" and "embedding" in endpoint_path:
         target_url = join_upstream_path(
             strip_trailing_api_version(model.endpoint_url),
@@ -1415,7 +1415,7 @@ async def _proxy_stream_impl(
     performs a server-side token estimate from request/response text.
 
     Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
-    headers only (doc 05 §4; doc 04 AC5 forbids them toward the model
+    headers only (Agent Registry §4; Model Gateway AC5 forbids them toward the model
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
     """

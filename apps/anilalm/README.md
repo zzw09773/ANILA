@@ -6,7 +6,7 @@
 
 > 🌿 **分支對照**：本子專案存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`；**`trial-military` 精簡版不含本子專案**。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 >
-> 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`01-domain-model.md`](../../docs/anila-redesign-docs/01-domain-model.md)（Task 網域）、[`09-api-event-contracts.md`](../../docs/anila-redesign-docs/09-api-event-contracts.md)（Task / artifact 契約）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 
 ---
 
@@ -14,15 +14,15 @@
 
 本 SPA 提供「文件 → 對話 → 產出」一站式流程：上傳建知識庫 → 對話查詢 → 生成 artifact。它**只是前端**，串接 [`services/csp`](../../services/csp/)（CSP）做認證 / ingestion / 對話 / LLM proxy，artifact 生成走 [`services/anila-studio`](../../services/anila-studio/)。
 
-在 ANILA 產品憲章（doc 00 §2）中，本 SPA 同時實作兩個一級使用者入口 —「我的知識庫」與「產出中心」；ANILA Shell 的側欄以同源絕對路徑 `/anilalm` 進入。
+在 ANILA 產品憲章（產品憲章 §2）中，本 SPA 同時實作兩個一級使用者入口 —「我的知識庫」與「產出中心」；ANILA Shell 的側欄以同源絕對路徑 `/anilalm` 進入。
 
 ---
 
 ## 2. Task-first 產出（redesign Slice 8b）
 
-**每一次 Studio 產出 job 送出前，先在 CSP 建立一個 Task**，讓後續的 artifact-job / artifact / trace 全部掛回同一個治理單元（doc 09 §2 Task API）。
+**每一次 Studio 產出 job 送出前，先在 CSP 建立一個 Task**，讓後續的 artifact-job / artifact / trace 全部掛回同一個治理單元（API 契約 §2 Task API）。
 
-- `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks`（`task_type:'generate_artifact'`、`source_scope` 預設 `'project'`、`selected_collection_ids`、`requested_output_type`）。回傳 `TaskBinding { taskId, sourceSnapshotId?, traceId? }`，再 thread 進 Studio job body。型別對映 `services/csp/app/schemas/contracts/tasks.py` 與 doc 01（`TaskType` / `SourceScope` / `RequestedOutputType`）。
+- `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks`（`task_type:'generate_artifact'`、`source_scope` 預設 `'project'`、`selected_collection_ids`、`requested_output_type`）。回傳 `TaskBinding { taskId, sourceSnapshotId?, traceId? }`，再 thread 進 Studio job body。型別對映 `services/csp/app/schemas/contracts/tasks.py` 與領域模型（`TaskType` / `SourceScope` / `RequestedOutputType`）。
 - **韌性契約**：任何失敗（端點未上線 / 認證 / 網路）回傳 `null` ＋ zh-TW `console.warn`，產出**以無任務綁定方式照常繼續**，絕不因治理 metadata 掛不上而中斷生成。
 - 呼叫點：`src/workspace/CommandModal.tsx`（簡報）與 `src/studio/generators.ts`（報告 / 心智圖 / 資訊圖 / 資料表）——五種 artifact 皆先建 Task。
 
@@ -128,7 +128,7 @@ npm run build          # tsc -b && vite build（正式驗證用；非只 tsc）
 
 ## 7. 相關文件
 
-- 設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / 網域 01 / 契約 09）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 - 後端服務：CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
 - 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 治理中心 [`../csp-governance-ui/README.md`](../csp-governance-ui/README.md)
 - 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）

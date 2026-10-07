@@ -5,7 +5,7 @@ Revision ID: r1_0029
 Revises: r1_0028
 Create Date: 2026-07-31
 
-SYSTEM-MAP §1 / §5：CSP 專案知識庫與 ANILALM 個人知識庫各自獨立，
+舊 SYSTEM-MAP §1 / §5：CSP 專案知識庫與 ANILALM 個人知識庫各自獨立，
 但同一張 ``ingestion_collections`` 表、同一支 list API，過去只濾
 ``created_by``，所以治理中心建的庫會出現在 ANILALM「你的知識庫」。
 

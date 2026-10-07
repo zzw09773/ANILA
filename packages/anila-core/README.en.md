@@ -108,13 +108,13 @@ packages/anila-core/
             └── chunking_plugins/  # base · registry (@register_chunker) · builtins
 ```
 
-> Full module responsibilities & boundaries: [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md).
+- Module responsibility and boundary live in each `src/anila_core/` package docstring; the old `docs/archive/anila-core/anila-core-boundary.md` is deleted — mapping table in `docs/CURRENT-STATUS.md`.
 
 ---
 
 ## Redesign capability mapping (what anila-core owns)
 
-Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; anila-core provides only the **runtime producer surface**. Design lineage (convergence record) is [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution `00`; runtime/registry domain doc `05`; frozen contracts `09`). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+Most platform capability lives in CSP / the frontends; anila-core only provides the runtime producer surface. The old redesign docs' chapter numbers (doc 05 / 08 …) are gone; see `docs/CURRENT-STATUS.md` for the mapping table.
 
 | Capability | What anila-core owns | Code / doc |
 |---|---|---|
@@ -122,7 +122,7 @@ Most of the platform's Slice 0–9 capabilities live in CSP / the frontends; ani
 | **Task spine** (`X-ANILA-Task-Id`) | the runtime reads it via `CallerContext` and threads the task-id through the turn | `api/caller_context.py` |
 | **Four-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (`無機密` / `營業秘密` / `密` / `機密`) (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
 | **Agent Registry** (OE-1 three states: registered / approved / disabled) | No `anila-core register` CLI. Registration is the governance UI or `POST /api/agents/register`. **The state machine lives in CSP** | `services/csp/app/models/agent.py` |
-| **Model Gateway** (http fail-closed) | `url_guard` rejects http unless `ANILA_ALLOW_HTTP_ENDPOINT=1`. **Per-model keys / 5-state health live in CSP** | `security/url_guard.py`; doc `04` §8 |
+| **Model Gateway** (http fail-closed) | `url_guard` rejects http unless `ANILA_ALLOW_HTTP_ENDPOINT=1`. **Per-model keys / 5-state health live in CSP** | `security/url_guard.py`; Model Gateway §8 |
 
 ---
 
@@ -195,7 +195,7 @@ seven-state machine and no trace-test gate.
 
 `security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` is the central allow-list for user-supplied endpoint URLs (validated once by CSP at credential create and again by the worker at call time — defense in depth). **Slice 6a** domain-splits the http-relaxation flag by `endpoint_kind` (scheme only; host / IP / DNS / trusted-host checks are identical across kinds):
 
-- **`model`** — rejects http by default; admitted only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (PLAN.md P0.2, decided 2026-07-29: uniform across production and dev, superseding the original doc `04` §8 hard rule).
+- **`model`** — rejects http by default; admitted only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (decided 2026-07-29: uniform across production and dev).
 - **`agent`** — http is allowed via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` (for on-prem MLSteam plain-http NodePort agents); legacy `ANILA_ALLOW_HTTP_ENDPOINT` remains a deprecated fallback.
 - **`generic`** (default) — original global semantics; `ANILA_ALLOW_HTTP_ENDPOINT` relaxes it; existing callers are unaffected.
 
@@ -216,9 +216,7 @@ Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), inte
 
 ## Related docs
 
-- Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md), runtime/registry protocol [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), API/event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md), classification latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md), Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
-- anila-core boundary: [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md) · runtime design: [`../../docs/archive/anila-core/anila-core-runtime-design.md`](../../docs/archive/anila-core/anila-core-runtime-design.md)
-- Ingestion platform design: [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Release notes: [`CHANGELOG.md`](./CHANGELOG.md)
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - RAG agent template: [`../anila-agent/README.md`](../anila-agent/README.md) · Router shell: [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 - Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
 

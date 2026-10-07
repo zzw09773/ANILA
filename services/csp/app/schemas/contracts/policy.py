@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""PolicyDecision 契約(doc 03 §5,Slice 2a)。
+"""PolicyDecision 契約(控制面 §5,Slice 2a)。
 
-``action`` 九值與 ``decision`` 三值為封閉 enum(doc 03 逐字);DB 層
+``action`` 九值與 ``decision`` 三值為封閉 enum(控制面 逐字);DB 層
 (app/models/policy_decision.py)存開放 String、append-only,本模組在
 API 邊界 fail-closed 把關。
 """
@@ -19,7 +19,7 @@ from app.schemas.base import ApiResponseModel
 
 
 class PolicyAction(str, enum.Enum):
-    """doc 03 PolicyDecision.action 九值(逐字,順序照文件)。"""
+    """控制面 PolicyDecision.action 九值(逐字,順序照文件)。"""
 
     TASK_RUN = "task.run"
     MODEL_INVOKE = "model.invoke"
@@ -33,7 +33,7 @@ class PolicyAction(str, enum.Enum):
 
 
 class PolicyDecisionVerdict(str, enum.Enum):
-    """doc 03 PolicyDecision.decision 三值。"""
+    """控制面 PolicyDecision.decision 三值。"""
 
     ALLOW = "allow"
     DENY = "deny"
@@ -50,7 +50,7 @@ class PolicyActorType(str, enum.Enum):
 class PolicyDecisionOut(ApiResponseModel):
     """PolicyDecision 讀出契約(from ORM;append-only,無更新契約)。
 
-    doc 03 Done Criteria 4:所有 deny 必有可解釋原因(``reason`` +
+    控制面 Done Criteria 4:所有 deny 必有可解釋原因(``reason`` +
     ``matched_policy_ids``)—— service 層強制。
     """
 

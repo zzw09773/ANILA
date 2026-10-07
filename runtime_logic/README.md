@@ -1,6 +1,6 @@
 # runtime_logic — agent runtime 參考原始碼快照
 
-> ⚠ 2026-08-17 盤點：本檔為【已被取代】——`runtime_logic/` 是 reference-only 參考快照(見 `AGENTS.md` §2),不可當 runtime import 或部署來源。現行狀態與執行順序見 `PLAN.md`。
+> 這是參考快照，不能 import，也不能拿去部署。平台現況看 `docs/CURRENT-STATUS.md`。只有 `main` 這一條線。
 
 > Agent runtime 的「設計參考目錄」：收兩份生產級 runtime 的原始碼快照，供 ANILA 對照、借鑑、把好的 design pattern 翻譯成 Python 後納入 `packages/anila-core/` 與 agent template。**這不是執行碼。**
 
@@ -103,8 +103,7 @@
 
 - 平台總覽：[`../README.md`](../README.md) · 現行 `main`（舊七分支模型已失效）
 - Python runtime（移植目的地）：[`../packages/anila-core/README.md`](../packages/anila-core/README.md)
-- `openai-agents-python` 深入分析：[`../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md)
-- Agent framework 架構與移植決策：[`../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../docs/archive/agent-framework/anila-agent-framework-architecture.md)、[`../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md)
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 
 ---
 

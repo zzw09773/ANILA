@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Slice 8a — Artifact contract (doc 02 ArtifactJob, doc 01 Artifact/Version/
-Export, doc 08 §5).
+"""Slice 8a — Artifact contract (系統架構 ArtifactJob, 領域模型 Artifact/Version/
+Export, 四級分類 §5).
 
-Four tables backing the Studio artifact contract (doc 02 §8 blocker: Studio
+Four tables backing the Studio artifact contract (系統架構 §8 blocker: Studio
 five job pipelines keep state in process memory → violates the failure model
-"restart 不丟 job"). Studio reports over HTTP with its service token (doc 10
+"restart 不丟 job"). Studio reports over HTTP with its service token (邊界守則
 §12: studio 不直讀 CSP DB), so the durable state lives here:
 
-- ``artifacts``          : doc 01 Artifact + doc 08 §5 four common
+- ``artifacts``          : 領域模型 Artifact + 四級分類 §5 four common
   classification columns (binding rule: source_task_id OR source_snapshot_id).
-- ``artifact_versions``  : doc 01 ArtifactVersion (version increments;
+- ``artifact_versions``  : 領域模型 ArtifactVersion (version increments;
   per-version effective classification record).
-- ``export_records``     : doc 01 ExportRecord + doc 08 §5 four common
+- ``export_records``     : 領域模型 ExportRecord + 四級分類 §5 four common
   classification columns (only classification-policy-passed exports land).
-- ``artifact_jobs``      : doc 02 ArtifactJob schema verbatim (job_id string
-  PK = studio uuid; four-value status; NOT a doc 08 §5 classification
+- ``artifact_jobs``      : 系統架構 ArtifactJob schema verbatim (job_id string
+  PK = studio uuid; four-value status; NOT a 四級分類 §5 classification
   resource, so no classification columns).
 
 FK cycle avoidance (mirrors ``tasks.source_snapshot_id``): ``artifacts.job_id``
@@ -44,7 +44,7 @@ _UNCLASSIFIED = "無機密"
 
 
 def upgrade() -> None:
-    # ── artifacts (doc 01 + doc 08 §5 four common classification columns) ─────
+    # ── artifacts (領域模型 + 四級分類 §5 four common classification columns) ─────
     op.create_table(
         "artifacts",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -128,7 +128,7 @@ def upgrade() -> None:
         "ix_artifact_versions_artifact_id", "artifact_versions", ["artifact_id"]
     )
 
-    # ── export_records (doc 01 + doc 08 §5 four common classification cols) ───
+    # ── export_records (領域模型 + 四級分類 §5 four common classification cols) ───
     op.create_table(
         "export_records",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -178,7 +178,7 @@ def upgrade() -> None:
         "ix_export_records_artifact_id", "export_records", ["artifact_id"]
     )
 
-    # ── artifact_jobs (doc 02 ArtifactJob verbatim; created last for the FK) ──
+    # ── artifact_jobs (系統架構 ArtifactJob verbatim; created last for the FK) ──
     op.create_table(
         "artifact_jobs",
         sa.Column("job_id", sa.String(length=64), primary_key=True),

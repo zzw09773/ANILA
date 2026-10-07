@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """D1 — drop the Full Trace span subsystem.
 
-SYSTEM-MAP §7 rejects span trees / parent links / trace-id reporting.
+舊 SYSTEM-MAP §7 rejects span trees / parent links / trace-id reporting.
 OE-2 package D1; OE-1 already removed the approval hard-gate that stamped
 ``trace_test_passed_at`` via span polling.
 
@@ -11,7 +11,7 @@ Drops:
 
 Keeps ``tasks.trace_id`` as a correlation id for Task rows — that is not the
 span tree. Existing rows go with the table (DB disposable before go-live,
-PLAN 0.4).
+舊 PLAN 0.4).
 
 Revision ID: r1_0021
 Revises: r1_0020

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slice 7a — Service Registry / Launch Gateway tests (doc 07).
+"""Slice 7a — Service Registry / Launch Gateway tests (Service Registry).
 
 Covers: migration single head + data-migration fidelity (platform_link →
 registered_services with grants intact), the 8-step access algorithm matrix,
@@ -364,7 +364,7 @@ class TestLaunch:
 
 
 class TestAuditCallback:
-    """Bearer = Service Client Token (doc 03). The AES envelope crypto needs a
+    """Bearer = Service Client Token (控制面). The AES envelope crypto needs a
     process-global SECRET_KEY whose presence would leak into other test modules
     and shift the baseline, so we monkeypatch the real verifier (the endpoint
     calls ``agent_credential_service.verify_service_token``) and back it with a

@@ -33,7 +33,7 @@ class Conversation(Base):
         ForeignKey("ingestion_collections.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # OW-1 / docs/plans/ow1-message-tree-blueprint.md — single active-path pointer.
+    # OW-1 / ``app/services/message_tree.py`` — single active-path pointer.
     # use_alter: conversations ↔ messages would otherwise cycle create_all (SQLite).
     active_leaf_message_id = Column(
         Integer,
@@ -56,8 +56,8 @@ class Conversation(Base):
     classification_inherited = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    # ── 四級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
-    # 舊 boolean classified 保留為 compatibility read model(doc 08 §15
+    # ── 四級分類共通欄位(四級分類 §5,Slice 3a)────────────────────────────
+    # 舊 boolean classified 保留為 compatibility read model(四級分類 §15
     # Step 3;鏡射規則 classified = level >= 密,由
     # app.modules.policy.service 維護,舊 latch 不破)。
     classification_level = Column(
@@ -170,7 +170,7 @@ class ConversationUserMeta(Base):
 class ConversationShare(Base):
     """P4.3 — named share to a person XOR a department unit.
 
-    Anonymous token links are retired (SYSTEM-MAP §分享). A department
+    Anonymous token links are retired (舊 SYSTEM-MAP §分享). A department
     share reaches that node and its descendants, resolved at *read* time
     via ``_department_scope_ids`` so later re-parenting is honoured.
     Revoke = delete the row (no more server reads; no recall / no

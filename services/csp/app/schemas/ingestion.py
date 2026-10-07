@@ -272,9 +272,9 @@ class CollectionTransferRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=100)
 
 
-# ── Document relations (cross-document edges, design v2 §3/§8) ───────────────
+# ── Document relations (cross-document edges, document-relations design v2 §3/§8) ───────────────
 
-# The 6 edge types the citation extractor classifies (design v2 §5). ``relates``
+# The 6 edge types the citation extractor classifies (document-relations design v2 §5). ``relates``
 # is the catch-all when a regulation name is cited with no directional cue.
 RelationType = Literal[
     "based_on", "amends", "supersedes", "cites", "supplements", "relates"
@@ -353,7 +353,7 @@ class DocumentRelationResponse(ApiResponseModel):
 
 class ReresolveResponse(BaseModel):
     """Result of ``POST .../relations:reresolve`` — counts after a re-extract
-    + reconciliation pass over the collection (design v2 §7)."""
+    + reconciliation pass over the collection (document-relations design v2 §7)."""
 
     rule_edges_extracted: int = 0
     resolved: int = 0

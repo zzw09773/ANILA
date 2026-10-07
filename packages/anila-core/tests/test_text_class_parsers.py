@@ -441,7 +441,7 @@ def test_extract_text_low_entropy_binary_unsupported(name: str, factory) -> None
 
 
 def _repo_han_prose(n: int) -> str:
-    """First ``n`` Han characters of this repo's ``SYSTEM-MAP.md``.
+    """First ``n`` Han characters of this repo's ``docs/CURRENT-STATUS.md``.
 
     C3: fixtures on the UTF-16 path must come from the population the path
     actually serves. Repeated-phrase fixtures ("姓名單位王小明"×10) have a
@@ -452,11 +452,11 @@ def _repo_han_prose(n: int) -> str:
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[3]
-    src = root / "SYSTEM-MAP.md"
+    src = root / "docs" / "CURRENT-STATUS.md"
     if not src.is_file():  # authority doc — absence is a real failure
         pytest.fail(f"prose fixture source missing: {src}")
     han = [c for c in src.read_text(encoding="utf-8") if 0x4E00 <= ord(c) <= 0x9FFF]
-    assert len(han) >= n, "SYSTEM-MAP.md no longer has enough Han prose"
+    assert len(han) >= n, "docs/CURRENT-STATUS.md no longer has enough Han prose"
     return "".join(han[:n])
 
 

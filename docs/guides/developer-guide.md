@@ -23,7 +23,7 @@ export LLM_API_KEY=…
 
 4. `./run.sh start`。服務聽埠 8200。
 5. 在 MLSteam 把 port forwarding 指到 8200。
-6. 回到 Console 註冊助手。endpoint 填轉出去的 http 位址。註冊要填名稱、至少 24 字的用途說明、endpoint，以及基礎模型。
+6. 回到 Console 註冊助手。endpoint 填轉出去的 http 位址。註冊要填名稱、用途說明、endpoint，以及基礎模型；Console 表單另外把用途說明定在至少 24 字，後端驗的是非空、單行、最多 200 字。
 7. 把註冊得到的數字 id 填進 `deployment.env` 的 `ANILA_AGENT_ID`，執行 `./run.sh restart`。
 
 `LLM_BASE_URL` 已是 CSP 的 `/v1`。維持下載包裡的這個值。上線用量算提問者，開發者的金鑰不參與那筆計帳。
@@ -32,7 +32,7 @@ export LLM_API_KEY=…
 
 | reason | 下一步 |
 |---|---|
-| 啟動被拒，缺 CSP_BASE_URL／ANILA_CA_FILE／LLM_BASE_URL | 用下載包裡的 deployment.env，不要手填站台位址 |
+| 啟動被拒，缺 CSP_BASE_URL／ANILA_CA_FILE／LLM_BASE_URL／LLM_AUTH_REQUIRED | 用下載包裡的 deployment.env，不要手填站台位址 |
 | 啟動被拒，映像版本不符 | 換 `bundle.json` 寫的那版 lab 映像，或重新下載 zip |
 | `not_registered` | 註冊後把數字 id 填進 ANILA_AGENT_ID，再 `./run.sh restart` |
 | `llm_not_configured` | 填 LLM_MODEL。lab 測試才 `export LLM_API_KEY` 後重啟；上線用量算提問者 |

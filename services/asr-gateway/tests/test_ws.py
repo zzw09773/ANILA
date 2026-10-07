@@ -223,7 +223,7 @@ def test_internal_service_name_over_http_accepted(intranet_guard_env):
     """內部版(`http://asr-decoder:9000`)與外部版純 http 同一道門:都接受。
 
     治理中心在 ANILA_ALLOW_HTTP_ENDPOINT=1 時已接受 http;環境變數門若再拒絕
-    會讓「同一位址、兩扇門、兩種結果」。內網前例(P0.2)以接受為準。
+    會讓「同一位址、兩扇門、兩種結果」。內網前例(2026-07-29 拍板)以接受為準。
 
     ⚠ 2026-08-05:這道門現在**就是** anila_core 的 `validate_outbound_url`
     (以前是本檔自己的 startswith 字串檢查)。同一位址要通過的條件因此變成

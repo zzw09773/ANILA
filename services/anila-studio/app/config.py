@@ -65,9 +65,9 @@ class Settings(BaseSettings):
 
     # ── Durable job store (Slice 8b) ─────────────────────────────────────
     # The five artifact pipelines used to hold job state purely in process
-    # memory, so a studio restart lost every in-flight job (doc 02 failure
+    # memory, so a studio restart lost every in-flight job (系統架構 failure
     # model: "Studio restart → job 不應丟失"). We persist job metadata to
-    # the SAME Redis instance the revocation cache uses (doc 02 §1 topology
+    # the SAME Redis instance the revocation cache uses (系統架構 §1 topology
     # lists Redis as "queue + revocation + jobs"). Keys are prefixed and
     # carry a generous TTL so restarts can still answer status queries.
     JOB_STORE_KEY_PREFIX: str = "anila-studio:jobs:"

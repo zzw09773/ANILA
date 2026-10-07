@@ -1,5 +1,5 @@
 // OW-3 — governed message-level custom actions (user press path).
-// Contract: docs/plans/ow3-message-actions-blueprint.md §Q5 / §Q7 / §4.
+// Contract: services/csp/app/services/message_action_service.py (server truth).
 //
 // Visibility and invoke are server-authoritative. /visible includes the raw
 // template so the presser can inspect it; substitution still happens only on

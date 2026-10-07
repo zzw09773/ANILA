@@ -1,6 +1,6 @@
 """Tests for ``anila_core.ingestion.citation_extractor``.
 
-Phase 1 of document-relations (see docs/ingestion/document-relations-design.md):
+Phase 1 of document-relations (see the document-relations design):
 PURE text → list[Citation]. No DB, no resolution here — that lives in the
 worker/CSP layer. We assert:
 

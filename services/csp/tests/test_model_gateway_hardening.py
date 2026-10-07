@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Slice 6a — Model Gateway Hardening(doc 04 §2/§3/§5/§8/§9)。
+"""Slice 6a — Model Gateway Hardening(Model Gateway §2/§3/§5/§8/§9)。
 
 覆蓋:
 1. alembic 單一 head = r1_0005(regex 掃描,不執行遷移)。
 2. per-model secret ref write-only round trip:encrypt→resolve→GET 永不外露;
    無 ref 退回全域 env。
 3. health 五態映射 + POST /test + legacy /health-check alias + GET /health。
-4. url_guard kind split 在 model 註冊層:http 由旗標明確放行(PLAN.md P0.2)。
+4. url_guard kind split 在 model 註冊層:http 由旗標明確放行(2026-07-29 拍板)。
 5. 出向前 ceiling 檢查:deny(不發出向,respx 零呼叫)、allow 落 decision 列
    (task-linked,或 OE-4 G4:task-less 且 level ≥ 營業秘密)、legacy 無機密
    allow 不落列、legacy latched conversation deny。
@@ -94,7 +94,7 @@ def test_r1_0005_revises_r1_0004():
         / "migrations" / "versions" / "r1_0005_model_gateway_hardening.py"
     ).read_text(encoding="utf-8")
     assert re.search(r'down_revision[^=]*=\s*["\']r1_0004["\']', mod)
-    # allowed_task_types 明確不加(doc 04 §2/§11 內部不一致的拍板)。
+    # allowed_task_types 明確不加(Model Gateway §2/§11 內部不一致的拍板)。
     assert "allowed_task_types" not in mod.split("def upgrade")[1]
 
 
@@ -258,7 +258,7 @@ def test_legacy_health_check_alias_is_deprecated(db, monkeypatch):
 
 
 # ── 4. url_guard kind split @ model registration (flag-gated http) ───────────
-# PLAN.md P0.2 (2026-07-29): model http is gated by ANILA_ALLOW_HTTP_ENDPOINT
+# 2026-07-29 決策: model http is gated by ANILA_ALLOW_HTTP_ENDPOINT
 # uniformly — production no longer rejects unconditionally.
 
 def test_model_registration_allows_http_in_production_with_flag(monkeypatch):

@@ -3,8 +3,7 @@
 串流語音輸入的 WebSocket 端點。瀏覽器麥克風 → 切句 → 打治理中心設定的遠端解碼器 →
 把文字推回前端。**純 CPU、無 GPU、無 DB。**
 
-整體架構、WS 協定、實測證據、部署步驟見
-`docs/planning/asr-voice-input-plan.md` 與 `docs/runbooks/asr-voice-input.md`。
+解碼位址與協定在治理中心「外部服務」。WS 協定見 `app/`。
 
 ## 職責邊界
 
@@ -70,7 +69,7 @@ refresh token、fail-closed 撤銷查核)。長連線特有的兩點:
   是明確的接受決策(握手驗一次,session 上限 300s ≪ access token 60 分鐘)。
 
 ⚠ **session assurance(`sid`/`amr`/`acr`/`auth_time`)刻意不驗** —— csp 從不簽這些 claim,
-驗了就是全院被擋在門外。詳見 `app/auth.py` 檔頭與 `docs/runbooks/asr-voice-input.md` §7。
+驗了就是全院被擋在門外。詳見 `app/auth.py` 檔頭。
 
 ⚠ **`app/services/jwks_client.py` 與 `revocation_cache.py` 是 anila-studio 的
 vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,反之亦然 ——
@@ -105,7 +104,7 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 
 > `ASR_ALLOW_HTTP_DECODER` 已於 2026-08-05 **退役**:它從被馴服之後就沒有任何
 > 程式在讀,而名字讀起來像一個安全旗標(維運者設 0 會以為自己關掉了 http)。
-> 紀錄在 `docs/FAKE-CONTROLS.md` #31。舊 `.env` 留著那一行不會壞。
+> 舊 `.env` 留著那一行不會壞。
 
 ### native 與 openai
 

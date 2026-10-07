@@ -92,7 +92,7 @@ exit 1
 #
 # 內網端:
 #   bash INTRANET-LOAD.sh
-#   然後用同一個 COMPOSE_PROJECT_NAME 起棧(見 docs/runbooks/intranet-image-bundle.md)
+#   然後用同一個 COMPOSE_PROJECT_NAME 起棧(見 docs/deploy/UPDATE.md)
 # ============================================================================
 set -euo pipefail
 
@@ -1338,7 +1338,7 @@ fi
 if [ "\${NO_CHECKSUM_PROTECTION:-0}" = "1" ]; then
     echo "⚠ 再次提醒:本次載入不具備 checksum 完整性保護(ALLOW_NO_CHECKSUMS=1)——載入內容未經 sha256 驗證。" >&2
 fi
-echo "  下一步見 docs/runbooks/intranet-image-bundle.md"
+echo "  下一步見 docs/deploy/UPDATE.md"
 echo "  起棧時 -p 必須是: $COMPOSE_PROJECT_NAME"
 echo "  INCLUDE_ASR 打包值: $INCLUDE_ASR → 預設不開語音;要開才 --profile asr(且映像須已在包內)"
 echo "  WITH_DOCLING_IMAGE 打包值: $WITH_DOCLING_IMAGE → 平台 up **不要**加 --profile docling-local"

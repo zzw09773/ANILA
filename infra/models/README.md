@@ -8,6 +8,8 @@
 
 ---
 
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+
 ## 定位
 
 `infra/models/` 收容一份 `docker-compose.yml`（project `anila-models`）與服務的 build context（`src/`）。它與平台 stack（`anila`，見根 `compose.yaml` → `infra/compose/platform.yml`）是**兩個獨立 project**：
@@ -92,10 +94,10 @@ docker compose -f infra/models/docker-compose.yml down
 
 ## 與平台 / Model Gateway 的邊界
 
-CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs/04-model-gateway-design.md)）** 才是「註冊、路由、per-model API Key、5-state 健康、`ANILA_ALLOW_HTTP_ENDPOINT` 拒絕 http、分類限制、usage trace」的所在。本 compose 只**提供上游端點**，兩件事分層：
+CSP 的 **Model Gateway（治理中心，Model Gateway）** 才是「註冊、路由、per-model API Key、5-state 健康、`ANILA_ALLOW_HTTP_ENDPOINT` 拒絕 http、分類限制、usage trace」的所在。本 compose 只**提供上游端點**，兩件事分層：
 
 - **同機 docker DNS 上游（本 compose）**：`gpt-oss-20b` / `gemma4` / `nv-embed-proxy` 由平台 seed 註冊進 CSP model registry；同網內免 API Key。`nv-embed-triton` 不直接註冊，只由 `nv-embed-proxy` 內部連。生圖模型在治理中心指定，不在這份 compose。
-- **跨機模型（doc 04 的主場景）**：不同內網主機（如 `.12` gateway）的模型走 HTTPS + per-model API Key，由 CSP Model Gateway 代理——那條路徑的憑證／健康／fail-closed 治理在 CSP，不在本 compose。
+- **跨機模型（Model Gateway 的主場景）**：不同內網主機（如 `.12` gateway）的模型走 HTTPS + per-model API Key，由 CSP Model Gateway 代理——那條路徑的憑證／健康／fail-closed 治理在 CSP，不在本 compose。
 
 ---
 
@@ -113,5 +115,5 @@ CSP 的 **Model Gateway（治理中心，[doc 04](../../docs/anila-redesign-docs
 
 ## 相關文件
 
-- 重設計文件：[`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、[`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
+- 重設計文件：`04-model-gateway-design.md`、`00-product-constitution.md`
 - 部署腳本：`infra/deployment/archive/model-side/model-serve.sh`（模型生命週期）、`infra/deployment/scripts/deploy-prod.sh`（平台生命週期） · 平台整體：[`../../README.md`](../../README.md)

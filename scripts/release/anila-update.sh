@@ -1389,66 +1389,47 @@ _anila_port_collision() {
   return 1
 }
 
-# 只有第一次安裝會問。埠空著、是 ANILA 的入口、且沒有撞到其他 ANILA 埠，就不問。
-# 沒有終端機時拒絕，請操作者把 NGINX_HTTPS_PORT 寫進 state/.env。
-# 測試可傳入一個回答；空字串表示採用建議的 8443。正式執行不傳。
-ensure_first_install_https_port() {
-  local file port choice="" collision="" choice_collision="" blocked=0
-  file="$(install_root)/state/.env"
-  port="$(nginx_https_port_of "$file")"
+# 這個埠不能當 HTTPS 入口。anila-nginx 自己聽的埠算可用。
+_https_port_blocked() {
+  local file="$1" port="$2"
   if ! port_number_ok "$port"; then
-    blocked=1
-  elif collision="$(_anila_port_collision "$file" "$port")"; then
-    blocked=1
-  elif port_is_listening "$port" && ! anila_nginx_owns_port "$port"; then
-    blocked=1
-    collision=""
-  fi
-  if (( blocked == 0 )); then
     return 0
   fi
-  if [[ $# -ge 1 ]]; then
-    choice="$1"
-  elif [[ -t 0 ]]; then
-    while true; do
-      if [[ -n "$collision" ]]; then
-        printf '埠 %s 與 %s 相同，不能當作 HTTPS 埠。要改用哪個 HTTPS 埠？[8443] ' "$port" "$collision" >&2
-      else
-        printf '埠 %s 已被佔用，不是 ANILA 的入口。要改用哪個 HTTPS 埠？[8443] ' "$port" >&2
-      fi
-      read -r choice || true
-      [[ -z "$choice" ]] && choice=8443
-      if ! port_number_ok "$choice"; then
-        printf '請輸入 1 到 65535 的數字。\n' >&2
-        continue
-      fi
-      if port_is_listening "$choice" && ! anila_nginx_owns_port "$choice"; then
-        printf '埠 %s 也被佔用。\n' "$choice" >&2
-        continue
-      fi
-      if choice_collision="$(_anila_port_collision "$file" "$choice")"; then
-        printf '埠 %s 與 %s 相同，不能當作 HTTPS 埠。\n' "$choice" "$choice_collision" >&2
-        continue
-      fi
-      break
-    done
-  elif [[ -n "$collision" ]]; then
-    die "HTTPS 埠 ${port} 與 ${collision} 相同，而且沒有終端機可以詢問。請在 ${file} 寫入 NGINX_HTTPS_PORT=<另一個埠>（例如 8443），chmod 600，然後再執行一次。"
+  if _anila_port_collision "$file" "$port" >/dev/null; then
+    return 0
+  fi
+  if port_is_listening "$port" && ! anila_nginx_owns_port "$port"; then
+    return 0
+  fi
+  return 1
+}
+
+# 固定先聽 443。被別的程式佔用，或與 ANILA 其他入口相同，就依序自動改走下一個空埠。
+# 不詢問，沒有終端機也一樣。安裝與更新在拉起服務前都會重算：
+# 443 空出來，或已經是 anila-nginx，就改回 443。目前的值已經是選中的埠就不改檔。
+ensure_https_port() {
+  local file current="" chosen="" candidate
+  file="$(install_root)/state/.env"
+  current="$(nginx_https_port_of "$file")"
+  for candidate in 443 8443 8444 8445 8446 8447 8448 8449 8450; do
+    if _https_port_blocked "$file" "$candidate"; then
+      continue
+    fi
+    chosen="$candidate"
+    break
+  done
+  if [[ -z "$chosen" ]]; then
+    die "443 與備用埠 8443-8450 都無法使用（被佔用，或與其他 ANILA 入口相同）。請空出其中一個再執行。"
+  fi
+  if [[ "$current" == "$chosen" ]]; then
+    return 0
+  fi
+  _write_nginx_https_port "$file" "$chosen"
+  if [[ "$chosen" == 443 ]]; then
+    ok "HTTPS 埠改回 443"
   else
-    die "HTTPS 埠 ${port} 已被佔用，而且沒有終端機可以詢問。請在 ${file} 寫入 NGINX_HTTPS_PORT=<另一個埠>（例如 8443），chmod 600，然後再執行一次。"
+    ok "443 無法使用，HTTPS 埠自動改為 ${chosen}"
   fi
-  [[ -z "$choice" ]] && choice=8443
-  if ! port_number_ok "$choice"; then
-    die "HTTPS 埠必須是 1 到 65535 的數字。"
-  fi
-  if port_is_listening "$choice" && ! anila_nginx_owns_port "$choice"; then
-    die "埠 ${choice} 也被佔用。請換一個沒有人用的埠。"
-  fi
-  if choice_collision="$(_anila_port_collision "$file" "$choice")"; then
-    die "埠 ${choice} 與 ${choice_collision} 相同，不能當作 HTTPS 埠。請換一個沒有被 ANILA 其他入口使用的埠。"
-  fi
-  _write_nginx_https_port "$file" "$choice"
-  ok "HTTPS 埠改為 ${choice}"
 }
 
 ensure_platform_env() {
@@ -2278,7 +2259,6 @@ cmd_update() {
     tag_running_as_version "$old"
   else
     info "這台還沒有在跑的平台，略過公告與更新前備份"
-    ensure_first_install_https_port
   fi
   dest="$root/versions/$new"
   rm -rf "$dest"
@@ -2289,6 +2269,7 @@ cmd_update() {
   prepare_tree "$dest" "$root"
   ANILA_RETAG_ON_DIE=0
   switch_current "$root" "$new"
+  ensure_https_port
   if ! bring_up "$dest"; then
     append_operations_log update "${old:-none}" "$new" failure
     _ops_done=1

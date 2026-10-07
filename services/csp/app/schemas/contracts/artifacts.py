@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """Artifact 契約(型別 + 封閉 enum)—— Slice 8a。
 
-依 docs/anila-redesign-docs/02-system-architecture.md(ArtifactJob schema
+依系統架構規格(ArtifactJob schema
 逐欄)、01-domain-model.md(Artifact / ArtifactVersion / ExportRecord)、
 09-api-event-contracts.md(Artifact API 回應契約)、08(分類匯出判定)。
 
 DB 層存開放 String,封閉 enum 在本契約層 fail-closed 把關(同
-``contracts.tasks`` / ``contracts.policy`` 模式)。五類產出名稱以 doc 02/01
+``contracts.tasks`` / ``contracts.policy`` 模式)。五類產出名稱以 系統架構/01
 逐字為準:``slides / report / mindmap / infographic / datatable``(task 提示
 的 ``deck`` 是佔位,doc 用 ``slides`` → 從文件)。
 """
@@ -23,7 +23,7 @@ from app.schemas.base import ApiResponseModel
 
 
 class ArtifactType(str, enum.Enum):
-    """doc 02/01 五類產出(順序照 doc 02 ArtifactJob.type)。"""
+    """系統架構/01 五類產出(順序照 系統架構 ArtifactJob.type)。"""
 
     SLIDES = "slides"
     REPORT = "report"
@@ -33,7 +33,7 @@ class ArtifactType(str, enum.Enum):
 
 
 class ArtifactJobStatus(str, enum.Enum):
-    """doc 02 ArtifactJob.status 四值(逐字)。"""
+    """系統架構 ArtifactJob.status 四值(逐字)。"""
 
     QUEUED = "queued"
     RUNNING = "running"
@@ -42,7 +42,7 @@ class ArtifactJobStatus(str, enum.Enum):
 
 
 class ArtifactStatus(str, enum.Enum):
-    """doc 01 Artifact.status 四值(逐字)。"""
+    """領域模型 Artifact.status 四值(逐字)。"""
 
     QUEUED = "queued"
     GENERATING = "generating"
@@ -134,7 +134,7 @@ class ArtifactVersionIn(BaseModel):
 class ArtifactExportIn(BaseModel):
     """``POST /v1/artifacts/{artifact_id}/exports`` body(匯出 policy gate)。
 
-    OE-4 / SYSTEM-MAP §8 L241-242:allow iff artifact.level ≤ 營業秘密;
+    OE-4 / 四級分類契約 L241-242，原 SYSTEM-MAP §8:allow iff artifact.level ≤ 營業秘密;
     audit iff level ≥ 營業秘密。``target_classification_floor`` 保留為
     目的地空間 metadata,不再作判定軸。
     """

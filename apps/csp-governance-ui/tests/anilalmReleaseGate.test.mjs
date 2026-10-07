@@ -53,9 +53,9 @@ test('isReleaseGateClosedFor marks the row instead of hiding it', () => {
 })
 
 // 使用者面 vs 管理面：閘門關的是「可用」，不是「可管理」。
-// 2026-08-02：服務登記在前端濾掉整列，連編輯／停用／刪除按鈕一起消失，
+// 2026-08-02：平台連結在前端濾掉整列，連編輯／停用／刪除按鈕一起消失，
 // 管理員看不到也管不動，要停用只能手打 API。那不是 release gate。
-test('使用者面（儀表板）過濾，管理面（服務登記／服務存取）不過濾只標記', () => {
+test('使用者面（儀表板）過濾，管理面（平台連結／服務存取）不過濾只標記', () => {
   const dashboard = readFileSync(
     new URL('../src/views/DashboardView.vue', import.meta.url), 'utf8')
   assert.match(

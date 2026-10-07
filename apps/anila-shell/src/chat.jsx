@@ -4380,7 +4380,7 @@ export const Sidebar = ({
       </div>
 
       {/* ANILA Shell 主導覽：對話 / 我的知識庫 / 專案入口
-          （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
+          （+ admin 才顯示的 治理中心）。已刪的 doc 00 §2 唯一產品入口 / 舊 doc 10 §11。 */}
       <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} currentId={currentNavId} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 

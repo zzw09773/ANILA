@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Slice 2a — Task / Policy schema 基礎測試(D1 已卸 TraceSpan)。
 
-依 docs/anila-redesign-docs/01-domain-model.md(Task 是主脊椎、SourceSnapshot
+依領域模型規格(Task 是主脊椎、SourceSnapshot
 三規則)、03(PolicyDecision 九動作 enum、append-only)。
 
 涵蓋:
@@ -80,7 +80,7 @@ class TestTaskCrud:
         assert task.legacy_runtime_call is False
         assert task.classification_level == UNCLASSIFIED
         assert task.created_at is not None
-        # doc 01 驗收:建立 Task 必產生 trace_id
+        # 領域模型 驗收:建立 Task 必產生 trace_id
         assert task.trace_id
 
     def test_task_trace_id_unique(self, db):

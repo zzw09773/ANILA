@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """app.modules.launch — Service Launch Gateway(服務啟動閘道)。
 
-職掌(doc 02 §1、doc 07、doc 10 §12):所有正式 GUI service launch 必須
+職掌(系統架構 §1、Service Registry、邊界守則 §12):所有正式 GUI service launch 必須
 通過本閘道——Service Registry 查核、Launch Contract / Launch Token 簽發,
 與 launch 事件的 trace 紀錄。
 

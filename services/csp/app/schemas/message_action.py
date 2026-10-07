@@ -1,5 +1,5 @@
 """OW-3 message-action Pydantic contracts
-(docs/plans/ow3-message-actions-blueprint.md §4 / §Q5)."""
+(``app/api/message_actions.py`` §4 / §Q5)."""
 
 from __future__ import annotations
 

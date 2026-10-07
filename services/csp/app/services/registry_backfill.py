@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Data-migration: platform_links → registered_services (Slice 7, doc 07 §14).
+"""Data-migration: platform_links → registered_services (Slice 7, Service Registry §14).
 
 Extracted from the alembic migration so it is DB-agnostic (ORM handles JSON
 serialisation per-dialect) and directly unit-testable on the SQLite fixture.

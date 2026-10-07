@@ -1,5 +1,8 @@
 """FAKE-CONTROLS cleanup: retired accept-and-ignore settings must refuse.
 
+``FAKE-CONTROLS #nn`` 這個標記原本指一份已刪的盤點文件；現行落點就是本檔，
+加上程式碼與測試裡的同名註解。
+
 Each test below goes red if the corresponding write path is restored without
 an effect (silent success). Revert the production guard to confirm.
 """

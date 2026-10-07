@@ -446,7 +446,7 @@ def test_backtick_wrapped_instruction_still_dispatches(db_path, monkeypatch):
     ("directive", "terminator"),
     [
         pytest.param(
-            "DISPATCH:iso42001-probe:陸海空軍懲罰法第 46 條的規定是什麼？",
+            "DISPATCH:legal-probe:陸海空軍懲罰法第 46 條的規定是什麼？",
             "\n",
             id="incident-newline",
         ),
@@ -491,7 +491,7 @@ def test_streaming_dispatch_scans_every_prefix_before_terminator(
 @pytest.mark.parametrize(
     "directive",
     [
-        "DISPATCH:iso42001-probe:陸海空軍懲罰法第 46 條的規定是什麼？",
+        "DISPATCH:legal-probe:陸海空軍懲罰法第 46 條的規定是什麼？",
         "DISPATCH:agent-a:what is article 46",
         "DISPATCH:agent-a:what  is  article  46",
     ],

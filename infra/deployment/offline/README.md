@@ -2,6 +2,8 @@
 
 這一包的承諾很窄：在有網路的建置端，把平台 Python 服務的相依閉包收成 cp313 wheelhouse，讓已出貨映像可以在氣隙內做 Python 依賴的 overlay patch。它不是從零離線重建方案；Dockerfile 在 pip 之前仍有 apt 等建置步驟，這一階不處理那條路。
 
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+
 ## 內容與收集
 
 `build-platform-wheelhouse.sh` 從自身位置推導 repo root，所以可從任何 worktree 位置執行。它只接受 `all` 與 `cp313`，其他參數直接失敗。預設只收集：
@@ -25,7 +27,7 @@ infra/deployment/offline/dist/cp313/
 
 `dist/` 已加入 `.gitignore`；house 與 manifest 是交付產物，不進 PUBLIC repo。router 的 `pydantic-settings` 也已移到 `services/anila-core-router/requirements.txt`，Dockerfile 與 collector 共用同一份宣告。
 
-同一 ABI house 允許同一 distribution 出現多個版本；這是目前已出貨映像的真實狀態，不是 audit 錯誤。cp313 已量到 csp 使用較舊版本，而 ingestion-worker、asr-gateway 使用較新版本；平台層版本漂移列在 `docs/OWNER-QUESTIONS.md` Q52，本 wheelhouse 工具鏈不替平台做版本收斂。
+同一 ABI house 允許同一 distribution 出現多個版本；這是目前已出貨映像的真實狀態，不是 audit 錯誤。cp313 已量到 csp 使用較舊版本，而 ingestion-worker、asr-gateway 使用較新版本；本 wheelhouse 工具鏈不替平台做版本收斂。
 
 audit 的預設 CLI 是 `python3 audit-wheelhouse.py <house>`，會遞迴尋找該 house 下的 `*.freeze.txt`。它保留空 house 與 `*.tar.gz` 硬閘，並檢查 manifest→wheel、wheel→manifest 的雙向閉包，以及單一 manifest 內每個 distribution 只出現一次；不再以 house-wide 的多版本作為失敗條件。
 
@@ -75,7 +77,7 @@ wheel **絕對不可 COPY 進任何 image layer**：即使後面刪掉，歷史 
 
 - apt / npm / Playwright Chromium / 字型下載與其他非 Python build-time 網路依賴。
 - 從零開始的 offline Docker rebuild；這一階的 apt mirror 等外部條件尚未定義。
-- `infra/models` 映像；是否納入待 `docs/OWNER-QUESTIONS.md` 的 Q51 裁定。
+- `infra/models` 映像。這包不負責模型映像。
 
 ## 離線 audit 測試
 

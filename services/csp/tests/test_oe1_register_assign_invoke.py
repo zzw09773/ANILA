@@ -1,7 +1,7 @@
 """OE-1 end-to-end: register → admin assigns → user invokes.
 
 No connection-test / trace-test / security-review step. Assigning a
-registered agent auto-approves it (SYSTEM-MAP eight-step table).
+registered agent auto-approves it (舊 SYSTEM-MAP eight-step table).
 """
 
 from __future__ import annotations

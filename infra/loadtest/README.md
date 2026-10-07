@@ -1,6 +1,6 @@
 # ANILA load test (k6) — pool-fix concurrency probe
 
-Reclaimed from attic W2-8 (`infra/loadtest/`, `docs/planning/load-baseline.md`),
+Reclaimed from the attic W2-8 load test package (`infra/loadtest/`),
 adapted 2026-07-31 for the redesign stack on the running `anila` compose project.
 
 > Numbers are **relative / regression** measurements against a **stubbed**

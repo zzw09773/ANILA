@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Pydantic contracts for the Service Registry (doc 07 §3/§6/§10/§13).
+"""Pydantic contracts for the Service Registry (Service Registry §3/§6/§10/§13).
 
 Enums mirror doc §3's closed value sets and are validated at the API boundary
 (FastAPI 422 on a bad value). ``required_roles`` reuses the same allow-list as

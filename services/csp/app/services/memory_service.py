@@ -514,7 +514,7 @@ async def retrieve_relevant_chunks(
     just wastes context.
 
     ``only_conversation_id`` is the P4.5 confinement: recall may not
-    leave the one conversation named here. Owner rule (PLAN 4.4/4.5) —
+    leave the one conversation named here. Owner rule (擁有者裁定, 2026-07-30) —
     ANILALM 的「同一 session」= 同一個對話框 — so the LM side searches
     its own conversation and nothing else. It is the inverse of
     ``exclude_conversation_id``; when set, exclude is ignored (excluding
@@ -2527,11 +2527,11 @@ def start_memory_idle_loop():
 def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, int]:
     """Delete every piece of memory derived from ``conversation_id``.
 
-    Owner rule (PLAN.md §4.4/4.5, 2026-07-30):
+    Owner rule (擁有者裁定, 2026-07-30):
     「對話**升密之後,先前萃取的記憶直接刪除**(不是標記不可用)。」
     Real DELETE, not a tombstone or a retrieval-time filter — a filter
     is one forgotten call site away from serving the content again, and
-    SYSTEM-MAP §5 L189 says 撤回, not 隱藏.
+    記憶 §5 L189 says 撤回, not 隱藏.
 
     Both stores the memory subsystem writes are covered:
 
@@ -2539,7 +2539,7 @@ def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, in
       a column on this table, not a separate store, so the vector dies
       with the row; there is no orphaned index entry to sweep.
     * ``user_facts`` — extracted key/value facts, matched on
-      ``source_conversation_id`` (the provenance column SYSTEM-MAP §5
+      ``source_conversation_id`` (the provenance column 記憶 §5
       L189 requires precisely so an upgrade can find them again).
 
     Caller owns the transaction — this stages the DELETEs and does not

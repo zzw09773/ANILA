@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """P4.3 — named conversation shares (person XOR unit); retire anonymous token.
 
-SYSTEM-MAP §分享 / PLAN 4.3:分享給指定的人/單位,不是匿名連結。
+舊 SYSTEM-MAP §分享 / 舊 PLAN P4.3:分享給指定的人/單位,不是匿名連結。
 擁有者 2026-07-30 裁定:人與單位兩者皆可;撤銷=自此不可再讀(非召回)。
 
 本 migration 改寫 ``conversation_shares``:

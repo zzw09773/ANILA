@@ -157,7 +157,7 @@ class TestAllowedAgents:
         assert any(a["id"] == agent.id for a in resp2.json())
 
     def test_assign_registered_auto_approves(self, client, db):
-        """SYSTEM-MAP: register → admin assigns → usable (no other gate)."""
+        """舊 SYSTEM-MAP: register → admin assigns → usable (no other gate)."""
         user = make_user(db, username="u_reg")
         dev = make_user(db, username="dev_reg", role="developer")
         make_user(db, username="admin_reg", role="admin")

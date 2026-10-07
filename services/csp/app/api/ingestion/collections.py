@@ -99,7 +99,7 @@ def _normalized_caption_model(db: Session, name: str | None) -> str | None:
     return cleaned
 
 # 唯一「可以被 ANILA 檢索」的密等。取自 enum,不是抄一份字串常數——
-# 四級的儲存拼法只有契約層說了算(SYSTEM-MAP §8)。
+# 四級的儲存拼法只有契約層說了算(四級分類契約)。
 _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 
 

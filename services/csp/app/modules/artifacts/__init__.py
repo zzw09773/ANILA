@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """app.modules.artifacts — Artifact Service(Studio 產出契約持久化)。
 
-職掌(doc 02 ArtifactJob、doc 01 Artifact/Version/Export、doc 08 §5/§10):
+職掌(系統架構 ArtifactJob、領域模型 Artifact/Version/Export、四級分類 §5/§10):
 把 Studio 五類產出(slides / report / mindmap / infographic / datatable)的
-job 生命週期與成品物件搬進 CSP DB —— doc 02 §8 blocker:「Studio restart 後
+job 生命週期與成品物件搬進 CSP DB —— 系統架構 §8 blocker:「Studio restart 後
 job 不應丟失」。負責 artifact_jobs 冪等 upsert 與狀態機、artifacts 的
 binding 規則(必綁 task 或 source_snapshot,constitution §6)、artifact
 版本、export_records 落地與治理 owner-scope 讀取。

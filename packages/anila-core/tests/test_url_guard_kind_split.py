@@ -1,11 +1,10 @@
 """Slice 6a — ``validate_outbound_url`` endpoint_kind domain split.
 
 http-scheme 放寬旗標按端點類型分域(Slice 6a;model 域原「production 無條件
-拒收」不變量已由 PLAN.md P0.2「2026-07-29 拍板」改為旗標統一判定)。
+拒收」不變量已由 2026-07-29 拍板改為旗標統一判定)。
 
 - ``model``   — http 由 ``ANILA_ALLOW_HTTP_ENDPOINT`` 明確放行,預設拒收;
-                production 與 dev 同樣依此旗標判定(PLAN.md P0.2,
-                2026-07-29 拍板:內網模型 gateway 走 http)。
+                production 與 dev 同樣依此旗標判定(2026-07-29 拍板:內網模型 gateway 走 http)。
 - ``agent``   — http 由 ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT`` 放行;legacy
                 ``ANILA_ALLOW_HTTP_ENDPOINT`` 仍 fallback(帶 deprecation 警告,
                 內網 MLSteam 純 http NodePort agent 靠它)。
@@ -63,7 +62,7 @@ def test_model_http_dev_without_flag_rejected(monkeypatch):
 
 @pytest.mark.parametrize("env_val", ["production", "prod"])
 def test_model_http_production_with_flag_ok(monkeypatch, env_val):
-    """PLAN.md P0.2(2026-07-29 拍板):production 與 dev 同樣依
+    """2026-07-29 拍板:production 與 dev 同樣依
     ANILA_ALLOW_HTTP_ENDPOINT 判定 —— 內網模型 gateway 走 http。"""
     monkeypatch.setenv(_HTTP_MODEL, "1")
     monkeypatch.setenv(_ENV, env_val)

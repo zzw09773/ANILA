@@ -49,7 +49,7 @@ def _comment_cell(value) -> str:
 
     ``\\r``／``\\n`` are handled by :func:`_one_physical_line`.
     Export-time only — registration and username charset are unchanged
-    (that is an owner decision, docs/archive/TOMORROW.md item 5).
+    (that is an owner decision, owner decision, item 5).
     """
     return _one_physical_line(value).translate(_COMMENT_UNSAFE)
 
@@ -93,7 +93,7 @@ def export_audit_logs(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """SYSTEM-MAP §8「要能匯出給稽核單位」的匯出檔 —— **同時是鏈頭的錨點**。
+    """四級分類契約「要能匯出給稽核單位」的匯出檔 —— **同時是鏈頭的錨點**。
 
     P2.7:檔頭印出目前的稽核鏈鏈頭與涵蓋區間。這份檔案一旦交出去(給稽核
     單位、給長官的月報附件),就成為這台機器上的人**碰不到的東西** —— 之後

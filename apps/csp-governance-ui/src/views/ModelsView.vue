@@ -387,7 +387,7 @@
           金鑰欄位只在會真的送出金鑰的協定下出現。triton_grpc 路徑從不呼叫
           resolve_model_gateway_key / _apply_gateway_auth,client.py 也沒有掛
           call credentials 或 metadata —— 留著這個欄位就是「打了字、跳成功、
-          什麼也沒送出去」的假控制項(docs/FAKE-CONTROLS.md)。
+          什麼也沒送出去」的假控制項(已刪的 docs/FAKE-CONTROLS.md)。
         -->
         <p v-if="form.name === 'anila-router'" class="field-note">
           這是平台入口「ANILA」，不必另設金鑰；Router 轉送呼叫者 JWT／CSP sk-。
@@ -789,7 +789,7 @@ const testingId = ref(null)
 const testResults = ref({})
 const probingThinking = ref(false)
 
-// doc 04 §2 protocol 列舉。openai_compatible = HTTP OpenAI shape；
+// 已刪的 doc 04 §2 protocol 列舉。openai_compatible = HTTP OpenAI shape；
 // triton_grpc = Triton/KServe gRPC（端點填 grpc://host:port）。custom_adapter 已退場。
 const PROTOCOL_OPTIONS = [
   { value: 'openai_compatible', label: 'OpenAI 相容（HTTP）' },
@@ -800,7 +800,7 @@ const PROTOCOL_OPTIONS = [
 ]
 const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
 
-// SYSTEM-MAP §8 四級分類（無機密 < 營業秘密 < 密 < 機密）。
+// 已刪的 SYSTEM-MAP §8 四級分類（無機密 < 營業秘密 < 密 < 機密）。
 const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '密', '機密']
 
 // supports_* → 能力晶片繁中標籤。缺欄位（6a 未落地）時該晶片不顯示。
@@ -913,7 +913,7 @@ const ENDPOINT_INTERNAL = '<internal>'
 // Group import sources by visible endpoint_url. Designated viewers / owner
 // see the real address so same-host rows collapse to one option. Undesignated
 // viewers see a sentinel and fall back to per-row id: keys (they have no
-// business grouping by a property they may not see — SYSTEM-MAP §6).
+// business grouping by a property they may not see — 舊 SYSTEM-MAP §6)。
 const importEndpointOptions = computed(() => {
   const seen = new Set()
   const opts = []

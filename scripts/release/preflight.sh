@@ -111,10 +111,17 @@ anila_owns() { anila_nginx_owns_port "$1"; }
 for spec in "NGINX_HTTP_PORT 80" "NGINX_HTTPS_PORT 443" "ANILA_UI_HTTPS_PORT 4443"; do
   read -r key def <<<"$spec"
   port="$(port_of "$key" "$def")"
+  # HTTPS 固定先聽 443。被佔用時安裝程式自己改走下一個空埠，預檢不因此失敗。
+  if [[ "$key" == NGINX_HTTPS_PORT ]]; then
+    port=443
+  fi
   if ! listening "$port"; then
     pass "埠 $port 空著（$key）"
   elif anila_owns "$port"; then
     pass "埠 $port 是 ANILA 自己在用（$key）"
+  elif [[ "$key" == NGINX_HTTPS_PORT ]]; then
+    owner="$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -E ":$port->" | awk '{print $1}' | head -1)"
+    note "埠 443 被 ${owner:-其他程式} 佔用。安裝與更新會自動改聽下一個空埠（從 8443 起）；443 空出來後會改回 443。"
   else
     owner="$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -E ":$port->" | awk '{print $1}' | head -1)"
     fail "埠 $port 被 ${owner:-其他程式} 佔用（$key）"

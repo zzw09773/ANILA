@@ -78,7 +78,7 @@ def test_flag_zero_disables(db, monkeypatch: pytest.MonkeyPatch) -> None:
     [
         "2113年度計畫",
         "編號113年度計畫",
-        "ISO 2024",
+        "規格 2024",
         "型號2024",
         "113年式步槍",
         "F-16",

@@ -1,6 +1,6 @@
 # share/
 
-> ⚠ 2026-08-17 盤點：本檔為【歷史紀錄】,保留供追溯,不代表現況。現行狀態與執行順序見 `PLAN.md`。
+> 這份只說明這個目錄怎麼被 nginx 用。平台現況看 `docs/CURRENT-STATUS.md`。
 
 Runtime data for the ANILA nginx container. `/static/*` is served publicly;
 `/uploads/` is not public (nginx returns 404). Both subdirectories are git-ignored —

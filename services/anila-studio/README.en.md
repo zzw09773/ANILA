@@ -179,5 +179,5 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 ## Related docs
 
-- Redesign design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (`00-product-constitution.md`, `09-api-event-contracts.md` artifact / trace contracts, `02-system-architecture.md` JobStore failure model). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

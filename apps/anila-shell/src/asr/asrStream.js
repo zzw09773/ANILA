@@ -8,8 +8,8 @@
  * 沒有任何前端共用包(沒有 npm workspace / pnpm / turbo,兩個 app 是各自獨立的
  * vite build,而且 anilalm 有 TypeScript、anila-shell 沒有)。要共用就得先引入
  * 前端 monorepo 工具鏈 —— 那是基礎建設改動,不該夾在語音輸入這個功能裡。
- * 這是刻意的取捨,不是疏忽。(規劃書 §2.5 要求實作者查既有慣例後決定;查了,
- * 沒有前例。)
+ * 這是刻意的取捨,不是疏忽。(已刪的 ASR 規劃書 §2.5 要求實作者查既有慣例後
+ * 決定;查了,沒有前例。)
  *
  * 刻意寫成純 JS、零框架相依:anila-shell 沒有 TypeScript,同一份 .js 兩邊都能
  * 直接 import;anilalm 那邊靠旁邊的 asrStream.d.ts 拿型別。
@@ -18,7 +18,7 @@
  * (語料庫/ASR_intranet/code_for_mlsteam/streaming_asr/templates/index.html:629+),
  * 幾個看起來多餘、其實是踩過坑的地方都保留了 —— 見各處註解。
  *
- * 協定見 docs/planning/asr-voice-input-plan.md §2.2。
+ * 協定見 ASR 規劃書 §2.2;權威實作在 services/asr-gateway/app/main.py。
  */
 
 const TARGET_SR = 16000;
@@ -132,7 +132,7 @@ registerProcessor('pcm-forwarder', PCMForwarder);
 /**
  * 追蹤協定不變式:final/discard 之後,同 id 的 partial 一律無效。
  *
- * 伺服器已經擋了一層(gateway 的 _terminal),這裡再擋是規劃書 §2.2 明文要求的
+ * 伺服器已經擋了一層(gateway 的 _terminal),這裡再擋是 ASR 規劃書 §2.2 明文要求的
  * 雙保險 —— 少了它,一個遲到的 partial 就會讓預覽文字在定稿後復活,而且永遠
  * 清不掉(下一個 final 是別的 id,蓋不到它)。
  */

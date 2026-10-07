@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Launch token issuance — short-lived CSP-signed RS256 JWT (doc 07 §6).
+"""Launch token issuance — short-lived CSP-signed RS256 JWT (Service Registry §6).
 
 The launch token rides the same RS256 keypair / ``kid`` as CSP's access
 tokens, so registered services verify it LOCALLY via the existing

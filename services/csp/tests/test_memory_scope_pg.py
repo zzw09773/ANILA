@@ -7,7 +7,7 @@
 不是把 SQL 攔下來看參數 —— 攔參數只證明字串長對,證明不了資料庫真的
 把對話框外的列擋掉了。
 
-擁有者裁定(PLAN.md §4.4/4.5):ANILALM 的「同一 session」= 同一個對話框。
+擁有者裁定(P4.4/P4.5,2026-07-30):ANILALM 的「同一 session」= 同一個對話框。
 
 沒設 ``ANILA_TEST_PG_DSN`` 就跳過。跑法:
 
@@ -222,7 +222,7 @@ async def test_only_conversation_id_returns_that_box_and_nothing_else(world):
 
 @pytest.mark.asyncio
 async def test_unscoped_retrieval_still_crosses_conversations(world):
-    """ANILA 側不變 —— 沒下範圍就是跨對話召回,規格給的功能不能被收掉。"""
+    """ANILA 側不變 —— 沒下範圍就是跨對話召回,舊 SYSTEM-MAP 給的功能不能被收掉。"""
     from app.services import memory_service
 
     db, user, convs = world

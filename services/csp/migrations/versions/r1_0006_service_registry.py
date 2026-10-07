@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slice 7a — Service Registry (doc 07 §3/§5/§10/§13/§14).
+"""Slice 7a — Service Registry (Service Registry §3/§5/§10/§13/§14).
 
 Additive upgrade of ``platform_links`` into the full ``registered_services``
 Registry, plus the launch-gateway audit trail tables:
@@ -48,7 +48,7 @@ def upgrade() -> None:
     # 0013 補 is_public)。走過 startup create_all fallback 的既有 DB 有這些欄,
     # 乾淨 Alembic-only DB 沒有 → 下方 backfill_registered_services 讀 link.icon
     # 等會 UndefinedColumn。inspector 冪等補建:既有 DB 跳過、乾淨 DB 建欄。
-    # (與 r1_0005 補 model_registry.health_* 同源;doc 10 §17.3 預警的漂移。)
+    # (與 r1_0005 補 model_registry.health_* 同源;邊界守則 §17.3 預警的漂移。)
     _insp = sa.inspect(op.get_bind())
     _pl_cols = {c["name"] for c in _insp.get_columns("platform_links")}
     if "icon" not in _pl_cols:

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Slice 6a — Model Gateway Hardening(doc 04 §2/§8/§9/§11、doc 10 Slice 6)。
+"""Slice 6a — Model Gateway Hardening(Model Gateway §2/§8/§9/§11、邊界守則 Slice 6)。
 
-把既有 ``model_registry`` 的語意 formalize 成 doc 04 §2 的 ``ModelEndpoint``
-目標 schema,並收斂 health 字彙為 doc 04 §9 / doc 01 拍板的五態。
+把既有 ``model_registry`` 的語意 formalize 成 Model Gateway §2 的 ``ModelEndpoint``
+目標 schema,並收斂 health 字彙為 Model Gateway §9 / 領域模型 拍板的五態。
 
-新增欄位(doc 04 §2 目標 schema 逐字,順序照文件):
+新增欄位(Model Gateway §2 目標 schema 逐字,順序照文件):
 
 | 欄位                    | 型別          | 說明                                                 |
 |-------------------------|---------------|------------------------------------------------------|
@@ -19,11 +19,11 @@
 | supports_json_schema    | bool NOT NULL | doc §2；backfill = false(保守起點,admin 逐一開)。  |
 | supports_tools          | bool NOT NULL | doc §2；backfill = false(同上)。                    |
 
-**allowed_task_types 不加**:doc 04 §11 缺欄清單列了 ``allowed_task_types``,
+**allowed_task_types 不加**:Model Gateway §11 缺欄清單列了 ``allowed_task_types``,
 但 §2 目標 schema 未列(文件內部不一致)。依「§2 目標 schema 為準」拍板
 **不新增** ``allowed_task_types``;此裁決由 orchestrator 落 ADR。
 
-health_status 字彙遷移(doc 04 §9 / doc 01 §32 拍板,保留欄位、就地改值):
+health_status 字彙遷移(Model Gateway §9 / 領域模型 §32 拍板,保留欄位、就地改值):
 
     online     → healthy
     connecting → degraded
@@ -32,7 +32,7 @@ health_status 字彙遷移(doc 04 §9 / doc 01 §32 拍板,保留欄位、就地
 
 ``disabled`` 為新增第五態(承接 ``is_active=false`` / approval disabled),
 由讀取端(API / health loop)在呈現時填,不需 data migration 產生。欄位
-server_default 由 ``offline`` 改為 ``unknown``(doc 01 驗收 5:初始未檢查 →
+server_default 由 ``offline`` 改為 ``unknown``(領域模型 驗收 5:初始未檢查 →
 unknown)。欄寬 VARCHAR(20) 已能容納最長的 ``unhealthy``(9)/``degraded``(8),
 不需加寬。
 
@@ -56,7 +56,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 _DEFAULT_PROTOCOL = "openai_compatible"
 
-# doc 04 §9 / doc 01 §32 拍板映射(升級方向)。
+# Model Gateway §9 / 領域模型 §32 拍板映射(升級方向)。
 _HEALTH_UPGRADE_SQL = (
     "UPDATE model_registry SET health_status = CASE "
     "WHEN health_status = 'online' THEN 'healthy' "
@@ -79,7 +79,7 @@ def upgrade() -> None:
     # ── 0. 冪等補齊 health 欄(修 Alembic 鏈缺漏) ────────────────────────────────
     # health_status / health_checked_at 一直由 ORM(models/model_registry.py)宣告,
     # 但從無任何 migration 建立它們 —— 走過 startup ``Base.metadata.create_all``
-    # fallback 的既有部署 DB 有這兩欄,乾淨 Alembic-only DB 卻沒有(doc 10 §17.3
+    # fallback 的既有部署 DB 有這兩欄,乾淨 Alembic-only DB 卻沒有(邊界守則 §17.3
     # 警告的 schema 漂移)。本 migration 的 health 值映射 UPDATE 需要它們,故先用
     # inspector 冪等補建:既有 DB 跳過、乾淨 DB 建欄。downgrade 不 DROP(見下)。
     _insp = sa.inspect(op.get_bind())
@@ -100,7 +100,7 @@ def upgrade() -> None:
             sa.Column("health_checked_at", sa.DateTime(timezone=True), nullable=True),
         )
 
-    # ── 1. doc 04 §2 目標 schema 新欄 ──────────────────────────────────────────
+    # ── 1. Model Gateway §2 目標 schema 新欄 ──────────────────────────────────────────
     op.add_column(
         "model_registry",
         sa.Column(

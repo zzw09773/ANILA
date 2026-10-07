@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""SourceSnapshot / Citation — 穩定引用的核心(doc 01 §4–5,Slice 2a)。
+"""SourceSnapshot / Citation — 穩定引用的核心(領域模型 §4–5,Slice 2a)。
 
-SourceSnapshot 三規則(doc 01 拍板):
+SourceSnapshot 三規則(領域模型 拍板):
 1. 回答 / artifact / GUI service launch 必指向 snapshot 或明確宣告無來源。
 2. Citation 只指向 snapshot 內的 chunk,不指向 live document —— 因此
    ``citations.document_id`` 刻意不掛 ingestion_documents FK(那會把
@@ -53,13 +53,13 @@ class SourceSnapshot(Base):
     # 五值:collection/document/upload/none/service(Pydantic 層封閉)。
     origin = Column(String(32), nullable=False, default="none",
                     server_default="none")
-    # 對齊 Task.source_scope 五值(doc 01 SourceSnapshot.source_scope)。
+    # 對齊 Task.source_scope 五值(領域模型 SourceSnapshot.source_scope)。
     source_scope = Column(String(32), nullable=False, default="none",
                           server_default="none")
     collection_ids = Column(JSONValue, nullable=False, default=list)
     document_ids = Column(JSONValue, nullable=False, default=list)
     chunk_ids = Column(JSONValue, nullable=False, default=list)
-    # document_id → 版本指紋(doc 01 document_versions)。
+    # document_id → 版本指紋(領域模型 document_versions)。
     document_versions = Column(JSONValue, nullable=True)
     retrieval_queries = Column(JSONValue, nullable=False, default=list)
     # 快照內容整體 sha256(不可變性驗證用)。
@@ -69,7 +69,7 @@ class SourceSnapshot(Base):
     # 三規則之 3:max(來源分類);service 層計算,這裡只存結果。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。
+    # 四級分類 §5 其餘三共通欄位(Slice 3a 補齊)。
     classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
@@ -108,7 +108,7 @@ class Citation(Base):
     # 被引文字在 chunk 內的字元位移(span 資訊);未知時 NULL。
     span_start = Column(Integer, nullable=True)
     span_end = Column(Integer, nullable=True)
-    # doc 01 三值:answer/artifact/agent_tool(Pydantic 層封閉)。
+    # 領域模型 三值:answer/artifact/agent_tool(Pydantic 層封閉)。
     used_by = Column(String(20), nullable=False, default="answer",
                      server_default="answer")
     classification_level = Column(String(20), nullable=False,

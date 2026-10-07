@@ -1,18 +1,18 @@
 # ANILA 治理中心 — CSP Governance Console（`csp-platform`）
 
-> CSP（Control / Security Plane）的治理控制台（Vue 3 + Vite，v1.0.0）。這是 ANILA 的 **Admin / Developer / Service Admin 控制面**，管理身份、模型、Agent Registry、Service Registry、知識治理、機敏分類與單向閂鎖，以及 Trace / Audit / Usage。**它不是一般使用者的日常入口**（產品憲章 doc 00 §2）。
+> CSP（Control / Security Plane）的治理控制台（Vue 3 + Vite，v1.0.0）。這是 ANILA 的 **Admin / Developer / Service Admin 控制面**，管理身份、模型、Agent Registry、Service Registry、知識治理、機敏分類與單向閂鎖，以及 Trace / Audit / Usage。**它不是一般使用者的日常入口**（產品憲章 §2）。
 
 > English mirror: [`README.en.md`](./README.en.md)
 
 > 🌿 **分支對照**：治理中心存在於各部署分支（登入方式依分支而異；`prod-intranet-card` 走自然人憑證卡）。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
 >
-> 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)（控制面）、[`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md) 模型、[`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) Agent、[`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md) Service、[`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md) 分類、[`12`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) 視覺重設計。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 
 ---
 
 ## 1. 產品定位
 
-依產品憲章（doc 00 §2），治理中心是 **Admin-facing 控制面**，承載以下治理域：
+依產品憲章（產品憲章 §2），治理中心是 **Admin-facing 控制面**，承載以下治理域：
 
 ```text
 治理中心（CSP）
@@ -29,14 +29,14 @@
 
 ---
 
-## 2. 官方藍視覺重設計（doc 12）
+## 2. 官方藍視覺重設計（視覺重設計）
 
 治理中心已從「終端機／駭客風」（碳黑深底 + 薄荷終端綠 + 全等寬字）改為**中性、官方、可信的「官方藍」institutional console**：
 
 - **淺色優先**：`src/assets/styles/tokens.css` 重寫（保留全部變數名以自動 cascade）；`:root` = 淺色（官方藍），`[data-theme="dark"]` 保留但重調為柔和藍灰。
 - **主題解析**：`src/composables/useTheme.js` 淺色為預設（`localStorage` 鍵 `anila.theme`，僅在無偏好且 OS 為深色時翻 dark）；`index.html` 於 Vue mount 前以 inline script 同步套 `data-theme`，避免首屏 dark→light 閃爍。
 - **字型**：系統字型堆疊（`--font-sans` 介面主字型 / `--font-mono` 只給 ID、token、時間戳、數值），air-gap 安全、不下載外部 webfont。
-- **語言**：全繁體中文台灣用語（doc 11 語言政策）；`index.html` `lang="zh-TW"`。
+- **語言**：全繁體中文台灣用語（zh-TW 語言政策）；`index.html` `lang="zh-TW"`。
 
 > `src/components/cli/` 下的 `Term*` 元件（Badge / Field / Modal / Stat …）是共用 UI kit，**名稱為歷史沿用**，視覺已是官方藍非終端機。
 
@@ -53,9 +53,9 @@
 | 治理域 | View（route） | 重點 |
 |---|---|---|
 | 儀表板 | `DashboardView`（`/`） | 平台總覽（`dashboard/PlatformCard.vue`） |
-| 模型治理 | `ModelsView`（`models`） | **五態健康**（`utils/healthStatus.js`：未知 / 健康 / 降級 / 異常 / 已停用，含舊 online/connecting/offline 正規化）＋**每模型金鑰**（`has_api_key`：已設定模型金鑰 / 使用全域金鑰；`api_key` write-only）。doc 04 |
+| 模型治理 | `ModelsView`（`models`） | **五態健康**（`utils/healthStatus.js`：未知 / 健康 / 降級 / 異常 / 已停用，含舊 online/connecting/offline 正規化）＋**每模型金鑰**（`has_api_key`：已設定模型金鑰 / 使用全域金鑰；`api_key` write-only）。Model Gateway |
 | Agent Registry | `DeveloperAgentsView`（`developer/agents`, developer）＋ `DeveloperGuideView` | **三態審批**（`utils/approvalStatus.js`：已註冊 / 已核准 / 已停用）。無七態、無軌跡測試關卡。測試連線探針仍在。 |
-| Service Registry | `PlatformLinksView`（`platform-links`）、`ServiceAccessView`、`ServiceClientsView` | 已註冊 GUI 服務（`utils/serviceRegistry.js`：`launch_mode` 新分頁／iframe、`config_source` env_seeded／db 欄位鎖定、`classification_ceiling` 四級：無機密／營業秘密／密／機密）；service-token 管理。doc 07 |
+| Service Registry | `PlatformLinksView`（`platform-links`）、`ServiceAccessView`、`ServiceClientsView` | 已註冊 GUI 服務（`utils/serviceRegistry.js`：`launch_mode` 新分頁／iframe、`config_source` env_seeded／db 欄位鎖定、`classification_ceiling` 四級：無機密／營業秘密／密／機密）；service-token 管理。Service Registry |
 | 知識治理 | `KnowledgeCollectionsView`、`ChunkingPreviewView`、`CollectionDetailView`（developer） | collection 檢視、chunking 策略比較精靈；關聯圖走 `components/RelationGraph.vue`（cytoscape） |
 | 身份 / 部門 | `UsersView`、`DepartmentsView`（admin） | 使用者、部門、角色 |
 | 稽核 / 用量 | `AuditLogsView`、`UsageView` | 稽核；用量以 echarts（`charts/UsageLineChart.vue`、`TimeRangeSelector.vue`） |
@@ -139,7 +139,7 @@ npm test && npm run build
 
 ## 7. 相關文件
 
-- 設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / 控制面 03 / 模型 04 / Agent 05 / Service 07 / 分類 08 / 語言 11 / 視覺 12）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 - 後端：[`../../services/csp/README.md`](../../services/csp/README.md)
 - 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 我的知識庫／產出中心 [`../anilalm/README.md`](../anilalm/README.md)
 - 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）

@@ -4,7 +4,7 @@ Pure text → ``list[Citation]``. No DB, no resolution (that lives in the
 worker/CSP layer, which matches ``target_title`` against
 ``ingestion_documents.normalized_title``).
 
-Design: docs/ingestion/document-relations-design.md §5/§6.
+Design: the document-relations design §5/§6.
 
 Approach (codex review #6): anchor each citation on a **cue verb**
 (依/依據/修正/廢止/準用/補充 …) and capture the regulation name that FOLLOWS

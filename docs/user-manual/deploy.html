@@ -106,7 +106,7 @@
   <li><a href="#s8">端到端驗收</a></li>
   <li><a href="#s9">更新到新版本</a></li>
   <li><a href="#s10">日常維運</a></li>
-  <li><a href="#s11">語音輸入：本機或外部解碼端</a></li>
+  <li><a href="#s11">語音輸入：gateway 在本機，解碼端在遠端</a></li>
   <li><a href="#s12">卡登壞掉時的後路（破窗）</a></li>
   <li><a href="#s13">疑難排解</a></li>
   <li><a href="#s14">進一步的文件</a></li>
@@ -175,51 +175,25 @@
 <tr><td>對話路由</td><td>router</td><td>分析問題、決定要不要查規章、派給哪個 agent、組合回答。</td><td>問問題回 503。</td></tr>
 <tr><td>文件匯入</td><td>ingestion-worker</td><td>解析上傳的文件、切塊、算向量。</td><td>知識庫文件卡在處理中。</td></tr>
 <tr><td>簡報</td><td>anila-studio、pptx-renderer</td><td>由對話產生簡報。</td><td>只影響簡報功能。</td></tr>
-<tr><td>語音（選配）</td><td>asr-gateway、asr-decoder</td><td>麥克風輸入轉文字。gateway 一定在平台主機；decoder 可本機或外部（第 11 節）。</td><td>麥克風按鈕不出現。</td></tr>
+<tr><td>語音（選配）</td><td>asr-gateway</td><td>麥克風輸入轉文字。gateway 在平台主機；解碼端是遠端的獨立服務，位址與協定填在治理中心「外部服務」（第 11 節）。</td><td>麥克風按鈕不出現。</td></tr>
 <tr><td>附屬（預設關）</td><td>codeserver、n8n、anilalm</td><td>開發與自動化工具、ANILA LM。nginx 對未開放的入口回 404 或「暫時維護中」。GitLab 已撤下，沒有 <code>/gitlab</code>。</td><td>無影響。</td></tr>
 </table>
 
-<h2 id="s2"><span class="num">2</span>出貨包裡有什麼、怎麼分辨演練包</h2>
-<p>出貨包是一個資料夾，由開發機從<strong>乾淨的 git tag</strong>建出來：</p>
-<pre><code>anila-images-export-v1.0.1/
-├── MANIFEST.txt                  ← 身分：Ref、commit、建置時間、含不含 ASR
-├── CHECKSUMS.sha256              ← 每個映像檔的雜湊
-├── INTRANET-LOAD.sh              ← 載入腳本（三道閘）
-├── intranet-image-overrides.yml  ← 讓 compose 用載入的映像而不是 build
-├── 01-compose-images.images.txt  ← 映像清單
-├── 01-compose-images.files.txt
-└── 01-images/                    ← 映像 tar.gz（不再含 GitLab）
-    ├── anila-restart-csp.tar.gz
-    ├── anila-restart-anila-ui.tar.gz
-    ├── anila-restart-router.tar.gz
-    ├── anila-restart-ingestion-worker.tar.gz
-    ├── anila-restart-anila-studio.tar.gz
-    ├── anila-restart-pptx-renderer.tar.gz
-    ├── anila-restart-asr-gateway.tar.gz
-    ├── anila_asr-decoder_0.1.0.tar.gz
-    ├── anila-restart-anilalm.tar.gz
-    ├── anila-codeserver_local.tar.gz
-    ├── nginx_1.30.4-alpine@sha256_….tar.gz
-    ├── pgvector_pgvector_pg16.tar.gz
-    ├── redis_7-alpine.tar.gz
-    └── n8nio_n8n_1.98.2.tar.gz</code></pre>
-<p>出貨包<strong>只有映像</strong>。設定（<code>.env</code>）、憑證、密碼都是在內網主機上由安裝腳本產生的，不在包裡，也不該在包裡。程式碼與文件（含本手冊）由對應版本的 repo 帶進去。</p>
-<h3>Ref 判準：演練包與出貨包長得一模一樣</h3>
-<p>唯一的差別在 <code>MANIFEST.txt</code> 的 <code>Ref</code> 欄位：</p>
-<table>
-<tr><th><code>Ref</code> 長什麼樣</th><th>是什麼</th><th>載入腳本的行為</th></tr>
-<tr><td><code>v1.0.1</code>（乾淨 tag）</td><td>出貨包</td><td>照常載入</td></tr>
-<tr><td><code>v1.0.1-3-gabcdef0</code>、<code>…-dirty</code>、裸 hash</td><td><strong>演練包</strong>（tag 之後又改過的樹）</td><td><strong>拒絕</strong>，除非設 <code>ALLOW_REHEARSAL_BUNDLE=1</code>（只准在演練環境）</td></tr>
-</table>
-<pre><code>$ head -8 MANIFEST.txt
-ANILA Platform — Intranet Image Bundle
-Built at: 2026-09-02T14:59:42+08:00
-Branch:   main
-Commit:   a433883b
-Ref:      v1.0.1          ← 收到包先看這一行
-Project:  anila-restart
-INCLUDE_ASR: 1</code></pre>
-<p>載入腳本的三道閘：① <code>Ref</code> 是乾淨 tag；② <code>CHECKSUMS.sha256</code> 全部相符；③ 每個映像 <code>docker load</code> 成功且 tag 與清單一致。任何一道紅就停，不會載進一半。</p>
+<h2 id="s2"><span class="num">2</span>出貨包裡有什麼</h2>
+<p>出貨包是 <code>anila-YYYY.MM.DD-N.tar.gz</code>（約 4 GB），由開發機 <code>scripts/release/build-release.sh</code> 從<strong>乾淨的 git HEAD</strong>建出來；版本是台北日期。解開後是一個目錄：</p>
+<pre><code>anila-YYYY.MM.DD-N/
+├── anila-update.sh    ← 安裝／更新／回復／認領
+├── preflight.sh        ← 主機預檢，不改任何東西
+├── manifest.txt        ← 版本、commit、每個檔案的 SHA256
+├── manifest.sha256
+├── images.tsv          ← 映像清單與來源 digest（含 redis）
+├── source.tar.gz       ← 這一版 HEAD 的原始碼
+├── compose/
+│   ├── compose.yaml
+│   └── platform.yml
+└── images/             ← 每個映像一份 docker save 封存</code></pre>
+<p>包裡<strong>沒有</strong> <code>.env</code>、<code>secrets/</code>、憑證私鑰、備份。密鑰、憑證、JWT 都在內網主機上由 <code>anila-update.sh</code> 產生，放進 <code>/opt/anila/state/</code>，不進版本目錄。</p>
+<p>打包時做三道檢查：① 工作目錄必須乾淨（不能用未提交的檔案建映像）；② 每個封存逐層掃描不得夾帶私鑰（含 redis 層，<code>BEGIN … PRIVATE KEY</code> 也算），已知的公開測試憑證例外；③ 產出後逐檔核對清單與 SHA256。任何一道紅就停。</p>
 
 <h2 id="s3"><span class="num">3</span>帶進內網的清單</h2>
 <table>
@@ -246,28 +220,25 @@ INCLUDE_ASR: 1</code></pre>
 <tr><td>CPU</td><td>24 核</td><td>平台本身負載很輕；本機語音解碼（CPU 版）是最吃 CPU 的元件</td></tr>
 <tr><td>記憶體</td><td>62 GB</td><td>全棧含語音在開發機上實際佔用未量測；不開語音時明顯更少</td></tr>
 <tr><td>磁碟</td><td>映像 70 GB（含開發用映像）、資料卷 48 GB、容器 3 GB</td><td>出貨包載入後的映像約 20 GB；資料卷隨對話與上傳檔案成長，資料放獨立分割區方便備份</td></tr>
-<tr><td>GPU</td><td>無</td><td>平台主機不跑模型；本機語音解碼用 CPU 版 overlay（<code>infra/compose/asr-cpu.yml</code>）</td></tr>
+<tr><td>GPU</td><td>無</td><td>平台主機不跑模型；語音解碼在別台，位址填在治理中心「外部服務」</td></tr>
 <tr><td>網路</td><td>—</td><td>能連到模型主機的 443；內網 DNS 能解析平台網域與模型主機網域；防火牆只開 443 入向</td></tr>
 <tr><td>時間</td><td>—</td><td>NTP 同步。卡片簽章與登入權杖都看時間，時鐘偏差大登入會失敗</td></tr>
 </table>
 
-<h2 id="s5"><span class="num">5</span>安裝：一條龍腳本</h2>
-<p>在 repo 根目錄執行安裝腳本，把出貨包路徑當參數：</p>
-<pre><code>cd /opt/anila            # repo 解壓處
-bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v1.0.1</code></pre>
-<p>腳本的每一步開頭都印 <code>[n/7]</code>：</p>
+<h2 id="s5"><span class="num">5</span>安裝：出貨包的 anila-update.sh</h2>
+<p>出貨包解開後，跑包裡的 <code>anila-update.sh</code>（第一次安裝與更新同一支）：</p>
+<pre><code>sudo tar -xzf ~/anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N</code></pre>
+<p>先跑預檢，每一條 <code>✗</code> 都附要執行的指令，全綠再安裝：</p>
+<pre><code>sudo bash /opt/anila/anila-YYYY.MM.DD-N/preflight.sh ~/anila-YYYY.MM.DD-N.tar.gz</code></pre>
+<p>腳本做這些事（順序固定，失敗自動回復）：</p>
 <table>
 <tr><th>步</th><th>做什麼</th><th>你要做的</th></tr>
-<tr><td>[0/7] 前置檢查</td><td>確認在 repo 根目錄、docker 可用、找到出貨包</td><td>—</td></tr>
-<tr><td>[1/7] TLS 憑證</td><td>從 <code>server.pfx</code> 抽出憑證與私鑰到 <code>infra/nginx/certs/</code></td><td>回答 pfx 路徑與密碼（空密碼直接 Enter）</td></tr>
-<tr><td>[2/7] 模型 gateway CA</td><td>把 repo 內建的 CSPKI CA bundle 放到 <code>share/pki/model-ca.pem</code>，供 csp 驗模型主機的 https</td><td>通常不用回答；沒有內建 bundle 時才會問 PEM 路徑</td></tr>
-<tr><td>[3/7] 產生 .env</td><td>從 <code>.env.example</code> 產 <code>.env</code>：自動生 8 把密鑰、寫死 <code>ANILA_AUTH_MODE=card-only</code>、問擁有者員編與 gateway 金鑰</td><td>回答員編、貼金鑰；<strong>把畫面列出的密鑰存進密碼管理器再按 Enter</strong></td></tr>
-<tr><td>[4/7] 載入映像</td><td>執行 <code>INTRANET-LOAD.sh</code>：三道閘＋<code>docker load</code></td><td>看它全綠</td></tr>
-<tr><td>[4b/7] JWT 簽章金鑰</td><td>產 <code>secrets/jwt-private.pem</code>／<code>jwt-public.pem</code>。<strong>一定在起棧之前</strong></td><td>—</td></tr>
-<tr><td>[4c/7] 目錄所有權</td><td>把 <code>share/</code>、<code>secrets/</code> 的擁有者對齊容器帳號</td><td>—</td></tr>
-<tr><td>[5/7] docker network</td><td>建 <code>anila-models-net</code></td><td>—</td></tr>
-<tr><td>[6/7] 起棧</td><td><code>docker compose -p anila-restart … up -d --no-build</code>，含語音 profile</td><td>—</td></tr>
-<tr><td>[7/7] 等 csp healthy＋驗證</td><td>探五個入口、印健康摘要</td><td>看第 6 節</td></tr>
+<tr><td>取鎖與核對清單</td><td>安裝根目錄取排他鎖、逐檔核對出貨清單與 SHA256</td><td>—</td></tr>
+<tr><td>備份（更新時）</td><td>停寫入服務、備份資料庫與檔案快照，記下備份時間與當時的 alembic 版本</td><td>—</td></tr>
+<tr><td>解壓與載入映像</td><td>解到 <code>/opt/anila</code> 底下、<code>docker load</code> 後用清單的映像 ID 核對</td><td>看它全綠</td></tr>
+<tr><td>準備目錄與密鑰</td><td>產 <code>state/.env</code>（5 把密鑰：<code>SECRET_KEY</code>、<code>ADMIN_PASSWORD</code>、<code>CSP_DB_PASSWORD</code>、<code>CSP_APP_DB_PASSWORD</code>、<code>CODESERVER_PASSWORD</code>，寫在 <code>state/generated-secrets.txt</code>）、JWT 金鑰、模型 CA、檔案所有權</td><td><strong>把密鑰檔案抄進密碼管理器</strong></td></tr>
+<tr><td>啟動與健康檢查</td><td>先不起 nginx，內部健康檢查（含 CSP <code>/health</code>）過了才開入口</td><td>看第 6 節</td></tr>
 </table>
 <h3>腳本會問的問題</h3>
 <p>問題不是固定序列：它依主機上已經有什麼決定要不要問。<strong>不要把一串固定答案 pipe 給它。</strong></p>
@@ -278,28 +249,23 @@ bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v
 <tr><td><code>server.pfx 路徑</code>／<code>pfx 密碼</code></td><td>需要抽憑證</td><td>路徑；空密碼直接 Enter</td></tr>
 <tr><td><code>保留現有 secret?</code></td><td><code>.env</code> 已存在（重跑時）</td><td><strong>答 <code>Y</code></strong>。答 n 會重生資料庫密碼，既有資料庫就連不上</td></tr>
 <tr><td><code>偵測到預設 owner … 確定用這組?</code></td><td>環境或 <code>.env</code> 已有員編</td><td>對就 <code>y</code>，不對就 Enter 讓它再問</td></tr>
-<tr><td><code>CARD_INITIAL_OWNERS — owner 員工編號</code></td><td>上一題沒確認</td><td>擁有者員編，多人用逗號；<strong>不可留空</strong></td></tr>
-<tr><td><code>MODEL_GATEWAY_API_KEY</code></td><td>一律出現</td><td>貼金鑰；還沒簽發可 Enter 跳過，之後補進 <code>.env</code> 並重建 csp</td></tr>
-<tr><td><code>存好了按 Enter 繼續</code></td><td>本次有新產生密鑰</td><td>存進密碼管理器後 Enter</td></tr>
+<tr><td><code>CARD_INITIAL_OWNERS — owner 員工編號</code></td><td>上一題沒確認</td><td>可以留空（預設 <code>,</code>＝沒有卡片擁有者，先用管理員密碼登入）</td></tr>
+<tr><td><code>ANILA_HOST_ANSWER</code>（或互動輸入）</td><td>非互動時用環境變數帶站台名稱</td><td>院內這台的名稱或 IP</td></tr>
 </table>
 <h3>無人值守</h3>
-<pre><code>CARD_INITIAL_OWNERS=1147259 \
-COMPOSE_PROJECT_NAME=anila-restart \
-INCLUDE_ASR=1 \
-ASR_OVERLAY=infra/compose/asr-cpu.yml \
-bash infra/deployment/intranet/intranet-deploy.sh /path/to/anila-images-export-v1.0.1</code></pre>
+<pre><code>ANILA_UPDATE_ASSUME_YES=1 ANILA_HOST_ANSWER=anila.example.local \
+sudo -E bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N</code></pre>
 <ul>
-  <li><code>COMPOSE_PROJECT_NAME</code> 一律 <code>anila-restart</code>：出貨包的映像名綁這個專案名，改了會找不到映像。</li>
-  <li><code>INCLUDE_ASR=0</code> 不起語音；GPU 主機把 overlay 換成 <code>asr-gpu.yml</code>。</li>
-  <li>擁有者員編那題仍會出現確認，這是刻意的安全閘。</li>
+  <li>專案名由腳本自帶（<code>anila</code>，認領既有部署時沿用作業記錄），不用自己設。</li>
+  <li>完整參數（含 <code>rollback</code>、<code>adopt</code>）與每一步的判準見 <code>docs/deploy/UPDATE.md</code>。</li>
 </ul>
 
 <h2 id="s6"><span class="num">6</span>首次啟動後的驗證</h2>
 <h3>6.1 容器</h3>
-<pre><code>docker compose -p anila-restart ps
+<pre><code>docker compose -p anila ps
 # 期望：csp / csp-db / redis / nginx / router / anila-ui / ingestion-worker /
-#       anila-studio / pptx-renderer 全部 healthy 或 running；
-#       asr-gateway / asr-decoder（有開語音時）healthy</code></pre>
+#       anila-studio / pptx-renderer / asr-gateway 全部 healthy 或 running
+#       （解碼端不在這台，不會有 asr-decoder 容器）</code></pre>
 <h3>6.2 五個入口（看 Content-Type，不要只看 200）</h3>
 <pre><code>H=https://anila.ai.ncsist.org.tw
 curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' $H/            # 200 text/html   治理中心
@@ -310,7 +276,7 @@ curl -sk $H/.well-known/jwks.json | head -c 80                            # 要�
 <h3>6.3 治理中心</h3>
 <p>用擁有者的卡刷進治理中心（網址根目錄）。<strong>不應有任何憑證警告</strong>；有＝憑證沒換到 wildcard 或 DNS 沒生效。</p>
 <figure><img src="img/login-card.png" alt="登入頁只有偵測憑證卡一顆按鈕"><figcaption>正式姿態的登入頁：只有卡片登入。<strong>如果看得到帳號密碼欄位，這台不是 card-only</strong>，回頭查 <code>.env</code>。</figcaption></figure>
-<figure><img src="img/gov-dashboard.png" alt="儀表板服務健康全綠"><figcaption>儀表板 → 服務健康：八個都要綠。</figcaption></figure>
+<figure><img src="img/gov-dashboard.png" alt="儀表板服務健康全綠"><figcaption>儀表板 → 服務健康：八個基礎服務都要綠（csp、csp-db、redis、nginx、router、ingestion-worker、anila-studio、pptx-renderer）。</figcaption></figure>
 <div class="box warn"><p><strong>在內網主機上，模型的健康燈應該是綠的</strong>；不是綠的先查 <code>MODEL_GATEWAY_API_KEY</code>、模型主機 DNS 與 <code>share/pki/model-ca.pem</code>，不是平台本身。（開發機上這一格必然紅，因為連不到模型主機。）</p></div>
 
 <h2 id="s7"><span class="num">7</span>初裝六件（腳本不會替你做的）</h2>
@@ -324,14 +290,10 @@ curl -sk $H/.well-known/jwks.json | head -c 80                            # 要�
 <p><code>.env</code> 的 <code>ADMIN_PASSWORD</code> <strong>只在擁有者帳號被建立的那一次被消費</strong>。帳號建好之後再改 <code>.env</code>，資料庫裡的密碼不會變，而且沒有任何錯誤訊息。要換密碼用治理中心 → 使用者 → 重設密碼。首次安裝時 <code>.env</code> 裡的值就是能登入的密碼，請存進密碼管理器。</p>
 
 <h3>7.3 JWT 簽章金鑰</h3>
-<p>腳本 [4b/7] 已做。漏掉的症狀是「起來了但登入炸」：<code>/.well-known/jwks.json</code> 回 500，登入發不出權杖，anila-studio 反覆重啟。手動補：</p>
-<pre><code># 跟安裝腳本 [4b/7] 一模一樣的指令；--user 0:0 是必要的（secrets/ 屬於主機帳號，容器預設 uid 10001 寫不進去）
-mkdir -p secrets
-docker run --rm --user 0:0 -v "$PWD/secrets:/out" --entrypoint python anila-restart-csp:latest \
-  /app/scripts/generate-jwt-keypair.py --output-dir /out
-# 然後重跑腳本讓 [4c/7] 對齊所有權，或手動 chgrp 後：
-docker compose -p anila-restart -f compose.yaml -f intranet-image-overrides.yml up -d csp
-docker exec anila-nginx nginx -s reload</code></pre>
+<p><code>anila-update.sh</code> 的「準備目錄」那一步已產。漏掉的症狀是「起來了但登入炸」：<code>/.well-known/jwks.json</code> 回 500，登入發不出權杖，anila-studio 反覆重啟。金鑰在 <code>/opt/anila/state/secrets/</code>；補完重建 csp 並重載 nginx：</p>
+<pre><code>cd /opt/anila
+sudo docker compose -f current/compose.yaml -f current/.anila-images.yml -p anila up -d --no-build --pull never csp
+sudo docker exec anila-nginx nginx -s reload</code></pre>
 
 <h3>7.4 CSPKI 憑證清單</h3>
 <table>
@@ -343,7 +305,7 @@ docker exec anila-nginx nginx -s reload</code></pre>
 <p><code>ANILA_MODEL_CA_FILE</code> 是「取代」整個信任庫，不是疊加：指到空檔或壞檔，csp 所有出向 https 全掛。先在主機上驗到 <code>verify return code: 0</code> 再交給容器。</p>
 
 <h3>7.5 指定主路由模型</h3>
-<p>治理中心 → 模型，找一顆 LLM 按「設為主要」。腳本會把模型登記進來，但<strong>不會</strong>選主路由；沒有它，第一個問題就回「ANILA Router 無可用主路由模型」。</p>
+<p>治理中心 → 模型 →「註冊模型」，登錄模型主機的端點；再到同頁「模型角色」指定七個角色（主路由模型、平台嵌入模型、簡報模型、生圖模型、視覺模型、摘要模型、知識庫對話模型）。沒有主路由時，同仁問第一個問題就回「ANILA Router 無可用主路由模型」。</p>
 <figure><img src="img/gov-models.png" alt="模型頁，操作欄有設為主要"><figcaption>模型頁。「Router」欄要有一列標「主路由」、一列標「主 embedding」。</figcaption></figure>
 
 <h3>7.6 規章知識庫標成「ANILA 可檢索」</h3>
@@ -366,39 +328,30 @@ docker exec anila-nginx nginx -s reload</code></pre>
 <div class="box"><p>第 3、4 項在同一個對話裡問，最能看出平台「查了」和「沒查」的差別。</p></div>
 
 <h2 id="s9"><span class="num">9</span>更新到新版本</h2>
-<p>每次更新都是一個新的出貨包（新的 tag）。流程：</p>
-<pre><code>cd /opt/anila
-# 0. 備份資料庫（第 10 節）
-# 1. 換 repo 到新版本（解壓或 checkout 新 tag）；.env、secrets/、share/、infra/nginx/certs/ 都不在 repo 裡，不會被蓋掉
-# 2. 載入新映像（三道閘）
-cd /path/to/anila-images-export-vX.Y.Z && bash INTRANET-LOAD.sh && cd /opt/anila
-cp /path/to/anila-images-export-vX.Y.Z/intranet-image-overrides.yml ./intranet-image-overrides.yml
-# 3. 重建容器（資料庫遷移在 csp 啟動時自動跑；遷不過 csp 會拒絕啟動，不會半套）
-docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml \
-  --profile asr up -d --no-build
-# 4. 重載反向代理（容器換了 IP，nginx 只在載入設定時解析一次）
-docker exec anila-nginx nginx -t && docker exec anila-nginx nginx -s reload
-# 5. 第 6 節的驗證再跑一次</code></pre>
+<p>每次更新都是一個新的出貨包（版本是台北日期 <code>YYYY.MM.DD-N</code>）。更新會自動先停寫入、備份資料庫與檔案，失敗自動回復；<code>.env</code>、<code>secrets/</code>、憑證、<code>share/</code> 都在 <code>state/</code>，不會被蓋掉：</p>
+<pre><code>sudo tar -xzf ~/anila-YYYY.MM.DD-N.tar.gz -C /opt/anila
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/preflight.sh ~/anila-YYYY.MM.DD-N.tar.gz
+sudo bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY.MM.DD-N</code></pre>
+<p>退回上一版是 <code>sudo bash /opt/anila/anila-update.sh rollback</code>（會先列出會消失的對話／訊息／文件筆數，打字確認才還原）。這台早有同名的 compose 專案卻沒有安裝記錄時，先用 <code>... adopt /opt/anila/versions/&lt;目前版本&gt;</code> 認領。完整判準見 <code>docs/deploy/UPDATE.md</code>；更新後照第 6 節再驗一次。</p>
 <div class="box warn">
 <p><strong>更新後請同仁硬重新整理（Ctrl+Shift+R）。</strong> 還開著的舊分頁點下一頁時會去抓已經不存在的舊檔案，症狀是點了沒反應或畫面空白。發一則公告最省事（治理中心 → 公告橫幅）。</p>
-<p><strong>只重建單一服務時也要重載 nginx。</strong> 例如 <code>up -d csp</code> 之後全站 502、但 <code>docker compose ps</code> 每個都綠，就是這個。</p>
+<p><strong>手動只重建單一服務時也要重載 nginx。</strong> 例如 <code>up -d csp</code> 之後全站 502、但 <code>docker compose ps</code> 每個都綠，就是這個。</p>
 <p><strong>改了 <code>infra/nginx/anila.conf</code> 要 <code>up -d --force-recreate nginx</code></strong>，不是 restart：那個檔是單檔掛載，編輯器換了 inode 之後容器仍抓舊檔，沒有任何錯誤。</p>
 </div>
 
 <h2 id="s10"><span class="num">10</span>日常維運</h2>
 <h3>10.1 備份與還原</h3>
-<p>只有資料庫需要備份（上傳的原始檔在 <code>share/uploads/</code>，一起備更保險）。排程每晚：</p>
-<pre><code>ANILA_DB_CONTAINER=anila-restart-csp-db-1 ANILA_BACKUP_DIR=/var/backups/anila \
-  bash infra/deployment/scripts/backup-csp-db.sh</code></pre>
-<p>還原先在丟棄用的 Postgres 演練，核對列數，再談切回；還原前要先建 <code>csp_app</code> 角色，否則權限設定會靜默失敗。完整手順：<code>docs/runbooks/csp-db-backup-restore.md</code>。</p>
+<p>每天的備份由 compose 的 <code>backup</code> 服務做，不是 crontab，也不用再跑 <code>backup-csp-db.sh</code>：容器起來先備份一輪，之後每 24 小時一輪，寫到 <code>state/share/backups/</code>，保留 14 份每日、6 份每月。最後一次成功的時間顯示在治理中心儀表板；超過 36 小時或最近一輪失敗會發警報。</p>
+<p>還原始於丟棄用的 Postgres 演練，核對列數，再談切回；還原前要先建 <code>csp_app</code> 角色，否則權限設定會靜默失敗。完整手順：<code>docs/runbooks/csp-db-backup-restore.md</code>。</p>
 <h3>10.2 憑證輪替</h3>
-<p>wildcard 憑證到期換發後，重跑安裝腳本的 [1/7]（會問「重新從 pfx 抽取」答 y），然後 <code>docker compose -p anila-restart restart nginx</code>。CSPKI CA 換代時更新 <code>share/pki/model-ca.pem</code> 並 restart csp。憑證是目錄掛載，restart 就讀得到。</p>
+<p>wildcard 憑證到期換發後，用院內新憑證覆蓋 <code>/opt/anila/state/certs/server.crt</code> 與 <code>server.key</code>，重建入口（<code>... up -d --force-recreate nginx</code>）。自簽的臨時憑證只在沒有正式憑證時才簽。CSPKI CA 換代時更新 <code>state/share/pki/model-ca.pem</code> 並重建 csp。憑證是目錄掛載，重建就讀得到。</p>
 <h3>10.3 停棧與起棧</h3>
-<pre><code># 全停（含語音 profile；不帶 --profile asr 會留下 asr 兩個容器）
-docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml --profile asr down
+<pre><code># 全停（asr-gateway 也一起停；解碼端不在這台，沒有要帶的 profile）
+cd /opt/anila
+sudo docker compose -f current/compose.yaml -p anila down
 # 全起
-docker compose -p anila-restart -f compose.yaml -f infra/compose/asr-cpu.yml -f intranet-image-overrides.yml --profile asr up -d --no-build
-docker exec anila-nginx nginx -s reload</code></pre>
+sudo docker compose -f current/compose.yaml -p anila up -d --no-build --pull never
+sudo docker exec anila-nginx nginx -s reload</code></pre>
 <p><code>down -v</code> 會<strong>刪掉資料庫</strong>。日常永遠不要帶 <code>-v</code>。</p>
 <h3>10.4 模型金鑰輪替、加擁有者</h3>
 <ul>
@@ -421,19 +374,19 @@ docker exec anila-nginx nginx -s reload</code></pre>
   <li>磁碟剩餘空間。</li>
 </ul>
 
-<h2 id="s11"><span class="num">11</span>語音輸入：本機或外部解碼端</h2>
-<p>瀏覽器的麥克風按鈕只會打平台主機的 <code>/asr/</code>，nginx 轉給本機的 <code>asr-gateway</code>。解碼（語音轉文字）可以在本機容器做，也可以交給外部主機；<strong>外部解碼端取代的是 decoder，不是 gateway</strong>，gateway 一定要在平台主機上跑。</p>
+<h2 id="s11"><span class="num">11</span>語音輸入：gateway 在本機，解碼端在遠端</h2>
+<p>瀏覽器的麥克風按鈕只會打平台主機的 <code>/asr/</code>，nginx 轉給本機的 <code>asr-gateway</code>。解碼（語音轉文字）不在平台這包裡：<strong>解碼端是遠端的一台服務</strong>，位址與協定填在治理中心「外部服務」；gateway 一定要在平台主機上跑。</p>
 <table>
-<tr><th>模式</th><th>起法</th><th><code>.env</code></th></tr>
-<tr><td>本機解碼（出貨預設）</td><td><code>--profile asr up -d</code></td><td><code>ASR_DECODE_URL=http://asr-decoder:9000</code>、<code>ASR_DECODE_PROTOCOL=native</code>、<code>ANILA_ALLOW_HTTP_ENDPOINT=1</code>、<code>ANILA_TRUSTED_HOSTS</code> 含 <code>asr-decoder</code></td></tr>
-<tr><td>外部解碼</td><td><code>--profile asr-remote up -d</code>（只起 gateway）</td><td><code>ASR_DECODE_URL=</code> 外部位址；<code>ANILA_TRUSTED_HOSTS</code> 加該主機；協定依對方（<code>native</code> 或 <code>openai</code>）</td></tr>
-<tr><td>不要語音</td><td><code>INCLUDE_ASR=0</code>，不帶 profile</td><td>—</td></tr>
+<tr><th>情況</th><th>做什麼</th><th>備註</th></tr>
+<tr><td>有解碼端</td><td>治理中心「外部服務」填語音那一筆（位址、協定、憑證）；位址若是私網 IP 或單一名稱，先加進「信任主機」</td><td>gateway 隨平台啟動，<code>docker ps</code> 應看得到 <code>anila-asr-gateway-1</code></td></tr>
+<tr><td>沒有解碼端</td><td>不必設定</td><td>麥克風不出現</td></tr>
+<tr><td>換解碼端</td><td>改治理中心那一筆</td><td>gateway 在 <code>ASR_DECODE_URL_TTL</code>（預設 60 秒）內重讀，不用重啟</td></tr>
 </table>
 <pre><code># 驗證 gateway 看到的解碼端
-docker exec anila-restart-asr-gateway-1 python3 -c \
+docker exec anila-asr-gateway-1 python3 -c \
   "import httpx,json;print(json.dumps(httpx.get('http://localhost:8200/asr/health').json(),ensure_ascii=False,indent=2))"
 # reason: ok = 健康；decoder_unreachable = 連不到；decoder_unauthorized = 金鑰錯（不要去查網路）</code></pre>
-<p>協定填錯的症狀是「麥克風看起來正常，每句話都失敗」；位址被出向檢查擋下的症狀是 gateway 開不了機，日誌有 <code>ASR_DECODE_URL 未通過出向檢查(reason)</code>。細節與 reason 對照：<code>docs/runbooks/asr-voice-input.md</code>。</p>
+<p>協定填錯的症狀是「麥克風看起來正常，每句話都失敗」；解碼端被出向檢查擋下時麥克風不出現，gateway 日誌會有 blocked 的 reason。<code>.env</code> 裡若還留著舊的 <code>ASR_DECODE_*</code>，服務不會讀，刪掉即可。</p>
 
 <h2 id="s12"><span class="num">12</span>卡登壞掉時的後路（破窗）</h2>
 <p>card-only 模式關掉了帳密登入。如果讀卡元件或 CSPKI 出問題，所有人進不來，包括你。兩條路：</p>
@@ -452,28 +405,25 @@ docker exec anila-restart-asr-gateway-1 python3 -c \
 <tr><td>刷卡後「簽章驗證失敗」</td><td>卡片憑證鏈不在 CSPKI bundle 內，或時鐘偏差</td><td>確認是院內配發的卡；<code>date</code> 對時；假卡在正式機必然失敗，那是對的</td></tr>
 <tr><td>登入成功但立刻被登出，jwks 回 500</td><td>JWT 金鑰沒產</td><td>第 7.3 節</td></tr>
 <tr><td>第一個問題回「無可用主路由模型」</td><td>沒設主路由</td><td>第 7.5 節</td></tr>
-<tr><td>模型健康燈紅</td><td>金鑰、DNS、CA 三選一</td><td><code>docker exec anila-restart-csp-1 printenv MODEL_GATEWAY_API_KEY | wc -c</code>（不能是 1）；<code>getent hosts &lt;模型主機&gt;</code>；第 7.4 節的 openssl 驗證</td></tr>
+<tr><td>模型健康燈紅</td><td>金鑰、DNS、CA 三選一</td><td><code>docker exec anila-csp-1 printenv MODEL_GATEWAY_API_KEY | wc -c</code>（不能是 1）；<code>getent hosts &lt;模型主機&gt;</code>；第 7.4 節的 openssl 驗證</td></tr>
 <tr><td>規章問答不查規章</td><td>知識庫沒標可搜尋，或沒有主 embedding</td><td>第 7.6 節；模型頁要有一列「主 embedding」</td></tr>
-<tr><td>上傳的文件一直「處理中」</td><td>ingestion-worker 或 redis 掛了、嵌入模型連不上</td><td><code>docker logs anila-restart-ingestion-worker-1 --tail 50</code></td></tr>
+<tr><td>上傳的文件一直「處理中」</td><td>ingestion-worker 或 redis 掛了、嵌入模型連不上</td><td><code>docker logs anila-ingestion-worker-1 --tail 50</code></td></tr>
 <tr><td>改了 <code>.env</code> 沒生效</td><td>用了 <code>restart</code></td><td><code>restart</code> 不重讀 <code>.env</code>；要 <code>up -d &lt;服務&gt;</code>。確認：<code>docker exec &lt;容器&gt; printenv 變數名</code>，沒輸出就是沒進去</td></tr>
 <tr><td>登入頁沒有憑證警告但同仁說有</td><td>同仁用 IP 或別的網域開</td><td>公告用正式網域；<code>ALLOWED_HOSTS</code> 與 nginx 的主機名清單要一起改</td></tr>
-<tr><td><code>down</code> 之後還剩 asr 兩個容器</td><td>沒帶 <code>--profile asr</code></td><td>第 10.3 節</td></tr>
+<tr><td><code>down</code> 之後還剩容器</td><td>沒帶對 compose 檔</td><td>第 10.3 節</td></tr>
 <tr><td>載入腳本說「這是演練包」</td><td>包的 <code>Ref</code> 不是乾淨 tag</td><td>不要繞過。回開發機從乾淨 tag 重建出貨包</td></tr>
 </table>
 
 <h2 id="s14"><span class="num">14</span>進一步的文件</h2>
 <table>
 <tr><th>文件</th><th>內容</th></tr>
-<tr><td><code>docs/runbooks/intranet-deployment-runbook.md</code></td><td>每一步的手動備援、模型主機端的金鑰簽發、本機模型混合模式、Triton gRPC 嵌入</td></tr>
-<tr><td><code>docs/runbooks/intranet-deployment-tutorial.md</code></td><td>演練實跡、出貨日程序、只能在內網驗的四項</td></tr>
-<tr><td><code>docs/runbooks/first-install-rehearsal.md</code></td><td>初裝六件的完整說明與「從零」會被繞過的五類地方</td></tr>
-<tr><td><code>docs/runbooks/intranet-image-bundle.md</code></td><td>出貨包怎麼建、怎麼驗媒體、載入時的陷阱</td></tr>
+<tr><td><code>docs/deploy/INSTALL.md</code>、<code>docs/deploy/UPDATE.md</code></td><td>第一次安裝、出貨包、更新與回復；出貨腳本 <code>scripts/release/build-release.sh</code>，主機預檢 <code>preflight.sh</code></td></tr>
 <tr><td><code>docs/runbooks/csp-db-backup-restore.md</code></td><td>備份排程、保留策略、還原演練</td></tr>
-<tr><td><code>docs/runbooks/asr-voice-input.md</code></td><td>語音輸入的本機／外部解碼端、出向檢查 reason 對照</td></tr>
 <tr><td><code>docs/runbooks/anilalm-release-gate.md</code></td><td>ANILA LM 入口的開關程序</td></tr>
-<tr><td><code>docs/runbooks/rotate-tls-cert.md</code></td><td>憑證輪替</td></tr>
-<tr><td><code>docs/VERSIONING.md</code></td><td>版本規則</td></tr>
+<tr><td><code>docs/deploy/INSTALL.md</code></td><td>把院內憑證放到 <code>/opt/anila/state/certs/</code> 後重建 nginx</td></tr>
+<tr><td><code>docs/deploy/UPDATE.md</code></td><td>版本是台北日期 <code>YYYY.MM.DD-N</code></td></tr>
 <tr><td><code>docs/user-manual/admin.html</code>、<code>index.html</code></td><td>管理員手冊、使用者手冊</td></tr>
+<tr><td><code>docs/CURRENT-STATUS.md</code></td><td>這一棵樹現在的實況；舊文檔去哪了也看這裡</td></tr>
 </table>
 
 <footer>

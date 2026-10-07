@@ -1,31 +1,31 @@
 # -*- coding: utf-8 -*-
-"""Slice 5a — Agent Registry 升級(doc 05 §3/§4/§6/§12、doc 10 Slice 5)。
+"""Slice 5a — Agent Registry 升級(Agent Registry §3/§4/§6/§12、邊界守則 Slice 5)。
 
-在既有 ``agents`` 表補齊 doc 05 §3 AgentDefinition schema 尚未存在的欄位,並把
+在既有 ``agents`` 表補齊 Agent Registry §3 AgentDefinition schema 尚未存在的欄位,並把
 ``approval_status`` 由現況三值(pending/approved/rejected)擴為七值狀態機
 (draft / pending_connection_test / pending_trace_test / pending_security_review
 / approved / rejected / disabled),以「連得上 → trace 過 → 安全審查」三關把守。
 
-新增欄位(doc 05 §3「尚未存在」清單逐字 + §4 manifest/§6 Full Trace 落章):
+新增欄位(Agent Registry §3「尚未存在」清單逐字 + §4 manifest/§6 Full Trace 落章):
 
 | 欄位                    | 型別          | 說明                                            |
 |-------------------------|---------------|-------------------------------------------------|
-| owner_department_id     | int FK        | doc 05 §3 owner_department_id?(SET NULL)       |
+| owner_department_id     | int FK        | Agent Registry §3 owner_department_id?(SET NULL)       |
 | runtime_type            | str NOT NULL  | 5 值;現況 backfill = openai_compatible_agent    |
 | agent_version           | str NULL      | manifest.version(§13 名 agent_version)         |
 | audit_level             | str NOT NULL  | v1 policy:approved 必為 full_trace(backfill)   |
 | classification_ceiling  | str NULL      | 分類上限(NULL = 無上限)                        |
 | manifest_url            | str NULL      | GET /.well-known/anila-agent.json 來源           |
 | healthcheck_url         | str NULL      | GET /health                                     |
-| supported_task_types    | json NULL     | doc 05 §3 string[]                              |
-| output_schema           | json NULL     | doc 05 §3                                        |
-| allowed_tool_ids        | json NULL     | doc 05 §3 string[]                              |
+| supported_task_types    | json NULL     | Agent Registry §3 string[]                              |
+| output_schema           | json NULL     | Agent Registry §3                                        |
+| allowed_tool_ids        | json NULL     | Agent Registry §3 string[]                              |
 | manifest_json           | json NULL     | 驗證後留存的 manifest 快照(§4)                 |
 | trace_callback_mode     | str NULL      | manifest trace.callback_mode(§4)               |
 | trace_test_passed_at    | datetime NULL | Full Trace 落章時間(§6 approval blocker)       |
 | trace_test_report       | json NULL     | trace-test 逐項報告                             |
 
-``approval_status`` backfill(doc 05 §3;pending 為唯一需搬遷值):
+``approval_status`` backfill(Agent Registry §3;pending 為唯一需搬遷值):
 - ``pending  → pending_connection_test``(第一關 = 連線測試)
 - ``approved → approved``、``rejected → rejected``(原值不動)
 
@@ -67,7 +67,7 @@ def upgrade() -> None:
         existing_nullable=False,
     )
 
-    # ── 2. 新增 doc 05 §3/§4/§6 欄位 ─────────────────────────────────────────
+    # ── 2. 新增 Agent Registry §3/§4/§6 欄位 ─────────────────────────────────────────
     op.add_column(
         "agents",
         sa.Column(

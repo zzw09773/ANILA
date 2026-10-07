@@ -20,7 +20,7 @@
 
 檔案擁有者用 `.env` 裡的 `UID`／`GID`（跟 code-server 同一組）。那就是你 SSH 登入這台機器的帳號，另一台才拉得到。沒設的話檔案歸 root。
 
-`status.json` 以只讀方式掛進 CSP（`/var/anila/backup-status/status.json`）。治理中心儀表板有「最後一次備份」（時間、結果、大小）。最後一次成功超過 **36 小時**，或最近一輪失敗，會進既有的告警。
+`status.json` 以只讀方式掛進 CSP（`/var/anila/backup-status/status.json`，路徑寫死、不另設環境變數，CSP 只讀這一支）。治理中心儀表板有「最後一次備份」（時間、結果、大小）。最後一次成功**超過** 36 小時（剛好 36 不算），或最近一輪失敗，會進既有的告警（`backup:stale`）。
 
 ### 1.1 一輪裡面有什麼
 
@@ -36,9 +36,9 @@
 | `files-router-sessions.tar` | 路由會話（不含 `state/`，那裡可能有後援憑證） |
 | `files-n8n.tar` | n8n 資料 volume |
 
-寫入先放在 `.incoming/`，完成才改名到 `daily/YYYYMMDD-HHMMSS/`。`LATEST` 是一行文字，指向最近一次成功的目錄。拉到一半不會拉到半套檔。
+寫入先放在 `.incoming/`，完成才改名到 `daily/YYYYMMDD-HHMMSS/`（目錄名是 UTC 時間戳）。`LATEST` 是一行文字，指向最近一次成功的目錄。拉到一半不會拉到半套檔。
 
-每月第一份成功的備份會再留一份到 `monthly/YYYYMM/`（同一顆磁碟上用硬連結）。月份用台北時間；映像裡沒有時區資料時用 UTC。
+每月第一份成功的備份會再留一份到 `monthly/YYYYMM/`（同一顆磁碟上用硬連結）。月份用台北時間（`TZ=Asia/Taipei`，映像裡有 zoneinfo），`daily/` 的戳記仍舊是 UTC。
 
 ### 1.2 保留
 
@@ -90,6 +90,8 @@ rsync -aH --delete \
 
 `pg_restore` 進一個**已經有表**的庫會失敗。演練用下面的丟棄庫；正式換庫時先換一顆空的 data volume，或先在丟棄庫還原成功再把平台指過去。不要對還在服務的 production 庫直接灌。
 
+還原腳本自己會先用 `ANILA_RESTORE_CONTAINER` 連進目標庫做檢查，只要容器活著就行，映像不必是同一張；`restore-all.sh` 驗 `db.dump` 時預設用 `ANILA_BACKUP_IMAGE`（`anila-pgvector:local`），所以出貨包載入的映像就夠，不必再拉別的。
+
 ```bash
 # 演練庫（不要跟活著的 anila-csp-db-1 撞名）
 docker volume create anila-ops-restore-data
@@ -108,11 +110,11 @@ ANILA_RESTORE_CONTAINER=anila-ops-restore-db \
 bash infra/deployment/scripts/restore-all.sh share/backups/daily/YYYYMMDD-HHMMSS
 ```
 
-最後一行要看到 `RESTORE_ALL_OK`。檔案會解進 repo 的 `share/`（上傳、附件、靜態檔、CA、快速起步 profile），並解回 Studio、路由會話、n8n 三個 volume。具名 volume 的名字預設是 `anila_anila-studio-artifacts`、`anila_router-sessions`、`anila_n8n_data`。
+最後一行要看到 `RESTORE_ALL_OK`。檔案會解進 repo 的 `share/`（上傳、附件、靜態檔、CA、快速起步 profile），並解回 Studio、路由會話、n8n 三個 volume。具名 volume 的名字預設是 `anila_anila-studio-artifacts`、`anila_router-sessions`、`anila_n8n_data`（專案名預設 `anila`；可用 `ANILA_COMPOSE_PROJECT` 或 `ANILA_STUDIO_VOLUME` 等覆寫）。
 
-檔案是蓋上去，不會先刪掉備份之後才出現的新檔。
+兩邊都是 `tar -xzf` 蓋上去（volume 是用 `anila-pgvector:local` 的 `--rm` 容器解）：同名的檔會被覆蓋，但備份之後才新增的檔會留著，不會先清空。
 
-只要資料庫、不要動檔案時，仍可用 `restore-csp-db.sh`（`ANILA_RESTORE_DUMP` 指到快照裡的 `db.dump`）。
+只要資料庫、不要動檔案時，仍可用 `restore-csp-db.sh`（`ANILA_RESTORE_DUMP` 指到快照裡的 `db.dump`，`ANILA_RESTORE_CONTAINER` 指目標容器）。它從 `pgvector/pgvector:pg16` 起一個 `--rm` 的 `pg_restore`；內網若沒有這張，先 `docker tag` 或補載入，才不會在還原中途停住。
 
 ### 3.1 還原後必核
 
@@ -122,14 +124,15 @@ bash infra/deployment/scripts/restore-all.sh share/backups/daily/YYYYMMDD-HHMMSS
    ALTER ROLE csp_app LOGIN PASSWORD '...從.env貼上...';
    ```
 
-2. 用的 `SECRET_KEY` 必須是備份當時那一把，否則庫裡的簽章私鑰解不開。
-3. 登入。
+2. 用的 `SECRET_KEY` 必須是備份當時那一把，否則庫裡的簽章私鑰、密封的外部服務憑證都解不開。
+3. 登入（密碼照上一步設回；卡登走的是另一條路）。
 4. 打開一則還原前就存在的舊對話，下載裡面的舊附件。
 5. 搜尋一份還原前就索引過的文件。
-6. 稽核鏈：dump 裡有稽核表，**沒有**鏈頭。鏈頭在已經交出去的稽核匯出檔上。
+6. 稽核鏈：dump 裡有稽核表，也有檢查點表 `audit_checkpoints`（含 `chain_head`）。拿一份已經交出去的稽核匯出檔上的鏈頭來比對（庫內的可以被改，交出去的那份不行）。
 
    ```bash
    docker exec <csp 容器> python scripts/verify_audit_chain.py --head <匯出檔上的鏈頭>
+   # 不帶 --head 只驗自洽；帶了才對得上庫外錨點
    ```
 
 演練完：
@@ -150,13 +153,14 @@ docker volume rm anila-ops-restore-data
 | `role "csp_app" does not exist` | 直接 `pg_restore` 沒先建 role | 用 `restore-csp-db.sh` / `restore-all.sh` |
 | 還原後 `/health` 是 200、容器 healthy、沒有人登得進來 | `pg_restore --no-owner` 把擁有權壓平。開機要改 `users` 等表，例外被吞掉 | 不要加 `--no-owner`。重跑 `restore-csp-db.sh` |
 | 稽核表歸 `csp_app` | 擁有權被壓平，防竄改失效 | 腳本驗收失敗就不會印 `RESTORE_OK` |
+| 忘了給 `csp_app` 密碼 | 還原不含密碼（dump 只建 role） | 還原後在 psql 裡 `ALTER ROLE`，見 §3.1 |
 | `extension "vector" does not exist` | 映像不是這張 pgvector | 用 `anila-pgvector:local` |
 | 備份很小或狀態是失敗 | dump 中斷 | 看 `LATEST`，用上一份成功的。狀態檔的 `error` 只是代碼，細節在 `docker logs` 的 backup 容器 |
 
-姿態不對時不要把平台指到那個庫。`r1_0027` 之前的舊 dump 要先讓 csp 跑完 alembic 再驗。
+姿態不對時不要把平台指到那個庫。`r1_0027` 之前的舊 dump 要先讓 csp 跑完 alembic、產生稽核檢查點之後再驗。
 
 ---
 
 ## 5. 跟誰無關
 
-一般使用者沒有新步驟。不要再手動執行 `backup-csp-db.sh`，那支腳本只會告訴你改看這份說明。
+一般使用者沒有新步驟。不要再手動執行 `backup-csp-db.sh`：它現在什麼都不做，印出「改看 compose 的 backup 服務」與這份說明，然後以 1 結束。

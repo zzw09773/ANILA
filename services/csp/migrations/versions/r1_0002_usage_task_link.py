@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slice 2b-C — token_usage ↔ task 連結(doc 04 AC10 usage 歸戶、doc 10
+"""Slice 2b-C — token_usage ↔ task 連結(Model Gateway AC10 usage 歸戶、邊界守則
 Slice 2 Done 舊流量標記)。
 
 - ``token_usage.task_id``:nullable + FK tasks ON DELETE SET NULL(刪任務

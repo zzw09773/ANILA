@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """app.modules — CSP 內部 module boundary 骨架。
 
-依 doc 02 §1 / doc 10 §4(2026-07-02 MVP 拍板):Task Service、Policy
+依 系統架構 §1 / 邊界守則 §4(2026-07-02 MVP 拍板):Task Service、Policy
 Engine、Service Launch Gateway 在 MVP 階段實作在 CSP service 內(同一
 FastAPI app),但以 module boundary 隔離——各自是獨立 package,禁止跨
 模組直接 import 內部實作;v1.1 後再評估抽成獨立 service。

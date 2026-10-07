@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """OE-1 — agent approval_status seven-gate → three-state.
 
-SYSTEM-MAP (知識庫怎麼運作): register → admin assigns → usable.
+舊 SYSTEM-MAP (知識庫怎麼運作): register → admin assigns → usable.
 There is no connection / trace / security-review ceremony.
 
 Maps existing rows onto ``registered`` / ``approved`` / ``disabled``

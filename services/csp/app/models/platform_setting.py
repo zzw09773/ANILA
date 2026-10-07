@@ -66,7 +66,7 @@ KB_THRESHOLD_KEY = "institutional_kb.score_threshold"
 KB_THRESHOLD_EMBEDDING_KEY = "institutional_kb.score_threshold_embedding_model"
 KB_THRESHOLD_CALIBRATED_AT_KEY = "institutional_kb.score_threshold_calibrated_at"
 
-# ⚠ **這個 0.3 是未校準的猜測。** 它是拿替代嵌入模型量出來的（PLAN.md:77），
+# ⚠ **這個 0.3 是未校準的猜測。** 它是拿替代嵌入模型量出來的（舊 PLAN p.77），
 # 真正上線的是 nv-embed，分數分布不一樣。所以 ``GET /threshold`` 會把
 # ``calibrated: false`` 一起回出去 —— 一個沒有人量過的數字被當成已知數，
 # 就再也沒有人會去量它。

@@ -1,6 +1,6 @@
 """OW-1 — message history tree backend tests.
 
-Pins docs/plans/ow1-message-tree-blueprint.md §5 (20 cases): append chaining,
+Pins ``app/services/message_tree.py`` §5 (20 cases): append chaining,
 branch (edit-re-ask + regenerate), view=active|all, active-leaf switch,
 sibling cap, subtree delete, ANILALM exclusion, attachments, public share,
 search stays all-branches.

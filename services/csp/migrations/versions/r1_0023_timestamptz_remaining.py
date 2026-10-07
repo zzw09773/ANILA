@@ -33,7 +33,7 @@ revision is safe on:
   earlier startup DDL — those eight are included in ``_CONVERT`` and
   converted when present.
 
-Database is disposable before go-live (PLAN 0.4); no elaborate backfill.
+Database is disposable before go-live (舊 PLAN 0.4); no elaborate backfill.
 """
 
 from __future__ import annotations

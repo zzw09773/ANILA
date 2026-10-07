@@ -15,7 +15,7 @@ should call ``validate_outbound_url(url)`` and reject on raise.
 Policy (current):
 - Scheme must be ``https`` unless explicitly relaxed per endpoint kind:
   ``ANILA_ALLOW_HTTP_ENDPOINT=1`` admits http for model / generic
-  endpoints (PLAN.md P0.2, 2026-07-29: the intranet model gateway speaks
+  endpoints (2026-07-29 決策: the intranet model gateway speaks
   plain http, production included); ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1``
   for agent endpoints. Default posture rejects http for every kind.
 - ``grpc`` / ``grpcs`` are a **sibling** scheme branch (model kind only):
@@ -68,7 +68,7 @@ def _env_flag(name: str) -> bool:
 # ── endpoint_kind (Slice 6a, http 旗標分域) ─────────────────────────────────
 # http 放寬旗標按端點類型分域。三種 kind:
 #   'model'   — http 由 ``ANILA_ALLOW_HTTP_ENDPOINT`` 明確放行,預設拒收。
-#               決策紀錄:PLAN.md P0.2(2026-07-29)——內網部署的模型 gateway
+#               決策紀錄:2026-07-29 拍板 ——內網部署的模型 gateway
 #               走 http,production 與 dev 同樣依此旗標判定。
 #   'agent'   — http 由新旗標 ANILA_ALLOW_HTTP_AGENT_ENDPOINT 放行;為不打斷
 #               既有內網 MLSteam 純 http NodePort agent,legacy
@@ -98,7 +98,7 @@ def _reject_http_scheme(endpoint_kind: str) -> None:
     allow_http = _env_flag(_HTTP_MODEL_FLAG)
 
     if endpoint_kind == ENDPOINT_KIND_MODEL:
-        # 2026-07-29 拍板(PLAN.md P0.2):model http 一律由旗標明確放行,
+        # 2026-07-29 拍板:model http 一律由旗標明確放行,
         # production 不再無條件拒絕(氣隙內網模型 gateway 走純 http)。
         if not allow_http:
             raise UnsafeEndpointError(
@@ -468,7 +468,7 @@ def validate_outbound_url(
 
     ``endpoint_kind`` (Slice 6a) domain-splits the http-scheme
     relaxation flag by endpoint class — ``'model'`` (http gated by
-    ``ANILA_ALLOW_HTTP_ENDPOINT``, env-independent since PLAN.md P0.2),
+    ``ANILA_ALLOW_HTTP_ENDPOINT``, env-independent since 2026-07-29 拍板),
     ``'agent'`` (own ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT`` flag,
     legacy fallback), or ``'generic'`` (default; original global semantics,
     existing callers unaffected). ALL host / IP / DNS / trusted-host checks

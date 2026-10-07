@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """RegisteredService — the Slice 7 additive upgrade of ``platform_links``.
 
-doc 07 §3 defines ``RegisteredService`` as a superset of the legacy
+Service Registry §3 defines ``RegisteredService`` as a superset of the legacy
 ``platform_links`` row: the same nine visible-link fields plus 14 new
 target fields (slug, owner department / admin, service_admin list, service
 type, project entry, origin allow-list, launch mode, iframe flag, sso mode,

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Service Registry API (doc 07) — CRUD, Launch Gateway, audit callbacks.
+"""Service Registry API (Service Registry) — CRUD, Launch Gateway, audit callbacks.
 
 Layering: this ``app.api`` module orchestrates the launch flow by composing the
 pure ``app.modules.launch`` primitives with ``app.modules.policy`` (PolicyDecision)
@@ -249,7 +249,7 @@ def list_services(
 
     Release gate(``anilalm_release_gate``):預設清單 = 使用者面的「可用服務」
     (shell 專案入口就是照這份畫的),閘門關著的服務不列。
-    ``include_inactive=true`` 是 admin-tier 的**管理**清單(治理中心服務登記
+    ``include_inactive=true`` 是 admin-tier 的**管理**清單(治理中心平台連結
     用它),那份照列 —— 管理員必須看得到、管得動一個關著的門。
     """
     from app.services.access_control import accessible_services_for
@@ -464,7 +464,8 @@ def launch_service(
 
     # ── Release gate ────────────────────────────────────────────────────────
     # 閘門關著的服務不得啟動 —— 這道要在 is_active 之前,才不會依賴資料庫裡
-    # 那一格:種子在全新資料庫會把 ANILA LM 建成 is_active=True,靠人工停用
+    # 那一格:全新資料庫的平台連結列(0009 的資料、r1_0006 起搬進
+    # registered_services)is_active 預設 True,靠人工停用
     # 撐著的「擋住了」在下一次冷啟就沒了。回 503 與 nginx 那道同一個語意
     # (尚未開放,不是不存在)。
     #
@@ -490,7 +491,7 @@ def launch_service(
     #
     # (同一個張力在第三處也有:``_validate_launch_entry_url`` 目前排在 access
     # gate 之前,所以設定壞掉的服務會對沒授權的人回 400 而不是 404。那是 base
-    # 既有的順序,本包沒有動它,已記進 ``docs/FAKE-CONTROLS.md``。)
+    # 既有的順序,本包沒有動它,已記在 FAKE-CONTROLS 的註記裡。)
     if release_gate.is_gated(service):
         log_audit_event(
             db,
@@ -675,7 +676,7 @@ def audit_callback(
     db: Session = Depends(get_db),
 ):
     """Registered service posts an audit event back to CSP, authenticated with
-    its Service Client Token (doc 03 naming). Bad key → 401; oversized → 413."""
+    its Service Client Token (控制面 naming). Bad key → 401; oversized → 413."""
     token = _bearer_token(authorization)
     identity = agent_credential_service.verify_service_token(db, token=token)
     if identity is None or identity.kind != "service_client":

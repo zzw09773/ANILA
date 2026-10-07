@@ -6,13 +6,13 @@
 
 > 🌿 **分支對照**：本 UI 存在於所有 ANILA 部署分支；分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。**登入已統一交給治理中心**：本 Shell 不再持有登入頁（見下方「無登入頁」）。
 >
-> 設計沿革（收斂紀錄）：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`10-migration-and-development-guardrails.md`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md)（§11 Shell IA）、[`12-frontend-visual-redesign.md`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md)（分類浮水印）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 
 ---
 
 ## 1. 產品定位
 
-依產品憲章（doc 00 §2），正式使用者只看到 **ANILA** 一個產品，四個一級入口：
+依產品憲章（產品憲章 §2），正式使用者只看到 **ANILA** 一個產品，四個一級入口：
 
 ```text
 ANILA
@@ -126,7 +126,7 @@ npm test        # vitest run — 17 檔 / 222 個測試（截至撰稿全綠）
 ## 7. 相關文件
 
 - 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
-- 設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / IA 10 / 視覺 12 / 契約 09）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 - 相鄰入口：知識庫／產出中心 [`../anilalm/README.md`](../anilalm/README.md) · 治理中心 [`../csp-governance-ui/README.md`](../csp-governance-ui/README.md)
 - 後端：[`../../services/csp/README.md`](../../services/csp/README.md) · Router [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 

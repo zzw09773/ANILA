@@ -1,13 +1,53 @@
-# 目前狀態（給交接與代理）
+# 目前狀態
 
-> 這一頁才是「現在這棵樹怎麼跑」。歷史細節在 `PLAN.md`、`docs/office/`、`docs/anila-redesign-docs/`。
-> 更新：2026-10-01。HEAD 以 `git log -1` 為準。
+> 這一頁才是「現在這棵樹怎麼跑」。不要再去找 `PLAN.md`、`SYSTEM-MAP.md` 或舊交接；那些會和現在的程式衝突，已於 2026-10 文檔清理刪除，去哪看下節〈舊文檔去哪了〉。
+> 更新：2026-10-06。HEAD 以 `git log -1` 為準。
 
-## 工作守則（給人也給 AI 助手；取代已刪除的 `AGENTS.md`）
+## 舊文檔去哪了
+
+下表把 2026-10 文檔清理刪掉的舊計畫、規格與交接對到現在的出處；路徑相對 repo 根目錄，都是現存路徑，舊檔名只當歷史對照。
+
+文檔內容以現存程式碼為準；本頁與程式衝突時以程式為準。容量數字、負載實測、出貨流程，以及備份保留份數、稽核保留天數、磁碟與憑證門檻這類設定，都只是執行紀錄或可由程式碼與腳本核對的值，不是規格。
+
+| 舊文檔 | 現在看哪裡 |
+|---|---|
+| `PLAN.md`、`docs/CONFIG-MAP.md`（現況與設定面） | 本頁與〈設定面〉一節、`.env.example` |
+| `SYSTEM-MAP.md`（系統規格） | 契約 `services/csp/app/schemas/contracts/`；實作 `services/csp/app/api/`、`services/csp/app/models/`、`apps/csp-governance-ui/src/views/`、`apps/anila-shell/src/shellNav.jsx` |
+| `FAKE-CONTROLS.md` | `services/csp/tests/test_fake_controls_retired.py`，以及程式碼與測試裡的 `FAKE-CONTROLS #nn` 註解 |
+| `VERSIONING.md` | 前端版本 `apps/anila-shell/package.json`＋`apps/anila-shell/vite.config.js`；平台出貨版本（台北日期 `YYYY.MM.DD-N`，映像裡的 `/app/VERSION`）看 `infra/docker/csp.Dockerfile`、`services/csp/app/services/platform_release.py`、`scripts/release/release-lib.sh`，流程與版本比較見 `docs/deploy/UPDATE.md` |
+| `OWNER-QUESTIONS.md` | 程式碼註解已內嵌決策，例如 `services/csp/app/api/directory.py`、`packages/anila-agent/anila_agent/dispatch_token.py`、`packages/anila-core/src/anila_core/ingestion/parser_registry.py` |
+| 其他舊說明 `packages/anila-agent/REBUILD_PLAN.md`、`services/anila-studio/MIGRATION_BASELINE.md`、`services/csp/migrations/versions/0035_iso_42001_traceability.py` | `packages/anila-agent/README.md`、`packages/anila-agent/CHANGELOG.md`（`make test`）；另兩者看該服務的程式碼與測試（現行 migration 在 `services/csp/migrations/versions/`） |
+| `docs/archive/`（含 `anila-core/`、`handoffs/`、`agent-framework/`、`anila_plan.md`） | `packages/anila-core/src/anila_core/` 與 `services/` 的實作；其餘只留 git 歷史 |
+| `docs/anila-redesign-docs/README.md`、`00-product-constitution.md` | `apps/anila-shell/src/shellNav.jsx`（四入口 IA）與本頁 |
+| `docs/anila-redesign-docs/01-domain-model.md` | `services/csp/app/models/task.py`、`services/csp/app/models/source_snapshot.py` |
+| `docs/anila-redesign-docs/02-system-architecture.md`、`03-csp-governance-control-plane.md`、`06-openwebui-agent-migration.md` | `services/csp/app/main.py`、`services/csp/app/modules/`、`services/csp/.importlinter`、`infra/compose/platform.yml`、`services/csp/app/api/`、`apps/anila-shell/src/app.jsx` |
+| `docs/anila-redesign-docs/04-model-gateway-design.md` | `services/csp/app/api/models.py`、`services/csp/app/services/model_gate.py` |
+| `docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md` | `services/csp/app/api/agents/`、`services/csp/app/models/agent.py` |
+| `docs/anila-redesign-docs/07-registered-gui-service-platform.md` | `services/csp/app/models/registered_service.py`、`services/csp/app/models/service_launch.py`、`apps/csp-governance-ui/src/views/PlatformLinksView.vue` |
+| `docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md` | `services/csp/app/models/classification.py`、`services/csp/app/modules/policy/service.py`、`services/csp/tests/test_classification_upgrade.py` |
+| `docs/anila-redesign-docs/09-api-event-contracts.md` | `services/csp/app/schemas/contracts/`、`services/anila-studio/app/services/job_store.py` |
+| `docs/anila-redesign-docs/10-migration-and-development-guardrails.md` | `infra/ci/lint-boundaries.sh`、`services/csp/.importlinter` |
+| `docs/anila-redesign-docs/11-frontend-zh-tw-language-policy.md` | `infra/ci/lint-zh-tw.sh`、`infra/ci/lint_zh_tw.py` |
+| `docs/anila-redesign-docs/12-frontend-visual-redesign.md` | `apps/csp-governance-ui/src/assets/`、`apps/csp-governance-ui/src/brandAssets.js`、`apps/anila-shell/src/AnilaBrand.jsx` |
+| `docs/ingestion/` | `packages/anila-core/src/anila_core/ingestion/`、`services/csp/app/api/ingestion/`、`services/ingestion-worker/src/` |
+| `docs/plans/ow1-message-tree-blueprint.md` | `services/csp/app/services/message_tree.py`、`services/csp/tests/test_message_tree.py` |
+| `docs/plans/ow3-message-actions-blueprint.md` | `services/csp/app/api/message_actions.py`、`services/csp/app/services/message_action_service.py`、`services/csp/tests/test_message_actions.py` |
+| `docs/designs/`（含 `ncsist-prompt-localization-and-harness.md`，以及 pricing／user-skills／thinking-summary 三份設計） | `packages/anila-core/src/anila_core/prompts/`、`packages/anila-core/tests/test_router_prompt_localization.py`、`tools/eval/`、本頁對應三節 |
+| `docs/platform/`（`multi-service-integration-plan.md`、`sso-migration.md`） | `services/csp/app/models/registered_service.py`、`docs/runbooks/settings-page.md`、`services/csp/app/api/auth/` |
+| `docs/specs/` | `services/csp/app/services/institutional_kb.py`、`services/csp/app/api/` 與對應測試、`apps/anilalm/`、`docs/runbooks/settings-page.md` |
+| `docs/agents/ORCHESTRATOR-PLAYBOOK.md` | 本頁〈工作守則〉、`docs/FRICTION-LOG.md` |
+| `docs/guides/openwebui-agent-migration.md` 與其 CSV 範本 | `docs/guides/developer-guide.md`、`apps/csp-governance-ui/src/views/DeveloperAgentsView.vue` |
+| `docs/governance/`、`docs/audits/`、`docs/office/`、`docs/ui-sweep/` | 程式碼與測試（治理規則在 `services/csp/app/modules/policy/`）；手冊 `docs/user-manual/admin.html` |
+| `docs/runbooks/asr-voice-input.md` | `services/asr-gateway/`、`apps/anila-shell/src/asr/` |
+| `docs/runbooks/{intranet-deployment-runbook,intranet-deployment-tutorial,intranet-image-bundle,first-install-rehearsal,deploy-checklist-2026-08-01,from-zero-lab-2026-09-10,rotate-tls-cert}.md` | `docs/deploy/INSTALL.md`、`docs/deploy/UPDATE.md`；已退役腳本 `infra/deployment/archive/intranet-legacy/` |
+| `docs/runbooks/loadtest-search-pool.md`、`docs/runbooks/model-variants.md` | `tools/loadtest/`、`infra/models/` |
+
+`docs/FRICTION-LOG.md` 內文提到的 `INSTALL.md`、`UPDATE.md` 指的是 `docs/deploy/` 下的同名檔。表列到目錄的，以該目錄內的實作為準。
+
+## 工作守則
 
 - 回覆與文件用繁體中文、台灣用語。這是中科院（NCSIST）院內平台。
 - 平台由一個人維護：少一個金鑰、少一個 `.env` 鍵、少一個手動步驟都算進步。模型、外部服務、信任主機一律在治理中心設定。
-- 不要擅自 commit／push；由擁有者或他授權的代理決定。
 - 絕不提交 `.env`、`secrets/`、`*.pem`、`*.key`、API 金鑰、JWT 私鑰。
 - `anila-studio` 不可 import `anila_core`（有守門測試）。產品程式不可呼叫任何院外服務。
 - schema 改動一定要有 Alembic migration；多人並行時編號接在目前 head 後面。
@@ -16,16 +56,13 @@
 
 ## 開發線
 
-- 分支：`main`（單一開發線；舊七分支模型已進 `docs/archive/agents-seven-branch-model.md`，不要再切 `prod-intranet-card` 那種線）
-- 專案權威：`PLAN.md`（現況與順序）、`SYSTEM-MAP.md`（規格）
-- `CLAUDE.md` **不存在**。環境事實看本頁與 `PLAN.md`，不要去找那份檔。
-- 接手擔任總指揮的 AI 主 session（例如 GPT）先讀 `docs/agents/ORCHESTRATOR-PLAYBOOK.md`：派工、驗證、跨家族審查、合併、發布演練的實際流程與踩過的坑。
+- 分支：`main`。
 
 ## 容量（2026-09-28）
 
 平台自己要撐住平常 300–500 人、尖峰約 3000 人同時在線。模型主機不是我們的；模型再慢，平台也要活著，而且要公平。
 
-CSP 與 Router 的 uvicorn worker 數在容器啟動時看 CPU（`os.cpu_count` 與 cgroup quota 取較小）。CSP 是 `max(2, min(2×CPU, 32))`：串流是 I/O，但一個卡住的 event loop 會拖住該 process 上所有連線，所以一核兩個 worker；32 是天花板，避免 128 執行緒各自帶一份資料庫連線。Router 是 `max(2, min(CPU, 8))`：同樣是 I/O，但每個 worker 都寫同一份會話 SQLite，少一點 process 才不會搶寫鎖。這台開發機 24 核會得到 CSP 32、Router 8；EPYC 128 執行緒也是這兩個數字。Studio 與 ASR 維持一個 process。Studio 的工作清單在記憶體裡，多開 worker 會拆開。
+CSP 與 Router 的 uvicorn worker 數在容器啟動時看 CPU（`sched_getaffinity`，讀不到才用 `os.cpu_count`，再與 cgroup CPU quota 取較小；`packages/anila-core/src/anila_core/runtime/cpu_budget.py`）。CSP 是 `max(2, min(2×CPU, 32))`：串流是 I/O，但一個卡住的 event loop 會拖住該 process 上所有連線，所以一核兩個 worker；32 是天花板，避免 128 執行緒各自帶一份資料庫連線。Router 是 `max(2, min(CPU, 8))`：同樣是 I/O，但每個 worker 都寫同一份會話 SQLite，少一點 process 才不會搶寫鎖。這台開發機 24 核會得到 CSP 32、Router 8；EPYC 128 執行緒也是這兩個數字。Studio 與 ASR 維持一個 process。Studio 的工作清單在記憶體裡，多開 worker 會拆開。
 
 用量寫入每個 worker 各跑一份：佇列在 process 裡面，只有 leader 寫的話其他 worker 的用量會消失。寫入要等資料庫 commit 成功才從佇列拿掉；commit 失敗就留著重試。其餘週期工作（健康檢查、警報、備份狀態、稽核封存、記憶體整理、附件保留、向量清理、憑證週期核發、金鑰圈週期維護、外部服務探測）用 Redis 鎖 `anila:csp:background-leader` 選一個 worker。續租和釋放是比對 token 的 Lua，對不上就立刻停掉迴圈，不會把別人剛拿到的鎖延長或刪掉。鎖過期才換人。Redis 不在時這些迴圈暫停。每個 worker 仍會做啟動時那一次憑證核發與金鑰圈，並開自己的連線池。啟動遷移在 Postgres 上先拿 session advisory lock，所以多個 worker 同時起來只會有一個在跑 `upgrade head`。pytest 沒有 Redis，迴圈在那一個 process 裡照舊跑。
 
@@ -52,6 +89,7 @@ TTFT 變長是 32 個 process 一起消化 3000 條串流，不是資料庫池�
 ```bash
 # 平台（repo 根目錄）
 docker compose up -d --build
+# （dev 站改用 `docker compose -f compose.dev.yaml up -d --build`，project `anila-platform-dev`）
 
 # Shell 主流程（Vitest orchestrator，不是已刪的 Playwright functions.spec.js）
 cd apps/anila-shell && npm test
@@ -70,7 +108,7 @@ cd apps/csp-governance-ui && npm test && npm run build
 
 預設沒有單價、也沒有上限，呼叫行為與以前相同。治理中心的模型編輯可以追加每百萬 token 的輸入、輸出、思考單價；改價只新增一列。用量頁用呼叫當時生效的價格算成本，完全沒定價顯示「未計價」，不會顯示 0。另有依 API 金鑰、依單位（含下層）兩種切分。匯出可以選本月、上月、本季，或自訂日期，最長一年。API 金鑰頁顯示該金鑰本月用量。
 
-管理員可對使用者、單位（含下層）或 API 金鑰設定每日或每月的 token／金額上限；留空就是不限，0 是立刻擋下。單位管理員只能看自己範圍內的額度。呼叫在進上游之前檢查。超過且設成擋下時回 429，訊息寫明是哪一條額度、何時（台北時間）重置；ANILA 對話把同一句顯示成「用量已達上限」。接近門檻或被擋下時，用既有的站內通知與警報，不另寄外部信。計數放在 Redis，缺了就從資料庫把這一期補上；Redis 連不上就放行並記警告。價格、貨幣與額度的異動都寫稽核。遷移是 `r1_0068`。
+管理員可對使用者、單位（含下層）或 API 金鑰設定每日或每月的 token／金額上限；留空就是不限，0 是立刻擋下。單位管理員只能看自己範圍內的額度。呼叫在進上游之前檢查。超過且設成擋下時回 429，訊息寫明是哪一條額度、何時（台北時間）重置；ANILA 對話把同一句顯示成「用量已達上限」。接近門檻或被擋下時，用既有的站內通知與警報，不另寄外部信。計數放在 Redis，缺了就從資料庫把這一期補上；Redis 連不上就放行並記警告。價格、貨幣與額度的異動都寫稽核。遷移是 `r1_0067`（`r1_0068` 只補額度唯一索引與擋下紀錄索引）。
 
 ## ANILA LM（2026-09-26 開放）
 
@@ -93,14 +131,15 @@ CSP 在啟動時，以及之後每個週期（預設一小時），為內建名�
 | router | `/run/anila/service-clients/router-primary/token` | 服務憑證 `csk-`（`client_type=router`） | 目錄 gid 10002 `anila-svc-tokens` |
 | anila-studio | `/run/anila/service-clients/anila-studio/token` | 服務憑證 `csk-`（`client_type=studio`） | 目錄 gid 10003 `anila-studio-tokens` |
 | ingestion-worker | `/run/anila/service-clients/ingestion-worker/token` | 系統使用者的 `sk-` API key（雜湊存在 `api_keys`，不是 `service_clients`） | 目錄 gid 10004 `anila-worker-tokens` |
+| asr-gateway | `/run/anila/service-clients/asr-gateway/token` | 服務憑證 `csk-`（`client_type=asr`） | 目錄 gid 10006 `anila-asr-tokens` |
 
-子目錄的擁有者是 uid 10005（沒有服務用這個 uid），mode 2770，只有該群組進得去。CSP、studio、worker 都是 uid 10001；若憑證放在同一個他們擁有的目錄，0640 擋不住互讀。`csp-credential-dirs` 在 CSP 啟動前用 root 把這三個目錄建好（既有 volume 也不會漏），並刪掉根目錄的扁平 `<client>.token`。有刪到檔案時留下標記，CSP 把 `router-primary` 輪替一次且不留寬限，複製走的舊檔因此失效。沒有專屬目錄時 CSP 拒絕發布、不退回扁平檔，`/health` 降級。檔案本身是 0640。CSP 加入上述三個群組才能寫；每個消費者只加入自己的群組。上層目錄仍是 gid 10002、mode 2750。日誌不記明文。chmod／chown 失敗，或寫完之後的 mode／gid 不符，這次發布算失敗，readiness 降級。約 30 天輪替一次。服務憑證的上一把在寬限期（預設 24 小時）內仍可通過驗證；worker 的舊 key 同樣留到寬限期。環境變數 `INTERNAL_PLATFORM_API_KEY` 不再參與換發。`ANILA_SERVICE_CLIENT_AUTO_PROVISION=0` 時 `/health` 是 503。
+子目錄的擁有者是 uid 10005（沒有服務用這個 uid），mode 2770，只有該群組進得去。CSP、studio、worker 都是 uid 10001；若憑證放在同一個他們擁有的目錄，0640 擋不住互讀。`csp-credential-dirs` 在 CSP 啟動前用 root 把這四個目錄建好（既有 volume 也不會漏），並刪掉根目錄的扁平 `<client>.token`。有刪到檔案時留下標記，CSP 把 `router-primary` 輪替一次且不留寬限，複製走的舊檔因此失效。沒有專屬目錄時 CSP 拒絕發布、不退回扁平檔，`/health` 降級。檔案本身是 0640。CSP 加入上述四個群組才能寫；每個消費者只加入自己的群組。上層目錄仍是 gid 10002、mode 2750。日誌不記明文。chmod／chown 失敗，或寫完之後的 mode／gid 不符，這次發布算失敗，readiness 降級。約 30 天輪替一次。服務憑證的上一把在寬限期（預設 24 小時）內仍可通過驗證；worker 的舊 key 同樣留到寬限期。環境變數 `INTERNAL_PLATFORM_API_KEY` 不再參與換發。`ANILA_SERVICE_CLIENT_AUTO_PROVISION=0` 時 `/health` 是 503。
 
-三個服務都讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀；CSP 回 401／403 時再讀一次才放棄。路徑有設而檔案不在或讀不到時，不改用別的憑證。`/health`（worker 沒有 HTTP，啟動日誌與 `credential_health()`）的 `token_source` 是 `file`、`file_missing` 或 `file_error`。studio 在 `file_missing`／`file_error` 時 `/health` 是 503。
+四個服務都讀 `ANILA_SERVICE_TOKEN_FILE`。檔案變了會重讀；CSP 回 401／403 時再讀一次才放棄。路徑有設而檔案不在或讀不到時，不改用別的憑證。`/health`（worker 沒有 HTTP，啟動日誌與 `credential_health()`）的 `token_source` 是 `file`、`file_missing` 或 `file_error`。studio 在 `file_missing`／`file_error` 時 `/health` 是 503。
 
 舊的共用 `CSP_SERVICE_TOKEN` 已從設定欄位刪除，服務不會再把它讀進設定。請求只帶那把祕密會得到 401。資料庫裡 `is_legacy` 的列（現用或寬限複本）都不是身分；自動核發換掉這種列時，不把舊祕密留成寬限憑證。`.env` 或 shell 裡這兩個鍵有非空值時，部署拒絕，訊息只印鍵名。部署檢查照 compose 的讀法解析 `.env`：引號值只取到結束引號，沒加引號的值「空格 + #」起是註解。程序環境裡還看得到非空值時，該服務拒絕啟動，並請操作者刪掉。Router、Studio、asr-gateway 只讀 `ANILA_SERVICE_TOKEN_FILE`。長效 `agent_credentials` 已退役（代理用 5 分鐘派工 JWT）；遷移 `r1_0048` 撤銷仍有效的列並清掉寬限複本，驗證路徑也不再接受那些列。
 
-`asr-gateway` 只讀專屬憑證檔。本機生圖服務已刪除，不再讀 `INTERNAL_PLATFORM_API_KEY`。模型若有自己的金鑰而解密失敗，這次呼叫失敗（「模型暫時無法使用：憑證無法讀取，請通知管理員」），管理端測試、健康檢查、整批帶入、背景健康檢查與串流錯誤事件用同一句，不改用全域 `MODEL_GATEWAY_API_KEY`。警報與健康迴圈共用 `health:model:{id}`，同一模型只有一筆，金鑰修好、下一輪健康檢查恢復時自動結案；請求路徑上同一模型 60 秒內只送一次，寫入與寄信交給背景執行緒。沒有專屬金鑰的模型仍用全域金鑰。
+`asr-gateway` 只讀專屬憑證檔 `/run/anila/service-clients/asr-gateway/token`。本機生圖服務已刪除，不再讀 `INTERNAL_PLATFORM_API_KEY`。模型若有自己的金鑰而解密失敗，這次呼叫失敗（「模型暫時無法使用：憑證無法讀取，請通知管理員」），管理端測試、健康檢查、整批帶入、背景健康檢查與串流錯誤事件用同一句，不改用全域 `MODEL_GATEWAY_API_KEY`。警報與健康迴圈共用 `health:model:{id}`，同一模型只有一筆，金鑰修好、下一輪健康檢查恢復時自動結案；請求路徑上同一模型 60 秒內只送一次，寫入與寄信交給背景執行緒。沒有專屬金鑰的模型仍用全域金鑰。
 
 緊急吊銷服務憑證：治理中心「服務客戶端」按吊銷。CSP 不會把已吊銷的列重新核發，並刪掉憑證檔。要恢復時，刪掉那筆已吊銷的 `service_clients` 列，然後重啟 CSP（或等下一個週期）。worker 的 key 不在那個畫面：把名為 `ingestion-worker-system-key` 的 API key 停用後，CSP 不會再核發，並刪掉憑證檔；要恢復就刪掉那些已停用的 key 列再重啟 CSP。
 
@@ -112,9 +151,9 @@ CSP 在啟動時，以及之後每個週期（預設一小時），為內建名�
 
 worker 已經不讀 `INTERNAL_PLATFORM_API_KEY`、`EMBEDDING_API_KEY`、`VISION_API_KEY`、`RELATION_LLM_API_KEY`。本機生圖服務也不再讀它。
 
-同時要重建 csp、router、anila-studio、ingestion-worker 映像（群組 10002／10003／10004），再用更新後的 compose 啟動。憑證 volume 仍是 `anila-service-credentials`（dev 是 `anila-service-credentials-dev`）。不要再把 `CSP_BOOTSTRAP_TOKEN` 灌進 router。
+同時要重建 csp、router、anila-studio、ingestion-worker 映像（群組 10002／10003／10004，另加 asr-gateway 的 10006），再用更新後的 compose 啟動。憑證 volume 仍是 `anila-service-credentials`（dev 是 `anila-service-credentials-dev`）。不要再把 `CSP_BOOTSTRAP_TOKEN` 灌進 router。
 
-`.env.example` 已拿掉的鍵：`CSP_SERVICE_TOKEN`。
+`.env.example` 已拿掉的鍵：`CSP_SERVICE_TOKEN`、`CSP_BOOTSTRAP_TOKEN`（部署檢查 `prod-env-guard.sh` 兩個都拒收）。
 
 ## JWT 簽章金鑰
 
@@ -130,7 +169,7 @@ CSP 自己保管 RS256 簽章金鑰，放在資料表 `jwt_signing_keys`（遷�
 
 ## 生圖（2026-09-26：不部署本機模型）
 
-治理中心「模型角色」多了「生圖模型」（`image_generation`，類型用既有的 `image`）。有設且健康時，Studio 經 CSP `POST /v1/images/generations` 配圖，不直連模型主機。沒設、不健康或請求失敗時，簡報仍用版面、圖示、圖表、表格，以及知識庫文件裡已有的圖，不留空的配圖框。
+治理中心「模型角色」多了「生圖模型」（`image_generation`，類型用既有的 `image`）。有設且健康時，Studio 經 CSP `POST /v1/images/generations` 配圖，不直連模型主機。沒設、不健康或請求失敗時，簡報仍用版面、圖示、圖表、表格，以及知識庫文件裡已有的圖，不留空的配圖框（`services/anila-studio/app/clients/csp_client.py` 的 `proxy_image_generation` 失敗一律回 `None`，呼叫端照無生成圖的版面走）。
 
 本機 `flux2-dev`／`flux2-dev-agent`、compose 服務、`/uploads/flux` 與 `FLUX_*` 環境變數已從這棵樹拿掉。這次沒有刪除主機上的 Docker volume。若先前起過 Studio，具名 volume `anila_anila-studio-flux-cache` 與 `anila-platform-dev_anila-studio-flux-cache-dev` 可能還在，由擁有者自行移除。`share/uploads/flux` 若還在磁碟上，同樣先留著。
 
@@ -154,7 +193,7 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 4. asr-gateway 預設就啟動（2026-09-29 起不再用 `asr` profile）。它只負責切句與轉送，位址向 CSP 讀；解碼端沒設定或不健康時麥克風自己藏起來，容器健康檢查只看 gateway 本身（`/asr/health` 回 200 或 503 都算活著），所以解碼端壞了不會讓平台更新判定失敗。沒有本機 whisper。語音模型（權重與解碼器）屬於模型側，由別人維護；平台只留 asr-gateway。
 5. 開機不再從 `.env` 匯入文件解析或語音位址。請在治理中心「外部服務」填。`.env` 裡若還留著 `DOC_PARSER`、`DOCLING_URL`、`DOCLING_SERVICE_TOKEN`、`ASR_DECODE_URL`、`ASR_DECODER_TOKEN`、`ASR_DECODE_PROTOCOL`、`ASR_DECODE_API_KEY`、`ASR_OPENAI_MODEL`，刪掉即可，服務不會讀。
 
-憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
+憑證存在 CSP 自己的金鑰檔裡，不是模型 API key 那把 `SECRET_KEY`。畫面只看得到「有沒有憑證」。語音憑證只有 asr-gateway 用它的憑證檔（`/run/anila/service-clients/asr-gateway/token`）讀得到，文件解析憑證只有 ingestion-worker 用它的憑證檔讀得到。
 
 ## 帳號閒置（2026-09-29）
 
@@ -164,7 +203,7 @@ compose 不再宣告 `gitlab` 服務，也不再宣告 `gitlab_config`、`gitlab
 
 未處理的警報會在治理中心每一頁上方出現紅橫幅（擁有者與管理員），連到「警報」。確認或解決後橫幅消失。寄信在同一頁的「警報寄信」：SMTP 主機、連接埠、不加密／STARTTLS／SSL、選填帳密（密碼只寫入）、寄件者、群組信箱、啟用，以及「寄測試信」。沒有 `ANILA_ALERT_SMTP_*` 環境變數。寄失敗只記在該區與日誌，偵測不會停。稽核帳保留期是 365 天。
 
-磁碟使用率 80% 起為 high、95% 為 critical（2026-09-29 從 85% 下修警告線）。儀表板另有一格，只顯示掛載標籤、使用率與剩餘 GiB，不顯示宿主機路徑。
+磁碟使用率 80% 起為 high、95% 為 critical（`DISK_WARN_PCT`／`DISK_CRIT_PCT`，2026-09-29 從 85% 下修警告線）。只檢查 `ingestion`、`attachments` 兩個已掛載的標籤。儀表板另有一格，只顯示掛載標籤、使用率與剩餘 GiB，不顯示宿主機路徑。
 
 HTTPS 憑證由資訊單位用院內 CA 核發，擁有者更換 `infra/nginx/certs` 的檔案。CSP 對 compose 裡的 nginx 做 TLS 連線（SNI 用既有的 `ANILA_HOST`），讀伺服端憑證的到期日，不掛載、也不讀私鑰。未滿 30 天是 high「HTTPS 憑證將於 N 天後到期，請向資訊單位申請新憑證」；未滿 7 天或已過期是 critical；換新後結案。nginx 連不上不開這條（入口無回應由既有偵測器負責）。到期日也顯示在儀表板。
 
@@ -190,9 +229,10 @@ compose 的 `backup` 服務跟資料庫共用 `anila-pgvector:local`。起來先
 - `app.jsx`／`router_server.py` 大檔拆分（等主流程測試穩定後再抽）
 - 真模型主機的負載（`tools/loadtest/` 量的是平台自己，模型是可調速度的假上游）
 
-## 本輪工程債（2026-09-18 抽查）
+## 本輪工程債（2026-09-18 抽查；三條都已落地，程式與守門測試都在）
 
 1. Shell／治理測試基線（composer accessible name、群組 `extractError`）
 2. 共用工作站資料夾 localStorage 依帳號隔離
 3. 檢索 `calibrated` 必須對應當下 embedding 模型
-4. （2026-09-27 已處理）備份由 compose 的 `backup` 服務排程，還原含資料庫與檔案。見 `docs/runbooks/csp-db-backup-restore.md`。
+
+第 4 條（備份）已於 2026-09-27 處理完畢，不再是工程債：備份由 compose 的 `backup` 服務排程，還原含資料庫與檔案，見 `docs/runbooks/csp-db-backup-restore.md`。

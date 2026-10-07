@@ -8,6 +8,8 @@
 
 ---
 
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+
 ## Position
 
 `infra/models/` holds one `docker-compose.yml` (project `anila-models`) plus the service build contexts (`src/`). It is a **separate project** from the platform stack (`anila`, see the root `compose.yaml` → `infra/compose/platform.yml`):
@@ -93,10 +95,10 @@ docker compose -f infra/models/docker-compose.yml down
 
 ## Platform / Model Gateway boundary
 
-CSP's **Model Gateway (治理中心, [doc 04](../../docs/anila-redesign-docs/04-model-gateway-design.md))** is where "registration, routing, per-model API keys, 5-state health, `ANILA_ALLOW_HTTP_ENDPOINT` refusing http, classification limits, usage trace" live. This compose only **provides the upstream endpoints**; the two layers separate cleanly:
+CSP's **Model Gateway (治理中心, Model Gateway)** is where "registration, routing, per-model API keys, 5-state health, `ANILA_ALLOW_HTTP_ENDPOINT` refusing http, classification limits, usage trace" live. This compose only **provides the upstream endpoints**; the two layers separate cleanly:
 
 - **Same-host docker-DNS upstreams (this compose)**: `gpt-oss-20b` / `gemma4` / `nv-embed-proxy` are seed-registered into the CSP model registry by the platform; no API key needed inside the network. `nv-embed-triton` is reached only by `nv-embed-proxy`. Slide images use the governance-center image-generation role and are proxied by CSP.
-- **Cross-host models (doc 04's main scenario)**: models on other intranet hosts (e.g. the `.12` gateway) go over HTTPS + per-model API key, proxied by the CSP Model Gateway — that path's credential / health / fail-closed governance lives in CSP, not in this compose.
+- **Cross-host models (Model Gateway's main scenario)**: models on other intranet hosts (e.g. the `.12` gateway) go over HTTPS + per-model API key, proxied by the CSP Model Gateway — that path's credential / health / fail-closed governance lives in CSP, not in this compose.
 
 ---
 
@@ -114,5 +116,5 @@ CSP's **Model Gateway (治理中心, [doc 04](../../docs/anila-redesign-docs/04-
 
 ## Related docs
 
-- Redesign docs: [`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md), [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
+- Redesign docs: `04-model-gateway-design.md`, `00-product-constitution.md`
 - Deploy scripts: `infra/deployment/archive/model-side/model-serve.sh` (model lifecycle), `infra/deployment/scripts/deploy-prod.sh` (platform lifecycle) · Platform overview: [`../../README.md`](../../README.md)

@@ -1,6 +1,6 @@
 # runtime_logic — agent runtime reference source snapshots
 
-> ⚠ 2026-08-17 盤點：本檔為【已被取代】——`runtime_logic/` 是 reference-only 參考快照(見 `AGENTS.md` §2),不可當 runtime import 或部署來源。現行狀態與執行順序見 `PLAN.md`。
+> Reference snapshot only. Do not import it and do not deploy it. Current platform status is `docs/CURRENT-STATUS.md`. There is only `main`.
 
 > The agent runtime "design reference directory": holds source snapshots of two production-grade runtimes for ANILA to study, borrow from, and translate good design patterns into Python for `packages/anila-core/` and the agent template. **This is not executable code.**
 
@@ -103,8 +103,7 @@ The two references cover two dimensions:
 
 - Platform: [`../README.md`](../README.md) · current `main` (old seven-branch model retired)
 - Python runtime (porting destination): [`../packages/anila-core/README.md`](../packages/anila-core/README.md)
-- `openai-agents-python` deep-dive: [`../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/archive/agent-framework/runtime-logic-openai-agents-deep-dive.md)
-- Agent framework architecture & porting decisions: [`../docs/archive/agent-framework/anila-agent-framework-architecture.md`](../docs/archive/agent-framework/anila-agent-framework-architecture.md), [`../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/archive/agent-framework/anila-agent-framework-porting-decisions.md)
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 
 ---
 

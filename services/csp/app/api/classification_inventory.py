@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """機敏分類盤點報表(Classification Inventory Before Cutover)。
 
-依 SYSTEM-MAP §8 四級字彙與舊 boolean 相容讀模型:提供盤點快照——
+依 四級分類契約 四級字彙與舊 boolean 相容讀模型:提供盤點快照——
 每個資源類型 × 四級分類的分佈、已閂鎖(``classification_latched_at`` 非空)
 筆數,以及「舊 boolean latch 與等級」的一致性檢查。
 
 backfill 映射:``classified=true → 機密``(SECRET)、
 ``requires_encryption=true → 機密``。一致性檢查的「受控集合」門檻保留
-舊行為 rank >= 2 → 現為 RESTRICTED(密)(SYSTEM-MAP §8);凡舊 boolean
+舊行為 rank >= 2 → 現為 RESTRICTED(密)(四級分類契約);凡舊 boolean
 為真、但等級卻低於「密」的列即為 **不一致**(``inconsistent``)。
 
 ``ingestion_documents`` 的等級分佈用**有效密等**
@@ -56,11 +56,11 @@ from app.services.auth_service import require_admin
 
 router = APIRouter(prefix="/api/classification", tags=["機敏分類盤點"])
 
-# 四級順序(單一事實來源 = 契約 enum 宣告順序;SYSTEM-MAP §8);報表欄位固定用它。
+# 四級順序(單一事實來源 = 契約 enum 宣告順序;四級分類契約);報表欄位固定用它。
 _LEVELS: list[str] = [level.value for level in ClassificationLevel]
 
 # 低於「密」(RESTRICTED,rank 2)的等級集合;舊 boolean 為真卻落在這裡 =
-# backfill 不一致。意圖保留舊「controlled set = rank >= 2」語意(SYSTEM-MAP §8)。
+# backfill 不一致。意圖保留舊「controlled set = rank >= 2」語意(四級分類契約)。
 _BELOW_RESTRICTED: list[str] = [
     level.value
     for level in ClassificationLevel
@@ -86,7 +86,7 @@ class _ResourceSpec:
         self.legacy_attr = legacy_attr
 
 
-# doc 08 §5 掛載四級共通欄位的核心資源(順序照 Slice 3c 契約;字彙=SYSTEM-MAP §8)。
+# 四級分類 §5 掛載四級共通欄位的核心資源(順序照 Slice 3c 契約;字彙=四級分類契約)。
 # agents 用 ``default_classification_level`` 且無 latched 欄位;
 # model_registry(=ModelEndpoint)現況無分類欄位 → 全數視為 floor 無機密。
 _RESOURCES: list[_ResourceSpec] = [
@@ -244,7 +244,7 @@ def get_classification_inventory(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """四級分類盤點快照(admin/owner;SYSTEM-MAP §8)。
+    """四級分類盤點快照(admin/owner;四級分類契約)。
 
     ``?format=csv`` 回傳含 BOM 的 UTF-8 text/csv;否則回 JSON。
     """

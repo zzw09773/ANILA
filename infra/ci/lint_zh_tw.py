@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""繁體中文(台灣用語)語言政策 lint — doc 11。
+"""繁體中文(台灣用語)語言政策 lint。
 
 掃描使用者可見字串,偵測 ①簡體字(繁簡相異的高頻字) ②大陸用語詞。
 簡體 blocklist 以 unicode code point 表達 → 原始碼本身不含任何簡體字面,
 lint 不會誤傷自己,也符合本 repo「禁簡體」政策。
 
-豁免:行內標記 ``zh-exempt``(doc 11 裝飾性豁免清單,如登入 cosplay、
+豁免:行內標記 ``zh-exempt``(裝飾性豁免清單,如登入 cosplay、
 CONFIDENTIAL 浮水印);整檔/路徑豁免見 EXEMPT_PATHS。
 
 用法:python3 infra/ci/lint_zh_tw.py [root]  (exit 1 表示有未豁免命中)
@@ -32,7 +32,7 @@ SIMPLIFIED_CP = frozenset({
     0x53D1, 0x5BFC, 0x6267, 0x4EA7, 0x8D26, 0x53C2, 0x8FDB,  # 發導執產賬參進
 })
 
-# 大陸用語詞 → 台灣用語(key/value 皆繁體字,非簡體;doc 11 術語表)。
+# 大陸用語詞 → 台灣用語(key/value 皆繁體字,非簡體;zh-TW 術語表)。
 MAINLAND_TERMS = {
     "視頻": "影片",
     "屏幕": "螢幕",

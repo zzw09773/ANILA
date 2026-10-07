@@ -199,7 +199,7 @@ class SearchRequest(BaseModel):
             "前端如要做 'in this doc' 之類的範圍縮限會用到。"
         ),
     )
-    # ── Cross-document relation expansion (design v2 §7) — all opt-in, B/C ──────
+    # ── Cross-document relation expansion (document-relations design v2 §7) — all opt-in, B/C ──────
     expand_relations: bool = Field(
         default=False,
         description=(
@@ -249,7 +249,7 @@ class SearchHitOut(BaseModel):
 
 class RelatedHit(BaseModel):
     """A document reached by a 1-hop relation edge from a main top-k hit
-    (design v2 §7). Additive context for the RAG agent — never replaces the
+    (document-relations design v2 §7). Additive context for the RAG agent — never replaces the
     primary ``results``."""
 
     document_id: int
@@ -487,7 +487,7 @@ async def _expand_relations(
     query_vec: list[float],
     payload: "SearchRequest",
 ) -> list[RelatedHit]:
-    """1-hop relation expansion over ``document_relations`` (design v2 §7).
+    """1-hop relation expansion over ``document_relations`` (document-relations design v2 §7).
 
     For the set ``D`` of documents the main top-k hit, find resolved edges with
     one end in ``D`` (``relation_type`` / ``confidence`` filtered), take the

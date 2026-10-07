@@ -1,6 +1,6 @@
 """OW-3 — message actions backend tests (declarative-only surface).
 
-docs/plans/ow3-message-actions-blueprint.md
+``app/api/message_actions.py``
 """
 from __future__ import annotations
 

@@ -46,7 +46,7 @@ def require_dispatch_bearer() -> str:
             "no dispatch JWT in request scope; in-task CSP callbacks must "
             "present the inbound Authorization Bearer token (P2.1). "
             "Out-of-task paths (config poll / revocation) are not covered "
-            "here — see OWNER-QUESTIONS Q19."
+            "here — see Q19."
         )
     return token
 

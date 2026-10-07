@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Task Service(Slice 2b-A)— Task / TaskRun 生命週期與 SourceSnapshot 編排。
 
-依 doc 01(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)與
-doc 03(admin/owner 全域 bypass 必寫 audit)。風格對齊
+依 領域模型(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)與
+控制面(admin/owner 全域 bypass 必寫 audit)。風格對齊
 ``app/services/conversation_service.py``:module-level functions on Session。
 
 SourceSnapshot 三規則落地:
@@ -47,7 +47,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ── 狀態機(doc 01 十值)────────────────────────────────────────────────────
+# ── 狀態機(領域模型 十值)────────────────────────────────────────────────────
 # 合法轉移表;不在表內(含終態出邊與自轉移)一律非法 → ValueError。
 _LEGAL_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.DRAFT: frozenset({TaskStatus.SUBMITTED, TaskStatus.CANCELLED}),
@@ -104,7 +104,7 @@ def _derive_snapshot_classification(
 
     現況 ingestion collections / documents 尚無 classification 欄位,
     以 ``getattr`` 前瞻式取值:欄位補上後本函式自動生效,現在則
-    fail-safe 落在 無機密(migration floor,同 doc 08 backfill 精神)。
+    fail-safe 落在 無機密(migration floor,同 四級分類 backfill 精神)。
     """
     derived: list[ClassificationLevel] = []
     if payload.selected_collection_ids:
@@ -140,8 +140,8 @@ def create_task(
     """建立 Task + 對應 SourceSnapshot(規則 1:必指向 snapshot 或明確
     宣告無來源 —— 兩者都以一筆 snapshot 落地)。
 
-    - trace_id 由 model default 產生(doc 01 驗收 2)。
-    - 初始狀態 = draft(doc 01 狀態機起點)。
+    - trace_id 由 model default 產生(領域模型 驗收 2)。
+    - 初始狀態 = draft(領域模型 狀態機起點)。
     - task.classification_level = max(payload 宣告, snapshot 導出分類)。
     """
     requester = db.query(User).filter(User.id == requester_user_id).first()
@@ -229,7 +229,7 @@ def ensure_task_access(db: Session, *, task_id: int, user_id: int) -> Task:
 
     - 任務不存在 → ``LookupError``(router 對映 404)。
     - 非 requester 且非 admin tier → ``PermissionError``(403)。
-    - admin/owner 全域 bypass(doc 03 拍板)—— 但跨界存取必寫 audit
+    - admin/owner 全域 bypass(控制面 拍板)—— 但跨界存取必寫 audit
       (actor / action / resource)。
     """
     task = get_task(db, task_id)

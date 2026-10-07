@@ -1,5 +1,5 @@
 """Tests for the 1-hop relation expansion in ``app.api.ingestion.search``
-(design v2 §7, test plan §12: out-going / in-going carried out,
+(document-relations design v2 §7, test plan §12: out-going / in-going carried out,
 ``max_related`` cap, ``relation_types`` filter, confidence threshold, related
 never replaces the main top-k, empty when no relations).
 

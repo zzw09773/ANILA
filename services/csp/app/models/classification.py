@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""四級分類治理三表(doc 08 §6/§7/§8/§12,Slice 3a)。
+"""四級分類治理三表(四級分類 §6/§7/§8/§12,Slice 3a)。
 
-- :class:`ClassificationEvent` — 分類異動事件(doc 08 §6 欄位逐字)。
+- :class:`ClassificationEvent` — 分類異動事件(四級分類 §6 欄位逐字)。
   append-only:只 INSERT,不 UPDATE / DELETE;``reason`` 7 值封閉 enum
   在契約層(``app.schemas.contracts.classification``)把關,DB 存開放
   String(SQLite create_all 相容,同 policy_decision.py 模式)。
-- :class:`DeclassificationRequest` — 降級申請(doc 08 §8 欄位逐字)。
+- :class:`DeclassificationRequest` — 降級申請(四級分類 §8 欄位逐字)。
   ``status`` 5 值,fail-closed 預設 ``pending_supervisor``;變體 A:
   ``approved_via`` 二選一,``recorded_paper_decision`` 必附
   ``authority_reference``(公文文號/簽呈)＋``authority_title_name``
@@ -13,12 +13,12 @@
   「申請人 ≠ 核准人/代錄人」由 service 層
   (``app.modules.policy.service``)強制。
 - :class:`ClassificationAuthorityAssignment` —「機密審批權責」指派
-  (doc 08 §7 第 2–3 點、§12):核准權與平台 owner/admin 技術角色脫鉤,
+  (四級分類 §7 第 2–3 點、§12):核准權與平台 owner/admin 技術角色脫鉤,
   指派必附核定依據(公文文號/簽呈)、雙人控制(登錄人＋確認人或
   bootstrap 見證)。Slice 3a 只由 migration / seed 管理列,admin UI
   在 3b;``has_declassification_authority`` hook 讀本表。
 
-``resource_type`` / ``resource_id`` 一律字串參照(doc 08 §6),不掛
+``resource_type`` / ``resource_id`` 一律字串參照(四級分類 §6),不掛
 資源表 FK —— 事件橫跨 11 種資源,反向由各資源表的
 ``classification_event_id`` FK 指回本表。
 """
@@ -66,7 +66,7 @@ class ClassificationEvent(Base):
     resource_id = Column(String(100), nullable=False)
     previous_level = Column(String(20), nullable=False)
     new_level = Column(String(20), nullable=False)
-    # doc 08 §6 七值:source_selected / agent_policy / memory_inherited /
+    # 四級分類 §6 七值:source_selected / agent_policy / memory_inherited /
     # manual_admin / service_policy / content_detection /
     # declassification_copy(契約層封閉)。
     reason = Column(String(32), nullable=False)
@@ -81,7 +81,7 @@ class ClassificationEvent(Base):
 
 
 class DeclassificationRequest(Base):
-    """Admin 降級申請單(doc 08 §8);主管核准/紙本代錄後才生效。"""
+    """Admin 降級申請單(四級分類 §8);主管核准/紙本代錄後才生效。"""
 
     __tablename__ = "declassification_requests"
     __table_args__ = (
@@ -98,14 +98,14 @@ class DeclassificationRequest(Base):
     resource_id = Column(String(100), nullable=False)
     from_level = Column(String(20), nullable=False)
     to_level = Column(String(20), nullable=False)
-    # 申請人必為 Admin(doc 08 §7 規則 4;service 層強制)。不掛
+    # 申請人必為 Admin(四級分類 §7 規則 4;service 層強制)。不掛
     # ondelete:降級治理紀錄不得因刪帳號而連帶蒸發(fail-closed)。
     requested_by_admin_id = Column(
         Integer, ForeignKey("users.id"), nullable=False
     )
     reason = Column(Text, nullable=False)
     proposed_redaction_summary = Column(Text, nullable=True)
-    # doc 08 §8 五值(契約層封閉);fail-closed 預設 pending_supervisor。
+    # 四級分類 §8 五值(契約層封閉);fail-closed 預設 pending_supervisor。
     status = Column(
         String(32),
         nullable=False,
@@ -125,14 +125,14 @@ class DeclassificationRequest(Base):
     recorded_by_user_id = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    # 降密副本模式的新資源參照(doc 08 §9;in-place 生效時留 NULL)。
+    # 降密副本模式的新資源參照(四級分類 §9;in-place 生效時留 NULL)。
     resulting_resource_id = Column(String(100), nullable=True)
     audit_event_ids = Column(JSONValue, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class ClassificationAuthorityAssignment(Base):
-    """「機密審批權責」指派(doc 08 §7 第 2–3 點、§12)。
+    """「機密審批權責」指派(四級分類 §7 第 2–3 點、§12)。
 
     - ``department_id`` NULL = 全域權責;非 NULL = per-department。
     - ``authority_reference``(核定依據:公文文號/簽呈)必附 —— 權責

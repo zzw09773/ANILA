@@ -1,6 +1,6 @@
 import client from './client'
 
-// doc 07 Service Registry — registered_services CRUD 封裝。
+// 已刪的 doc 07 Service Registry — registered_services CRUD 封裝。
 //
 // 7a 後端契約：GET /api/services（可存取清單，admin 見全部）、admin CRUD、
 // GET /api/services/{id}/audit-callbacks（若實作；未實作回 404，UI 需 feature-check）。

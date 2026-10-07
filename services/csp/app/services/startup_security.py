@@ -269,7 +269,7 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
     ``_reject_dev_test_ca_in_production`` 的 fail-closed 檢查;這一顆在
     2026-08-08 的環境盤點之前**沒有任何程式層攔截** —— 任何人在 compose
     overlay 加一行就靜默生效,唯一的防線是
-    ``docs/runbooks/intranet-deployment-runbook.md:26`` 那句「內網一律不可設」。
+    ``docs/deploy/INSTALL.md``:26 那句「內網一律不可設」。
     這支函式把那句話變成開機硬檢查。
 
     **主判準是「這個行程已經凍結成什麼」,不是「環境現在寫什麼」。** 驗章那一行讀
@@ -334,7 +334,7 @@ def assert_card_dev_bypass_not_in_a_real_boot() -> None:
         f"dev-card 模式({why_not})。這顆旗標會關掉卡登的 nonce 綁定,"
         "也就是反 replay 保護 —— 任何人攔到一次成功的刷卡簽章就能無限重放,"
         "而簽章與憑證鏈驗證全都會通過,log 上看起來是正常登入。"
-        "內網正式部署一律不可設(見 docs/runbooks/intranet-deployment-runbook.md)。"
+        "內網正式部署一律不可設(見 ``docs/deploy/INSTALL.md``)。"
         "若確實要在本機接舊的固定簽章素材,請一併設 CARD_DEV_TRUST_TEST_CA=1 "
         "並讓 ANILA_AUTH_MODE 不是 card-only —— 這是 dev-card 模式的定義。"
     )

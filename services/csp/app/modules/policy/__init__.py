@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """app.modules.policy — Policy Engine(政策引擎,含分類決策)。
 
-職掌(SYSTEM-MAP §8):集中所有政策判定,包含四級分類決策
+職掌(四級分類契約):集中所有政策判定,包含四級分類決策
 (無機密 < 營業秘密 < 密 < 機密)、單向閂鎖(classification
 只能維持或升級,不得自動降級)、降級申請與主管批核流程,以及
 PolicyDecision 的產出。分類等級契約型別在
@@ -25,7 +25,7 @@ PolicyDecision 的產出。分類等級契約型別在
 - ``effective_level(db, *, resource_type, resource_id)
   -> ClassificationLevel``
 - ``create_declassification_request(...)`` / ``decide_declassification(...)``
-  —— doc 08 §7 變體 A 降級申請與裁決(Slice 3a)
+  —— 四級分類 §7 變體 A 降級申請與裁決(Slice 3a)
 - ``has_declassification_authority(db, user_id) -> bool`` ——
   「機密審批權責」查核 hook(與技術角色脫鉤)
 - ``router`` —— GET /api/policy-decisions(admin tier 唯讀查詢)

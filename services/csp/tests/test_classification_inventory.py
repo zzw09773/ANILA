@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""機敏分類盤點端點測試(SYSTEM-MAP §8 四級字彙)。
+"""機敏分類盤點端點測試(四級分類契約 四級字彙)。
 
 覆蓋:
 - admin 取得的計數與 seeded fixtures 相符(含一列刻意 backfill 不一致);

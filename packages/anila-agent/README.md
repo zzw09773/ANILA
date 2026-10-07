@@ -2,7 +2,9 @@
 
 > 本專案展示 OpenAI Agents SDK v0.17.5 的工具、檢索、記憶與服務化整合，供需要自訂 harness 的開發者參考。它不是一般開發者的最短起步路徑；一般快速實作請使用治理中心另行提供的「快速起步骨架」。是否可在氣隙環境執行，取決於模型端點、相依套件與部署憑證是否已備妥。
 
-**繁體中文** · [English](README.en.md) · 完整重建藍圖見 [REBUILD_PLAN.md](REBUILD_PLAN.md)。
+**繁體中文** · [English](README.en.md)。這是進階範例。要掛上平台的最短路徑是 `packages/anila-agent-quickstart`，步驟在治理中心「開發指南」。
+
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 
 ## 在 redesign 版圖中的定位
 
@@ -77,7 +79,7 @@ ANILA_OUTPUT_STYLE=zh-tw-formal
 > 上面這個 `nv-embed-proxy:8000` 是 **model 容器**,它的 shim 沒宣告這個欄位、
 > pydantic 預設 `extra="ignore"` → **不會 400,也不會被讀**,查詢一樣被當文件編碼。
 > 要真的拿到分流,請把它指向 **CSP** 的 `/v1`(例 `https://<平台>/v1`),
-> 並在模型頁以 `protocol=triton_grpc` 註冊該 embedder。見 `docs/FAKE-CONTROLS.md` #35。
+> 並在模型頁以 `protocol=triton_grpc` 註冊該 embedder。
 
 CLI 指令：`/help`、`/memory [查詢]`、`/style`、`/clear`、`/deep-research <問題>`，以及
 `configs/commands/*.md` 定義的 `/<檔名>`（範例：`/summarize`）。
@@ -127,7 +129,7 @@ Lab；源碼從 workspace clone。`make docker-build`／`make docker-save`（存
 
 P0–P5 全部完成並對本地 gpt-oss-20b / NV-embed-V2 端到端驗證（含 memdir 混合 recall、deny-all 政策、
 多輪 session、deep-research、service wrapper）。`make test` 收 **198** 個單元測試
-（另有 1 個 `live` 標記測試需真實端點，共 199）。詳見 [REBUILD_PLAN.md](REBUILD_PLAN.md)。
+（另有 1 個 `live` 標記測試需真實端點，共 199）。
 
 ## License
 

@@ -3,6 +3,8 @@
 操作 ANILA 時覺得「不該是這樣」的地方都記在這裡。這些是優化目標。
 每一條寫：在哪裡、發生什麼、為什麼反直覺、建議怎麼改。修掉的標 ✅ 並寫 commit。
 
+內文提到的 `INSTALL.md`／`UPDATE.md` 指 `docs/deploy/` 下的同名檔；commit 短碼查 `git log`。
+
 ---
 
 ## 2026-09-30　演練機 .35 從零安裝與初始設定
@@ -247,4 +249,28 @@
 
 新批次操作會比對操作開始時的畫面帳號與實際登入帳號；另一分頁換了登入時，拒絕寫入並提示重新整理，失敗項目保留。既有 API 未帶此操作帳號時維持原行為。對話摘要每批最多 200 筆並依序處理，批內全部成功或全部不刪；不同批次的部分成功會顯示成功與失敗數。
 
-回歸測試：`conversationBulkActions.test.jsx`、`conversationBulkAcceptance.test.jsx`、`memoryBulkActions.test.jsx`、`test_memory_summary_bulk.py`、`test_bulk_expected_identity.py`。新增批次功能、確認期間的操作邊界與帳號一致性都有修正前失敗證據；證據與審查紀錄保存在 repo 外的 harness 目錄。
+回歸測試：`conversationBulkActions.test.jsx`、`conversationBulkAcceptance.test.jsx`、`memoryBulkActions.test.jsx`、`test_memory_summary_bulk.py`、`test_bulk_expected_identity.py`。
+
+
+## 2026-10-05　.35 從零部署後的全功能演練
+
+演練環境：172.16.120.35，版本 2026.10.05-3，owner 帳號走破窗登入。治理中心 22 個頁面、ANILA 對話介面、知識庫（ANILA LM v0.1.0）都實際走一遍。
+
+**F-32　未登入時被導到沒有埠號的網址，撞上另一台 nginx 的 Basic Auth**
+在哪：對話介面的未登入導向。
+發生：開 `https://<主機>:8443/anila/` 但還沒登入時，畫面被轉到 `https://<主機>/login`（埠號消失）。這台機器的 443 是另一個 nginx，對所有路徑回 401 Basic Auth，登入頁根本出不來。
+反直覺：平台明明在 8443，導向卻把埠號拿掉，而 443 上的東西不是 ANILA。
+建議：導向要保留原本的埠號。443 與 8443 是兩台不同的 nginx，這點也值得在部署說明裡講明。
+
+**F-33　更正：空回覆是模型金鑰還沒設，不是程式缺陷**
+演練當下 gemma26 回「模型沒有留下正文」，路由日誌是閘道 `invalid api key`。
+擁有者把同一把金鑰貼進治理中心模型頁的金鑰欄位後，對話就正常回答。從零部署不會帶這把金鑰，要在模型頁設定一次。
+我先前把它追成程式問題，又一度撤回成「單次失敗」，兩次都錯。正確處置就是在模型頁貼上金鑰。
+
+**F-34　治理中心「skill 審核」的頁籤顯示原始路徑**
+在哪：治理中心頂部的頁籤（`apps/csp-governance-ui/src/components/layout/AppHeader.vue` 的 `PAGE_LABELS`）。
+發生：進到 skill 審核時，頁籤與分頁標題顯示 `/skill-review`，其他頁都是中文。
+反直覺：`PAGE_LABELS` 有 22 條，唯獨漏了 `/skill-review`，於是退回顯示網址最後一段。
+建議：補上 `'/skill-review': 'skill 審核'`。
+
+補充（不是缺陷）：`/codeserver/` 與 `/n8n/` 回 502，是因為這兩個服務掛在 compose 的 `ops` profile，這次部署沒開；`infra/nginx/anila.conf` 的註解已寫明沒開 profile 時這兩個路徑就是 502。`/classification-inventory` 會導回儀表板，是 2026-09-14 刻意下線、路由改成 `redirect: '/'`。

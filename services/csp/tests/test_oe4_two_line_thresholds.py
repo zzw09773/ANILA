@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""OE-4 — SYSTEM-MAP §8 L241-242 two-line thresholds.
+"""OE-4 — 四級分類契約 L241-242，原 SYSTEM-MAP §8 two-line thresholds.
 
 Truth table per action face:
   無機密     → allow, no audit

@@ -156,7 +156,7 @@ def _max_siblings(db: Session) -> int:
 
 
 def _require_branchable(conv: Conversation) -> None:
-    """ANILALM conversations do not support message branching (SYSTEM-MAP:47).
+    """ANILALM conversations do not support message branching (訊息樹 §47).
 
     NULL origin = legacy ANILA (same semantics as list_conversations exclude).
     """
@@ -712,7 +712,7 @@ def delete_conversation(db: Session, conv_id: int, user: User) -> None:
     break per-row ORM delete. Null the pointer → flush → null attachment
     message_ids → bulk delete messages → bulk delete attachments → delete conv.
     (SQLite tests do not fire DB CASCADE; Python must own the cleanup.)
-    docs/plans/ow1-message-tree-blueprint.md Q4.
+    ``app/services/message_tree.py`` Q4.
     """
     conv = get_conversation(db, conv_id, user)
     conv.active_leaf_message_id = None
@@ -1154,7 +1154,7 @@ def branch_message(
     """Create a sibling of ``message_id`` (edit-re-ask and regenerate).
 
     Server sets ``parent_id = target.parent_id``. Role must match the target.
-    docs/plans/ow1-message-tree-blueprint.md Q2/Q3/Q5.
+    ``app/services/message_tree.py`` Q2/Q3/Q5.
     """
     conv = get_conversation(db, conv_id, user)
     # Serialize concurrent branches so sibling cap / pointer cannot race.
@@ -1240,7 +1240,7 @@ def delete_message_branch(
 ) -> tuple[Conversation, list[Message]]:
     """Subtree-delete ``message_id`` and descendants (Python-side; SQLite-safe).
 
-    docs/plans/ow1-message-tree-blueprint.md Q4.
+    ``app/services/message_tree.py`` Q4.
     """
     conv = get_conversation(db, conv_id, user)
     conv = _lock_conversation(db, conv.id)
@@ -1544,7 +1544,7 @@ def set_message_rating(
 def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation:
     """Mark conversation as classified (irreversible by non-admin).
 
-    Slice 3b: routes through the four-level one-way core (SYSTEM-MAP §8)
+    Slice 3b: routes through the four-level one-way core (四級分類契約)
     (``apply_classification`` reason=``manual_admin``) which writes the
     ClassificationEvent, sets ``classification_level`` to
     :attr:`ClassificationLevel.RESTRICTED` (``密``; the mirror floor for
@@ -1615,7 +1615,7 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
 def log_classified_access(db: Session, conv_id: int, user: User) -> None:
     # Field names match the AuditLog model exactly: actor_user_id /
     # actor_username / detail (singular). Trigger predicate lives at the
-    # call site (level >= TRADE_SECRET; SYSTEM-MAP §8 L242) — OE-4 does
+    # call site (level >= TRADE_SECRET; 四級分類契約 L242，原 SYSTEM-MAP §8) — OE-4 does
     # not read conversations.classified for audit decisions.
     db.add(AuditLog(
         actor_user_id=user.id,
@@ -1650,7 +1650,7 @@ def create_share(
 
     conv = get_conversation(db, conv_id, user, for_write=True)
     level = ClassificationLevel.from_storage(conv.classification_level)
-    # SYSTEM-MAP §8 L241-242: allow iff level <= TRADE_SECRET; audit iff
+    # 四級分類契約 L241-242: allow iff level <= TRADE_SECRET; audit iff
     # level >= TRADE_SECRET (including the allow path for 營業秘密).
     if not outbound_action_allowed(level):
         raise HTTPException(

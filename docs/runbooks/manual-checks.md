@@ -1,4 +1,4 @@
-# 手動三檢查 — 何時跑、怎麼跑
+# 手動檢查 — 何時跑、怎麼跑
 
 擁有者裁定：**不要 CI**（一人維運太辛苦）。本樹沒有 GitHub workflows；
 `infra/ci/` 與 `infra/checks/` 裡的腳本是**你覺得該看的時候才跑**的工具，
@@ -7,7 +7,7 @@
 入口：
 
 ```bash
-# 全部（結尾有三行摘要）
+# 全部（結尾有四行摘要）
 bash infra/checks/run-all.sh
 
 # 單項
@@ -17,13 +17,15 @@ bash infra/checks/run-all.sh zh
 bash infra/checks/run-all.sh geometry
 ```
 
+另有一支 `infra/checks/check_response_datetime_utc.py`（回應 schema 的 datetime 必須帶 UTC 位移；exit code 同下表），不在 `run-all.sh` 內，要自己跑。
+
 Exit code：`0` 乾淨、`3` 有發現（自己決定要不要修）、`1` 檢查壞了、`2` 用法錯。
 
 依賴：只用專案／本機既有的 Python（標準庫 + 既有 venv 裡的
 SQLAlchemy／alembic／psycopg2）。**不新增**要在內網主機另裝的套件。
-ORM 檢查會借舊樹 `services/csp/.venv`（或設 `CHECKS_PYTHON`）；
+ORM 檢查先找本樹 `services/csp/.venv/bin/python`，找不到再退回舊樹 `anila-migration-20260706` 的同名路徑（最準的作法：設 `CHECKS_PYTHON` 指到你自己的解譯器）；
 scratch DB 預設連本機已在跑的 throwaway Postgres（`127.0.0.1:55441`，
-可用 `SCRATCH_*` 覆寫）。**絕不**對 `anila-csp-db-1` 跑 alembic。
+可用 `SCRATCH_*` 覆寫）。**絕不**對線上那顆 `anila-csp-db-1` 跑 alembic（compose 專案名是 `anila`；`prepare_scratch_db.sh` 註解寫的 `anila-restart-csp-db-1` 是舊工作目錄名）。
 Check 4（幾何）同樣**不新增 npm／pip 相依**——用系統既有的 Chrome/Chromium；
 🔴 **找不到瀏覽器時它回 BROKEN(1)，不回 PASS**（安靜通過的幾何檢查比沒有檢查更糟）。
 
@@ -46,7 +48,7 @@ Check 4（幾何）同樣**不新增 npm／pip 相依**——用系統既有的 
 
 **不修什麼**
 
-有發現 → 記進 PLAN，不要在檢查當下順手改 production schema。
+有發現 → 先記下來（`PLAN.md` 已於這輪文檔清理刪除），不要在檢查當下順手改 production schema。
 
 ⚠ **要先起 throwaway Postgres（`127.0.0.1:55441`），否則這一格恆 `BROKEN`**：
 
@@ -69,8 +71,8 @@ docker rm -f anila-scratch-pg
 
 **何時跑**
 
-- 動了任一前端的色票／theme token（`anila-shell/index.html`、
-  `csp-governance-ui/.../tokens.css`、`anilalm/.../tokens.ts`）
+- 動了任一前端的色票／theme token（`apps/anila-shell/index.html`、
+  `apps/csp-governance-ui/src/assets/styles/tokens.css`、`apps/anilalm/src/theme/tokens.ts`）
 - 改了預設淺／深主題
 - 發版前若本月動過顏色
 
@@ -117,7 +119,7 @@ docker rm -f anila-scratch-pg
 
 `apps/anila-shell` 跑 vitest + **jsdom**，**jsdom 沒有版面引擎**：
 `getBoundingClientRect()` 全回 0、`elementFromPoint` 不做真正的命中判定。
-`citedFigures.test.jsx` 對燈箱的斷言**全部是 style 字串**——守的是寫法，不是幾何。
+`apps/anila-shell/src/__tests__/citedFigures.test.jsx` 對燈箱的斷言**全是 style 字串**——守的是寫法，不是幾何。
 2026-08-22 一天之內三條**使用者可見**的缺陷，**沒有一條是測試抓到的**：
 
 | 缺陷 | 現象 |

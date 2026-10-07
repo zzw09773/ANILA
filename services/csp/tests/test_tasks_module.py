@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Slice 2b-A — Task Service module(app.modules.tasks)測試。
 
-依 doc 01(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)、
-doc 03(admin/owner bypass 必寫 audit)、doc 09(Task API:POST /api/tasks、
+依 領域模型(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)、
+控制面(admin/owner bypass 必寫 audit)、API 契約(Task API:POST /api/tasks、
 GET /api/tasks/{task_id};list / runs 為 Slice 2b-A 附加讀面)。
 
 涵蓋:
@@ -67,7 +67,7 @@ class TestCreateTask:
             ),
         )
         assert task.id is not None
-        assert task.trace_id  # doc 01 驗收 2:建立必產生 trace_id
+        assert task.trace_id  # 領域模型 驗收 2:建立必產生 trace_id
         assert task.status == TaskStatus.DRAFT.value
         assert task.requester_user_id == user.id
 

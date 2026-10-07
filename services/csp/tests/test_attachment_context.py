@@ -2000,13 +2000,13 @@ def test_csp_han_utf16_refused_utf8_twin_ok(
 ):
     """Reject side: the same Han body bills in UTF-8 and not in UTF-16.
 
-    Fixture is real prose from ``SYSTEM-MAP.md`` (uniq_ratio ≈ 0.53), the
+    Fixture is real prose from ``docs/CURRENT-STATUS.md`` (uniq_ratio ≈ 0.55), the
     population this path serves — a repeated phrase (uniq_ratio ≈ 0.01)
     hid the round-13 defect.
     """
     from pathlib import Path
 
-    src = Path(__file__).resolve().parents[3] / "SYSTEM-MAP.md"
+    src = Path(__file__).resolve().parents[3] / "docs" / "CURRENT-STATUS.md"
     assert src.is_file(), f"prose fixture source missing: {src}"
     han = [c for c in src.read_text(encoding="utf-8") if 0x4E00 <= ord(c) <= 0x9FFF]
     sample = "".join(han[:400])

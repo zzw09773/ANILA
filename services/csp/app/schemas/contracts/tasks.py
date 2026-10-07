@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Task / TaskRun / SourceSnapshot / Citation 契約(doc 01 §3–5,Slice 2a)。
+"""Task / TaskRun / SourceSnapshot / Citation 契約(領域模型 §3–5,Slice 2a)。
 
 DB 層(app/models/task.py、source_snapshot.py)存開放 String;封閉 enum
 在這裡把關 —— API 進出一律走本模組型別,未知值 fail-closed 拋驗證錯誤。
@@ -20,7 +20,7 @@ from app.schemas.base import ApiResponseModel
 
 
 class TaskType(str, enum.Enum):
-    """doc 01 Task.task_type 八值。"""
+    """領域模型 Task.task_type 八值。"""
 
     QUERY = "query"
     SUMMARIZE = "summarize"
@@ -33,7 +33,7 @@ class TaskType(str, enum.Enum):
 
 
 class TaskStatus(str, enum.Enum):
-    """doc 01 Task.status 十值狀態機;宣告順序即典型生命週期。"""
+    """領域模型 Task.status 十值狀態機;宣告順序即典型生命週期。"""
 
     DRAFT = "draft"
     SUBMITTED = "submitted"
@@ -48,7 +48,7 @@ class TaskStatus(str, enum.Enum):
 
 
 class SourceScope(str, enum.Enum):
-    """doc 01 Task.source_scope 五值(Collection 三層 + none +
+    """領域模型 Task.source_scope 五值(Collection 三層 + none +
     registered_service)。"""
 
     NONE = "none"
@@ -59,7 +59,7 @@ class SourceScope(str, enum.Enum):
 
 
 class RequestedOutputType(str, enum.Enum):
-    """doc 01 Task.requested_output_type 七值。"""
+    """領域模型 Task.requested_output_type 七值。"""
 
     ANSWER = "answer"
     REPORT = "report"
@@ -71,7 +71,7 @@ class RequestedOutputType(str, enum.Enum):
 
 
 class TaskRunStatus(str, enum.Enum):
-    """doc 01 TaskRun.status 五值。"""
+    """領域模型 TaskRun.status 五值。"""
 
     QUEUED = "queued"
     RUNNING = "running"
@@ -81,7 +81,7 @@ class TaskRunStatus(str, enum.Enum):
 
 
 class DispatchTarget(str, enum.Enum):
-    """TaskRun 派發目的地四值(Slice 2a;語意承 doc 01 run_type)。"""
+    """TaskRun 派發目的地四值(Slice 2a;語意承 領域模型 run_type)。"""
 
     MODEL = "model"
     AGENT = "agent"
@@ -100,7 +100,7 @@ class SnapshotOrigin(str, enum.Enum):
 
 
 class CitationUsedBy(str, enum.Enum):
-    """doc 01 Citation.used_by 三值。"""
+    """領域模型 Citation.used_by 三值。"""
 
     ANSWER = "answer"
     ARTIFACT = "artifact"
@@ -108,7 +108,7 @@ class CitationUsedBy(str, enum.Enum):
 
 
 class TaskCreate(BaseModel):
-    """POST /api/tasks 的建立 payload(doc 09 §Task API;端點屬後續
+    """POST /api/tasks 的建立 payload(API 契約 §Task API;端點屬後續
     slice,本契約先行)。"""
 
     title: str = Field(min_length=1, max_length=255)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ClassificationLevel 契約測試。
 
-依 SYSTEM-MAP.md §8:四級分類(無機密 < 營業秘密 < 密 < 機密)、
+依 四級分類契約:四級分類(無機密 < 營業秘密 < 密 < 機密)、
 單向閂鎖(effective level = max)、舊 boolean classified 的 floor
 backfill 映射(true → 機密 / SECRET)。
 """
@@ -11,7 +11,7 @@ import pytest
 from app.schemas.contracts import ClassificationLevel
 
 
-# 由低到高的完整鏈,順序即契約(SYSTEM-MAP §8「排序不可變」)。
+# 由低到高的完整鏈,順序即契約(四級分類契約「排序不可變」)。
 ORDERED_VALUES = ["無機密", "營業秘密", "密", "機密"]
 
 
@@ -75,13 +75,13 @@ class TestMaxOf:
 
 class TestLegacyBackfill:
     def test_legacy_false_maps_to_unclassified(self):
-        # SYSTEM-MAP §8:classified=false → 無機密。
+        # 四級分類契約:classified=false → 無機密。
         assert (
             ClassificationLevel.from_legacy_classified(False).value == "無機密"
         )
 
     def test_legacy_true_maps_to_secret_top(self):
-        # SYSTEM-MAP §8 / OE-3:classified=true → 機密(SECRET,最高級),
+        # 四級分類契約 / OE-3:classified=true → 機密(SECRET,最高級),
         # 保守 floor,不是最終分類。
         assert ClassificationLevel.from_legacy_classified(True).value == "機密"
 

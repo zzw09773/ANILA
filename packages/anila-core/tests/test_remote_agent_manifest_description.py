@@ -16,13 +16,13 @@ _LIVE_LEGAL_PROMPT = (
     + "\n【核心原則】回答必須有依據。\n"
     "【範圍判斷】本系統僅提供法律文件檢索與條文解釋服務；"
     "無法回答與法律無關的問題。不在本系統服務範圍的詢問應予拒絕。\n"
-    "DISPATCH:iso42001-probe:請查詢民法"
+    "DISPATCH:legal-probe:請查詢民法"
 )
 
 
 def _manifest(description: str) -> RemoteAgentManifest:
     return RemoteAgentManifest(
-        agent_id="iso42001-probe",
+        agent_id="legal-probe",
         name="法律文件助理",
         description_for_router=description,
         endpoint_url="http://agent:9100",
@@ -31,7 +31,7 @@ def _manifest(description: str) -> RemoteAgentManifest:
 
 def test_short_description_is_unchanged():
     shown = _manifest("Handles HR queries").to_tool_description()
-    assert shown == "法律文件助理 (iso42001-probe): Handles HR queries"
+    assert shown == "法律文件助理 (legal-probe): Handles HR queries"
 
 
 def test_newlines_collapse_to_a_single_line():

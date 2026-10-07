@@ -5,12 +5,12 @@ Background
 
 The five artifact pipelines (slides / report / mindmap / infographic /
 datatable) each kept their job state in a process-local ``_jobs`` dict.
-That works for a single uvicorn process that never restarts, but doc 02's
+That works for a single uvicorn process that never restarts, but 系統架構's
 failure model is explicit: *"Studio restart → job 不應丟失；重構後由
 persisted job store 恢復"*. A restart wiped every in-flight and recently
 completed job, and a status poll for a pre-restart job 404'd.
 
-This module is the durable backend. Per doc 02 §1 the target topology
+This module is the durable backend. Per 系統架構 §1 the target topology
 lists **Redis** as ``queue + revocation + jobs`` — so we reuse the SAME
 Redis instance the revocation cache already connects to (``REDIS_URL``),
 keyed under ``anila-studio:jobs:{job_id}`` with a generous TTL (default
@@ -53,7 +53,7 @@ _singleton: "JobStore | None" = None
 
 @dataclass(frozen=True)
 class PersistedJob:
-    """The unified ``ArtifactJob`` projection persisted per job (doc 02).
+    """The unified ``ArtifactJob`` projection persisted per job (系統架構).
 
     ``status_view`` is the verbatim JSON of the owning pipeline's
     ``to_status()`` model. Persisting it means a restarted studio can

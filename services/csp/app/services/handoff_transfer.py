@@ -13,7 +13,7 @@
   擁有者**補一筆不過期的具名分享，原擁有者不會因為交接就看不到這串對話。
 - **拒絕** → 什麼都不動，只有狀態與通知(`handoff_service.resolve_handoff`)。
 - **密等** → 走平台既有的外流上限 `outbound_action_allowed`
-  (SYSTEM-MAP §8 L241：可外流 = 密等 ≤ 營業秘密)，與具名分享同一個判準。
+  (四級分類契約 L241，原 SYSTEM-MAP §8：可外流 = 密等 ≤ 營業秘密)，與具名分享同一個判準。
   密／機密的對話**建立交接與接受交接兩端都擋**：建立時擋是為了讓送出的人
   當下就知道；接受時再擋一次，是因為對話可能在送出之後才閂上去(agent
   policy latch、手動列管)。
@@ -48,7 +48,7 @@ from app.services.auth_service import is_admin_tier
 # ── 密等把關 ──────────────────────────────────────────────────────────────────
 
 def guard_transferable(conv: Conversation) -> ClassificationLevel:
-    """交接是外流動作，套 SYSTEM-MAP §8 L241 的上限。回傳現行密等。
+    """交接是外流動作，套 四級分類契約 L241 的上限。回傳現行密等。
 
     判準直接用契約層的 `outbound_action_allowed`，不另抄一份門檻 ——
     OE-4 的教訓：門檻散在各處就會漂移。

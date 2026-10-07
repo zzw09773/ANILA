@@ -235,8 +235,6 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 
 ## 相關文件
 
-- [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md)（含 evaluator §6.5 LLM-as-judge）
-- [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
-- [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md)
-- 重構設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`02-system-architecture.md` 系統架構）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
-- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+
+- 平台整體：[`../../README.md`](../../README.md)

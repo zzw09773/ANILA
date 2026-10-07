@@ -464,7 +464,7 @@ export function watermarkReaderLabel(user) {
 
 /**
  * Build the forensic watermark line: level · reader · time.
- * Spec (SYSTEM-MAP §8 / PLAN P4.2):「本文件屬{密等} · 讀取者 · 時間」.
+ * Spec (原 SYSTEM-MAP §8 / 原 PLAN P4.2):「本文件屬{密等} · 讀取者 · 時間」.
  *
  * @param {{level: string, reader: string, readAt: string}} parts
  * @returns {string}

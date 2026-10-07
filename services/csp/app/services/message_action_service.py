@@ -1,5 +1,5 @@
 """OW-3 message-action CRUD, visibility, invoke
-(docs/plans/ow3-message-actions-blueprint.md §Q1–Q2 / §Q9).
+(``app/api/message_actions.py`` §Q1–Q2 / §Q9).
 
 Authoring audit = fail-closed (commit=False + return-check → None ⇒ 500 +
 rollback, same transaction; P1.4 idiom). Invoke audit = write-ahead
@@ -84,7 +84,7 @@ def render_template(
     """Single-pass substitution of {content}/{choice}/{input} ONLY.
 
     Never str.format, f-strings on user data, or any template engine
-    (docs/plans/ow3-message-actions-blueprint.md §Q2). Values that
+    (``app/api/message_actions.py`` §Q2). Values that
     themselves contain those tokens are not re-scanned.
     """
     values = {"content": content, "choice": choice, "input": input}

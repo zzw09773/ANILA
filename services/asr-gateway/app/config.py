@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # 'openai' = POST {base}/v1/audio/transcriptions(multipart WAV + Bearer)
     # ⚠ 認不得的值**開不了機**(app/main.py:_validate_settings)。選錯協定的
     # 症狀是每句話都 404/401 而麥克風看起來正常 —— 這種「設了、沒報錯、其實
-    # 沒生效」的靜默錯誤,本專案已經有一整份紀錄(docs/FAKE-CONTROLS.md)。
+    # 沒生效」的靜默錯誤,本專案已經有一整份紀錄(FAKE-CONTROLS)。
     ASR_DECODE_PROTOCOL: str = "native"
     # openai 協定的 Bearer 金鑰(治理中心沒替該端點掛金鑰時的環境變數退路)。
     # ⚠ 祕密:不進 log、不進 /asr/health、不進錯誤訊息。

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Agent Registry 契約(OE-1 三態 + 自我描述 / 診斷殘餘)。
 
-SYSTEM-MAP §「知識庫怎麼運作」八步表:註冊拿 key → admin 指派誰能用 → 使用者選它。
+舊 SYSTEM-MAP §「知識庫怎麼運作」八步表:註冊拿 key → admin 指派誰能用 → 使用者選它。
 無連線／trace／安全審查三關。``approval_status`` 只認三值:
 
     registered → approved → disabled
@@ -43,7 +43,7 @@ DEFAULT_RUNTIME_TYPE = RuntimeType.OPENAI_COMPATIBLE_AGENT.value
 
 
 class ApprovalStatus(str, enum.Enum):
-    """OE-1:approval_status 三值(SYSTEM-MAP 註冊→指派→可用)。"""
+    """OE-1:approval_status 三值(舊 SYSTEM-MAP 註冊→指派→可用)。"""
 
     REGISTERED = "registered"
     APPROVED = "approved"

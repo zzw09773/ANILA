@@ -1,134 +1,33 @@
-# ANILA `docs/` 文件索引
+# 文件
 
-> ⚠ 2026-08-17 盤點：**本索引已過期,內容停在 2026-07-02**——其後新增的文件(HANDOFF 系列、`runbooks/`、`designs/`、`specs/`、`ui-sweep/` 等)未列入,且下方「prod 分支／main 分支」的說法源自**已不存在的多分支模型**。現行狀態與執行順序見 `PLAN.md`;目錄結構請以實際檔案樹為準。
+接手的人只需要這些。舊的計畫、規格、交接、稽核草稿已經刪除，留在 git 歷史裡。
 
+## 現在怎麼跑
 
-> 📘 **手冊（2026-09-02，v1.0.1，附截圖）**：
-> [使用者手冊](./user-manual/index.html) · [管理員手冊](./user-manual/admin.html) · [部署手冊](./user-manual/deploy.html)。
-> 用瀏覽器開；氣隙內網可直接列印。
+[`CURRENT-STATUS.md`](CURRENT-STATUS.md)
 
-> ANILA 平台技術 / 治理文件總入口。實作 source 在 repo 各子專案,本目錄是「為什麼這樣做」的記錄處。
->
-> ⚠️ 現行開發線是單一 `main`。`governance/` 與 `runbooks/` 在這棵樹上。[`branch-sync-backlog.md`](./archive/branch-sync-backlog.md) 描述的七分支同步**已失效**，只當歷史。
+操作時覺得不該這樣，記在 [`FRICTION-LOG.md`](FRICTION-LOG.md)。
 
----
+舊 `PLAN.md`／`SYSTEM-MAP.md` 等已刪文檔去哪看：見 [`CURRENT-STATUS.md`](CURRENT-STATUS.md) 的〈舊文檔去哪了〉。
 
-## 目錄結構
+## 給人用的手冊
 
-```
-docs/
-├── README.md                   <-- 本檔(索引)
-├── archive/                    <-- 歷史文件,按原目錄名分群
-│   ├── branch-sync-backlog.md  <-- 舊七分支同步（已失效）
-│   ├── agents-seven-branch-model.md
-│   ├── handoffs/               <-- session 移交紀錄
-│   ├── TOMORROW.md
-│   ├── UX-IDEAS.md
-│   ├── PRE-TAG-RESIDUALS-2026-08-15.md
-│   ├── agent-framework/        <-- anila-agent / runtime 架構 (8 份)
-│   ├── agenticrag/             <-- AgenticRAG 解耦 / 增強計畫 (3 份)
-│   ├── anila-core/             <-- anila-core 邊界 / runtime 設計 (2 份)
-│   ├── briefing/               <-- 對外簡報 / RFC (2 份)
-│   ├── changelog/              <-- 重大變更紀錄 (1 份)
-│   ├── history/                <-- 平台沿革 (4 份)
-│   └── planning/               <-- 早期 sprint 計畫 (2 份)
-│
-├── governance/                 <-- ISO 42001 合規文件 ⭐ (prod-only,10 份)
-│   ├── README.md
-│   ├── iso-42001-compliance.md <-- 合規主索引
-│   ├── ai-policy.md
-│   ├── roles-responsibilities.md
-│   ├── risk-register.md
-│   ├── aiia-template.md
-│   ├── data-governance.md
-│   ├── model-card-template.md
-│   ├── ai-incident-response.md
-│   └── third-party-ai-register.md
-│
-├── runbooks/                   <-- 操作手冊
-│   ├── intranet-deployment-runbook.md   <-- 中科院內網部署手冊
-│   └── rotate-tls-cert.md
-│
-├── ingestion/                  <-- ingestion 平台設計 / parent-child RAG (2 份)
-├── platform/                   <-- 多服務整合 / SSO migration (2 份)
-├── guides/                     <-- developer guide (1 份)
-└── specs/                      <-- studio-flux / studio-wizard / anila-studio 子計畫（原名 superpowers/，2026-08-17 更名）
-    ├── studio-flux/            <-- FLUX 圖像生成 Stage 1-4 spec / plans / history
-    ├── studio-wizard/          <-- studio 嚮導模式設計
-    ├── anila-studio/           <-- anila-studio 抽取決策
-    ├── specs/                  <-- 詳細 spec
-    └── plans/                  <-- 階段計畫
-```
+- [使用者手冊](user-manual/index.html)
+- [管理員手冊](user-manual/admin.html)
+- [開發者手冊](user-manual/developer.html)
+- [部署手冊](user-manual/deploy.html)
 
-## 我要找什麼?
+## 安裝與維運
 
-### 部署 / 維運
-
-| 我想知道… | 看這份 |
+| 要做的事 | 文件 |
 |---|---|
-| **第一次安裝** | [`deploy/INSTALL.md`](./deploy/INSTALL.md)（2026-09-30 演練實裝過） |
-| **出貨、更新、回復** | [`deploy/UPDATE.md`](./deploy/UPDATE.md) |
-| **（已失效）舊七分支同步策略** | [`branch-sync-backlog.md`](./archive/branch-sync-backlog.md) |
-| **TLS 私鑰怎麼輪換** | [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) |
-
-### AI 治理(prod-only,中科院內網部署必看)
-
-| 我想知道… | 看這份 |
-|---|---|
-| **ISO 42001 合規現況** | [`governance/iso-42001-compliance.md`](./governance/iso-42001-compliance.md) ⭐ |
-| **平台 AI 政策** | [`governance/ai-policy.md`](./governance/ai-policy.md) |
-| **角色責任 RACI** | [`governance/roles-responsibilities.md`](./governance/roles-responsibilities.md) |
-| **AI 風險登錄** | [`governance/risk-register.md`](./governance/risk-register.md) |
-| **新 agent 上線前 AIIA 範本** | [`governance/aiia-template.md`](./governance/aiia-template.md) |
-| **新模型 model card 範本** | [`governance/model-card-template.md`](./governance/model-card-template.md) |
-| **資料治理** | [`governance/data-governance.md`](./governance/data-governance.md) |
-| **AI 事件怎麼分級處理** | [`governance/ai-incident-response.md`](./governance/ai-incident-response.md) |
-| **第三方 AI 供應商登錄** | [`governance/third-party-ai-register.md`](./governance/third-party-ai-register.md) |
-
-### 架構 / 設計
-
-| 我想知道… | 看這份 |
-|---|---|
-| **`anila-core` 怎麼運作** | [`anila-core/anila-core-runtime-design.md`](./archive/anila-core/anila-core-runtime-design.md) |
-| **`anila-core` 與 csp 的邊界** | [`anila-core/anila-core-boundary.md`](./archive/anila-core/anila-core-boundary.md) |
-| **`anila-agent` template 怎麼設計** | [`agent-framework/anila-agent-framework-architecture.md`](./archive/agent-framework/anila-agent-framework-architecture.md) |
-| **agent runtime 移植決策** | [`agent-framework/anila-agent-framework-porting-decisions.md`](./archive/agent-framework/anila-agent-framework-porting-decisions.md) |
-| **openai-agents runtime 深入** | [`agent-framework/runtime-logic-openai-agents-deep-dive.md`](./archive/agent-framework/runtime-logic-openai-agents-deep-dive.md) |
-| **Ingestion pipeline 設計** | [`ingestion/ingestion-platform-design.md`](./ingestion/ingestion-platform-design.md) |
-| **Parent-child RAG 設計** | [`ingestion/parent-child-rag-design.md`](./ingestion/parent-child-rag-design.md) |
-
-### 計畫 / 規劃
-
-| 我想知道… | 看這份 |
-|---|---|
-| **SSO 切換進度** | [`platform/sso-migration.md`](./platform/sso-migration.md) |
-| **n8n / ANILA LM 整合**（GitLab 已於 2026-09-26 撤下，該計畫裡的 `/gitlab` 步驟不要照做） | [`platform/multi-service-integration-plan.md`](./platform/multi-service-integration-plan.md) |
-
-### Studio / FLUX
-
-| 我想知道… | 看這份 |
-|---|---|
-| **anila-studio 為何要從 csp 抽出** | [`specs/anila-studio/`](./specs/anila-studio/) |
-| **FLUX 圖像生成 4 階段(rewriter / quality gate / deck style / use case routing)** | [`specs/studio-flux/`](./specs/studio-flux/) |
-| **Studio 嚮導模式(theme override)** | [`specs/studio-wizard/`](./specs/studio-wizard/) |
-
-### 其他
-
-| 我想知道… | 看這份 |
-|---|---|
-| **新進開發者要看什麼** | [`guides/`](./guides/) 或根 `docs/developer-guide.md` |
-
----
-
-## prod 分支文件慣例
-
-- 每份文件頂端標 **狀態**(Active / Stable / Deprecated)+ **last updated**
-- 同主題的 sibling docs 用 `**Companion docs**:` 列在頂端
-- 跨 subdir 連結用 `../<subdir>/<file>.md` 相對路徑
-- 重大變更走 PR review;過時文件不直接刪,改放 `specs/<topic>/history/` 或加 `[ARCHIVED]` 前綴
-- 不要依 `branch-sync-backlog.md` 重建部署分支；現行 SSOT 是 `main`
-- 文件結構同步策略:main 重組 docs/ 時(例:把根目錄 `.md` 收進 `<topic>/` 子目錄),prod 跟著對齊,以免兩邊路徑漂移後 cross-link 全壞
-
----
-
-**Last updated**: 2026-05-26(main → prod sync 後重整目錄索引,加入 fork 區策略指標)· **Maintainers**: ANILA 平台團隊
+| 第一次安裝 | [`deploy/INSTALL.md`](deploy/INSTALL.md) |
+| 出貨、更新、回復 | [`deploy/UPDATE.md`](deploy/UPDATE.md) |
+| 備份與還原 | [`runbooks/csp-db-backup-restore.md`](runbooks/csp-db-backup-restore.md) |
+| 改了設定要重建容器 | [`runbooks/restart-vs-recreate.md`](runbooks/restart-vs-recreate.md) |
+| 換正式憑證 | [`deploy/INSTALL.md`](deploy/INSTALL.md) 的 HTTPS 憑證那一步 |
+| 治理中心改平台設定 | [`runbooks/settings-page.md`](runbooks/settings-page.md) |
+| 開或關 ANILA LM | [`runbooks/anilalm-release-gate.md`](runbooks/anilalm-release-gate.md) |
+| 三顆預設訊息按鈕 | [`runbooks/ow3-default-actions.md`](runbooks/ow3-default-actions.md) |
+| 沒有 CI 時手動檢查 | [`runbooks/manual-checks.md`](runbooks/manual-checks.md) |
+| 掛助手 | [`guides/developer-guide.md`](guides/developer-guide.md) |

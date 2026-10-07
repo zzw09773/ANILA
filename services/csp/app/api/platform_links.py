@@ -1,6 +1,6 @@
 """``/api/platform-links`` — compat façade over ``registered_services``.
 
-Slice 7 (doc 07 §14): ``PlatformLink`` is superseded by ``RegisteredService``
+Slice 7 (Service Registry §14): ``PlatformLink`` is superseded by ``RegisteredService``
 but the legacy CRUD surface stays byte-compatible so existing CSP admin UI and
 any callers keep working with zero changes. Every handler here now reads/writes
 ``registered_services`` and serialises through ``PlatformLinkResponse`` (the

@@ -1,6 +1,6 @@
 """Agent 底層模型代理：派工 JWT 呼叫模型、用量歸提問者、模型下線。
 
-設計：docs/designs/agent-model-delegation-2026-09-25.md 第 6 節。
+設計：the agent-model delegation design 第 6 節。
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 單一查詢載入 (id, parent_id)，於 Python 組裝；不使用遞迴 SQL。
 Idiom: ``app.services.department_tree`` (flat load + maps).
-See docs/plans/ow1-message-tree-blueprint.md.
+See ``app/services/message_tree.py``.
 
 Revisit pagination when a conversation exceeds ~500 messages.
 """

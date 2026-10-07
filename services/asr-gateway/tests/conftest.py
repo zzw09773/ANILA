@@ -51,7 +51,7 @@ def intranet_guard_env(monkeypatch):
     """把「內網部署當下的出向旗標」在測試裡明說出來。
 
     對應 `.env` 與 `infra/compose/platform.yml` 的實際值:內網模型 gateway 走
-    純 http(P0.2 拍板),而本地 decoder 是 docker 服務名 `asr-decoder`,靠
+    純 http(2026-07-29 拍板),而本地 decoder 是 docker 服務名 `asr-decoder`,靠
     ANILA_TRUSTED_HOSTS 點名。**這不是放寬 guard** —— guard 照跑,只是測試
     不再依賴跑測試那台機器剛好設了什麼環境變數。
     """

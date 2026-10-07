@@ -41,9 +41,9 @@ async def enqueue_usage_task_linked(
     (migration r1_0002):
 
     - ``task_id`` — set when the /v1 call carried a valid
-      ``X-ANILA-Task-Id`` (usage 歸戶到 task, doc 04 AC10).
+      ``X-ANILA-Task-Id`` (usage 歸戶到 task, Model Gateway AC10).
     - ``legacy_runtime_call`` — true for /v1 chat calls WITHOUT a task
-      (doc 10 Slice 2 Done: 舊流量相容但標記).
+      (邊界守則 Slice 2 Done: 舊流量相容但標記).
 
     Kept beside the proxy (not in ``usage_writer``) so the legacy enqueue
     path — and every non-proxy caller of it — stays byte-identical.

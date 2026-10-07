@@ -102,13 +102,13 @@ packages/anila-core/
             └── chunking_plugins/  # base · registry(@register_chunker)· builtins
 ```
 
-> 完整模組責任與邊界見 [`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md)。
+- 模組責任與邊界見 `src/anila_core/` 各套件的 docstring;舊 `docs/archive/anila-core/anila-core-boundary.md` 已刪,對照表見 `docs/CURRENT-STATUS.md`。
 
 ---
 
 ## Redesign 能力對應(anila-core 承擔的部分)
 
-平台的 Slice 0–9 能力多數落在 CSP / 前端;anila-core 只提供其中的 **runtime 生產者面**。設計沿革（收斂紀錄）在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)(constitution `00`;runtime/registry 領域文件 `05`;凍結線協定 `09`)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+平台能力多數落在 CSP／前端,anila-core 只提供 runtime 生產者面;舊 redesign doc 的章號(doc 05／08 等)已刪,對照表見 `docs/CURRENT-STATUS.md`。
 
 | 能力 | anila-core 承擔的面向 | 程式碼 / 文件 |
 |---|---|---|
@@ -116,7 +116,7 @@ packages/anila-core/
 | **Task spine**(`X-ANILA-Task-Id`) | runtime 由 `CallerContext` 讀入並沿 turn 傳遞 task-id | `api/caller_context.py` |
 | **四級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `--classification-level`（無機密／營業秘密／密／機密,寫入 `default_classification_level`）。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
 | **Agent Registry**(OE-1 三態:registered / approved / disabled) | `register` / `status` CLI 送件進 CSP registry;底層模型可用名稱(`base_model`)指定,由 CSP 解析成 id。**核准態機在 CSP** | `cli/register_cmd.py`;doc `05` |
-| **Model Gateway**(http 旗標分域) | `url_guard` 對 `endpoint_kind='model'` 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(PLAN.md P0.2,2026-07-29 拍板:production 與 dev 同準)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;doc `04` §8 |
+| **Model Gateway**(http 旗標分域) | `url_guard` 對 `endpoint_kind='model'` 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(2026-07-29 拍板:production 與 dev 同準)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;Model Gateway §8 |
 
 ---
 
@@ -187,7 +187,7 @@ print(result.stop_reason, result.turn_count)
 
 `security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` 是使用者提供之 endpoint URL 的中央 allow-list(CSP 建憑證時 + worker 呼叫時各驗一次,defense in depth)。**Slice 6a** 依 `endpoint_kind` 把 http 放寬旗標分域(僅影響 scheme;host / IP / DNS / trusted-host 檢查跨 kind 一致):
 
-- **`model`** — 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(PLAN.md P0.2,2026-07-29 拍板:production 與 dev 同準,取代 doc `04` §8 原硬規則)。
+- **`model`** — 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(2026-07-29 拍板:production 與 dev 同準)。
 - **`agent`** — http 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` 放行(內網 MLSteam 純 http NodePort agent);legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 deprecated fallback。
 - **`generic`**(預設)— 既有全域語意,`ANILA_ALLOW_HTTP_ENDPOINT` 放行;既有呼叫端零行為變更。
 
@@ -208,10 +208,8 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 
 ## 相關文件
 
-- Redesign 設計沿革（收斂紀錄）:[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、runtime/registry 協定 [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、API/事件凍結線 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、分類 latch [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
-- anila-core 邊界:[`../../docs/archive/anila-core/anila-core-boundary.md`](../../docs/archive/anila-core/anila-core-boundary.md) · runtime 設計:[`../../docs/archive/anila-core/anila-core-runtime-design.md`](../../docs/archive/anila-core/anila-core-runtime-design.md)
-- Ingestion 平台設計:[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · 詳細 release notes:[`CHANGELOG.md`](./CHANGELOG.md)
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 - 官方 RAG agent template:[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼:[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
-- 平台總覽:[`../../README.md`](../../README.md) · 分支策略:[`../../docs/archive/branch-sync-backlog.md`](../../docs/archive/branch-sync-backlog.md)
+- 平台總覽:[`../../README.md`](../../README.md) · 版本沿革:[`CHANGELOG.md`](./CHANGELOG.md)
 
 > 版本以 `pyproject.toml`(v0.14.0)為權威;`CHANGELOG.md` 最新條目為 v0.13.0。⚠️ 已知程式碼不一致(非本 README):`src/anila_core/__init__.py` 的 `__version__` 仍寫死 `"0.7.0"`,以程式方式讀 `anila_core.__version__` 會拿到舊值。

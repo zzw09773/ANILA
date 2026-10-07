@@ -3,7 +3,7 @@
 // 這一包的驗收 FAIL 就出在這裡：後端老老實實回了 `index_mismatch_warning`，
 // ModelsView 只讀 `truncation_warning` 與 `measured_native_dim`，於是把整個
 // 語料庫索引作廢的人看到的是綠色成功提示。送了沒人收的欄位，就是
-// FAKE-CONTROLS 上那種「按了、沒報錯、什麼也沒發生」。
+// 已刪的 FAKE-CONTROLS 上那種「按了、沒報錯、什麼也沒發生」。
 //
 // 沿用 healthOverview.test.mjs 已確立的兩層作法：
 //   1. 行為層：決策抽成零依賴純函式，直接 import 斷言。

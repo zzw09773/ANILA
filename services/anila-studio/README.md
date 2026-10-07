@@ -51,7 +51,7 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 - **版型**：standard / section_break / stat_callout / quote / two_column / icon_rows / image_focus / **process**（流程步驟）/ **table**（原生表格）/ **sources**（結尾資料來源，管線自己寫）。每張內容頁底部有「資料來源：檔名」腳註，來自模型寫的 `[N]`。
 - **品質檢查**：幾何檢查（渲染器 `/qa-geometric`，會拿到每頁版型，封面／章節頁不判留白）＋視覺檢查（每頁一通 VLM）。修正失敗不會丟掉已渲染的簡報，只加 warning。
 - **成品與預覽**：`.pptx` 落在 `ARTIFACTS_DIR/slides/{job_id}.pptx`，每頁 PNG 在 `slides/{job_id}/NN.png`；`GET /api/studio/slides/jobs/{id}/preview`（清單）、`/preview/{n}`（PNG）。studio 重啟後仍可下載。
-- **治理回報**：`POST /v1/artifact-jobs` 用 `requester_user_id`（＋卡片使用者的 `employee_id`）、整數 `task_id`；`POST /v1/artifacts` 仍要求綁 task 或 snapshot（csp 憲章 §6），沒有 ALM task 的簡報不會登記成 artifact。
+- **治理回報**：`POST /v1/artifact-jobs` 用 `requester_user_id`（＋卡片使用者的 `employee_id`）、整數 `task_id`；`POST /v1/artifacts` 仍要求綁 task 或 snapshot（CSP 產品憲章 §6），沒有 ALM task 的簡報不會登記成 artifact。
 - **繁體轉換**：OpenCC `s2tw`（只轉字形）＋一張自己維護的技術詞表；「程序」「項目」「文件」這類法規本義詞不動。
 
 ## 技術棧
@@ -190,5 +190,5 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 ## 相關文件
 
-- 重構設計沿革（收斂紀錄）：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`09-api-event-contracts.md` artifact / trace 合約、`02-system-architecture.md` JobStore 失效模型）。現行權威＝[`PLAN.md`](../../PLAN.md)（現況與執行順序）、規格＝[`SYSTEM-MAP.md`](../../SYSTEM-MAP.md)。
+- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
 - 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）

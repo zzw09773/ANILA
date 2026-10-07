@@ -2,8 +2,8 @@
 """Artifact Service(Slice 8a)—— artifact_jobs / artifacts / artifact_versions
 / export_records 的持久化、binding 規則與治理讀面。
 
-依 doc 02(ArtifactJob 逐欄、§8 「Studio restart job 不丟失」)、doc 01
-(Artifact / ArtifactVersion / ExportRecord、binding 規則)、doc 08(§5 四共通
+依 系統架構(ArtifactJob 逐欄、§8 「Studio restart job 不丟失」)、領域模型
+(Artifact / ArtifactVersion / ExportRecord、binding 規則)、四級分類(§5 四共通
 分類欄位、§10 匯出判定)。
 
 **模組邊界(independence)**:本 module 只碰 ``app.models`` 與
@@ -51,7 +51,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ── job 狀態機(doc 02 四值)─────────────────────────────────────────────────
+# ── job 狀態機(系統架構 四值)─────────────────────────────────────────────────
 # 合法轉移:非終態允許自轉移(進度更新);終態(completed/failed)無出邊。
 _LEGAL_JOB_TRANSITIONS: dict[ArtifactJobStatus, frozenset[ArtifactJobStatus]] = {
     ArtifactJobStatus.QUEUED: frozenset({
@@ -92,7 +92,7 @@ def resolve_owner(
 def inherited_level(
     db: Session, *, source_task_id: int | None, source_snapshot_id: int | None
 ) -> ClassificationLevel | None:
-    """讀 task / snapshot 的分類等級,回其 max(doc 08 §5 傳遞公式的來源項)。
+    """讀 task / snapshot 的分類等級,回其 max(四級分類 §5 傳遞公式的來源項)。
 
     只讀不閂鎖 —— 由 orchestrator 交給 policy 核心做單向 latch。兩者皆無
     → None(binding 規則另由 :func:`create_artifact` 把關)。

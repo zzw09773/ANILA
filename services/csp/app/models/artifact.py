@@ -1,26 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Artifact 契約四表(doc 01 §Artifact 群、doc 02 ArtifactJob、doc 08 §5,
+"""Artifact 契約四表(領域模型 §Artifact 群、系統架構 ArtifactJob、四級分類 §5,
 Slice 8a)。
 
 Studio 五類產出(slides / report / mindmap / infographic / datatable)的
-持久化骨幹 —— doc 02 §8 明列 blocker:「Studio restart 後 job 不應丟失」,
+持久化骨幹 —— 系統架構 §8 明列 blocker:「Studio restart 後 job 不應丟失」,
 現況五 pipeline 的 job 狀態全在 process memory。本檔把 job 生命週期與
 產出物件搬進 CSP DB(Studio 經 HTTP + service token 回報,不直讀 CSP DB,
-doc 10 §12 邊界)。
+邊界守則 §12 邊界)。
 
-- :class:`ArtifactJob` — doc 02 ArtifactJob schema 逐欄(``job_id`` 為
+- :class:`ArtifactJob` — 系統架構 ArtifactJob schema 逐欄(``job_id`` 為
   studio uuid PK;``artifact_type`` 對 doc 的 ``type``;``status`` 四值
-  queued/running/completed/failed)。**不屬** doc 08 §5 的分類資源,故無
+  queued/running/completed/failed)。**不屬** 四級分類 §5 的分類資源,故無
   四共通分類欄位;分類掛在成品 :class:`Artifact` 上。
-- :class:`Artifact` — doc 01 Artifact(``artifact_type`` 五值、狀態四值、
+- :class:`Artifact` — 領域模型 Artifact(``artifact_type`` 五值、狀態四值、
   binding 規則:必綁 ``source_task_id`` 或 ``source_snapshot_id``,
-  constitution §6 凍結未綁 Task 的 artifact 產出)+ doc 08 §5 四共通分類
+  constitution §6 凍結未綁 Task 的 artifact 產出)+ 四級分類 §5 四共通分類
   欄位。
-- :class:`ArtifactVersion` — doc 01 ArtifactVersion(version 遞增、
+- :class:`ArtifactVersion` — 領域模型 ArtifactVersion(version 遞增、
   file_refs、citation_map、generated_by_*);每版記當時 effective 分類。
-- :class:`ExportRecord` — doc 01 ExportRecord + doc 08 §5 四共通分類欄位;
+- :class:`ExportRecord` — 領域模型 ExportRecord + 四級分類 §5 四共通分類欄位;
   **只在** classification policy 核可後落列(deny 不落 allow 列,
-  doc 00 §6「未通過 classification policy 的資料匯出 frozen」)。
+  產品憲章 §6「未通過 classification policy 的資料匯出 frozen」)。
 
 循環相依處理(對齊 ``task.py`` 慣例):``Artifact.job_id`` 只存字串參照、
 不掛 FK(``ArtifactJob.artifact_id`` 反向已有 FK,雙向 FK 會成環,
@@ -67,10 +67,10 @@ class Artifact(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # doc 01 五值:report/slides/mindmap/infographic/datatable(契約層封閉)。
+    # 領域模型 五值:report/slides/mindmap/infographic/datatable(契約層封閉)。
     artifact_type = Column(String(32), nullable=False)
     title = Column(String(500), nullable=False, default="未命名產出")
-    # doc 01 四值:queued/generating/completed/failed;註冊 = 已產出成品。
+    # 領域模型 四值:queued/generating/completed/failed;註冊 = 已產出成品。
     status = Column(String(20), nullable=False, default="completed",
                     server_default="completed")
     owner_user_id = Column(
@@ -91,7 +91,7 @@ class Artifact(Base):
                              server_default="1")
     trace_id = Column(String(64), nullable=True, index=True)
     metadata_json = Column(JSONValue, nullable=True)
-    # doc 08 §5 四共通分類欄位(effective = max(explicit, task, snapshot),
+    # 四級分類 §5 四共通分類欄位(effective = max(explicit, task, snapshot),
     # 單向閂鎖由 policy 核心維護)。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
@@ -149,10 +149,10 @@ class ArtifactVersion(Base):
 
 
 class ArtifactJob(Base):
-    """Studio 五 pipeline 的持久化 job(doc 02 ArtifactJob schema 逐欄)。
+    """Studio 五 pipeline 的持久化 job(系統架構 ArtifactJob schema 逐欄)。
 
     ``job_id`` = studio uuid(PK);``artifact_id`` 完成時回填。restart 後
-    Studio 可自本表恢復,不再丟 job(doc 02 §8 failure model)。
+    Studio 可自本表恢復,不再丟 job(系統架構 §8 failure model)。
     """
 
     __tablename__ = "artifact_jobs"
@@ -162,7 +162,7 @@ class ArtifactJob(Base):
         Index("ix_artifact_jobs_artifact_type", "artifact_type"),
     )
 
-    # doc 02:id: string(studio uuid)。
+    # 系統架構:id: string(studio uuid)。
     job_id = Column(String(64), primary_key=True)
     owner_user_id = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -177,16 +177,16 @@ class ArtifactJob(Base):
         Integer, ForeignKey("source_snapshots.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # doc 02 type 五值(契約層封閉)。
+    # 系統架構 type 五值(契約層封閉)。
     artifact_type = Column(String(32), nullable=False)
-    # doc 02 status 四值:queued/running/completed/failed。
+    # 系統架構 status 四值:queued/running/completed/failed。
     status = Column(String(20), nullable=False, default="queued",
                     server_default="queued")
     progress = Column(Integer, nullable=False, default=0, server_default="0")
     message = Column(Text, nullable=True)
     result_metadata = Column(JSONValue, nullable=True)
     artifact_files = Column(JSONValue, nullable=False, default=list)
-    # doc 02 error?: {code, message}。
+    # 系統架構 error?: {code, message}。
     error = Column(JSONValue, nullable=True)
     params_digest = Column(String(64), nullable=True)
     trace_id = Column(String(64), nullable=True, index=True)
@@ -201,9 +201,9 @@ class ArtifactJob(Base):
 
 
 class ExportRecord(Base):
-    """一次(已核可的)匯出(doc 01 ExportRecord + doc 08 §5 四共通分類欄位)。
+    """一次(已核可的)匯出(領域模型 ExportRecord + 四級分類 §5 四共通分類欄位)。
 
-    只在 classification policy 核可後落列(doc 00 §6);deny 只寫
+    只在 classification policy 核可後落列(產品憲章 §6);deny 只寫
     PolicyDecision、不落本表(不存在被標為 allow 的 deny 匯出)。
     """
 
@@ -222,7 +222,7 @@ class ExportRecord(Base):
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     exporter_employee_id = Column(String(32), nullable=True)
-    # 匯出目的地與其分類下限(doc 08 §10 匯出判定式的輸入)。
+    # 匯出目的地與其分類下限(四級分類 §10 匯出判定式的輸入)。
     target_space = Column(String(100), nullable=True)
     target_classification_floor = Column(String(20), nullable=True)
     export_format = Column(String(32), nullable=True)
@@ -234,7 +234,7 @@ class ExportRecord(Base):
     decision = Column(String(20), nullable=False, default="allow",
                       server_default="allow")
     trace_id = Column(String(64), nullable=True)
-    # doc 08 §5 四共通分類欄位(匯出當下 artifact 的 effective 分類)。
+    # 四級分類 §5 四共通分類欄位(匯出當下 artifact 的 effective 分類)。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
     classification_latched_at = Column(DateTime(timezone=True), nullable=True)

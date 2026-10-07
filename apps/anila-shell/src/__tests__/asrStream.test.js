@@ -5,7 +5,7 @@
  * 重採樣的樣本保留、以及協定不變式(final/discard 後同 id partial 無效)。
  *
  * 真正的「按麥克風→出字」需要真人對著瀏覽器講話 + secure context,無法在
- * vitest/jsdom 驗(規劃書 §5 M5 已載明由 user 手動實測)。這裡守住的是不需要
+ * vitest/jsdom 驗(已刪的 ASR 規劃書 §5 M5 載明由 user 手動實測)。這裡守住的是不需要
  * 麥克風就能出錯的那一整層。
  */
 

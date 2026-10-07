@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Task / TaskRun — 新系統主脊椎(doc 01 §3,Slice 2a)。
+"""Task / TaskRun — 新系統主脊椎(領域模型 §3,Slice 2a)。
 
 - Task 是主脊椎;Conversation 降級為互動容器(``conversation_id`` 可空,
   ON DELETE SET NULL:刪對話不動任務)。
-- 每個 Task 建立時必產生 ``trace_id``(唯一,doc 01 驗收 2);每次執行/
+- 每個 Task 建立時必產生 ``trace_id``(唯一,領域模型 驗收 2);每次執行/
   重跑/handoff 產生一筆 TaskRun(``run_sequence`` 遞增,同 task 內唯一)。
-- 無 task_id 的舊流量相容標記 ``legacy_runtime_call``(doc 10)。
+- 無 task_id 的舊流量相容標記 ``legacy_runtime_call``(邊界守則)。
 - enum 欄位(task_type / status / source_scope / requested_output_type /
   dispatch_target)一律存開放 String,封閉 enum 在 Pydantic 契約層
   (``app.schemas.contracts.tasks``)把關 — 測試套件在 SQLite 上跑
@@ -56,7 +56,7 @@ class Task(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String(255), nullable=False, default="新任務")
-    # doc 01 八值:query/summarize/analyze/compare/draft/generate_artifact/
+    # 領域模型 八值:query/summarize/analyze/compare/draft/generate_artifact/
     # launch_service/governance(Pydantic 層封閉)。
     task_type = Column(String(32), nullable=False)
     requester_user_id = Column(
@@ -67,21 +67,21 @@ class Task(Base):
         Integer, ForeignKey("departments.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # Conversation 只是互動容器(doc 01 拍板);刪對話保留任務。
+    # Conversation 只是互動容器(領域模型 拍板);刪對話保留任務。
     conversation_id = Column(
         Integer, ForeignKey("conversations.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # doc 01 十值狀態機:draft/submitted/policy_checking/source_resolving/
+    # 領域模型 十值狀態機:draft/submitted/policy_checking/source_resolving/
     # running/waiting_for_user/completed/failed/cancelled/blocked_by_policy。
     status = Column(String(32), nullable=False, default="draft",
                     server_default="draft", index=True)
-    # doc 01 五值:none/personal/project/organization/registered_service。
+    # 領域模型 五值:none/personal/project/organization/registered_service。
     source_scope = Column(String(32), nullable=False, default="none",
                           server_default="none")
     selected_collection_ids = Column(JSONValue, nullable=False, default=list)
     selected_service_id = Column(String(100), nullable=True)
-    # doc 01 七值:answer/report/slides/mindmap/infographic/datatable/
+    # 領域模型 七值:answer/report/slides/mindmap/infographic/datatable/
     # service_launch。
     requested_output_type = Column(String(32), nullable=True)
     # 無 DB FK(循環相依,見模組 docstring);service 層維護。
@@ -92,7 +92,7 @@ class Task(Base):
     # 四級分類(ClassificationLevel)繁中字串落地;預設 無機密。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。
+    # 四級分類 §5 其餘三共通欄位(Slice 3a 補齊)。
     classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(
@@ -100,7 +100,7 @@ class Task(Base):
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # 建立即產生;每 task 一條 trace(doc 02 observability ID)。
+    # 建立即產生;每 task 一條 trace(系統架構 observability ID)。
     trace_id = Column(String(64), nullable=False, unique=True, index=True,
                       default=_new_trace_id)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
@@ -140,12 +140,12 @@ class TaskRun(Base):
     run_sequence = Column(Integer, nullable=False, default=1)
     # 四值:model/agent/studio/service(Pydantic 層封閉)。
     dispatch_target = Column(String(32), nullable=False)
-    # doc 01 TaskRun 五值:queued/running/completed/failed/cancelled。
+    # 領域模型 TaskRun 五值:queued/running/completed/failed/cancelled。
     status = Column(String(32), nullable=False, default="queued",
                     server_default="queued")
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
-    # 對應 token_usage 一列(doc 02 usage_record_id);usage 晚於 run 落地,
+    # 對應 token_usage 一列(系統架構 usage_record_id);usage 晚於 run 落地,
     # 可空、SET NULL。
     usage_record_id = Column(
         Integer, ForeignKey("token_usage.id", ondelete="SET NULL"),
@@ -155,7 +155,7 @@ class TaskRun(Base):
     error = Column(JSONValue, nullable=True)
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
-    # doc 08 §5 其餘三共通欄位(Slice 3a;AgentRun 的現制對應表)。
+    # 四級分類 §5 其餘三共通欄位(Slice 3a;AgentRun 的現制對應表)。
     classification_latched_at = Column(DateTime(timezone=True), nullable=True)
     classification_source = Column(String(50), nullable=True)
     classification_event_id = Column(

@@ -4,7 +4,7 @@
 
 > 繁體中文版：[`README.md`](./README.md)
 
-> 🧭 **This file reflects the post-redesign reality** (`anila-redesign` branch): the four-way top layout `services/ apps/ packages/ infra/`, the root compose shim (`compose.yaml` → `infra/compose/platform.yml`), deploy scripts under `infra/deployment/{scripts,intranet}/`, and the Slice 2–9 capabilities relevant to CSP (Task spine, Full Trace, four-level classification, Agent Registry, Model Gateway, Service Registry, Artifact contract). Design lineage (convergence record) lives in [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/): the constitution [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) and this service's domain doc [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 
 ---
 
@@ -54,7 +54,7 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Text post-processing | opencc-python-reimplemented 0.1.7 |
 | Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`), and it is now the **only** one — a second `services/csp/Dockerfile` that compose never built was deleted on 2026-08-06 ([FAKE-CONTROLS](../../docs/FAKE-CONTROLS.md) #50). The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
+> The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`), and it is now the **only** one — a second `services/csp/Dockerfile` that compose never built was deleted on 2026-08-06. The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
 >
 > The container runs as **uid 10001 (non-root)**. `/app/logs` is the only writable path baked into the image; uploads, attachments, `share/pki` and `secrets/` all live on bind mounts whose ownership is decided by the host — so [`infra/deployment/scripts/fix-runtime-ownership.sh`](../../infra/deployment/scripts/fix-runtime-ownership.sh) must run before the stack comes up (deploy-prod.sh's `deploy`/`up`/`rebuild` paths and intranet-deploy.sh `[4c]` all call it).
 >
@@ -68,9 +68,9 @@ The redesign carves the four MVP cores into **mutually independent** modules, en
 
 | Module | Files | Responsibility |
 |--------|-------|----------------|
-| `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun lifecycle (ten-value state machine), the three SourceSnapshot rules, mandatory `trace_id` (doc 01 / doc 03). |
+| `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun lifecycle (ten-value state machine), the three SourceSnapshot rules, mandatory `trace_id` (domain model / control plane). |
 | `app.modules.policy` | `router.py` · `service.py` | Append-only PolicyDecision record (fail-closed; a deny must carry a reason), ceiling pure functions, and the four-level classification latch core (`apply_classification`, one-way; `無機密 < 營業秘密 < 密 < 機密`). |
-| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway primitives: `service_launches` rows, launch URLs, RS256 launch token (doc 07 §6). **Zero** policy/task/api coupling — access control is orchestrated by `app.api.services`. |
+| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway primitives: `service_launches` rows, launch URLs, RS256 launch token (Service Registry §6). **Zero** policy/task/api coupling — access control is orchestrated by `app.api.services`. |
 | `app.modules.artifacts` | `service.py` | Persistence of the four artifact tables, fail-closed binding, owner-scoped reads. The classification latch and PolicyDecision are done by the orchestrator (`app.api.artifacts`) calling policy. |
 
 ---
@@ -145,7 +145,7 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 - **JWT / JWKS**: RS256 (access + refresh, `tv` token-version revocation claim); `GET /.well-known/jwks.json` publishes the verification keys. The launch token reuses the same RS256 keypair / `kid`, so registered services verify it **locally** via JWKS (`aud` / `iss` / `exp` / signature); TTL 10 min, and it **never** embeds a model key or a long-lived user JWT.
 - **CSRF**: cookie-authenticated mutating requests use double-submit (`X-CSRF-Token`, constant-time compare, `CsrfMiddleware`).
 - **RLS / `csp_app`**: the runtime uses the non-privileged `csp_app` role (so RLS actually fires); only migrations use the escalated `csp` superuser (see §8).
-- **SSRF url_guard kind split (Slice 6a, doc 04 §8)**: `anila_core.security.validate_outbound_url(url, endpoint_kind=...)` domain-splits the http flag across `model` / `agent` / `generic` — a model endpoint rejects http by default and **admits it only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (PLAN.md P0.2, 2026-07-29: uniform across production and dev; the intranet model gateway speaks plain http)**; an agent endpoint is allowed over http via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` (legacy `ANILA_ALLOW_HTTP_ENDPOINT` still works as a deprecation-warned fallback, for the intranet MLSteam plain-http NodePort agent). The allow-list = the `trusted_hosts` table + the `ANILA_TRUSTED_HOSTS` env; `host.docker.internal` is a structural deny and cannot be allow-listed.
+- **SSRF url_guard kind split (Slice 6a, Model Gateway §8)**: `anila_core.security.validate_outbound_url(url, endpoint_kind=...)` domain-splits the http flag across `model` / `agent` / `generic` — a model endpoint rejects http by default and **admits it only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (2026-07-29: uniform across production and dev; the intranet model gateway speaks plain http)**; an agent endpoint is allowed over http via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` (legacy `ANILA_ALLOW_HTTP_ENDPOINT` still works as a deprecation-warned fallback, for the intranet MLSteam plain-http NodePort agent). The allow-list = the `trusted_hosts` table + the `ANILA_TRUSTED_HOSTS` env; `host.docker.internal` is a structural deny and cannot be allow-listed.
 - **Credential encryption**: AES-256-GCM (`anila-core` `credential_crypto` / `service_token_envelope`; covers per-model `api_key_secret_ref`, `csk-` agent credentials, ingestion credentials).
 - **Token revocation**: durable `token_revocations` table + JWT `tv` enforcement + Redis fan-out; `/api/auth/revocations` for cold-start sync.
 - **startup_security**: in prod, dev defaults for `SECRET_KEY` / `ADMIN_PASSWORD` / DB passwords refuse to boot (an empty `SECRET_KEY` is always fatal; `ANILA_ALLOW_DEV_SECRET=1` downgrades to a warning). Inbound hardening also includes a CORS allow-list (no `*` fallback), optional TrustedHostMiddleware, SPA path-traversal guard, and nginx security headers + rate-limit.
@@ -171,7 +171,7 @@ cd services/csp && python -m pytest -q   # or from here; both MUST agree
 
 - **`r1_` namespace**: redesign migrations use the `r1_` prefix and chain linearly after the legacy numeric series (`r1_0001` has `Revises: 0046`). When adding a module / table, update the `.importlinter` contract and `app/schemas/contracts/` in lockstep.
 - **`MIGRATION_DATABASE_URL` (escalated, alembic-only)**: migrations need a superuser-class connection (`0014` runs `CREATE EXTENSION` / `CREATE ROLE csp_app`). The runtime `DATABASE_URL` points at the non-privileged `csp_app` (so RLS fires); `MIGRATION_DATABASE_URL` is alembic's escalated stand-in, falling back to `DATABASE_URL` when unset (`migrations/env.py`). Compose splits the two: runtime `csp_app:...`, migration `csp:...`.
-- **Auto-upgrade on boot**: the `app/main.py` lifespan runs `alembic upgrade head` programmatically via `command.upgrade(cfg, "head")`. Empty databases also go through alembic (`MIGRATION_DATABASE_URL` / superuser); failure refuses to start — there is no `create_all` fallback. `ANILA_SKIP_STARTUP_MIGRATIONS=1` (compose default `0`) starts the service without migrating.
+- **Auto-upgrade on boot**: the `app/main.py` lifespan runs `alembic upgrade head` programmatically via `command.upgrade(cfg, "head")`. Empty databases also go through alembic (`MIGRATION_DATABASE_URL` / superuser); failure refuses to start. `create_all` happens only on the pytest sqlite host with an empty file (see `_apply_startup_schema`). `ANILA_SKIP_STARTUP_MIGRATIONS=1` (compose default `0`) starts the service without migrating.
 
 ---
 
@@ -195,7 +195,7 @@ Local backend (no container, bring your own PostgreSQL): `cd services/csp && .ve
 
 ## 10. Related docs
 
-- Design lineage (convergence record): [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md), CSP governance control plane [`03`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md), Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md), Agent Registry [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), Service Platform [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md), classified latch & policy engine [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md), API / event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md), migration & development guardrails [`10`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - Platform overview: [`../../README.md`](../../README.md).
 - Module boundary contract: [`.importlinter`](./.importlinter) (`infra/ci/lint-boundaries.sh`).
 

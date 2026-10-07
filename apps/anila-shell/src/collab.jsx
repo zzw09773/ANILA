@@ -23,7 +23,7 @@ function ttlToExpiresAt(ttlKey) {
 }
 
 // ---- Share Dialog (P4.3) ----
-// Named person XOR unit. Anonymous link retired (SYSTEM-MAP §分享).
+// Named person XOR unit. Anonymous link retired.
 // `onCreateShare({ targetUsername | targetDepartmentName, expiresAt })`
 export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, onListShares, onRevokeShare }) => {
   const { authRequest } = useAuth();

@@ -49,7 +49,9 @@ from app.middleware.cookies import ACCESS_COOKIE_NAME
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _PLATFORM_YML = _REPO_ROOT / "infra" / "compose" / "platform.yml"
 _ENV_EXAMPLE = _REPO_ROOT / ".env.example"
-_RUNBOOK = _REPO_ROOT / "docs" / "runbooks" / "intranet-deployment-runbook.md"
+# The runbook was deleted in the 2026-10 doc cleanup; its host allow-list
+# section now lives in the install doc. Read rather than copied.
+_RUNBOOK = _REPO_ROOT / "docs" / "deploy" / "INSTALL.md"
 
 # `${ANILA_HOST:?...},localhost,...` — the site name is not a second knob.
 _COMPOSE_FROM_HOST = re.compile(

@@ -1,18 +1,18 @@
 # ANILA Governance Center — CSP Governance Console (`csp-platform`)
 
-> The governance console for CSP (Control / Security Plane) (Vue 3 + Vite, v1.0.0). This is ANILA's **Admin / Developer / Service Admin control plane**, managing identity, models, the Agent Registry, the Service Registry, knowledge governance, classification & the one-way latch, and Trace / Audit / Usage. **It is not a regular user's day-to-day entry** (product constitution doc 00 §2).
+> The governance console for CSP (Control / Security Plane) (Vue 3 + Vite, v1.0.0). This is ANILA's **Admin / Developer / Service Admin control plane**, managing identity, models, the Agent Registry, the Service Registry, knowledge governance, classification & the one-way latch, and Trace / Audit / Usage. **It is not a regular user's day-to-day entry** (product constitution §2).
 
 > 繁體中文原文: [`README.md`](./README.md)
 
 > 🌿 **Branch note**: The governance center exists on every deployment branch (login method varies by branch; `prod-intranet-card` uses the PKI ID card). See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
 >
-> Design lineage (convergence record): [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md), [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md) models, [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md) agents, [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md) services, [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md) classification, [`12`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) visual redesign. Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 
 ---
 
 ## 1. Product role
 
-Per the product constitution (doc 00 §2), the governance center is an **admin-facing control plane** hosting these governance domains:
+Per the product constitution (product constitution §2), the governance center is an **admin-facing control plane** hosting these governance domains:
 
 ```text
 Governance Center (CSP)
@@ -29,14 +29,14 @@ Regular users work from ANILA Shell's four entries and **do not enter** the gove
 
 ---
 
-## 2. Institutional-blue visual redesign (doc 12)
+## 2. Institutional-blue visual redesign (visual redesign)
 
 The console moved from a "terminal / hacker" aesthetic (carbon-black base + mint terminal-green + all-monospace) to a neutral, official, trustworthy **institutional-blue console**:
 
 - **Light-first**: `src/assets/styles/tokens.css` was rewritten (all variable names kept, so styles cascade automatically); `:root` = light (official blue), `[data-theme="dark"]` retained but retuned to soft blue-grey.
 - **Theme resolution**: `src/composables/useTheme.js` defaults to light (`localStorage` key `anila.theme`; only flips to dark when there's no stored preference and the OS is dark); `index.html` applies `data-theme` in an inline pre-mount script to avoid a dark→light first-paint flash.
 - **Typography**: system font stacks (`--font-sans` for the UI, `--font-mono` only for IDs, tokens, timestamps, numerics) — air-gap safe, no external webfonts.
-- **Language**: full Traditional Chinese, Taiwan usage (doc 11 language policy); `index.html` `lang="zh-TW"`.
+- **Language**: full Traditional Chinese, Taiwan usage (zh-TW language policy); `index.html` `lang="zh-TW"`.
 
 > The `Term*` components under `src/components/cli/` (Badge / Field / Modal / Stat …) are a shared UI kit; the **names are historical** — the visual is now institutional blue, not a terminal.
 
@@ -53,9 +53,9 @@ Routes are two-tier: `/login` (public) and `/` (`AppLayout`, `requiresAuth`) wit
 | Domain | View (route) | Highlights |
 |---|---|---|
 | Dashboard | `DashboardView` (`/`) | platform overview (`dashboard/PlatformCard.vue`) |
-| Model governance | `ModelsView` (`models`) | **five-state health** (`utils/healthStatus.js`: unknown / healthy / degraded / unhealthy / disabled, normalizing legacy online/connecting/offline) + **per-model keys** (`has_api_key`: model key set / uses global key; `api_key` write-only). doc 04 |
+| Model governance | `ModelsView` (`models`) | **five-state health** (`utils/healthStatus.js`: unknown / healthy / degraded / unhealthy / disabled, normalizing legacy online/connecting/offline) + **per-model keys** (`has_api_key`: model key set / uses global key; `api_key` write-only). Model Gateway |
 | Agent Registry | `DeveloperAgentsView` (`developer/agents`, developer) + `DeveloperGuideView` | **three-state approval** (`utils/approvalStatus.js`: registered / approved / disabled). No seven-state machine and no trace-test gate. The test-connection probe remains. |
-| Service Registry | `PlatformLinksView` (`platform-links`), `ServiceAccessView`, `ServiceClientsView` | registered GUI services (`utils/serviceRegistry.js`: `launch_mode` new_tab/iframe, `config_source` env_seeded/db field locking, `classification_ceiling` four-level: 無機密 / 營業秘密 / 密 / 機密); service-token management. doc 07 |
+| Service Registry | `PlatformLinksView` (`platform-links`), `ServiceAccessView`, `ServiceClientsView` | registered GUI services (`utils/serviceRegistry.js`: `launch_mode` new_tab/iframe, `config_source` env_seeded/db field locking, `classification_ceiling` four-level: 無機密 / 營業秘密 / 密 / 機密); service-token management. Service Registry |
 | Knowledge governance | `KnowledgeCollectionsView`, `ChunkingPreviewView`, `CollectionDetailView` (developer) | collection inspector, chunking-strategy comparison wizard; relation graph via `components/RelationGraph.vue` (cytoscape) |
 | Identity / departments | `UsersView`, `DepartmentsView` (admin) | users, departments, roles |
 | Audit / usage | `AuditLogsView`, `UsageView` | audit; usage charted with echarts (`charts/UsageLineChart.vue`, `TimeRangeSelector.vue`) |
@@ -139,7 +139,7 @@ npm test && npm run build
 
 ## 7. Related docs
 
-- Design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / control plane 03 / models 04 / agents 05 / services 07 / classification 08 / language 11 / visual 12). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - Backend: [`../../services/csp/README.md`](../../services/csp/README.md)
 - Adjacent entries: task center [`../anila-shell/README.en.md`](../anila-shell/README.en.md) · knowledge base / output center [`../anilalm/README.en.md`](../anilalm/README.en.md)
 - Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)

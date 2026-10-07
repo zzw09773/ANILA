@@ -6,13 +6,13 @@
 
 > 🌿 **Branch note**: This UI exists on every ANILA deployment branch; see the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired) for branch policy. **Login is unified into the governance console** — this shell no longer owns a login page (see "No login page" below).
 >
-> Design lineage (convergence record): [`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md), [`10-migration-and-development-guardrails.md`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md) (§11 Shell IA), [`12-frontend-visual-redesign.md`](../../docs/anila-redesign-docs/12-frontend-visual-redesign.md) (classification watermark). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 
 ---
 
 ## 1. Product role
 
-Per the product constitution (doc 00 §2), regular users see one product — **ANILA** — with four first-class entries:
+Per the product constitution (product constitution §2), regular users see one product — **ANILA** — with four first-class entries:
 
 ```text
 ANILA
@@ -126,7 +126,7 @@ Endpoints actually called (from `src/runtime/*.js` and components): `/api/tasks`
 ## 7. Related docs
 
 - Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
-- Design lineage (convergence record): [`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) (constitution 00 / IA 10 / visual 12 / contracts 09). Current authority: [`PLAN.md`](../../PLAN.md) (state + order of work); spec: [`SYSTEM-MAP.md`](../../SYSTEM-MAP.md).
+- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
 - Adjacent entries: knowledge base / output center [`../anilalm/README.en.md`](../anilalm/README.en.md) · governance [`../csp-governance-ui/README.en.md`](../csp-governance-ui/README.en.md)
 - Backend: [`../../services/csp/README.md`](../../services/csp/README.md) · Router [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 

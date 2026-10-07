@@ -83,7 +83,8 @@ const routes = [
         component: () => import('../views/SkillReviewView.vue'),
         meta: { requiresSkillReview: true },
       },
-      // 平台設定總覽 —— 96 顆設定四區三態。讀寫同一道 admin 門
+      // 平台設定總覽 —— 顆數以 settings_registry.py 的 SETTINGS 為準，三段
+      // （模型與檢索／帳號／對話行為）。讀寫同一道 admin 門
       // (後端 router 級 Depends(require_admin))，所以這裡照 /users 的形狀。
       {
         path: 'platform-settings',

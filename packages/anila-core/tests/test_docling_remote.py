@@ -8,7 +8,7 @@ Covers the invariants the brief names plus reconstruction:
 4. A 2xx docling payload reconstructs ParsedDocument / ImageRef back.
 
 http 端點(如 http://docling:9100)在 guard 裡需要 ANILA_ALLOW_HTTP_ENDPOINT=1
-——scheme 門在 trusted-host 之前,這是 P0.2 起就存在的語意。測試一律設它,
+——scheme 門在 trusted-host 之前,這是 2026-07-29 拍板起就存在的語意。測試一律設它,
 才測得到「單標籤 host 是否被 trusted-hosts 門擋下」那一層。
 """
 

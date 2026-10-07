@@ -156,15 +156,20 @@
 </div>
 
 <h2 id="s4"><span class="num">4</span>畫面導覽</h2>
-<figure><img src="img/shell-home.png" alt="登入後的主畫面：左側對話清單，中間輸入框，右上工具列，最上方公告"><figcaption>登入後的主畫面。最上方藍色一條是公告（有公告才會出現）。</figcaption></figure>
+<figure><img src="img/shell-home.png" alt="登入後的主畫面：左側對話清單，中間是今天想問什麼，輸入框上方有助手、模型與思考"><figcaption>登入後的主畫面。公告出現時會在最上方；這張沒有公告。</figcaption></figure>
 <table>
 <tr><th>位置</th><th>是什麼</th></tr>
-<tr><td>左上「新對話」</td><td>開一個新主題。<strong>不同主題請開不同對話</strong>，答案會比較準。快捷鍵 <kbd>⌘K</kbd>／<kbd>Ctrl K</kbd>。</td></tr>
-<tr><td>左側「任務中心／專案入口」</td><td>任務中心：助手在背景幫你跑的長時間工作會列在這裡；目前沒有任務時，按了畫面不會有變化。專案入口：院內其他系統的連結（第 15 節）。</td></tr>
-<tr><td>左側「對話／Agents」</td><td>對話：你的對話清單，可搜尋、加星、分資料夾。Agents：平台上可用的助手清單。</td></tr>
-<tr><td>中間輸入框</td><td>打字、<kbd>Enter</kbd> 送出、<kbd>Shift</kbd>+<kbd>Enter</kbd> 換行。左下迴紋針是附檔，@ 是指定助手。</td></tr>
-<tr><td>輸入框上方「target」</td><td>這個問題要交給哪個助手。預設「ANILA」，平台自己判斷。</td></tr>
-<tr><td>右上工具列</td><td>更多（交給其他助手）、分享、比較模式、重新載入助手清單、專案入口、設定、深淺色、外觀微調、新功能。把滑鼠停在圖示上會顯示名稱；有些圖示要開了對話才會出現。</td></tr>
+<tr><td>左上「新對話」</td><td>開一個新主題。<strong>不同主題請開不同對話</strong>，答案會比較準。</td></tr>
+<tr><td>左側「對話」</td><td>回到對話工作區。預設就在這一頁。</td></tr>
+<tr><td>左側「我的知識庫」</td><td>知識庫與產出中心共用同一個介面，另開一頁。</td></tr>
+<tr><td>左側「專案入口」</td><td>院內其他系統的連結（第 15 節）。</td></tr>
+<tr><td>左側「用量」</td><td>你自己的 token 用量與費用。</td></tr>
+<tr><td>左側「記憶」</td><td>長期記憶的管理頁（第 14 節）。</td></tr>
+<tr><td>左側「治理中心」</td><td>管理介面。一般同仁看不到這一項。</td></tr>
+<tr><td>左側對話清單</td><td>可搜尋、加星、分資料夾。搜尋框支援 <code>tag:</code>，也認同義詞。</td></tr>
+<tr><td>輸入框上方</td><td><strong>助手</strong>預設是 ANILA，由平台挑適合的助手。<strong>模型</strong>是這一輪用哪一顆。<strong>思考</strong>依模型預設。</td></tr>
+<tr><td>中間輸入框</td><td>打字、<kbd>Enter</kbd> 送出、<kbd>Shift</kbd>+<kbd>Enter</kbd> 換行。左下是附加檔案與其他輸入。</td></tr>
+<tr><td>右上</td><td>設定、深淺色。開了對話之後，分享等動作才會出現。</td></tr>
 <tr><td>左下你的名字</td><td>目前登入的身分與角色。點開可以登出。</td></tr>
 </table>
 <figure class="narrow"><img src="img/shell-narrow.png" alt="視窗很窄時，左側清單自動收起，只剩圖示"><figcaption>視窗太窄（例如半個螢幕）時，左側清單自動收成一排圖示；按左上角的圖示可以展開。</figcaption></figure>
@@ -285,15 +290,17 @@
 <figure><img src="img/shell-entries.png" alt="專案入口：卡片式列出可用系統，每張卡有「新分頁」按鈕"><figcaption>專案入口。按 <kbd>Esc</kbd> 或右上的 × 關閉。</figcaption></figure>
 
 <h2 id="s16"><span class="num">16</span>設定</h2>
-<p>右上齒輪。設定分成五頁，大部分人只會用到「記憶」與「帳號」。</p>
+<p>右上齒輪。設定裡有「一般、隱私／信任、記憶、我的 skill、帳號、關於」。大部分人用到「記憶」與「我的 skill」。</p>
 <table>
 <tr><th>頁</th><th>裡面有什麼</th></tr>
 <tr><td>一般</td><td>預設助手是誰、列管等級怎麼決定。只是說明，沒有可以改的東西。</td></tr>
 <tr><td>隱私／信任</td><td>「敏感資訊處理」：送出前若偵測到像身分證、電話、金鑰的字樣，要<strong>提醒（warn）</strong>還是<strong>擋下（block）</strong>。預設提醒。這是你自己的偏好，換電腦登入也會保留。</td></tr>
 <tr><td>記憶</td><td>第 14 節。</td></tr>
+<tr><td>我的 skill</td><td>把常用指示存成文字，對話時打「/」或按輸入框旁的書本套用。skill 不會執行程式。要給全院或單位用，送出後等管理員審核。</td></tr>
 <tr><td>帳號</td><td>你的帳號、角色。確認自己的身分用。</td></tr>
 <tr><td>關於</td><td>平台版本。回報問題時附上。</td></tr>
 </table>
+<figure><img src="img/shell-skills.png" alt="設定裡的我的 skill：一則已發布的 skill，以及自動套用開關"><figcaption>設定 → 我的 skill。已發布的會標範圍。自動套用可以關掉，改成只有你手動選的才用。</figcaption></figure>
 <figure><img src="img/shell-settings-1.png" alt="設定 → 隱私／信任：敏感資訊處理 warn 或 block、列管對話說明"><figcaption>設定 → 隱私／信任。</figcaption></figure>
 <figure><img src="img/shell-settings-4.png" alt="設定 → 關於：ANILA Runtime Client v1.0.1"><figcaption>設定 → 關於：這裡的版本號就是回報問題時要附的。</figcaption></figure>
 

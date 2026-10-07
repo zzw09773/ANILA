@@ -63,7 +63,7 @@ def _enforce_endpoint_url(url: str) -> None:
     deny-list so a developer can't register an internal-only endpoint and
     have an admin unknowingly approve it.
 
-    Slice 6a (doc 04 §8): validated with ``endpoint_kind="agent"`` — http
+    Slice 6a (Model Gateway §8): validated with ``endpoint_kind="agent"`` — http
     agent endpoints are allowed via ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT``
     (legacy ``ANILA_ALLOW_HTTP_ENDPOINT`` still works with a deprecation
     warning so intranet MLSteam http NodePort agents keep registering).
@@ -239,7 +239,7 @@ class AgentRegisterRequest(BaseModel):
     # 派工只認 OpenAI 相容 /v1/chat/completions；治理 UI 不再讓人選型別。
     # 欄位保留給 CLI／舊呼叫，未送時寫預設。
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
-    # doc 05 §3 agent semver。**欄位名以資料庫欄位為準**(models/agent.py:83
+    # Agent Registry §3 agent semver。**欄位名以資料庫欄位為準**(models/agent.py:83
     # ``agent_version``),回應也是這個名字(AgentResponse.agent_version)。
     # 線上仍接受舊拼法 ``version``:治理 UI 與 anila-core CLI 都送過這個
     # 名字,而 BaseModel 預設 extra="ignore" 會把它「收下然後丟掉」——
@@ -252,7 +252,7 @@ class AgentRegisterRequest(BaseModel):
         validation_alias=AliasChoices("agent_version", "version"),
         description="agent 版本字串(例:1.0.0);未提供時取 manifest.version",
     )
-    # doc 05 §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
+    # Agent Registry §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
     manifest: dict | None = None
     # OE-1: shadow/draft 已退場。欄位保留為相容(忽略),一律落地 registered。
     shadow: bool = False
@@ -304,7 +304,7 @@ class AgentResponse(ApiResponseModel):
     # 底層模型下線等原因。NULL 表示不因此不可用。與健康、核准無關。
     unavailable_reason: str | None = None
     requires_encryption: bool = False
-    # doc 05 §3/§4/§6 registry-upgrade fields (Slice 5a). Optional so existing
+    # Agent Registry §3/§4/§6 registry-upgrade fields (Slice 5a). Optional so existing
     # consumers keep working; surfaced for the developer/admin registry UI.
     runtime_type: str | None = None
     agent_version: str | None = None
@@ -389,7 +389,7 @@ class AgentUpdateRequest(BaseModel):
     description_for_router: str | None = None
     base_model_id: int | None = None
     input_schema: dict | None = None
-    # doc 05 §4 — replace the stored manifest snapshot (validated fail-closed).
+    # Agent Registry §4 — replace the stored manifest snapshot (validated fail-closed).
     manifest: dict | None = None
     default_classification_level: ClassificationLevel | None = None
     # P4.7 — replace the bound collection set. Same derivation rule as
@@ -550,7 +550,7 @@ def _should_include_template_path(path: Path, root: Path) -> bool:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-# ── Download bundles (design docs/designs/agent-quickstart-scaffold-2026-09-22) ─
+# ── Download bundles (design the quickstart scaffold design) ─
 
 def _bundle_error(exc: _bundle.BundleError) -> HTTPException:
     """Assembly gaps are 503 — never a partial zip, never a silent fallback."""
@@ -762,7 +762,7 @@ def register_agent(
     if bind_ids:
         _validate_collection_access_for_ids(db, current_user, bind_ids)
 
-    # doc 05 §4 — optional manifest is validated fail-closed (422) and the
+    # Agent Registry §4 — optional manifest is validated fail-closed (422) and the
     # normalized snapshot is stored so the registry has the formal schema
     # (not just the loose ``capabilities`` blob).
     manifest_json = (
@@ -771,7 +771,7 @@ def register_agent(
         else None
     )
 
-    # doc 05 §3 — 明送的版本優先,否則沿用 manifest.version。兩者都沒有才是 NULL。
+    # Agent Registry §3 — 明送的版本優先,否則沿用 manifest.version。兩者都沒有才是 NULL。
     agent_version = request.agent_version or (
         (manifest_json or {}).get("version") or None
     )
@@ -887,7 +887,7 @@ def update_agent(
     patch.pop("collection_ids", None)
     patch.pop("collection_id", None)
 
-    # doc 05 §4 — a submitted manifest is validated fail-closed (422) and
+    # Agent Registry §4 — a submitted manifest is validated fail-closed (422) and
     # mapped onto ``manifest_json`` (the ``manifest`` request field is not a
     # column). Explicit ``null`` clears the stored snapshot.
     if "manifest" in patch:

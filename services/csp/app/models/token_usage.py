@@ -53,10 +53,10 @@ class TokenUsage(Base):
 
     # Slice 2b-C (migration r1_0002) — task linkage:
     #   * ``task_id`` — set when the /v1 call carried a valid
-    #     X-ANILA-Task-Id; usage 歸戶到 task (doc 04 AC10). SET NULL keeps
+    #     X-ANILA-Task-Id; usage 歸戶到 task (Model Gateway AC10). SET NULL keeps
     #     the usage history when a task is deleted.
     #   * ``legacy_runtime_call`` — true for /v1 chat calls WITHOUT a task
-    #     (doc 10 Slice 2 Done: 舊流量相容但標記). Non-chat writers
+    #     (邊界守則 Slice 2 Done: 舊流量相容但標記). Non-chat writers
     #     (embedding / judge / ingestion) stay false.
     task_id = Column(
         Integer, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True

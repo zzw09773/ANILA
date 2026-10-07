@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""R-SEC — audit-callback client↔service binding (doc 07 §3 schema gap).
+"""R-SEC — audit-callback client↔service binding (Service Registry §3 schema gap).
 
 Slice 7a's ``POST /api/services/{service_id}/audit-callbacks`` authenticated
 ANY valid Service Client Token, so any holder of one legitimate integration
 key could inject audit events for ANY service (cross-service audit-trail
-pollution). doc 07 §3's ``registered_services`` schema block lacked a
+pollution). Service Registry §3's ``registered_services`` schema block lacked a
 client↔service binding column, so the endpoint had no way to require that the
 presented token *belongs to* the target service.
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """app.modules.tasks — Task Service(任務中心核心)。
 
-職掌(doc 02 §1、doc 10 §4 Slice 2):任務(tasks / task_runs)的建立與
+職掌(系統架構 §1、邊界守則 §4 Slice 2):任務(tasks / task_runs)的建立與
 生命週期、Source Snapshot 與 Citation 的編排,以及任務層級的
 orchestration(可呼叫 CSP Data Plane / Knowledge / Studio / Launch
 Gateway)。每個正式 task 必須有 trace_id。

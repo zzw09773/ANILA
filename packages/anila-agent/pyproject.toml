@@ -8,7 +8,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "ANILA" }]
 dependencies = [
     # Runtime base. Pinned exactly: RunState/HITL persistence is bound to the
-    # SDK schema version, and the 0.3->0.17 surface change is large. See REBUILD_PLAN.md.
+    # SDK schema version, and the 0.3->0.17 surface change is large. See the package README for the rebuild story.
     "openai-agents==0.17.5",
     "pydantic>=2.7,<2.14",
     "pyyaml>=6.0,<6.1",

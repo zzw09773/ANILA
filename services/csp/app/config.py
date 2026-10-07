@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     AUTO_SEED_API_KEYS: str = ""
 
     # OW-1 — max sibling variants under the same parent_id (edit-re-ask /
-    # regenerate forks). Exceed → 409. docs/plans/ow1-message-tree-blueprint.md
+    # regenerate forks). Exceed → 409. ``app/services/message_tree.py``
 
     # 中科院憑證卡登入 (branch: SSO)
     # 內網 production:唯一登入方式 = 憑證卡 (中華電信 HiPKI 本機元件 + 中科院

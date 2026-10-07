@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Slice 8a — CSP artifact contract(doc 02 ArtifactJob、doc 01 Artifact/
-Version/Export、doc 08 §5/§10、doc 10 §12 邊界)。
+"""Slice 8a — CSP artifact contract(系統架構 ArtifactJob、領域模型 Artifact/
+Version/Export、四級分類 §5/§10、邊界守則 §12 邊界)。
 
 鎖住凍結的 wire 契約(平行 worker 據此建 Studio 端):
 
@@ -11,7 +11,7 @@ Version/Export、doc 08 §5/§10、doc 10 §12 邊界)。
   §6)、分類繼承 effective = max(explicit, task, snapshot)(單向,不降級)。
 - ``POST /v1/artifacts/{id}/versions``(service token)—— 版本遞增 + 繼承重驗。
 - ``POST /v1/artifacts/{id}/exports``(user JWT / service token)—— 匯出
-  policy gate(SYSTEM-MAP §8 L241-242):allow iff artifact.level ≤ 營業秘密;
+  policy gate(四級分類契約 L241-242，原 SYSTEM-MAP §8):allow iff artifact.level ≤ 營業秘密;
   deny → 403 + deny PolicyDecision、不落 allow 匯出列。
 - ``GET /api/artifacts`` + ``/{id}``(user JWT)—— owner-scope 治理讀面。
 

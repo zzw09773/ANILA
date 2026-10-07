@@ -1,4 +1,5 @@
 // 桌面側欄右緣可拖曳／鍵盤調整寬度。寬度只活在元件狀態，窄視窗與收合不出現手把。
+// @source-text-guard（最後一條讀 index.html 比對 resizer 的 CSS）
 import React from "react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

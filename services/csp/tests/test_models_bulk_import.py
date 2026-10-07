@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""P4.6 — bulk import from upstream ``/v1/models`` (SYSTEM-MAP §6 / OE-2 G5).
+"""P4.6 — bulk import from upstream ``/v1/models`` (模型閘道 §6 / OE-2 G5).
 
 Network is never required: ``_fetch_upstream_model_listing`` is stubbed.
 Covers happy path, endpoint-scoped inheritance, caps, audit sentinel,

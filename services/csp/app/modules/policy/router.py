@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Policy Engine 治理 API(doc 03 §11、doc 08 §7/§8/§12、doc 09 §11)。
+"""Policy Engine 治理 API(控制面 §11、四級分類 §7/§8/§12、API 契約 §11)。
 
 三組面(掛在同一個 package 根 ``router`` 下,各帶自己的前綴):
 
 1. ``GET /api/policy-decisions`` —— 政策裁決唯讀查詢(admin tier;沿
    audit-logs 慣例)。append-only:只有 GET,永遠不新增 PUT/PATCH/DELETE。
 2. ``/api/classification/declassification-requests`` —— 降級申請三段式
-   (doc 09 §11 路由形狀:建立 / 列表 / approve / reject)。申請僅 Admin
+   (API 契約 §11 路由形狀:建立 / 列表 / approve / reject)。申請僅 Admin
    (ADR-0005「上鎖後僅 Admin 可申請降級」);裁決繞開平台角色,改由
    「機密審批權責」把關(§7.2 脫鉤)。API 層在 service guard 之上再明確
    暴露:申請人 ≠ 核准/駁回人(403)、核准人無權責 → 申請維持 pending
@@ -14,7 +14,7 @@
    ``PolicyDecision``(action=``classification.downgrade_request`` —— 九值
    enum 中唯一的分類動作,無 ``declassify`` 這種值)。
 3. ``/api/classification-authorities`` —— 「機密審批權責」指派管理
-   (doc 08 §7.3 信任錨、§12)。授予/撤銷 owner-only(§7.2 owner 管理指派)、
+   (四級分類 §7.3 信任錨、§12)。授予/撤銷 owner-only(§7.2 owner 管理指派)、
    授予必附核定依據(公文文號/簽呈)、雙人控制(owner 登錄 → 另一名
    admin 以 ``/{id}/confirm`` 確認才生效;登錄人 ≠ 確認人)。撤銷為 soft
    (寫 ``revoked_at`` + ``is_active=false``)。指派生效 = ``is_active and
@@ -109,7 +109,7 @@ def list_policy_decisions(
     return query.offset(offset).limit(limit).all()
 
 
-# ── 降級申請(doc 08 §7/§8/§12、doc 09 §11)─────────────────────────────────
+# ── 降級申請(四級分類 §7/§8/§12、API 契約 §11)─────────────────────────────────
 
 _declassification_router = APIRouter(
     prefix="/api/classification/declassification-requests",
@@ -186,7 +186,7 @@ def _decide_and_record(
             status_code=409,
             detail=f"降級申請已裁決(狀態 {request.status}),不可重複裁決",
         )
-    # 雙人原則:申請人 ≠ 核准/駁回人(doc 08 §7 變體 A,無例外)。
+    # 雙人原則:申請人 ≠ 核准/駁回人(四級分類 §7 變體 A,無例外)。
     if approver.id == request.requested_by_admin_id:
         raise HTTPException(
             status_code=403,
@@ -291,7 +291,7 @@ def reject_declassification_request(
     )
 
 
-# ── 「機密審批權責」指派(doc 08 §7.3 信任錨、§12)──────────────────────────
+# ── 「機密審批權責」指派(四級分類 §7.3 信任錨、§12)──────────────────────────
 
 _authorities_router = APIRouter(
     prefix="/api/classification-authorities", tags=["機密審批權責"]

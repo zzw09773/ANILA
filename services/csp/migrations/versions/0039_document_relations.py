@@ -1,6 +1,6 @@
 """Document-relations Phase 1: cross-document citation edges + title columns.
 
-See docs/ingestion/document-relations-design.md (v2, codex-reviewed).
+See the document-relations spec (v2, codex-reviewed).
 
 - ingestion_documents: add `title` / `normalized_title` (resolve citation targets;
   filename alone is useless for ROC regs named by date/字號) + index +
