@@ -35,7 +35,6 @@ from app.services.hr_lookup import (
     lookup_staff,
     normalize_text,
 )
-from app.services.unit_admin_service import MAX_UNIT_ADMINS_PER_NODE
 
 logger = logging.getLogger(__name__)
 
@@ -312,23 +311,7 @@ def _sync_unit_admin(
     )
     if existing is not None:
         return
-    active_count = (
-        db.query(UnitAdminAssignment)
-        .filter(
-            UnitAdminAssignment.department_id == department.id,
-            UnitAdminAssignment.revoked_at.is_(None),
-        )
-        .count()
-    )
-    if active_count >= MAX_UNIT_ADMINS_PER_NODE:
-        _audit(
-            db,
-            user,
-            "hr_unit_admin_skipped",
-            f"人資單位管理員已達 {MAX_UNIT_ADMINS_PER_NODE} 人，略過 department_id={department.id}",
-            ip_address,
-        )
-        return
+    # 主管人數由人資決定，不受「每單位最多 3 名」限制；那個上限只算指派的。
     nested = db.begin_nested()
     try:
         db.add(

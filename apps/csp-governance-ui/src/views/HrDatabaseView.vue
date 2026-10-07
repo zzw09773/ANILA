@@ -68,7 +68,7 @@
           <input v-model="draft.autoUnitAdmin" type="checkbox" :disabled="!authStore.isOwner" />
           主管自動成為單位管理員
         </label>
-        <p class="health">人資有職稱的人，成為自己那個單位的單位管理員。一個單位最多三名，名額滿了就略過。</p>
+        <p class="health">人資有職稱的人，成為自己那個單位的單位管理員，可以看單位的成員與用量。主管不占「每單位最多三名」的名額，那個上限只算指派的人。</p>
         <TermField label="只限這些職稱（選填）" hint="完全相符，一行一個。留空表示任何職稱都算。">
           <textarea v-model="draft.unitAdminTitles" class="term-input" rows="3" :disabled="!authStore.isOwner" />
         </TermField>

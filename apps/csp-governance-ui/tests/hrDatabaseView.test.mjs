@@ -19,7 +19,7 @@ test('人資資料庫頁的密碼是密碼框，路由與側欄都叫人資資�
   assert.match(view, /測試連線/)
   assert.match(view, /根單位名稱/)
   assert.match(view, /主管自動成為單位管理員/)
-  assert.match(view, /人資有職稱的人，成為自己那個單位的單位管理員。一個單位最多三名，名額滿了就略過。/)
+  assert.match(view, /人資有職稱的人，成為自己那個單位的單位管理員。可以看單位的成員與用量。主管不占「每單位最多三名」的名額，那個上限只算指派的人。/)
   assert.match(view, /主管自動取得降密審批權責/)
   assert.match(view, /人資有職稱的人取得降密審批權。申請人不能核自己的申請。/)
   assert.match(view, /只限這些職稱（選填）/)

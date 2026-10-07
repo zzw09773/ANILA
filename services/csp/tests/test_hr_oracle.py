@@ -680,9 +680,10 @@ def test_titles_grant_skip_revoke_and_leave_hand_grants(
     capped = make_user(db, username="9101310", is_approved=False)
     capped_response = _swipe(client, monkeypatch, capped)
     assert capped_response.status_code == 202, capped_response.text
-    assert _active_unit(db, capped) == []
-    skipped = _audits(db, capped, "hr_unit_admin_skipped")
-    assert skipped and "3" in skipped[0].detail
+    # 指派的名額已滿三人。主管由人資帶入，不占名額，照樣成為單位管理員。
+    capped_rows = _active_unit(db, capped)
+    assert [(row.department_id, row.source) for row in capped_rows] == [(group.id, "hr")]
+    assert _audits(db, capped, "hr_unit_admin_skipped") == []
     assert _active_declass(db, capped)
 
     manual_user = make_user(db, username="9101311", is_approved=False)
@@ -2277,3 +2278,27 @@ def test_only_csp_and_hr_lookup_join_the_hr_oracle_network():
             if "hr-oracle" in names:
                 joined.append(name)
         assert sorted(joined) == ["csp", "hr-lookup"], relative
+
+
+def test_hand_assignment_limit_counts_only_hand_assigned_admins(db):
+    from fastapi import HTTPException
+
+    from app.services import unit_admin_service
+
+    owner = make_user(db, username="limit-owner", role="owner", is_approved=True)
+    root = _dept(db, "院")
+    group = _dept(db, "名額組", root.id)
+    # 五位主管由人資帶入，都不占名額。
+    for index in range(5):
+        _grant_unit(db, make_user(db, username=f"92000{index}", is_approved=True), group, source="hr")
+
+    for index in range(3):
+        target = make_user(db, username=f"92001{index}", is_approved=True)
+        row = unit_admin_service.assign(db, user=target, department=group, granted_by=owner)
+        assert row.source == "manual"
+
+    fourth = make_user(db, username="920019", is_approved=True)
+    with pytest.raises(HTTPException) as refused:
+        unit_admin_service.assign(db, user=fourth, department=group, granted_by=owner)
+    assert refused.value.status_code == 400
+    assert "最多 3 名" in refused.value.detail

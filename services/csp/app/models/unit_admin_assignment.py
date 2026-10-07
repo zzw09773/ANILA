@@ -5,7 +5,7 @@
 自己範圍內的額度。
 
 撤銷採 soft revoke（``revoked_at``），與 ``ServiceAccessGrant`` 同風格；
-active pair 用 partial unique index，撤銷後可再指派。每節點最多 3 名
+active pair 用 partial unique index，撤銷後可再指派。指派的（source=manual）每節點最多 3 名，人資依職稱帶入的不計；
 active 管理員由 service 層在 advisory lock 下強制（非 DB constraint）。
 """
 

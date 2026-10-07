@@ -3,7 +3,7 @@
 綁定表 ``unit_admin_assignments``；``users.role`` 不動。用量額度由管理員
 設定，單位管理員只能查看自己範圍內的額度。
 
-每節點最多 3 名 active 管理員、以及重複指派檢查，一律在
+每節點最多 3 名指派的 active 管理員（人資帶入的主管不計）、以及重複指派檢查，一律在
 ``acquire_dept_tree_lock`` 下執行。
 """
 
@@ -102,11 +102,13 @@ def assign(
     if existing:
         raise HTTPException(status_code=400, detail="已是該單位的管理員")
 
+    # 上限只算指派的。人資依職稱帶來的主管不占名額。
     active_count = (
         db.query(UnitAdminAssignment)
         .filter(
             UnitAdminAssignment.department_id == department.id,
             UnitAdminAssignment.revoked_at.is_(None),
+            UnitAdminAssignment.source == "manual",
         )
         .count()
     )

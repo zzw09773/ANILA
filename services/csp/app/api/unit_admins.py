@@ -35,6 +35,8 @@ class UnitAdminAssignmentResponse(ApiResponseModel):
     department_id: int
     granted_by: int | None
     granted_at: datetime
+    # manual＝管理員指派（計入每單位 3 名上限）；hr＝人資依職稱帶入（不計）
+    source: str = "manual"
     revoked_at: datetime | None
 
     model_config = {"from_attributes": True}
