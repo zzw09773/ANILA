@@ -117,7 +117,8 @@ LEGITIMATE_HOSTS = [
     (
         "127.0.0.1",
         "nginx loopback readiness listener proxies /health to csp_backend "
-        "with `proxy_set_header Host $host`; its own healthcheck speaks to "
+        "with `proxy_set_header Host $http_host` (127.0.0.1:8080; the port "
+        "is stripped before this check). Its own healthcheck speaks to "
         "127.0.0.1:8080 — infra/nginx/anila.conf + platform.yml nginx.healthcheck",
     ),
     (
@@ -130,7 +131,8 @@ LEGITIMATE_HOSTS = [
     ),
     (
         _SAMPLE_HOST,
-        "ANILA_HOST, forwarded by nginx as Host $host",
+        "ANILA_HOST. nginx forwards the browser Host as $http_host "
+        "(the port stays when the browser sent one); this check compares the name",
     ),
     (
         "router",

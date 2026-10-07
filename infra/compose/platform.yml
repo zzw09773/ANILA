@@ -463,6 +463,8 @@ services:
       # 官方映像會把 /etc/nginx/templates/*.template 裡「已存在的」環境變數
       # 代換進 conf.d。$host 這類 nginx 變數不在環境裡，不會被代換。
       ANILA_HOST: ${ANILA_HOST:?ANILA_HOST must be set}
+      # 容器內 HTTPS 固定聽 443。對外埠可能是 8443–8450，轉向要帶這個值。
+      NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT:-443}
     ulimits:
       nofile:
         soft: 65535

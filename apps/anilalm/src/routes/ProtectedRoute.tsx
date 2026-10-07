@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Outlet } from 'react-router'
 import { useAuthStore } from '../store/auth'
+import { cspLoginHref } from './loginRedirect'
 
 // ANILALM 不持有登入頁；唯一登入入口是治理中心 /login。
 // 未登入時用 window.location.assign 跳出
@@ -16,12 +17,8 @@ export function ProtectedRoute() {
   // 看 status。工作階段在 httpOnly cookie，頁面不留 access／refresh token。
   useEffect(() => {
     if (status !== 'unauth') return
-    // absolute URL with current port — ANILALM 可能跑在 4443，LoginView 在
-    // 443；next 帶完整 URL (含 port)，登入完才能跨 port 跳回 ANILALM。
-    const currentHref = window.location.href
-    const loginOrigin = `${window.location.protocol}//${window.location.hostname}`
-    const target = `${loginOrigin}/login?next=${encodeURIComponent(currentHref)}`
-    window.location.assign(target)
+    // 相對網址。用 hostname 重組絕對網址會拿掉埠，8443 會被送去 443。
+    window.location.assign(cspLoginHref(window.location))
   }, [status])
 
   if (status === 'authed') return <Outlet />

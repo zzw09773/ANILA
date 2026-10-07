@@ -451,6 +451,8 @@ services:
       - "${ANILA_UI_HTTPS_PORT_DEV:-9443}:4443"
     environment:
       ANILA_HOST: ${ANILA_HOST:-localhost}
+      # 對外 HTTPS 是宿主的 NGINX_HTTPS_PORT_DEV（預設 8443），不是容器內的 443。
+      NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT_DEV:-8443}
     ulimits:
       nofile:
         soft: 65535

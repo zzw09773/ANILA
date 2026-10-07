@@ -81,6 +81,36 @@ def test_nginx_map_uses_anila_host_and_has_no_lab_entries():
     )
 
 
+def test_public_redirects_keep_a_nondefault_https_port():
+    """$host 沒有埠。對外轉向要帶 NGINX_HTTPS_PORT，同一條連線的補斜線用 $http_host。"""
+    text = _NGINX.read_text(encoding="utf-8")
+    assert "return 301 https://$host$request_uri;" not in text
+    assert "return 302 https://$host/login" not in text
+    assert "return 302 $scheme://$host$request_uri;" not in text
+    assert "return 302 $scheme://$host/anila$request_uri;" not in text
+    assert "proxy_set_header Host $host;" not in text
+    assert "proxy_set_header Host              $host;" not in text
+    assert "X-Forwarded-Host    $host;" not in text
+    assert "X-Forwarded-Server  $host;" not in text
+
+    rendered = text.replace("${NGINX_HTTPS_PORT}", "8443")
+    assert "return 301 https://$host:8443$request_uri;" in rendered
+    assert "return 302 https://$host:8443/login$is_args$args;" in rendered
+    assert "return 302 $scheme://$host:8443$request_uri;" in rendered
+    assert "return 302 $scheme://$host:8443/anila$request_uri;" in rendered
+    assert text.count("return 301 $scheme://$http_host$uri/$is_args$args;") >= 4
+
+    platform = yaml.safe_load(_PLATFORM.read_text(encoding="utf-8"))
+    nginx_env = platform["services"]["nginx"]["environment"]
+    assert str(nginx_env["NGINX_HTTPS_PORT"]).startswith("${NGINX_HTTPS_PORT")
+
+    dev_path = _REPO / "infra" / "compose" / "dev.yml"
+    dev = yaml.safe_load(dev_path.read_text(encoding="utf-8"))
+    dev_port = str(dev["services"]["nginx"]["environment"]["NGINX_HTTPS_PORT"])
+    assert "NGINX_HTTPS_PORT_DEV" in dev_port
+    assert "8443" in dev_port
+
+
 def test_nginx_envsubst_renders_anila_host_into_the_map():
     """Same substitution the official nginx entrypoint performs at start."""
     script = _REPO / "infra" / "nginx" / "check-anila-host-subst.sh"

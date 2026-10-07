@@ -577,9 +577,10 @@ app.add_middleware(CsrfMiddleware)
 #   localhost   — the csp container healthcheck calls
 #                 http://localhost:8000/health (infra/compose/platform.yml)
 #   127.0.0.1   — nginx's loopback readiness listener proxies /health to
-#                 csp_backend with `proxy_set_header Host $host`
-#                 (infra/nginx/anila.conf), and its own healthcheck speaks
-#                 to 127.0.0.1:8080
+#                 csp_backend with `proxy_set_header Host $http_host`
+#                 (127.0.0.1:8080; this middleware strips the port).
+#                 The listener's own healthcheck speaks to 127.0.0.1:8080
+#                 (infra/nginx/anila.conf)
 #   ::1         — the same loopback, when the caller speaks IPv6
 #   csp         — every in-network caller reaches us at http://csp:8000 over
 #                 docker DNS (router, anila-studio, asr-gateway,

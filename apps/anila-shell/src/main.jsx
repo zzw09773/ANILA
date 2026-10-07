@@ -18,6 +18,7 @@ import { ErrorBoundary } from "./ErrorBoundary.jsx";
 import App from "./app.jsx";
 import NotFound from "./NotFound.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
+import { cspLoginHref } from "./runtime/loginRedirect.js";
 import { ConfirmProvider } from "./confirm.jsx";
 
 function BootScreen({ label = "啟動中…" }) {
@@ -49,13 +50,10 @@ function RequireAuth({ children }) {
 
 function RedirectToCspLogin() {
   React.useEffect(() => {
-    // 用 absolute URL with current port — anila-ui 通常跑在 4443，但 LoginView
-    // 在 443 (myCSPPlatform Vue SPA + assets 都在那)。next 帶完整 URL 包含
-    // 4443 port，登入完 LoginView 才能跨 port 把使用者送回原本的 anila-ui。
-    const currentHref = window.location.href;
-    const loginOrigin = `${window.location.protocol}//${window.location.hostname}`; // 443/80 default
-    const target = `${loginOrigin}/login?next=${encodeURIComponent(currentHref)}`;
-    window.location.assign(target);
+    // Root-relative. Rebuilding from hostname drops the port, so a page on
+    // :8443 (or 8444–8450) would be sent to whatever else is listening on :443.
+    // /login is the governance app, outside this SPA's router.
+    window.location.assign(cspLoginHref(window.location));
   }, []);
   return <BootScreen label="導向 CSP 平台登入…" />;
 }

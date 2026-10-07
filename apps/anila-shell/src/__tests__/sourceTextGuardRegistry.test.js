@@ -46,6 +46,7 @@ const KNOWN_SOURCE_TEXT_GUARDS = [
   "guards/aboutVersion.test.js",
   "guards/composerNarrowHint.test.js",
   "guards/headerLinesPresent.test.js",
+  "guards/loginRedirect.test.js",
   "guards/noProjectEntryButton.test.js",
   "guards/quotaExceeded.test.js",
   "mermaidVersionGuard.test.js",

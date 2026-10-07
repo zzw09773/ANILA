@@ -167,7 +167,7 @@ const PAGE_LABELS = {
   '/': '儀表板', '/api-keys': 'API 金鑰', '/models': '模型', '/model-access-groups': '群組', '/usage': '用量', '/quotas': '額度',
   '/developer/guide': '開發指南', '/developer/agents': 'Agent', '/knowledge-collections': '知識庫',
   '/message-actions': '自訂動作', '/users': '使用者', '/departments': '部門', '/alerts': '警報',
-  '/feedback': '使用者回饋', '/banners': '公告橫幅', '/audit-logs': '稽核紀錄',
+  '/feedback': '使用者回饋', '/banners': '公告橫幅', '/skill-review': 'skill 審核', '/audit-logs': '稽核紀錄',
   '/platform-links': '平台連結', '/service-access': '服務存取',
   '/service-clients': '服務客戶端', '/trusted-hosts': '信任主機',
   '/external-services': '外部服務', '/platform-settings': '平台設定',

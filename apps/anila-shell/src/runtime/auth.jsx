@@ -7,6 +7,7 @@ import {
   readCsrfCookie,
   refreshJwt,
 } from "./api.js";
+import { cspLoginHref } from "./loginRedirect.js";
 
 // Wave 2: the SPA holds no tokens — JWT access/refresh live in httpOnly
 // cookies set by POST /api/auth/login. The only piece of auth state kept
@@ -100,10 +101,8 @@ export function useLogoutRedirect() {
   const { logout } = useAuth();
   return async () => {
     await logout();
-    // /login 是 myCSPPlatform 的 LoginView,不在本 SPA 路由表內 — 必須整頁
-    // 跳轉(同 main.jsx RequireAuth 的做法)。原本的 navigate("/login") 只會
-    // 在 SPA 內導去不存在的路由;basename=/anila 之後更會變 /anila/login。
-    const loginOrigin = `${window.location.protocol}//${window.location.hostname}`;
-    window.location.assign(`${loginOrigin}/login`);
+    // /login 是治理中心的 LoginView，不在本 SPA 路由表內，必須整頁跳轉。
+    // 用相對網址，登出後仍留在原本的埠。basename=/anila 時不能用路由內的 /login。
+    window.location.assign(cspLoginHref(window.location, { carryNext: false }));
   };
 }
