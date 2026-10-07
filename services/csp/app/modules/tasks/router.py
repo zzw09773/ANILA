@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """Task API(Slice 2b-A)— JWT 認證的 /api/tasks 讀寫面。
 
-API 契約 §Task API 明定 ``POST /api/tasks`` 與 ``GET /api/tasks/{task_id}``
+明定 ``POST /api/tasks`` 與 ``GET /api/tasks/{task_id}``
 (本檔實作);``/submit`` ``/cancel`` ``/events`` ``/trace`` 屬後續 slice。
 ``GET /api/tasks``(自己的清單)與 ``GET /api/tasks/{task_id}/runs`` 為
 Slice 2b-A 附加讀面。差異註記:API 契約 create body 例含 ``input``(text),
 但 Slice 2a 凍結的 ``TaskCreate`` 契約與 ``tasks`` 表皆無該欄 —— 互動文字
-由 領域模型 的 TaskMessage 承載,屬後續 slice,本檔遵循已凍結契約。
+由 TaskMessage 承載,屬後續 slice,本檔遵循已凍結契約。
 
 邊界:本 module 不 import ``app.api``;auth 依賴直接取自
 ``app.services.auth_service``(與 ``app.api.auth`` re-export 同一實體)。
+
 """
 
 from __future__ import annotations

@@ -9089,7 +9089,7 @@ async def _router_streaming_body(
                 yield chunk
 
     # Full Trace Protocol: close the dispatch spans and mirror them into the
-    # ``anila.spans`` SSE event (doc-09 §10 / doc-05 §6). The event carries the
+    # ``anila.spans`` SSE event. The event carries the
     # exact span dicts also shipped to the CSP callback endpoint.
     if trace_session is not None and _downstream_span is not None:
         downstream_dict = trace_session.close(_downstream_span)

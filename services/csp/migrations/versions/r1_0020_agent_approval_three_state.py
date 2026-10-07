@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """OE-1 — agent approval_status seven-gate → three-state.
 
-舊 SYSTEM-MAP (知識庫怎麼運作): register → admin assigns → usable.
+(知識庫怎麼運作): register → admin assigns → usable.
 There is no connection / trace / security-review ceremony.
 
 Maps existing rows onto ``registered`` / ``approved`` / ``disabled``
@@ -26,6 +26,7 @@ columns (diagnostic residue; D1 may retire the span tables later).
 Revision ID: r1_0020
 Revises: r1_0019
 Create Date: 2026-07-30
+
 """
 
 from __future__ import annotations

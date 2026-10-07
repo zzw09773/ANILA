@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-"""四級分類契約(ClassificationLevel + 分類事件/降級申請 enum)。
+"""分類等級(ClassificationLevel + 分類事件/降級申請 enum)。
 
-依四級分類契約(原 SYSTEM-MAP §8):
 
 - 四級:無機密(0) < 營業秘密(1) < 密(2) < 機密(3),
-  排序不可變(四級分類契約)。
-- 單向閂鎖(四級分類契約;對話中途升密):effective level = 所有觀測到的
+  排序不可變。
+- 單向閂鎖(對話中途升密):effective level = 所有觀測到的
   分類取 max,只能維持或升級,不得自動降級 →
   見 :meth:`ClassificationLevel.max_of`。
 - 舊 boolean ``classified`` 的 backfill:false → 無機密、true → 機密
@@ -20,6 +19,7 @@
 儲存格式:一律以繁中字串(enum value)落地,經
 :meth:`ClassificationLevel.to_storage` / :meth:`ClassificationLevel.from_storage`
 往返;未知字串 fail-closed 拋 ``ValueError``。
+
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from app.schemas.base import ApiResponseModel
 
 @total_ordering
 class ClassificationLevel(enum.Enum):
-    """四級分類等級;成員定義順序即由低到高的排序契約(四級分類契約)。"""
+    """四級分類等級;成員定義順序即由低到高的排序契約。"""
 
     UNCLASSIFIED = "無機密"
     TRADE_SECRET = "營業秘密"
@@ -44,7 +44,7 @@ class ClassificationLevel(enum.Enum):
 
     @property
     def rank(self) -> int:
-        """數值序(四級分類契約的 0–3);僅供排序/比較,不作儲存格式。"""
+        """數值序(0–3);僅供排序/比較,不作儲存格式。"""
         return _RANKS[self]
 
     def __lt__(self, other: object) -> bool:
@@ -65,7 +65,7 @@ class ClassificationLevel(enum.Enum):
 
     @classmethod
     def from_legacy_classified(cls, classified: bool) -> "ClassificationLevel":
-        """舊 boolean classified → 四級的 floor backfill 映射(四級分類契約)。
+        """舊 boolean classified → 四級的 floor backfill 映射。
 
         true → 機密(SECRET,最高級)為保守 floor,不是最終分類。
         """
@@ -90,7 +90,7 @@ class ClassificationLevel(enum.Enum):
 def outbound_action_allowed(level: ClassificationLevel) -> bool:
     """外流動作(複製/匯出/分享/列印)是否允許。
 
-    四級分類契約 L241，原 SYSTEM-MAP §8:可以做 = 密等 ≤ 營業秘密。
+    可以做 = 密等 ≤ 營業秘密。
     等價阻擋謂詞:``level >= ClassificationLevel.RESTRICTED``。
     """
     return level <= ClassificationLevel.TRADE_SECRET
@@ -99,7 +99,7 @@ def outbound_action_allowed(level: ClassificationLevel) -> bool:
 def classification_audit_required(level: ClassificationLevel) -> bool:
     """該等級的外流/讀取是否必須落稽核。
 
-    四級分類契約 L242:要落稽核 = 密等 ≥ 營業秘密。
+    要落稽核 = 密等 ≥ 營業秘密。
     """
     return level >= ClassificationLevel.TRADE_SECRET
 
@@ -111,10 +111,10 @@ _RANKS: dict[ClassificationLevel, int] = {
 
 
 class ClassificationEventReason(str, enum.Enum):
-    """四級分類 §6 ClassificationEvent.reason 7 值(逐字,順序照文件)。
+    """ClassificationEvent.reason 7 值(逐字,順序即宣告順序)。
 
-    注:文件的 7 值 enum 是封閉集合 —— 降級核准生效所寫的事件也必須
-    落在其中,採 ``declassification_copy``(四級分類 §9 降密模式的事件
+    注:這 7 值 enum 是封閉集合 —— 降級核准生效所寫的事件也必須
+    落在其中,採 ``declassification_copy``(降密模式的事件
     reason;audit 面另記 ``classification.downgrade_approved`` 等事件)。
     """
 
@@ -128,9 +128,9 @@ class ClassificationEventReason(str, enum.Enum):
 
 
 class DeclassificationStatus(str, enum.Enum):
-    """四級分類 §8 DeclassificationRequest.status 5 值(逐字,順序照文件)。
+    """DeclassificationRequest.status 5 值(逐字,順序即宣告順序)。
 
-    fail-closed 預設 = ``pending_supervisor``(四級分類 §12:無主管資料且
+    fail-closed 預設 = ``pending_supervisor``(無主管資料且
     無可用權責者時,申請維持 pending,不升級、不自動放行)。
     """
 
@@ -142,7 +142,7 @@ class DeclassificationStatus(str, enum.Enum):
 
 
 class DeclassificationApprovedVia(str, enum.Enum):
-    """四級分類 §8 approved_via 二選一(變體 A,2026-07-02 拍板)。
+    """approved_via 二選一(變體 A,2026-07-02 拍板)。
 
     ``recorded_paper_decision``(紙本核定＋代錄)時必填
     ``authority_reference``(公文文號/簽呈)、``authority_title_name``
@@ -154,7 +154,7 @@ class DeclassificationApprovedVia(str, enum.Enum):
     RECORDED_PAPER_DECISION = "recorded_paper_decision"
 
 
-# ── Slice 3b：降級申請 / 權責指派 API 契約(四級分類 §7/§8/§12、API 契約 §11)───────
+# ── 降級申請 / 權責指派 API 契約───────
 #
 # 邊界 fail-closed:``requested_level`` / ``from_level`` / ``to_level`` /
 # ``status`` / ``approved_via`` 皆以封閉 enum 型別把關,非法值由 FastAPI 422
@@ -167,7 +167,7 @@ class DeclassificationRequestCreate(BaseModel):
     """POST /api/classification/declassification-requests 請求體。
 
     ``requested_level`` = 目標等級(service 的 ``to_level``),必須嚴格低於
-    資源現行等級(service 層驗證);``reason`` 必填(四級分類 §8)。
+    資源現行等級(service 層驗證);``reason`` 必填。
     """
 
     resource_type: str = Field(..., min_length=1, max_length=50)
@@ -198,7 +198,7 @@ class DeclassificationRejectBody(BaseModel):
 
 
 class DeclassificationRequestOut(ApiResponseModel):
-    """DeclassificationRequest 讀出契約(from ORM;四級分類 §8 欄位)。"""
+    """DeclassificationRequest 讀出契約(from ORM)。"""
 
     id: int
     resource_type: str
@@ -224,7 +224,7 @@ class DeclassificationRequestOut(ApiResponseModel):
 
 
 class ClassificationAuthorityCreate(BaseModel):
-    """POST /api/classification-authorities 請求體(四級分類 §7.3 信任錨)。
+    """POST /api/classification-authorities 請求體(信任錨)。
 
     ``authority_reference``(核定依據:公文文號/簽呈)必填 —— 權責來自行政
     程序,系統只負責記錄與鎖定;``department_id`` 為 None = 全域權責。

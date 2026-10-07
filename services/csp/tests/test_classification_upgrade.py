@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Slice 3a — 四級分類 schema 升級 + latch core 測試。
 
-依 四級分類契約(四級排序、單向閂鎖)與既有降級/權責流程:
+(四級排序、單向閂鎖)與既有降級/權責流程:
 ClassificationEvent reason enum、DeclassificationRequest status +
 approved_via、舊 boolean latch 不破。
 
@@ -15,6 +15,7 @@ approved_via、舊 boolean latch 不破。
   核准恰好降一次 + event
 - 未知 resource_type / reason / level fail-closed ValueError
 - migration chain:單一 head = r1_0004(Slice 5a 後)
+
 """
 
 from __future__ import annotations
@@ -117,7 +118,7 @@ class TestDoc08EnumsVerbatim:
         ]
 
     def test_backfill_mapping_from_legacy_boolean(self):
-        # 四級分類 §3 migration bridge → 四級分類契約:false → 無機密、
+        # migration bridge → :false → 無機密、
         # true → 機密(SECRET,最高級,保守 floor)
         assert (
             ClassificationLevel.from_legacy_classified(False)
@@ -341,7 +342,7 @@ class TestApplyClassification:
             effective_level(db, resource_type="starship", resource_id="1")
 
 
-# ── 降級申請 + 核准(四級分類 §7 變體 A、§8、§12)────────────────────────────────
+# ── 降級申請 + 核准────────────────────────────────
 
 
 class TestDeclassification:

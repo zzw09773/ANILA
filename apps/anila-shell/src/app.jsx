@@ -756,7 +756,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 那不是「使用者的選擇」,而是別人的。blob 跟著卡走才對得起「這是你的偏好」。
   //
   // ⚠ 這**不是**管理員政策。後端沒有這種欄位,這裡也刻意不做成那樣:要不要有
-  // 一個管理員層級的強制政策,是還沒裁決的產品問題(已刪的 OWNER-QUESTIONS)。
+  // 一個管理員層級的強制政策,是還沒裁決的產品問題。
   // 這裡存的只是使用者自己的選擇。
   const [redactionMode, setRedactionMode] = useState(REDACTION_MODE_DEFAULT);
 
@@ -3389,7 +3389,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     }
 
-    // Slice 2b-D 最小 Task 流(舊 doc 00 §3:提出任務→建立 Task→派發):對話
+    // 最小 Task 流(提出任務→建立 Task→派發):對話
     // 還沒綁 Task 時先建立一個(標題 = 首句前段),成功後快取到 conversation
     // state;失敗回 null → 靜默降級,聊天照常、只是不帶 Task 標頭。
     let taskId = taskIdForConv(convId);

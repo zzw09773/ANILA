@@ -8,7 +8,7 @@
 #
 # 為什麼需要這一步
 # ----------------
-# csp / ingestion-worker 從 2026-08-06 起以 uid 10001 跑(FAKE-CONTROLS #50)。
+# csp / ingestion-worker 從 2026-08-06 起以 uid 10001 跑。
 # 但 bind mount 的所有權**是 host 決定的,映像裡 chown 什麼都沒用**。四個掛載
 # 各自的壞法都是同一個形狀 —— 容器全綠、功能靜默死掉:
 #

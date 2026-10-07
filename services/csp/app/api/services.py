@@ -281,7 +281,7 @@ def create_service(
         raise HTTPException(status_code=409, detail=f"slug「{slug}」已存在")
     if not slug:
         slug = unique_slug(data["name"], taken, fallback="service")
-    # healthcheck_url was never probed (FAKE-CONTROLS §7). Refuse rather than
+    # healthcheck_url was never probed. Refuse rather than
     # store a setting that looks like it protects availability.
     if data.get("healthcheck_url"):
         raise HTTPException(
@@ -491,7 +491,7 @@ def launch_service(
     #
     # (同一個張力在第三處也有:``_validate_launch_entry_url`` 目前排在 access
     # gate 之前,所以設定壞掉的服務會對沒授權的人回 400 而不是 404。那是 base
-    # 既有的順序,本包沒有動它,已記在 FAKE-CONTROLS 的註記裡。)
+    # 既有的順序,本包沒有動它。)
     if release_gate.is_gated(service):
         log_audit_event(
             db,

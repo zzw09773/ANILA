@@ -377,8 +377,8 @@ def revoke_credential(
 def get_my_credential(agent_id: int):
     """Retired (Task 2): Tier-1 rotation-detection poll target.
 
-    Premise check (2026-08-02): the only Q19 justifications for an
-    agent-kind ``csk-`` were runtime-config self-fetch (removed) and a
+    Premise check (2026-08-02): an agent-kind ``csk-`` was justified
+    only by runtime-config self-fetch (removed) and a
     revocation list (never built agent-side; the live endpoint rejects
     ``kind=agent``). No in-tree caller. Retiring rather than scoping to
     bootstrap-tier agents — bootstrap itself is also 410.

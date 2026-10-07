@@ -261,7 +261,7 @@ def _build_response(
     ``can_see_endpoint_address`` (owner, designated author, or service
     token). Everyone else receives ``ENDPOINT_INTERNAL`` /
     ``ENDPOINT_REDACTED`` based on ``is_internal``. The grouping-key
-    field is retired (模型閘道 §6).
+    field is retired.
     """
     is_internal = bool(getattr(model, "is_internal", False))
     endpoint = visible_endpoint_url(
@@ -299,7 +299,7 @@ def _build_response(
         "base_model_id": model.base_model_id,
         "base_model_name": model.base_model.display_name if model.base_model else None,
         "is_internal": is_internal,
-        # Slice 6a (Model Gateway §2/§3): ModelEndpoint formalized fields. The
+        # ModelEndpoint formalized fields. The
         # per-model key is exposed ONLY as a boolean presence flag — never the
         # ciphertext / secret ref, never plaintext.
         "protocol": getattr(model, "protocol", "openai_compatible") or "openai_compatible",
@@ -467,7 +467,7 @@ async def create_model(
         if not base:
             raise HTTPException(status_code=400, detail="底層模型不存在")
 
-    # Slice 6a (Model Gateway §3): api_key is write-only — encrypt into the
+    # api_key is write-only — encrypt into the
     # ``enc::v1::`` envelope and store as api_key_secret_ref; never a column
     # by itself, so pop it before constructing the row.
     data = request.model_dump()
@@ -1029,7 +1029,7 @@ async def import_models_from_endpoint(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """P4.6 / 模型閘道 §6: pull upstream ``/v1/models`` into the registry.
+    """pull upstream ``/v1/models`` into the registry.
 
     Auth = same ``require_admin`` gate as ``POST /api/models``. SSRF / scheme
     rules reuse ``_enforce_endpoint_url`` (identical to single-record create).
@@ -2228,7 +2228,7 @@ async def update_model(
         or (pending_key is not None and str(pending_key).strip() != "")
     )
 
-    # Slice 6a (Model Gateway §3): api_key is write-only. When supplied non-empty,
+    # api_key is write-only. When supplied non-empty,
     # re-encrypt into api_key_secret_ref; it is never assigned as a column.
     api_key = update_data.pop("api_key", None)
     if api_key is not None and str(api_key).strip():
@@ -2398,7 +2398,7 @@ async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip:
     Runs the five-state probe (SSRF re-validated inside), persists the new
     ``health_status`` (five-state) + ``health_checked_at`` and audits the
     result. Returns ``{status, last_checked, latency_ms}``. The probe carries
-    NO real user data (Model Gateway §9).
+    NO real user data.
     """
     endpoint_url = model.endpoint_url
     model_id = model.id
@@ -2444,7 +2444,7 @@ def get_model_health(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Slice 6a (Model Gateway §9): current five-state health without probing.
+    """current five-state health without probing.
 
     Passive read — returns the stored status normalized to the five-state
     vocabulary (``disabled`` when inactive), plus ``last_checked`` and
@@ -2474,7 +2474,7 @@ async def test_model(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Slice 6a (Model Gateway §9): active probe — updates status + returns latency.
+    """active probe — updates status + returns latency.
 
     Admin-only. Runs the five-state health probe against the endpoint,
     persists the result and returns ``{status, last_checked, latency_ms}``.

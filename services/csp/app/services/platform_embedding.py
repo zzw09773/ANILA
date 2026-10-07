@@ -30,9 +30,8 @@ logger = logging.getLogger(__name__)
 # all, so collection create never becomes a new gate. Spelled the way
 # the model registers itself, NOT the way migration 0014's column
 # default used to spell it (``nvidia/NV-embed-V2``) — that disagreement
-# between two independently-written free-text fields is FAKE-CONTROLS
-# #56, and every collection created off the old default committed it
-# again.
+# between two independently-written free-text fields. Every collection
+# created off the old default committed that mismatch again.
 LAST_RESORT_EMBEDDING_MODEL = "nvidia/nv-embed-v2"
 
 
@@ -161,7 +160,7 @@ def canonical_embedding_model_name(db: Session, name: str | None) -> str | None:
     model (module docstring). A model name that arrives from anywhere
     else — an API payload, a column default, a hand-written seed — is
     free text, and free text that differs from the registry only in
-    case is the shape of FAKE-CONTROLS #56: retrieval filters chunk
+    case is enough to break retrieval: retrieval filters chunk
     provenance on the model name, so one wrong capital turns a
     perfectly-indexed corpus into one that answers nothing, with no
     error and no log line.
@@ -170,8 +169,8 @@ def canonical_embedding_model_name(db: Session, name: str | None) -> str | None:
     what stops the defect being re-committed once per new collection.
     The case-insensitive comparisons already in the read paths stay:
     they still carry rows written before this existed, and
-    ``model_registry.name`` carries no case-insensitive uniqueness
-    (#56 item 8), so two spellings can still be registered side by side.
+    ``model_registry.name`` carries no case-insensitive uniqueness,
+    so two spellings can still be registered side by side.
 
     Candidates are ``model_type='embedding'`` rows only. This column
     records which model produced a collection's vectors, so a chat model
@@ -179,7 +178,7 @@ def canonical_embedding_model_name(db: Session, name: str | None) -> str | None:
     counted, one unrelated ``llm`` row named ``NVIDIA/NV-Embed-V2`` would
     make the real embedder look ambiguous and stop being applied.
     ``is_active`` is deliberately not filtered: a deactivated embedder is
-    still the right name for the vectors it already produced (#56 item 9
+    still the right name for the vectors it already produced (the 409
     tells the operator to re-designate and if necessary reactivate
     exactly that model). ``is_active`` decides what may be *chosen*, not
     how an existing name is *spelled*.

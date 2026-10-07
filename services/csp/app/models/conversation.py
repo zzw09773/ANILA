@@ -56,8 +56,8 @@ class Conversation(Base):
     classification_inherited = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    # ── 四級分類共通欄位(四級分類 §5,Slice 3a)────────────────────────────
-    # 舊 boolean classified 保留為 compatibility read model(四級分類 §15
+    # ── 四級分類共通欄位────────────────────────────
+    # 舊 boolean classified 保留為 compatibility read model(
     # Step 3;鏡射規則 classified = level >= 密,由
     # app.modules.policy.service 維護,舊 latch 不破)。
     classification_level = Column(
@@ -170,7 +170,7 @@ class ConversationUserMeta(Base):
 class ConversationShare(Base):
     """P4.3 — named share to a person XOR a department unit.
 
-    Anonymous token links are retired (舊 SYSTEM-MAP §分享). A department
+    Anonymous token links are retired. A department
     share reaches that node and its descendants, resolved at *read* time
     via ``_department_scope_ids`` so later re-parenting is honoured.
     Revoke = delete the row (no more server reads; no recall / no

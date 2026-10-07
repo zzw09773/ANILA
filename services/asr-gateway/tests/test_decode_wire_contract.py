@@ -451,7 +451,7 @@ async def test_openai_error_message_carries_neither_secret(openai_stub):
 
 @pytest.mark.asyncio
 async def test_probe_detail_that_quotes_the_url_drops_userinfo(openai_stub):
-    """探針的 detail 會出現在 `/asr/health` 上(目前未認證,見 runbook F10)。
+    """探針的 detail 會出現在 `/asr/health` 上(目前未認證)。
 
     404 那條分支會把位址原樣引述出來 —— 位址要看得見(不然 operator 不知道
     打去哪裡),貼在裡面的憑證不可以。用一個不存在的子路徑逼出 404。

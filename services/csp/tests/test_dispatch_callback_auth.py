@@ -805,7 +805,7 @@ def test_f3_agent_cannot_launder_victim_job_into_artifact(
     """F-2 face1c: foreign job_id on POST /v1/artifacts must 403.
 
     Own task_id is included so removing the job-scope guard would otherwise
-    land a 201 (constitution §6 needs task/snapshot); the guard is what
+    land a 201 (needs task/snapshot); the guard is what
     keeps the foreign job_id from attaching.
     """
     victim = make_user(db, username="w2_f2_victim_jobbind")

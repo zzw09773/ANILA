@@ -1,4 +1,4 @@
-// Slice 2b-D — 最小 Task 流(已刪的 doc 00 §3 主流程:提出任務 → 建立 Task → 派發)。
+// 最小 Task 流(主流程:提出任務 → 建立 Task → 派發)。
 //
 // POST /api/tasks 的欄位契約以 services/csp/app/schemas/contracts/tasks.py
 // 的 ``TaskCreate`` 為準:title / task_type / source_scope /

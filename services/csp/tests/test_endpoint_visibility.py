@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Endpoint visibility relaxation (模型閘道 §6 / epvis).
+"""Endpoint visibility relaxation (epvis).
 
 Acceptance tests that fail if the single visibility predicate is removed
 or if any face regresses to owner-only / always-redact.
+
 """
 from __future__ import annotations
 

@@ -34,8 +34,8 @@ exit 1
 #   INCLUDE_ASR=1         預設 OFF。設 1 才把 --profile asr 算進有效組態,
 #                         bundle 才含 asr-gateway / asr-decoder。平台開機
 #                         預設沒語音(麥克風要 /asr/health 200 才出現);
-#                         開語音是開機後第二步,見 intranet-image-bundle.md
-#                         §5.1。若預知之後要開、不想再跑一趟打包,打包時才
+#                         開語音是開機後第二步,見 docs/deploy/UPDATE.md。
+#                         若預知之後要開、不想再跑一趟打包,打包時才
 #                         設 1(只帶映像);部署腳本預設仍是 0。
 #                         註:asr-cpu.yml 只改 deploy/device,不改 image 名,
 #                         打包不必帶;內網 .15 有 GPU 時用平台預設即可。

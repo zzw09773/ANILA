@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""PolicyDecision 契約(控制面 §5,Slice 2a)。
+"""PolicyDecision 契約。
 
 ``action`` 九值與 ``decision`` 三值為封閉 enum(控制面 逐字);DB 層
 (app/models/policy_decision.py)存開放 String、append-only,本模組在
 API 邊界 fail-closed 把關。
+
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ class PolicyActorType(str, enum.Enum):
 class PolicyDecisionOut(ApiResponseModel):
     """PolicyDecision 讀出契約(from ORM;append-only,無更新契約)。
 
-    控制面 Done Criteria 4:所有 deny 必有可解釋原因(``reason`` +
+    所有 deny 必有可解釋原因(``reason`` +
     ``matched_policy_ids``)—— service 層強制。
     """
 

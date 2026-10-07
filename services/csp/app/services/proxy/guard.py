@@ -1,9 +1,10 @@
 """Call-time outbound SSRF guard for the CSP proxy.
 
-Split verbatim out of ``app/services/proxy_service.py`` (Doc-10 Slice 1,
-behavior-preserving refactor). SECURITY-CRITICAL: ``_guard_outbound`` is the
+Split verbatim out of ``app/services/proxy_service.py``
+(behavior-preserving refactor). SECURITY-CRITICAL: ``_guard_outbound`` is the
 call-time SSRF re-validation (TOCTOU / DNS-rebinding defense) — moved
 unchanged.
+
 """
 from fastapi import HTTPException
 

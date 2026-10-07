@@ -4,7 +4,7 @@ Unlike :mod:`anila_agent.retrieval.anila_pgvector` (direct Postgres) this goes
 through CSP's authenticated ``POST /api/ingestion/collections/{id}/search``
 endpoint. In-task (service-wrapper) auth is the request-scoped dispatch JWT
 (:mod:`anila_agent.dispatch_token`); CLI / out-of-task may still pass a static
-API key via ``api_key`` / ``from_env`` (Q19 — undecided).
+API key via ``api_key`` / ``from_env``.
 
 PLATFORM CONTRACT: the request shape (``{query, top_k, min_score}``, Bearer
 auth, the ``/api/ingestion/collections/{id}/search`` path on the CSP origin —

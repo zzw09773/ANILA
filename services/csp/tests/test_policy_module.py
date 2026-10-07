@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
 """Slice 2b-B — Policy Engine「裁決紀錄」模組測試(recording only)。
 
-依 控制面 §5(PolicyDecision 九動作 enum、decision 三值、Done Criteria 4:
-所有 deny 必有可解釋原因)與 四級分類 §10(classification ceiling 判定式)。
+PolicyDecision 九動作 enum、decision 三值、所有 deny 必有可解釋原因,
+以及 classification ceiling 判定式。
 本 slice 只做紀錄(record)與純函式 ceiling helper;完整規則引擎在
 Slice 3 / 6。
 
 涵蓋:
 - record_decision happy path(預設值、metadata、task 掛載、round-trip)
 - fail-closed:非法 action / decision / actor_type → ValueError
-- deny 必附 reason(控制面 Done Criteria 4,service 層強制)
+- deny 必附 reason(service 層強制)
 - append-only:模組公開面不得暴露任何改寫 / 刪除 API
 - evaluate_classification_ceiling 全 5 級 × (5 ceiling + None) 真值表
 - API:admin 可列表 + 過濾(action / task_id / decision / 時間範圍 / 分頁),
   非 admin 403,未登入 401
+
 """
 
 from __future__ import annotations
@@ -135,7 +136,7 @@ class TestRecordDecision:
         assert db.query(PolicyDecision).count() == 0
 
     def test_deny_requires_reason(self, db):
-        # 控制面 Done Criteria 4:所有 policy deny 必有可解釋原因
+        # 所有 policy deny 必有可解釋原因
         with pytest.raises(ValueError):
             _record_allow(db, decision=PolicyDecisionVerdict.DENY.value,
                           reason=None)

@@ -425,7 +425,7 @@ def update_user_allowed_agents(
     promoted: list[str] = []
     for aid in new_ids:
         agent = agents_by_id[aid]
-        # OE-1 / 舊 SYSTEM-MAP: register → admin assigns → usable. Assigning a
+        # register → admin assigns → usable. Assigning a
         # registered agent is the admin enablement step (auto-approve); no
         # connection/trace/review ceremony.
         if agent.approval_status == ApprovalStatus.REGISTERED.value:
@@ -771,7 +771,7 @@ def reactivate_user(
 ):
     """Flip ``is_active=True`` only — no token_version / role changes.
 
-    舊 SYSTEM-MAP grants 停用/恢復 to unit admins; reactivation previously
+    grants 停用/恢復 to unit admins; reactivation previously
     lived only inside the admin-only PUT.
     """
     actor_is_unit_admin = False
@@ -854,7 +854,7 @@ def hard_delete_user(
 
     ⚠ P2.7：``audit_logs.actor_user_id`` **不再**被清成 NULL。稽核歸屬原地
     保留（``r1_0027`` 已拿掉那條 FK），否則「刪掉帳號」就成了洗掉自己稽核
-    足跡的合法通道 —— 那正是 四級分類契約 的威脅模型要防的事。
+    足跡的合法通道。
 
     其餘 FK 在 model schema 已設 CASCADE 或 SET NULL，由 DB 自動處理。
     """

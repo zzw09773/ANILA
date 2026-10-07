@@ -1,7 +1,7 @@
 """Downstream identity + credential headers for CSP outbound calls.
 
-Split verbatim out of ``app/services/proxy_service.py`` (Doc-10 Slice 1,
-behavior-preserving refactor). SECURITY-CRITICAL: ``downstream_identity`` /
+Split verbatim out of ``app/services/proxy_service.py``
+(behavior-preserving refactor). SECURITY-CRITICAL: ``downstream_identity`` /
 ``build_agent_headers`` / ``build_model_gateway_headers`` carry the
 employee-id (員編) downstream semantics — moved unchanged.
 
@@ -10,6 +10,7 @@ or plaintext ``X-ANILA-User-*`` headers. Identity rides in a 5-minute
 RS256 Bearer JWT (see ``dispatch_token``). The per-agent csk- cache below
 remains for credential-rotation invalidation hooks (W2/W3); dispatch
 itself no longer reads it.
+
 """
 import asyncio
 import logging

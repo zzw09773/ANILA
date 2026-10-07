@@ -1,29 +1,30 @@
 # -*- coding: utf-8 -*-
 """Slice 6a — classification ceiling check before a model gateway call.
 
-Model Gateway §5 / §8:``allow if task.classification_level <= model.classification_ceiling``。
+``allow if task.classification_level <= model.classification_ceiling``。
 現況機制(``requires_encryption`` + 單向 conversation latch)從不 deny 出向
-呼叫;本模組補上 Model Gateway §8「Classification ceiling check before outbound
+呼叫;本模組補上 「Classification ceiling check before outbound
 call」硬要求 —— 在 CSP Model Gateway 把請求送往上游模型 **之前** 判定,
 違反即 403 zh-TW、記一筆 ``PolicyDecision(action=model.invoke, decision=deny)``
 且 **不** 發出向呼叫。
 
-Effective level 決定順序(Model Gateway §5 / 四級分類 §4):
+Effective level 決定順序:
 - task-linked:讀 Task 的 effective level(呼叫端已把 conversation 等級
   propagate 到 task)。
 - 無 task 但有 latched conversation:讀 conversation 的 effective level。
 - 皆無:``無機密``(fail-safe 起點,唯一不設限的情況)。
 
-PolicyDecision 落列規則(OE-4 / 四級分類契約 L241-242;G4):
-- **deny**:一律記(task-linked 與 legacy 皆記);控制面 Done Criteria 4
+PolicyDecision 落列規則:
+- **deny**:一律記(task-linked 與 legacy 皆記);
   要求 deny 必附可解釋 reason。
 - **allow**:task-linked 一律記;**task-less 僅當** effective level ≥ 營業秘密
-  時記(舊 SYSTEM-MAP 稽核線)。無機密的 legacy allow 不落列,避免灌爆
+  時記(稽核線)。無機密的 legacy allow 不落列,避免灌爆
   ``policy_decisions``。
 
 模組邊界:``app.modules.policy`` 為 module-boundary package,call-time import
 其 package 根公開面(``effective_level`` / ``evaluate_classification_ceiling`` /
 ``record_decision``),不 import 其內部子模組。
+
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def _effective_task_level(
     task_ctx: Optional[TaskRunContext],
     conv_id_int: Optional[int],
 ) -> ClassificationLevel:
-    """Model Gateway §5 的 task effective level（fail-closed 讀取,查無 → 無機密）。"""
+    """的 task effective level（fail-closed 讀取,查無 → 無機密）。"""
     from app.modules.policy import effective_level
 
     if task_ctx is not None:
@@ -98,7 +99,7 @@ def _enforce_ceiling(
     if not allowed:
         reason = (
             f"任務分類等級「{level_str}」超過{target_label}「{target_name}」"
-            f"分類上限「{ceiling}」,依 Model Gateway §5 拒絕出向呼叫"
+            f"分類上限「{ceiling}」,拒絕出向呼叫"
         )
         record_decision(
             db,
@@ -121,7 +122,7 @@ def _enforce_ceiling(
         raise HTTPException(status_code=403, detail=reason)
 
     # pass:task-linked 一律記 allow;task-less 僅當 level ≥ 營業秘密
-    # (四級分類契約 L242 / OE-4 G4)—— 無機密 legacy 量大,不落列。
+    # —— 無機密 legacy 量大,不落列。
     from app.schemas.contracts.classification import classification_audit_required
 
     if task_ctx is not None or classification_audit_required(level):

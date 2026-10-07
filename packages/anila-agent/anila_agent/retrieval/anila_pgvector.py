@@ -143,7 +143,6 @@ class AnilaPgVectorRetriever:
         README 記錄的 ``http://nv-embed-proxy:8000/v1`` 指的是 **model 容器**：
         那支 shim 的 pydantic model 沒宣告這個欄位、預設 ``extra="ignore"``
         → 不會 400，但也不會被讀，查詢照樣落在 documents 張量。
-        見 FAKE-CONTROLS #35。
         """
         import httpx
 

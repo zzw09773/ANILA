@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """P1.1 — departments three-level tree (院 → 所 → 組).
 
-舊 SYSTEM-MAP requires a parent/child department tree so usage rollup (P1.2)
+requires a parent/child department tree so usage rollup
 and unit-admin scoping (P1.3) can walk descendants. The prior schema was a
 flat ``departments`` table with no ``parent_id``.
 
@@ -23,6 +23,7 @@ SQLite receives the matching partial index only via SQLAlchemy
 
 Revision ID: r1_0009
 Revises: r1_0008
+
 """
 
 from typing import Sequence, Union

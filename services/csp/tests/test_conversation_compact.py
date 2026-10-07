@@ -269,7 +269,7 @@ def test_delete_boundary_subtree_clears_summary(client, db):
 
 
 def test_delete_ancestor_clears_compact_when_boundary_is_descendant(client, db):
-    """Boundary is a descendant of the deleted root, not the root itself."""
+    """Boundary is a descendant of the removed root, not the root itself."""
     make_user(db, username="compact-prune-desc")
     headers = _headers(client, "compact-prune-desc")
     created = _open_conversation(client, headers)

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """P4.7 — agent_collection_bindings（agent 多知識庫綁定）.
 
-舊 SYSTEM-MAP §4：「一個 agent 可以綁多個知識庫」。既有
+「一個 agent 可以綁多個知識庫」。既有
 ``agents.bound_collection_id`` 單數 FK 無法表達「通用庫 + 專案庫」；
-OE-2 缺口 G6 / 舊 PLAN P4.7。
+缺口  /。
 
 本 migration 建 junction 表（複合 PK，同 ``user_agent_permissions`` 形狀），
 並把既有單數綁定搬進表內。``agents.bound_collection_id`` 保留為衍生相容
@@ -39,6 +39,7 @@ Downgrade 同樣 ``IF EXISTS``。Trigger／function 用 ``CREATE OR REPLACE``
 
 Revision ID: r1_0017
 Revises: r1_0016
+
 """
 
 from typing import Sequence, Union

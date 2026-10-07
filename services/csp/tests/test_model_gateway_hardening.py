@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slice 6a — Model Gateway Hardening(Model Gateway §2/§3/§5/§8/§9)。
+"""Model Gateway Hardening。
 
 覆蓋:
 1. alembic 單一 head = r1_0005(regex 掃描,不執行遷移)。
@@ -15,6 +15,7 @@ SECRET_KEY 只在本模組的測試期間以 monkeypatch 注入(function-scoped 
 不寫進 module 級 os.environ —— 避免洩漏到別的測試模組(如 test_agent_credentials
 的 SECRET_KEY 缺失基準失敗)。此值非 credential_crypto 的 known-dev-secret,
 故不需 ANILA_ALLOW_DEV_SECRET。
+
 """
 from __future__ import annotations
 
@@ -94,7 +95,7 @@ def test_r1_0005_revises_r1_0004():
         / "migrations" / "versions" / "r1_0005_model_gateway_hardening.py"
     ).read_text(encoding="utf-8")
     assert re.search(r'down_revision[^=]*=\s*["\']r1_0004["\']', mod)
-    # allowed_task_types 明確不加(Model Gateway §2/§11 內部不一致的拍板)。
+    # allowed_task_types 明確不加(內部不一致的拍板)。
     assert "allowed_task_types" not in mod.split("def upgrade")[1]
 
 

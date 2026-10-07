@@ -107,7 +107,7 @@ api_router.include_router(artifacts_router)
 # rather than under the /api/* prefix.
 api_router.include_router(jwks_router)
 api_router.include_router(jwt_keyring_router)
-# 機敏分類盤點(四級分類 §15 Classification Inventory Before Cutover;admin/owner)。
+# 機敏分類盤點(Classification Inventory Before Cutover;admin/owner)。
 api_router.include_router(classification_inventory_router)
 # 院內規章檢索的分數門檻設定 ＋ 校準視圖(admin-tier,整個 router 都關著)。
 api_router.include_router(institutional_kb_router)

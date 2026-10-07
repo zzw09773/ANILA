@@ -1,13 +1,13 @@
-// ANILA Shell 主導覽（Slice 9a）— 已刪的 doc 00 §2 唯一產品入口 + 舊 doc 10 §11 Shell IA。
+// ANILA Shell 主導覽 —  唯一產品入口 +  Shell IA。
 //
 // 一般使用者只看到 ANILA 的入口：對話 / 我的知識庫 / 專案入口 / 用量 / 記憶。
 // （原本另有「產出中心」，但它與「我的知識庫」是同一個 /anilalm 連結，
 //   兩個標籤指同一頁只會讓人以為點錯；產出中心這個產品概念仍在 anilalm 裡。）
 // 治理中心（CSP 控制面）不是一般使用者的日常入口，只對 owner / admin /
-// developer 顯示（舊 doc 00 §2）。標籤一律用產品語彙，不得暴露 ANILALM /
+// developer 顯示。標籤一律用產品語彙，不得暴露 ANILALM /
 // Studio / CSP 等技術品牌名。
 //
-// 外部同源介面（舊 doc 02 §10 nginx 佈局：/anila=shell、/anilalm=知識 SPA、
+// 外部同源介面（nginx 佈局：/anila=shell、/anilalm=知識 SPA、
 // / = 治理中心）以 origin 絕對路徑連結，不可相對於 shell 的 /anila/ base；
 // 因同屬單一 SSO origin，於同一分頁開啟即可共用登入 cookie。
 
@@ -28,7 +28,7 @@ import {
   IconSpark,
 } from "./icons.jsx";
 
-// 舊 doc 00 §2：治理中心 = Admin / Developer / Service Admin 控制面，非一般入口。
+// 治理中心 = Admin / Developer / Service Admin 控制面，非一般入口。
 // 對應 CSP UserRole：owner / admin / developer 可見；user / system 或未知一律隱藏。
 const GOVERNANCE_ROLES = new Set(["owner", "admin", "developer"]);
 
@@ -71,7 +71,7 @@ export function originHref(path) {
 }
 
 /**
- * 使用者入口（舊 doc 00 §2 / 舊 doc 10 §11 順序）。
+ * 使用者入口。
  * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, onOpenMemory?: () => void, currentId?: string }} handlers
  */
 export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" } = {}) {

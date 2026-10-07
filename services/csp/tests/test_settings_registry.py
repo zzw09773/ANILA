@@ -5,9 +5,10 @@ reader 不得再讀本輪刪掉的 CSP 設定名。
 
 ⚠ 2026-08-17：**部署檔與腳本這一側現在也由本檔掃描**（`*.yml`／`*.yaml`／
 `*.sh`／`.env.example`），不再只靠交付報告的人工全樹掃描留證。
-舊寫法只看 `*.py`，守的是**消費端**；而 FAKE-CONTROLS #59 那三顆
+舊寫法只看 `*.py`，守的是**消費端**；而  那三顆
 asr-gateway 死旋鈕長在**生產端**（compose），所以整整活到凍結前才被
 一次文件逐句稽核偶然撞到。守衛的視野要蓋住它自己宣稱要守的範圍。
+
 """
 
 from __future__ import annotations
@@ -282,7 +283,7 @@ def test_removed_settings_have_no_python_environment_reader():
 
 
 def test_removed_settings_have_no_deployment_declaration():
-    """部署檔不得再宣告已退役的設定名(FAKE-CONTROLS #59 的形狀)。
+    """部署檔不得再宣告已退役的設定名(的形狀)。
 
     「沒人讀」那半本來就有 `test_removed_settings_have_no_python_environment_reader`
     在看;這一條看的是**沒人宣告**——維運者編輯的是 compose,不會去讀服務的

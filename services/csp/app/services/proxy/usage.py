@@ -1,8 +1,9 @@
 """Usage serialization + token estimation helpers for the CSP proxy.
 
-Split verbatim out of ``app/services/proxy_service.py`` (Doc-10 Slice 1,
-behavior-preserving refactor). Slice 2b-C adds the task-linked enqueue
+Split verbatim out of ``app/services/proxy_service.py``
+(behavior-preserving refactor). Slice 2b-C adds the task-linked enqueue
 variant (``enqueue_usage_task_linked``).
+
 """
 import json
 import math
@@ -41,9 +42,9 @@ async def enqueue_usage_task_linked(
     (migration r1_0002):
 
     - ``task_id`` — set when the /v1 call carried a valid
-      ``X-ANILA-Task-Id`` (usage 歸戶到 task, Model Gateway AC10).
+      ``X-ANILA-Task-Id`` (usage 歸戶到 task).
     - ``legacy_runtime_call`` — true for /v1 chat calls WITHOUT a task
-      (邊界守則 Slice 2 Done: 舊流量相容但標記).
+      (舊流量相容但標記).
 
     Kept beside the proxy (not in ``usage_writer``) so the legacy enqueue
     path — and every non-proxy caller of it — stays byte-identical.

@@ -30,11 +30,11 @@ _PLATFORM_YML = _REPO_ROOT / "infra" / "compose" / "platform.yml"
 # 每一個都有「文件或程式的錯誤訊息叫操作者去設它」這個理由在後面。
 # 加新的一行進來以前先問:少了它,操作者照做會不會什麼都沒發生?
 _OPERATOR_KNOBS = [
-    # runbook §3.1c 第 1 步 / .env.example。
+    # `.env.example` 有列；沒進 compose，.env 設 1 到不了容器。
     "ANILA_ALLOW_GRPC_ENDPOINT",
-    # runbook §3.1c 第 2 步。
+    # 私網 IP 端點，同上。
     "ANILA_ALLOW_PRIVATE_ENDPOINT",
-    # runbook §3.1b。
+    # http:// 模型端點，同上。
     "ANILA_ALLOW_HTTP_ENDPOINT",
     "ANILA_ALLOW_HTTP_AGENT_ENDPOINT",
     # 入向 Host 白名單仍必須出現在 compose（否則 library 預設 "*" 把檢查關掉）。

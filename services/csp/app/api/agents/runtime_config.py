@@ -67,7 +67,7 @@ def patch_agent_runtime_config(
     CSP still stores a ``runtime_config`` column, but the official agent
     template never started the poller and the poll target itself is now
     removed. Accepting admin edits while nothing applies them was a
-    silent no-op (FAKE-CONTROLS §8). Refuse writes; GET remains for
+    silent no-op. Refuse writes; GET remains for
     read-only inspection.
     """
     raise HTTPException(

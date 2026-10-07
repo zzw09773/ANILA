@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Slice 2a — Task / Trace / Policy 六表基礎(redesign r1 系列首發)。
 
-依領域模型規格(Task 主脊椎、SourceSnapshot 三規則)、
+(Task 主脊椎、SourceSnapshot 三規則)、
 03 §5(PolicyDecision append-only + 可查詢索引)、05 §6 / 09(TraceSpan)。
 
 - tasks / task_runs / source_snapshots / citations / policy_decisions /
@@ -15,6 +15,7 @@
 
 Revision ID: r1_0001
 Revises: 0046
+
 """
 
 from typing import Sequence, Union

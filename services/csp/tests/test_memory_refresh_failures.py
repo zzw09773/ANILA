@@ -109,7 +109,7 @@ async def test_duplicate_fact_keys_merge_and_summary_survives_embed_commit(
 
 
 def test_upsert_merges_duplicate_keys_and_respects_edits_and_tombstones(db):
-    """一批裡的同 key 合併後 upsert；使用者改過或已刪的列不被蓋掉。"""
+    """一批裡的同 key 合併後 upsert；使用者改過或刪掉的列不被蓋掉。"""
     db.autoflush = False
     user = make_user(db, username="mem-merge-upsert")
     long_note = "甲" * 1200

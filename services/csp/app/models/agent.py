@@ -56,7 +56,7 @@ class Agent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, unique=True, index=True)
     owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    # Agent Registry §3 owner_department_id?(可選;SET NULL 保留 agent 於部門刪除後)。
+    # owner_department_id?(可選;SET NULL 保留 agent 於部門刪除後)。
     owner_department_id = Column(
         Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True
     )
@@ -73,15 +73,14 @@ class Agent(Base):
         Integer, ForeignKey("ingestion_collections.id", ondelete="SET NULL"), nullable=True
     )
     endpoint_url = Column(String(500), nullable=False)
-    # Agent Registry §3 optional manifest / healthcheck URLs(GET /.well-known/anila-agent.json
+    # optional manifest / healthcheck URLs(GET /.well-known/anila-agent.json
     # 與 GET /health;nullable —— endpoint_url 之外的可選探點)。
     manifest_url = Column(String(500), nullable=True)
     healthcheck_url = Column(String(500), nullable=True)
     api_version = Column(String(20), nullable=False, default="v1")
-    # Agent Registry §3/§4 agent semver(manifest.version;§13「尚未存在」欄位逐字名
-    # agent_version,對映 manifest 欄位 version)。
+    # agent semver。欄位名 agent_version,對映 manifest 欄位 version。
     agent_version = Column(String(40), nullable=True)
-    # Agent Registry §3 runtime_type 5 值(開放 String,contracts.agents.RuntimeType 把關);
+    # runtime_type 5 值(開放 String,contracts.agents.RuntimeType 把關);
     # 現況(有 endpoint_url)backfill = openai_compatible_agent(r1_0004)。
     runtime_type = Column(
         String(40),
@@ -90,16 +89,16 @@ class Agent(Base):
         server_default="openai_compatible_agent",
     )
     description_for_router = Column(Text, nullable=False, default="")
-    # Agent Registry §3 supported_task_types: string[] / output_schema / allowed_tool_ids: string[]。
+    # supported_task_types: string[] / output_schema / allowed_tool_ids: string[]。
     supported_task_types = Column(JSONValue, nullable=True)
     input_schema = Column(JSONValue, nullable=True)
     output_schema = Column(JSONValue, nullable=True)
     allowed_tool_ids = Column(JSONValue, nullable=True)
     capabilities = Column(JSONValue, nullable=True)
-    # Agent Registry §4 驗過的 manifest 快照(capabilities JSON → formal manifest schema,
-    # Agent Registry §12 Refactor);manifest_url = 來源、manifest_json = 驗證後留存。
+    # 驗過的 manifest 快照(capabilities JSON → formal manifest schema,
+    # Refactor);manifest_url = 來源、manifest_json = 驗證後留存。
     manifest_json = Column(JSONValue, nullable=True)
-    # Agent Registry §4 trace.callback_mode(sse_and_post 等;開放 String,契約層把關)。
+    # trace.callback_mode(sse_and_post 等;開放 String,契約層把關)。
     trace_callback_mode = Column(String(20), nullable=True)
     # health_status: unknown / healthy / unhealthy
     health_status = Column(String(20), nullable=False, default="unknown")
@@ -107,7 +106,7 @@ class Agent(Base):
     # 底層模型停用或刪除時寫入 base_model_offline。
     unavailable_reason = Column(String(40), nullable=True, index=True)
     # approval_status(OE-1,3 值):registered / approved / disabled。
-    # 舊 SYSTEM-MAP:註冊 → admin 指派 → 可用;無連線／trace／安全審查三關。
+    # 註冊 → admin 指派 → 可用;無連線／trace／安全審查三關。
     # r1_0019 將七值殘餘映射至此三態(usable 的 approved 不變)。
     approval_status = Column(
         String(30), nullable=False, default="registered", server_default="registered"
@@ -116,14 +115,14 @@ class Agent(Base):
     audit_level = Column(
         String(20), nullable=False, default="full_trace", server_default="full_trace"
     )
-    # 舊 SYSTEM-MAP §「稽核」:agent 上的列管標記上限(NULL = 無上限);
+    # agent 上的列管標記上限(NULL = 無上限);
     # 執行時 effective_task_level <= ceiling 才允許 dispatch。OE-1 KEEP。
     classification_ceiling = Column(String(20), nullable=True)
     # Compatibility read model: derived from default_classification_level
     # (true iff level >= 密 / RESTRICTED — conversation mirror threshold).
     # Writers must set the level and derive this; do not flip the boolean alone.
     requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")
-    # G9 / 四級分類契約: developer-chosen default level at register/update.
+    # developer-chosen default level at register/update.
     # Source of truth for agent_policy latch (proxy._agent_policy_level).
     # Boolean above is the derived compatibility flag (level >= 密).
     default_classification_level = Column(

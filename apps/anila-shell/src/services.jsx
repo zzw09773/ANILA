@@ -1,4 +1,4 @@
-// 專案入口（Service Platform）— 已刪的 doc 00 §2 first-class 使用者入口 + 舊 doc 07 launch 契約。
+// 專案入口（Service Platform）—  first-class 使用者入口 +  launch 契約。
 //
 // 從 GET /api/services 取得可存取的已註冊服務（7a 後端）；7a 尚未上線時
 // 於 404 退回 legacy GET /api/platform-links。點選服務卡片後：

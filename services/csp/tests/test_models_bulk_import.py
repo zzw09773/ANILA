@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""P4.6 — bulk import from upstream ``/v1/models`` (模型閘道 §6 / OE-2 G5).
+"""— bulk import from upstream ``/v1/models``.
 
 Network is never required: ``_fetch_upstream_model_listing`` is stubbed.
 Covers happy path, endpoint-scoped inheritance, caps, audit sentinel,
@@ -7,6 +7,7 @@ upstream error hygiene, admin-tier grouping key (P4.6b; probe blocked at
 registration), streamed body cap, missing-from-listing, activate-created,
 review round-2 address leaks, and round-3 residues (import guard echo,
 create-cap progress, listing-name length parity).
+
 """
 from __future__ import annotations
 

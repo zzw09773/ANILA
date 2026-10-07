@@ -222,7 +222,7 @@ async def test_only_conversation_id_returns_that_box_and_nothing_else(world):
 
 @pytest.mark.asyncio
 async def test_unscoped_retrieval_still_crosses_conversations(world):
-    """ANILA 側不變 —— 沒下範圍就是跨對話召回,舊 SYSTEM-MAP 給的功能不能被收掉。"""
+    """ANILA 側不變 —— 沒下範圍就是跨對話召回, 給的功能不能被收掉。"""
     from app.services import memory_service
 
     db, user, convs = world

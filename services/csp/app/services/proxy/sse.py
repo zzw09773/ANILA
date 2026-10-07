@@ -1,7 +1,8 @@
 """SSE parsing / aggregation helpers for the CSP proxy.
 
-Split verbatim out of ``app/services/proxy_service.py`` (Doc-10 Slice 1,
-behavior-preserving refactor).
+Split verbatim out of ``app/services/proxy_service.py``
+(behavior-preserving refactor).
+
 """
 import json
 import time

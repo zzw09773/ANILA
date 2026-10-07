@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Task Service(Slice 2b-A)— Task / TaskRun 生命週期與 SourceSnapshot 編排。
 
-依 領域模型(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)與
+(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)與
 控制面(admin/owner 全域 bypass 必寫 audit)。風格對齊
 ``app/services/conversation_service.py``:module-level functions on Session。
 
@@ -19,6 +19,7 @@ SourceSnapshot 三規則落地:
 - ``LookupError``     → 404(任務 / 使用者不存在)
 - ``PermissionError`` → 403(非 requester 且非 admin tier)
 - ``ValueError``      → 422 / 400(非法狀態轉移、未知 enum、宣告矛盾)
+
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ── 狀態機(領域模型 十值)────────────────────────────────────────────────────
+# ── 狀態機(十值)────────────────────────────────────────────────────
 # 合法轉移表;不在表內(含終態出邊與自轉移)一律非法 → ValueError。
 _LEGAL_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.DRAFT: frozenset({TaskStatus.SUBMITTED, TaskStatus.CANCELLED}),
@@ -140,8 +141,8 @@ def create_task(
     """建立 Task + 對應 SourceSnapshot(規則 1:必指向 snapshot 或明確
     宣告無來源 —— 兩者都以一筆 snapshot 落地)。
 
-    - trace_id 由 model default 產生(領域模型 驗收 2)。
-    - 初始狀態 = draft(領域模型 狀態機起點)。
+    - trace_id 由 model default 產生(驗收 2)。
+    - 初始狀態 = draft(狀態機起點)。
     - task.classification_level = max(payload 宣告, snapshot 導出分類)。
     """
     requester = db.query(User).filter(User.id == requester_user_id).first()

@@ -60,7 +60,7 @@ class Message(Base):
     rating_score = Column(Integer, nullable=True)
     # 這次評分寫入的時間。NULL＝遷移前的舊列，未讀通知不把它算進去。
     rated_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    # ── 四級分類共通欄位(四級分類 §5,Slice 3a)────────────────────────────
+    # ── 四級分類共通欄位────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )

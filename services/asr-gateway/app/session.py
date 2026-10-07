@@ -1,6 +1,6 @@
 """單一 ASR session 的 async 編排:VAD event → 解碼 → WS 訊息。
 
-這一層負責規劃書 §2.2「async 編排層必守規則」的七條。核心是**單一 worker
+這一層負責 async 編排層必守的七條。核心是**單一 worker
 task**:它讓「同時最多一個 in-flight 解碼」成為結構上的保證,而不是靠紀律
 維持的約定 —— 原版是靠「每 session 一條 thread + Condition」達到同一件事。
 
@@ -13,7 +13,7 @@ task**:它讓「同時最多一個 in-flight 解碼」成為結構上的保證,�
 2. **stale partial 是真的會發生**,即使 worker 是單執行緒的:`Discard` 來自
    `feed()`(WS 接收迴圈),與 worker 的 await 並行。partial 解碼途中該 utt
    可能已被 discard 掉 → 回來時必須丟棄,否則預覽文字會在定稿後復活且永遠
-   清不掉(協定不變式,見 §2.2)。
+   清不掉(協定不變式)。
 3. **棄單不會被取消**:httpx timeout 放棄的 partial,decoder 仍在 lock 裡解完。
    規則 1(final 優先)與 2(單 in-flight + 塌縮)就是為了讓棄單數量有上界。
 """
@@ -53,7 +53,7 @@ def make_text_filter(mode: str) -> Callable[[str], str]:
     """繁體後處理。預設 `off` = 原樣回傳。
 
     ⚠ 不要預設開:實測 whisper medium 在 1096 句真實繁中語料的簡體率是 0%,
-    而 OpenCC 對正確繁體的誤傷率 6~10%(見規劃書 §10)。opencc 不在 runtime
+    而 OpenCC 對正確繁體的誤傷率 6~10%。opencc 不在 runtime
     相依裡,設了非 off 卻沒裝就 ImportError —— 這是刻意的 fail-loud。
     """
     if mode == "off":
@@ -61,7 +61,7 @@ def make_text_filter(mode: str) -> Callable[[str], str]:
     if mode == "s2twp":
         raise ValueError(
             "ASR_OPENCC_MODE=s2twp 被明令禁止:實測對正確繁體誤傷 10.58%"
-            "(會把「類型」轉成「型別」)。見規劃書 §10。"
+            "(會把「類型」轉成「型別」)。"
         )
     import opencc  # noqa: PLC0415 — 只在真的要用時才 import
 

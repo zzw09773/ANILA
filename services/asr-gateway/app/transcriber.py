@@ -85,7 +85,6 @@ def looks_degenerate(text: str) -> bool:
     ⚠ 已知缺口:40-byte 下限讓短重複漏網(例:`詞曲 曲曲 曲曲 曲曲 曲曲` 只有
     31 bytes)。**先不要動這個數字** —— 那是對合成正弦波過擬合;真實輸入還有
     webrtcvad + RMS 兩道閘門在前面。要改請先用真實語音量測。
-    見 ASR 規劃書 §11。
     """
     data = text.encode("utf-8")
     if len(data) < 40:

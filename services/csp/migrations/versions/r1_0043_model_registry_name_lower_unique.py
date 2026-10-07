@@ -4,7 +4,7 @@
 ``model_registry.name`` has been UNIQUE since 0001, but PostgreSQL's default
 UNIQUE is case-sensitive. ``nvidia/NV-embed-V2`` and ``nvidia/nv-embed-v2``
 could both exist; retrieval and designation then depend on which spelling
-the caller happened to use (r1_0032 documented this as #56 item 8).
+the caller happened to use. r1_0032 already recorded that ambiguity.
 
 Adds a functional unique index on ``lower(name)``. The exact UNIQUE(name)
 stays — lookups by the stored spelling still use it.

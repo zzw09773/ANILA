@@ -1,6 +1,6 @@
 """Long-term memory embedding is a deliberate non-metered call.
 
-``memory_service._embed`` used to bypass the proxy entirely — the deleted
+``memory_service._embed`` used to bypass the proxy entirely — an earlier
 docstring called it "a layer we don't need for an internal background job" —
 and therefore wrote no ``token_usage`` rows. Routing it through
 ``proxy_request`` to share the query/document decision point silently turned

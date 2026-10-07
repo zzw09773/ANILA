@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Slice 2a — Task / Policy schema 基礎測試(D1 已卸 TraceSpan)。
 
-依領域模型規格(Task 是主脊椎、SourceSnapshot
+(Task 是主脊椎、SourceSnapshot
 三規則)、03(PolicyDecision 九動作 enum、append-only)。
 
 涵蓋:
@@ -12,6 +12,7 @@
 - 契約 enum:Task 狀態機 round-trip、PolicyDecision 九動作、決策三值
 - classification_level 新列預設 = 無機密
 - migration chain:恰好一個 alembic head,且屬 r1_ 命名空間(純文字解析,免 DB)
+
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ class TestTaskCrud:
         assert task.legacy_runtime_call is False
         assert task.classification_level == UNCLASSIFIED
         assert task.created_at is not None
-        # 領域模型 驗收:建立 Task 必產生 trace_id
+        # 驗收:建立 Task 必產生 trace_id
         assert task.trace_id
 
     def test_task_trace_id_unique(self, db):

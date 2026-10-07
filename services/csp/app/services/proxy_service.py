@@ -1,6 +1,6 @@
 """Proxy service facade: forward requests to model backends with retry + timeout.
 
-Doc-10 Slice 1 refactor: the implementation was split — verbatim,
+refactor: the implementation was split — verbatim,
 behavior-preserving — into the ``app.services.proxy`` package:
 
 - ``app.services.proxy.headers``  — downstream identity (員編) + credential
@@ -17,6 +17,7 @@ NOTE for tests: monkeypatching module-level *functions* on THIS module does
 not reach the implementation — patch ``app.services.proxy.service`` (etc.)
 instead. Patching attributes on the shared singleton objects re-exported
 here (``settings``, the ``httpx`` module) still propagates as before.
+
 """
 import logging
 

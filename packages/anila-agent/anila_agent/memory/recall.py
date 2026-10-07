@@ -109,7 +109,7 @@ def make_embed_fn(
     README 記錄的 ``ANILA_EMBED_BASE_URL=http://nv-embed-proxy:8000/v1`` 指的是
     **model 容器**:那支 shim 的 pydantic model 沒宣告這個欄位、預設
     ``extra="ignore"`` —— 送過去不會壞(不是 400),但也不會被讀,查詢一樣落在
-    documents 張量。這條差異記在 ``FAKE-CONTROLS`` #35。
+    documents 張量。這條差異。
     """
 
     async def _post(

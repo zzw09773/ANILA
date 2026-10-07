@@ -155,7 +155,7 @@ def test_hard_delete_keeps_audit_attribution(client: TestClient, db):
 
     先前的行為是把 ``audit_logs.actor_user_id`` 清成 NULL（FK 沒設 ondelete，
     users.py 手動 UPDATE）。那等於「刪掉自己的帳號」就是一條合法的、把自己
-    從稽核帳上抹掉的通道 —— 正是 四級分類契約 威脅模型裡那個人想要的。
+    從稽核帳上抹掉的通道 —— 正是  威脅模型裡那個人想要的。
     r1_0027 拿掉 FK，值原地保留。
     """
     _make_owner(db)

@@ -99,7 +99,7 @@ def _normalized_caption_model(db: Session, name: str | None) -> str | None:
     return cleaned
 
 # 唯一「可以被 ANILA 檢索」的密等。取自 enum,不是抄一份字串常數——
-# 四級的儲存拼法只有契約層說了算(四級分類契約)。
+# 四級的儲存拼法只有契約層說了算。
 _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 
 
@@ -406,7 +406,7 @@ def create_collection(
         designated_platform_embedding,
     )
 
-    # FAKE-CONTROLS #56: this column is compared against model_registry
+    # this column is compared against model_registry
     # names, and migration r1_0018 copied it onto chunk provenance. A
     # caller-supplied spelling that differs only in case is therefore a
     # corpus that silently retrieves nothing, so store the registry's

@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Slice 8a — CSP artifact contract(系統架構 ArtifactJob、領域模型 Artifact/
-Version/Export、四級分類 §5/§10、邊界守則 §12 邊界)。
+"""CSP artifact contract(ArtifactJob、Artifact / ArtifactVersion / ExportRecord)。
 
 鎖住凍結的 wire 契約(平行 worker 據此建 Studio 端):
 
 - ``POST /v1/artifact-jobs``(service token)—— 冪等 upsert(job_id)。
 - ``PATCH /v1/artifact-jobs/{job_id}``(service token)—— 狀態機(非法轉移
   409、未知值 422、查無 404)。
-- ``POST /v1/artifacts``(service token)—— binding 規則 422(constitution
-  §6)、分類繼承 effective = max(explicit, task, snapshot)(單向,不降級)。
+- ``POST /v1/artifacts``(service token)—— binding 規則 422(必須綁 task
+  或 source_snapshot)、分類繼承 effective = max(explicit, task, snapshot)(單向,不降級)。
 - ``POST /v1/artifacts/{id}/versions``(service token)—— 版本遞增 + 繼承重驗。
 - ``POST /v1/artifacts/{id}/exports``(user JWT / service token)—— 匯出
-  policy gate(四級分類契約 L241-242，原 SYSTEM-MAP §8):allow iff artifact.level ≤ 營業秘密;
+  policy gate:allow iff artifact.level ≤ 營業秘密;
   deny → 403 + deny PolicyDecision、不落 allow 匯出列。
 - ``GET /api/artifacts`` + ``/{id}``(user JWT)—— owner-scope 治理讀面。
 
 /v1 寫入面僅接受 service token:使用者 JWT → 403(不開放使用者直建
 artifact/job);匿名 → 401。
+
 """
 
 from __future__ import annotations
@@ -203,7 +203,7 @@ class TestServiceTokenOnly:
         assert resp.status_code == 401
 
 
-# ── binding 規則(constitution §6)─────────────────────────────────────────────
+# ── binding 規則─────────────────────────────────────────────
 
 
 class TestBindingRule:

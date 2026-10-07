@@ -1,6 +1,6 @@
 // @source-text-guard —— 讀原始碼的字串比對（第三級強度），第二條 it 才是行為：vitest 裡真的拿得到 define 注入的版本。
 // 逐頁走查 2026-09-02：設定 → 關於 寫著「v0.2.0」，而這條線已重定義為 v1.0.0
-// （已刪的 docs/VERSIONING.md）。版本字只准有一個來源：package.json，由 vite define 注入。
+// 。版本字只准有一個來源：package.json，由 vite define 注入。
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";

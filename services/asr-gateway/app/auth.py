@@ -199,7 +199,7 @@ async def authenticate(token: str) -> CurrentUserIdentity:
 async def is_still_valid(identity: CurrentUserIdentity) -> bool:
     """長連線的定期重查(每 REVOCATION_RECHECK_SECONDS 一次)。
 
-    只查撤銷,不重驗 exp —— token 過期是規劃書 §2.2 明列的接受決策(握手驗
+    只查撤銷,不重驗 exp —— token 過期是接受的決策(握手驗
     一次,session 上限 300s 遠短於 access token 的 60 分鐘)。**若日後把
     session 上限調大,必須回頭重評這條。**
 

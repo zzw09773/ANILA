@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lint-boundaries — CSP module boundary gate(邊界守則 §14 CI Gates)。
+# lint-boundaries — CSP module boundary gate(CI Gates)。
 # 以 import-linter 檢查 services/csp/.importlinter 的邊界契約:
 #   1. app.modules.{tasks,policy,launch} 互不 import(independence)
 #   2. app.modules 不得 import app.api(api → modules 單向分層)

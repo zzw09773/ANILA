@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Policy Engine 治理 API(控制面 §11、四級分類 §7/§8/§12、API 契約 §11)。
+"""Policy Engine 治理 API。
 
 三組面(掛在同一個 package 根 ``router`` 下,各帶自己的前綴):
 
 1. ``GET /api/policy-decisions`` —— 政策裁決唯讀查詢(admin tier;沿
    audit-logs 慣例)。append-only:只有 GET,永遠不新增 PUT/PATCH/DELETE。
 2. ``/api/classification/declassification-requests`` —— 降級申請三段式
-   (API 契約 §11 路由形狀:建立 / 列表 / approve / reject)。申請僅 Admin
+   (路由形狀:建立 / 列表 / approve / reject)。申請僅 Admin
    (ADR-0005「上鎖後僅 Admin 可申請降級」);裁決繞開平台角色,改由
-   「機密審批權責」把關(§7.2 脫鉤)。API 層在 service guard 之上再明確
+   「機密審批權責」把關(與平台角色脫鉤)。API 層在 service guard 之上再明確
    暴露:申請人 ≠ 核准/駁回人(403)、核准人無權責 → 申請維持 pending
    + 403(fail-closed)、紙本核定缺文號/官職姓名 → 422。每次裁決落一筆
    ``PolicyDecision``(action=``classification.downgrade_request`` —— 九值
    enum 中唯一的分類動作,無 ``declassify`` 這種值)。
 3. ``/api/classification-authorities`` —— 「機密審批權責」指派管理
-   (四級分類 §7.3 信任錨、§12)。授予/撤銷 owner-only(§7.2 owner 管理指派)、
+   (信任錨)。授予/撤銷 owner-only(owner 管理指派)、
    授予必附核定依據(公文文號/簽呈)、雙人控制(owner 登錄 → 另一名
    admin 以 ``/{id}/confirm`` 確認才生效;登錄人 ≠ 確認人)。撤銷為 soft
    (寫 ``revoked_at`` + ``is_active=false``)。指派生效 = ``is_active and
@@ -25,6 +25,7 @@
 避開 mutator 標記(append-only 公開面約束,見 tests/test_policy_module.py)。
 service 的降級三件組與裁決紀錄由本 module 內部 import;audit / auth 走
 ``app.services``(與 service.py 同慣例,不觸犯 modules→api 分層)。
+
 """
 
 from __future__ import annotations
@@ -109,7 +110,7 @@ def list_policy_decisions(
     return query.offset(offset).limit(limit).all()
 
 
-# ── 降級申請(四級分類 §7/§8/§12、API 契約 §11)─────────────────────────────────
+# ── 降級申請─────────────────────────────────
 
 _declassification_router = APIRouter(
     prefix="/api/classification/declassification-requests",
@@ -186,7 +187,7 @@ def _decide_and_record(
             status_code=409,
             detail=f"降級申請已裁決(狀態 {request.status}),不可重複裁決",
         )
-    # 雙人原則:申請人 ≠ 核准/駁回人(四級分類 §7 變體 A,無例外)。
+    # 雙人原則:申請人 ≠ 核准/駁回人(無例外)。
     if approver.id == request.requested_by_admin_id:
         raise HTTPException(
             status_code=403,
@@ -256,7 +257,7 @@ def approve_declassification_request(
     approver: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DeclassificationRequest:
-    """核准降級(§7.2:核准權來自「機密審批權責」,與平台角色脫鉤)。"""
+    """核准降級(核准權來自「機密審批權責」,與平台角色脫鉤)。"""
     return _decide_and_record(
         db,
         request_id=request_id,
@@ -291,7 +292,7 @@ def reject_declassification_request(
     )
 
 
-# ── 「機密審批權責」指派(四級分類 §7.3 信任錨、§12)──────────────────────────
+# ── 「機密審批權責」指派(信任錨)──────────────────────────
 
 _authorities_router = APIRouter(
     prefix="/api/classification-authorities", tags=["機密審批權責"]
@@ -335,7 +336,7 @@ def grant_classification_authority(
     """登錄一筆權責指派(owner-only);待另一名 admin 確認才生效(雙人控制)。
 
     授予必附核定依據(公文文號/簽呈);登錄後 ``is_active=false`` →
-    ``has_declassification_authority`` 尚未視為生效(§7.3)。
+    ``has_declassification_authority`` 尚未視為生效。
     """
     if not (body.authority_reference and body.authority_reference.strip()):
         raise HTTPException(
@@ -380,7 +381,7 @@ def confirm_classification_authority(
     confirmer: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> ClassificationAuthorityOut:
-    """第二人確認權責指派(§7.3 雙人控制:登錄人 ≠ 確認人),確認後生效。"""
+    """第二人確認權責指派(雙人控制:登錄人 ≠ 確認人),確認後生效。"""
     row = db.get(ClassificationAuthorityAssignment, assignment_id)
     if row is None:
         raise HTTPException(status_code=404, detail="找不到權責指派")

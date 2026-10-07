@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Slice 2b-A — Task Service module(app.modules.tasks)測試。
 
-依 領域模型(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)、
+(十值狀態機、SourceSnapshot 三規則、trace_id 必產生)、
 控制面(admin/owner bypass 必寫 audit)、API 契約(Task API:POST /api/tasks、
 GET /api/tasks/{task_id};list / runs 為 Slice 2b-A 附加讀面)。
 
@@ -12,6 +12,7 @@ GET /api/tasks/{task_id};list / runs 為 Slice 2b-A 附加讀面)。
 - run_sequence 遞增與 start/finish 生命週期
 - ensure_task_access:requester / 他人 / admin bypass(附 audit)/ 不存在
 - API:POST→GET roundtrip、401、403、list 過濾、admin user 過濾、runs
+
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ class TestCreateTask:
             ),
         )
         assert task.id is not None
-        assert task.trace_id  # 領域模型 驗收 2:建立必產生 trace_id
+        assert task.trace_id  # 驗收 2:建立必產生 trace_id
         assert task.status == TaskStatus.DRAFT.value
         assert task.requester_user_id == user.id
 

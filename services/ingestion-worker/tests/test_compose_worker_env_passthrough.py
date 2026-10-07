@@ -29,10 +29,10 @@ _PLATFORM_YML = _REPO_ROOT / "infra" / "compose" / "platform.yml"
 # 每一個都有「文件或錯誤訊息叫操作者去設它」這個理由在後面。
 # 加新的一行進來以前先問:少了它,操作者照做會不會什麼都沒發生?
 _WORKER_OPERATOR_KNOBS = [
-    # runbook §3.1c 排錯表的「縮小批次」就是縮這一個;`.env.example` 也列著。
+    # 「縮小批次」就是縮這一個;`.env.example` 也列著。
     # 少了它,那句指示又變回一個沒有旋鈕的動作。
     "EMBEDDING_BATCH_SIZE",
-    # 同一條不變式的另一項:runbook §3.1c 印著
+    # 同一條不變式的另一項:
     # 「EMBEDDING_BATCH_SIZE × 每段延遲 < min(這個, csp 的 EMBEDDING_TIMEOUT)」。
     # 2026-08-07 以前它到不了容器 —— 一條印出來的不變式,只有一項的旋鈕接得到
     # 容器,跟「有按鈕但後端收不到」是同一個形狀。

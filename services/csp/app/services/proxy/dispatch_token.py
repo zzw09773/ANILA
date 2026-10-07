@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Per-dispatch short-lived identity JWT (P2.1 / 舊 SYSTEM-MAP §身分).
+"""Per-dispatch short-lived identity JWT.
 
 CSP signs one 5-minute RS256 token on every agent dispatch. Claims are the
 spec's three identity fields (``user_id``, ``department``, ``agent_id``)
@@ -15,6 +15,7 @@ fixtures go through ``build_dispatch_claims`` instead.
 W2 (this module's verify half): in-task agent→CSP callbacks present the
 same token; CSP verifies it with the local kid→public-key path already
 used by ``decode_token`` (not a copied JWKS client).
+
 """
 
 from __future__ import annotations

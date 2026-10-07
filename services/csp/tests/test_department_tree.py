@@ -1,8 +1,9 @@
 """P1.1 — department three-level tree (院 → 所 → 組) API tests.
 
-Pins 舊 PLAN P1.1 acceptance: build a three-level tree, GET /tree returns
+Pins  acceptance: build a three-level tree, GET /tree returns
 the nested shape, GET /{院}/descendants returns {所, 組}; depth/cycle/
 deactivation guards return 400 with zh-TW messages.
+
 """
 from __future__ import annotations
 

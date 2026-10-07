@@ -6,7 +6,6 @@
  * 同步另一邊。** 純錄音/WS/協定邏輯不在這裡,在共用的 asrStream.js(兩個 app
  * 各 vendor 一份相同副本)。
  *
- * 規格見已刪的 ASR 規劃書 §2.5。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';

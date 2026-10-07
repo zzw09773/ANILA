@@ -2,9 +2,9 @@
 """Artifact Service(Slice 8a)—— artifact_jobs / artifacts / artifact_versions
 / export_records 的持久化、binding 規則與治理讀面。
 
-依 系統架構(ArtifactJob 逐欄、§8 「Studio restart job 不丟失」)、領域模型
-(Artifact / ArtifactVersion / ExportRecord、binding 規則)、四級分類(§5 四共通
-分類欄位、§10 匯出判定)。
+ArtifactJob 逐欄,以及「Studio restart job 不丟失」。
+Artifact / ArtifactVersion / ExportRecord 的 binding 規則、四共通分類欄位,
+以及匯出判定(密等 ≤ 營業秘密才允許)。
 
 **模組邊界(independence)**:本 module 只碰 ``app.models`` 與
 ``app.schemas.contracts``,**不 import** ``app.modules.policy`` /
@@ -18,6 +18,7 @@
 - ``LookupError``     → 404(job / artifact 不存在)
 - ``PermissionError`` → 403(非 owner 且非 admin tier)
 - ``ValueError``      → 422 / 409(binding 缺失、非法 job 狀態轉移)
+
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ── job 狀態機(系統架構 四值)─────────────────────────────────────────────────
+# ── job 狀態機(四值)─────────────────────────────────────────────────
 # 合法轉移:非終態允許自轉移(進度更新);終態(completed/failed)無出邊。
 _LEGAL_JOB_TRANSITIONS: dict[ArtifactJobStatus, frozenset[ArtifactJobStatus]] = {
     ArtifactJobStatus.QUEUED: frozenset({
@@ -92,7 +93,7 @@ def resolve_owner(
 def inherited_level(
     db: Session, *, source_task_id: int | None, source_snapshot_id: int | None
 ) -> ClassificationLevel | None:
-    """讀 task / snapshot 的分類等級,回其 max(四級分類 §5 傳遞公式的來源項)。
+    """讀 task / snapshot 的分類等級,回其 max(傳遞公式的來源項)。
 
     只讀不閂鎖 —— 由 orchestrator 交給 policy 核心做單向 latch。兩者皆無
     → None(binding 規則另由 :func:`create_artifact` 把關)。
@@ -194,7 +195,7 @@ def create_artifact(
 ) -> Artifact:
     """建立 artifact 列(不含 version);binding 規則 fail-closed。
 
-    binding(constitution §6):``source_task_id`` 或 ``source_snapshot_id``
+    binding:``source_task_id`` 或 ``source_snapshot_id``
     至少一,否則 ``ValueError``(router → 422)。``initial_level`` 先落
     explicit 宣告值,繼承升級由 orchestrator 走 policy 單向閂鎖(才會寫
     ClassificationEvent);故這裡不可預先灌 effective,否則閂鎖成 no-op、
@@ -202,7 +203,7 @@ def create_artifact(
     """
     if source_task_id is None and source_snapshot_id is None:
         raise ValueError(
-            "artifact 必須綁 task 或 source_snapshot(constitution §6);"
+            "artifact 必須綁 task 或 source_snapshot;"
             "兩者皆缺,拒絕落地"
         )
     artifact = Artifact(

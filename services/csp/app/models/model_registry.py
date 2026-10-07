@@ -21,7 +21,7 @@ class ModelRegistry(Base):
     model_type = Column(String(20), nullable=False)  # 'llm' / 'embedding' / 'agent' / 'image' / 'asr'
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(10), default="v1")  # 'v1' / 'v2'
-    # Slice 6a (Model Gateway §2): 'openai_compatible' / 'custom_adapter'. formalize 既
+    # 'openai_compatible' / 'custom_adapter'. formalize 既
     # 有全 openai-compatible 上游的隱含契約;custom adapter 之後才落地。
     protocol = Column(
         String(30), nullable=False, default="openai_compatible",
@@ -42,21 +42,21 @@ class ModelRegistry(Base):
     # designation time — never a configured guess.
     is_platform_embedding = Column(Boolean, nullable=False, default=False)
     embedding_native_dim = Column(Integer, nullable=True)
-    # Slice 6a (Model Gateway §9 / 領域模型 §32 拍板五態):
+    # (拍板五態):
     # unknown / healthy / degraded / unhealthy / disabled。舊三值
     # (online/connecting/offline) 由 r1_0005 就地遷移;'disabled' 由讀取端
     # 依 is_active 呈現(見 health_checker.normalize_health_status)。
     health_status = Column(String(20), default="unknown")
     health_checked_at = Column(DateTime(timezone=True), nullable=True)
-    # Slice 6a (Model Gateway §3): per-model API key 的 enc::v1:: envelope(與 csk- /
+    # per-model API key 的 enc::v1:: envelope(與 csk- /
     # ingestion 憑證同一套 credential_crypto)。NULL = 退回全域
     # MODEL_GATEWAY_API_KEY(MVP fallback)。永不隨 API 回傳明文,GET 只露
     # ``has_api_key: bool``。
     api_key_secret_ref = Column(Text, nullable=True)
-    # Slice 6a (Model Gateway §5): 分類上限(四級字串);NULL = 不設限。出向呼叫前的
+    # 分類上限(四級字串);NULL = 不設限。出向呼叫前的
     # ceiling 檢查依此判 allow/deny(app/services/proxy/ceiling.py)。
     classification_ceiling = Column(String(20), nullable=True)
-    # Slice 6a (Model Gateway §2): supports_* 能力宣告。
+    # supports_* 能力宣告。
     supports_streaming = Column(Boolean, nullable=False, default=True)
     supports_json_schema = Column(Boolean, nullable=False, default=False)
     supports_tools = Column(Boolean, nullable=False, default=False)
@@ -84,7 +84,7 @@ class ModelRegistry(Base):
     # NULL = no platform cap. A positive value is the fair-queue slot count.
     max_concurrent = Column(Integer, nullable=True)
 
-    # Slice 6a (Model Gateway §2): owner department（SET NULL）。
+    # owner department（SET NULL）。
     owner_department_id = Column(
         Integer,
         ForeignKey("departments.id", ondelete="SET NULL"),

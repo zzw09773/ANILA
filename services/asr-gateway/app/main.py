@@ -4,7 +4,7 @@
 所以對外是 `/asr/stream`、`/asr/health`。compose healthcheck 與 M4 驗證都要
 打 `/asr/health` —— 打 `/health` 得到 404 是路徑錯,不是服務掛了。
 
-WS 協定見規劃書 §2.2。close code:
+WS 協定的 close code:
   4401 權杖無效/過期/被撤銷(重新登入可解)
   4408 session 逾時(先 flush 再關,不會丟掉最後一句)
   4409 併發:同一 user 開了新連線,舊的被踢掉

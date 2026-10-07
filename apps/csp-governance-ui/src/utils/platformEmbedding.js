@@ -6,7 +6,7 @@
 // `index_mismatch_warning` 一度是「送了但沒人收」的欄位：後端寫了、
 // ModelsView 只讀 `truncation_warning` 與 `measured_native_dim`，
 // 於是把整個知識庫索引作廢的管理員，看到的是一個綠色的成功提示。
-// 那正是已刪的 FAKE-CONTROLS 清單上那種「按了、沒報錯、什麼也沒發生」。
+// 那正是 清單上那種「按了、沒報錯、什麼也沒發生」。
 //
 // 抽成純函式之後，「什麼情況要用什麼語氣講什麼話」變成可以直接斷言的東西，
 // 而不是藏在一個沒有 vitest 的 .vue 裡。`tests/platformEmbedding.test.mjs`

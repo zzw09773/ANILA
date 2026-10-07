@@ -1,9 +1,10 @@
 """Proxy orchestration: forward requests to model backends with retry + timeout.
 
-Split out of ``app/services/proxy_service.py`` (Doc-10 Slice 1,
-behavior-preserving refactor). ``proxy_request`` / ``proxy_stream`` /
+Split out of ``app/services/proxy_service.py``
+(behavior-preserving refactor). ``proxy_request`` / ``proxy_stream`` /
 ``build_default_anila_meta`` bodies are verbatim; the helpers they call now
 live in the sibling modules of this package (headers / sse / usage / guard).
+
 """
 import asyncio
 import base64
@@ -847,7 +848,7 @@ async def _proxy_request_impl(
     dashboards.
 
     Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
-    headers only (Agent Registry §4; Model Gateway AC5 forbids them toward the model
+    headers only (forbids them toward the model
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_request``
     wrapper.
@@ -911,7 +912,7 @@ async def _proxy_request_impl(
     # correct for both. Preserve the api_version=="v2" embedding special case
     # (strip any trailing version segment first so …/v1 + v2 does not become
     # …/v1/v2/embeddings). api_version is a URL path prefix only — not a
-    # wire protocol (see FAKE-CONTROLS).
+    # wire protocol.
     if model.api_version == "v2" and "embedding" in endpoint_path:
         target_url = join_upstream_path(
             strip_trailing_api_version(model.endpoint_url),
@@ -956,7 +957,7 @@ async def _proxy_request_impl(
             api_key_id=api_key_id,
         )
     else:
-        # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
+        # model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
         req_headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
@@ -1415,7 +1416,7 @@ async def _proxy_stream_impl(
     performs a server-side token estimate from request/response text.
 
     Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
-    headers only (Agent Registry §4; Model Gateway AC5 forbids them toward the model
+    headers only (forbids them toward the model
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
     """
@@ -1441,7 +1442,7 @@ async def _proxy_stream_impl(
             api_key_id=api_key_id,
         )
     else:
-        # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
+        # model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
         headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。

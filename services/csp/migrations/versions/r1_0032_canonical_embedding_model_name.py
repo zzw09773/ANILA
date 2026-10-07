@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""#56 — embedding 模型名稱的大小寫碰撞：把資料改成註冊表的拼法。
+"""embedding 模型名稱的大小寫碰撞：把資料改成註冊表的拼法。
 
 背景
 ====
@@ -26,9 +26,9 @@ migration ``r1_0018`` 又把那個欄位原封不動抄到
 候選只取 ``model_type='embedding'`` 的註冊列——這幾欄記的是「哪顆模型產生了這個向量」,
 聊天模型不可能產生,而一列剛好同名的 llm 會讓 distinct 數變 2、把真正的 embedder 整批跳過。
 **故意不濾 `is_active`**:已停用的 embedder 仍然是它產出的那些列的正確名字
-(#56 第 9 條與 409 訊息都是叫操作者重新指定回那顆、必要時重新啟用)。
+(409 訊息叫操作者重新指定回那顆、必要時重新啟用)。
 只在**恰好一種**註冊拼法能對上時才改寫。``model_registry.name`` 沒有
-大小寫不敏感的唯一性(#56 第 8 條),兩個只差大小寫的列建得出來;
+大小寫不敏感的唯一性,兩個只差大小寫的列建得出來;
 真的碰到就不猜,原值留著。
 
 **沒改的也要說**:每張表跑完會再數兩個數字並記一行——「拼法有歧義而不敢猜」的列數、
@@ -41,7 +41,7 @@ RLS
 policy 鍵在 ``anila.collection_id`` GUC(0019 / 0037)。FORCE 表示
 連 table owner 都吃 policy,所以**這支不假設 migration 角色是
 superuser**:逐一集合設 GUC 再改寫,非 superuser 角色跑起來結果相同。
-``conversation_memory_chunks`` 沒有 RLS(見 FAKE-CONTROLS #52),直接改。
+``conversation_memory_chunks`` 沒有 RLS,直接改。
 
 可逆性
 ======
@@ -53,6 +53,7 @@ superuser**:逐一集合設 GUC 再改寫,非 superuser 角色跑起來結果相
 Revision ID: r1_0032
 Revises: r1_0031
 Create Date: 2026-08-07
+
 """
 
 from __future__ import annotations
@@ -81,14 +82,14 @@ _OLD_COLUMN_DEFAULT = "nvidia/NV-embed-V2"
 # embedder's rows are silently skipped.
 #
 # ``is_active`` is deliberately NOT filtered. A deactivated embedder is
-# still the correct name for the vectors it already produced — #56 item 9
-# and the 409 message both tell the operator to re-designate (and if
+# still the correct name for the vectors it already produced. The 409
+# message tells the operator to re-designate (and if
 # necessary reactivate) exactly that model. Excluding it would strand the
 # corpus it built. ``is_active`` governs which model may be *chosen*, not
 # how an existing row is *spelled*.
 #
 # ``count(DISTINCT name) = 1`` then drops what remains ambiguous
-# (#56 item 8) so nothing is guessed.
+# so nothing is guessed.
 _CANDIDATES = "SELECT name FROM model_registry WHERE model_type = 'embedding'"
 
 _CANONICAL = f"""
@@ -136,7 +137,7 @@ def _left_sql(table: str, column: str, *, scoped: bool) -> str:
 
     A data fix that only ever logs what it changed teaches the operator
     that silence means "all clean" — which is the exact habit this whole
-    entry (#56) exists to break. Two categories, because they mean
+    migration exists to break. Two categories, because they mean
     different things:
 
     * ``ambiguous`` — the registry spells this case-folded name more than

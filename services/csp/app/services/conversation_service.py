@@ -1544,7 +1544,7 @@ def set_message_rating(
 def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation:
     """Mark conversation as classified (irreversible by non-admin).
 
-    Slice 3b: routes through the four-level one-way core (四級分類契約)
+    routes through the four-level one-way core
     (``apply_classification`` reason=``manual_admin``) which writes the
     ClassificationEvent, sets ``classification_level`` to
     :attr:`ClassificationLevel.RESTRICTED` (``密``; the mirror floor for
@@ -1615,7 +1615,7 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
 def log_classified_access(db: Session, conv_id: int, user: User) -> None:
     # Field names match the AuditLog model exactly: actor_user_id /
     # actor_username / detail (singular). Trigger predicate lives at the
-    # call site (level >= TRADE_SECRET; 四級分類契約 L242，原 SYSTEM-MAP §8) — OE-4 does
+    # call site (level >= TRADE_SECRET). This function does
     # not read conversations.classified for audit decisions.
     db.add(AuditLog(
         actor_user_id=user.id,
@@ -1650,7 +1650,7 @@ def create_share(
 
     conv = get_conversation(db, conv_id, user, for_write=True)
     level = ClassificationLevel.from_storage(conv.classification_level)
-    # 四級分類契約 L241-242: allow iff level <= TRADE_SECRET; audit iff
+    # allow iff level <= TRADE_SECRET; audit iff
     # level >= TRADE_SECRET (including the allow path for 營業秘密).
     if not outbound_action_allowed(level):
         raise HTTPException(

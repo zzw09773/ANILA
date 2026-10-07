@@ -1,4 +1,4 @@
-"""#56 — a new collection must record the model name the registry uses.
+"""A new collection must record the model name the registry uses.
 
 The defect, stated as data rather than code: ``model_registry.name`` is
 this platform's canonical name for a model, but
@@ -36,8 +36,7 @@ from app.services.platform_embedding import canonical_embedding_model_name
 
 from tests.conftest import login, make_user
 
-# Not invented for the test. Read out of the live database on 2026-08-05
-# and recorded in FAKE-CONTROLS #56:
+# Not invented for the test. Read out of the live database on 2026-08-05.
 #   ingestion_collections.embedding_model DEFAULT = 'nvidia/NV-embed-V2'
 #   model_registry.name                           = 'nvidia/nv-embed-v2'
 REGISTERED = "nvidia/nv-embed-v2"
@@ -196,7 +195,7 @@ class TestCreateStoresTheRegistrySpelling:
         """``is_active`` is deliberately NOT filtered.
 
         A deactivated embedder is still the right name for the vectors it
-        already produced — #56 item 9 and the 409 message both tell the
+        already produced. The 409 message tells the
         operator to re-designate (and if necessary reactivate) exactly
         that model. Filtering it out would strand the corpus it built.
         """
@@ -211,7 +210,7 @@ class TestCreateStoresTheRegistrySpelling:
         assert row.embedding_model == REGISTERED
 
     def test_two_registry_spellings_are_rejected(self, db):
-        """r1_0043 closed #56 item 8: lower(name) is unique.
+        """r1_0043: lower(name) is unique.
 
         Two rows differing only in case used to be insertable, and the
         canonicaliser refused to guess. The functional unique index now

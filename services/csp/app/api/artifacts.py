@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Artifact REST surface (Slice 8a — CSP artifact contract).
 
-系統架構(ArtifactJob 逐欄、§8「Studio restart job 不丟失」)、API 契約 §Artifact
-API、領域模型(Artifact/Version/Export、binding 規則)、四級分類(§5 四共通分類、
-§10 匯出判定)、邊界守則 §12 邊界(Studio 不直讀 CSP DB → 經 HTTP + service
-token 回報)。
+ArtifactJob 逐欄,以及「Studio restart job 不丟失」。
+Artifact / ArtifactVersion / ExportRecord 的 binding 規則、四共通分類欄位,
+以及匯出判定(密等 ≤ 營業秘密才允許)。Studio 不直讀 CSP DB,經 HTTP + service
+token 回報。
 
 本檔是 **orchestrator**:協調三個獨立面 —— artifacts module(DB 落地、
 binding、讀取)、policy 核心(單向分類閂鎖 + PolicyDecision + 匯出 gate)、
@@ -26,8 +26,9 @@ nginx ``/v1`` 直通吃得到 service 面):
   PolicyDecision、不落 allow 匯出列)。
 - ``GET /api/artifacts`` + ``GET /api/artifacts/{id}``(user JWT)—— 治理讀面。
 
-服務面(``/v1`` 寫)僅接受 service token(邊界守則 §12):使用者 JWT → 403
+服務面(``/v1`` 寫)僅接受 service token:使用者 JWT → 403
 (artifact/job 由 Studio 服務註冊,不開放使用者直建);匿名 → 401。
+
 """
 
 from __future__ import annotations
@@ -398,7 +399,7 @@ def register_artifact_job(
     caller: _ServiceCaller = Depends(require_service_caller),
     db: Session = Depends(get_db),
 ):
-    """冪等 upsert 一筆 Studio job(系統架構 ArtifactJob;restart 不丟失)。"""
+    """冪等 upsert 一筆 Studio job(ArtifactJob;restart 不丟失)。"""
     identity = caller.identity
     if identity is not None and getattr(identity, "kind", None) == "agent":
         pinned = _enforce_agent_requester_scope(
@@ -602,7 +603,7 @@ def export_artifact(
     caller: _ExportCaller = Depends(require_export_caller),
     db: Session = Depends(get_db),
 ):
-    """匯出 policy gate(四級分類契約 L241-242 兩條線)。
+    """匯出 policy gate(兩條線)。
 
     allow iff artifact.level ≤ 營業秘密;deny → 403。
     PolicyDecision 在 allow/deny 皆落列;≥ 營業秘密 的 allow 即為稽核列
@@ -644,16 +645,15 @@ def export_artifact(
             ) from None
     artifact_level = ClassificationLevel.from_storage(artifact.classification_level)
     target_floor = payload.target_classification_floor
-    # 四級分類契約 L241:可以做 = 密等 ≤ 營業秘密。
+    # 可以做 = 密等 ≤ 營業秘密。
     allowed = outbound_action_allowed(artifact_level)
     decision = "allow" if allowed else "deny"
     reason = (
         f"匯出判定 artifact={artifact_level.to_storage()}:"
         f"{'通過(≤營業秘密)' if allowed else '密等超過營業秘密,拒絕匯出'}"
-        f" (四級分類契約 L241)"
     )
-    # 四級分類契約 L242:≥ 營業秘密 必落稽核;deny 亦一律記。
-    # 無機密 allow 仍記 PolicyDecision(既有契約),但舊 SYSTEM-MAP「落稽核」閾在營業秘密。
+    # ≥ 營業秘密 必落稽核;deny 亦一律記。
+    # 無機密 allow 仍記 PolicyDecision(既有契約),但「落稽核」閾在營業秘密。
     pd = policy.record_decision(
         db,
         action="artifact.export",

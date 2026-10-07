@@ -49,7 +49,7 @@ def _classification_write_barrier() -> None:
 
 
 def validate_agent_manifest(payload: dict) -> dict:
-    """Validate a submitted Agent manifest against the Agent Registry §4 contract.
+    """Validate a submitted Agent manifest against the  contract.
 
     Fail-closed: unknown fields / wrong types / invalid enum values (e.g. a
     non-四級 classification) raise ``422`` with a zh-TW detail. Returns the
@@ -132,7 +132,7 @@ def requires_controlled_access(level: ClassificationLevel) -> bool:
     """Derive the legacy ``requires_encryption`` boolean from a level.
 
     Uses the conversation mirror threshold (``level >= 密`` / RESTRICTED;
-    四級分類契約 / ``_mirror_legacy_boolean``) so boolean readers stay
+    ``_mirror_legacy_boolean``) so boolean readers stay
     aligned with a single source of truth — the default classification level.
     """
     return level >= ClassificationLevel.RESTRICTED

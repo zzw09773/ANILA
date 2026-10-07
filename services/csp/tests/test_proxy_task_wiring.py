@@ -1,6 +1,6 @@
 """Slice 2b-C — task_id wiring through the CSP data plane (/v1/chat/completions).
 
-Locks the doc-04/05 contract:
+Locks that wiring:
 
 - Inbound ``X-ANILA-Task-Id`` (optional) on ``/v1/chat/completions``:
   user caller → ``ensure_task_access``(404 unknown / 403 foreign);
@@ -11,11 +11,12 @@ Locks the doc-04/05 contract:
   (completed / failed) around the proxied call.
 - Usage rows carry ``task_id`` when a task is present;
   ``legacy_runtime_call=true`` marks /v1 chat calls WITHOUT a task
-  (邊界守則 Slice 2 Done: 無 task_id 舊流量仍相容,但標記 legacy_runtime_call).
-- Outbound headers (Agent Registry §4): agent dispatch gains ``X-ANILA-Task-Id`` +
+  (無 task_id 的舊流量仍相容,但標記 legacy_runtime_call).
+- Outbound headers: agent dispatch gains ``X-ANILA-Task-Id`` +
   ``X-ANILA-Trace-Id`` (trace id from the task row). Model gateway headers
-  stay minimal per Model Gateway §3/AC5 — Bearer key + ``X-ANILA-User-Id`` ONLY,
+  stay minimal — Bearer key + ``X-ANILA-User-Id`` ONLY,
   never task/trace headers (regression lock).
+
 """
 
 from __future__ import annotations
@@ -268,7 +269,7 @@ class TestUserCallerWithTask:
         self, client: TestClient, db: Session, monkeypatch,
         task_sessions, captured_usage,
     ):
-        """Model Gateway §3 / AC5:模型出向 header 僅 Bearer key + X-ANILA-User-Id,
+        """模型出向 header 僅 Bearer key + X-ANILA-User-Id,
         任何狀態都不得出現 task / trace header。"""
         admin = make_user(db, username="task_admin2", role="admin")
         make_model(db, name="task-llm2")
@@ -291,7 +292,7 @@ class TestUserCallerWithTask:
         self, client: TestClient, db: Session, monkeypatch,
         task_sessions, captured_usage,
     ):
-        """Agent Registry §4:agent dispatch 帶 X-ANILA-Task-Id + X-ANILA-Trace-Id
+        """agent dispatch 帶 X-ANILA-Task-Id + X-ANILA-Trace-Id
         (trace id 取自 task 列)。"""
         user = make_user(db, username="task_user_ag")
         dev = make_user(db, username="task_dev_ag", role="developer")
@@ -663,7 +664,7 @@ class TestHeaderBuilders:
         assert h["Authorization"].startswith("Bearer ")
 
     def test_model_gateway_headers_have_no_task_or_trace_surface(self):
-        """Model Gateway AC5 regression lock — the model-gateway builder must not
+        """regression lock — the model-gateway builder must not
         even expose a way to emit task / trace headers."""
         h = build_model_gateway_headers("1147259")
         assert "X-ANILA-Task-Id" not in h

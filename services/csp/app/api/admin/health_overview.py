@@ -14,7 +14,7 @@ model / agent 清單頁與這張卡講的必須是同一種話。
 
 安全姿態(驗收會逐欄看)
 ------------------------
-1. ``require_admin`` —— 健康/metrics 端點洩內部資訊是舊 SYSTEM-MAP 點名的風險。
+1. ``require_admin`` —— 健康/metrics 端點洩內部資訊是 點名的風險。
 2. **回應是白名單**:只有服務名、繁中顯示名、kind、五態、bounded reason、
    latency、``checked_at``。連線字串 / 內部 IP / port / 探測 URL / 版本號 /
    後端例外訊息**一個都不出**。細節只進 log。
@@ -27,6 +27,7 @@ model / agent 清單頁與這張卡講的必須是同一種話。
 DB 探測與 registry 計數先做完並 ``commit`` 釋放交易,再跑 HTTP/redis 出向
 探測。不得把請求的 SQLAlchemy session 跨在 outbound await 上(與
 ``health_checker`` 背景迴圈同一條教訓)。
+
 """
 
 from __future__ import annotations

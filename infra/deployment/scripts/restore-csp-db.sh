@@ -30,7 +30,7 @@ DB_USER="${ANILA_DB_USER:-csp}"
 docker inspect "$CONTAINER" >/dev/null 2>&1 || fail "目標容器不存在或未啟動"
 
 # dump 含授予 csp_app 的 ACL；目標必須先有這個 role，否則 pg_restore 滿屏 ERROR。
-log "確保 role csp_app 存在（尚不設密碼；上線前見 runbook）"
+log "確保 role csp_app 存在（尚不設密碼；上線前見 docs/runbooks/csp-db-backup-restore.md §3.1）"
 docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
   -c "DO \$\$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'csp_app') THEN
@@ -140,5 +140,5 @@ log "⚠ P2.7：還原之後**必跑**稽核鏈驗證，並拿一份已經交出
 log "  鏈頭來比對 —— 被調換或被回捲的備份，鏈頭會對不上："
 log "  docker exec <csp 容器> python scripts/verify_audit_chain.py --head <報告上的鏈頭>"
 log "  （沒有 --head 只能驗自洽；鏈頭不在 dump 裡，那正是它有用的原因。"
-log "   請確認你手上留著至少一份已發出的稽核匯出檔，見 runbook §2.7。）"
+log "   請確認你手上留著至少一份已發出的稽核匯出檔。）"
 printf 'RESTORE_OK\n'

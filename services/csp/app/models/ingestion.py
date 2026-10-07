@@ -122,8 +122,8 @@ class IngestionCollection(Base):
         nullable=True,
         index=True,
     )
-    # ── 四級分類共通欄位(四級分類 §5,Slice 3a;backfill floor=無機密,
-    # 最終等級以人工分類盤點為準,四級分類 §15)────────────────────────────
+    # ── 四級分類共通欄位(backfill floor=無機密,
+    # 最終等級以人工分類盤點為準)────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )
@@ -213,7 +213,7 @@ class IngestionDocument(Base):
     uploaded_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    # ── 四級分類共通欄位(四級分類 §5,Slice 3a)────────────────────────────
+    # ── 四級分類共通欄位────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"
     )

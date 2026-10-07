@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """P1.3 — unit_admin_assignments（單位管理員綁定表）.
 
-舊 SYSTEM-MAP 定義單位管理員綁在部門樹節點、權限涵蓋子樹；指派由本組
+定義單位管理員綁在部門樹節點、權限涵蓋子樹；指派由本組
 admin 執行（外單位來文）。本 migration 只建 binding 表——``users.role``
 與全域角色系統不動。
 
-額度分配（舊 SYSTEM-MAP「調整自己單位內的額度分配」）刻意遞延至
+額度分配（「調整自己單位內的額度分配」）刻意遞延至
 credit-ledger epic，不在本包、本表亦不承載額度欄位。
 
 每節點最多 3 名 active 管理員由 service 層在 ``acquire_dept_tree_lock``
@@ -22,6 +22,7 @@ SQLite note: partial unique index 的 predicate 在 Postgres 路徑發出；
 
 Revision ID: r1_0010
 Revises: r1_0009
+
 """
 
 from typing import Sequence, Union

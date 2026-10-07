@@ -1,6 +1,6 @@
 """Background task to periodically check model and agent endpoint health.
 
-Slice 6a (Model Gateway §9 / 領域模型 §32 拍板):health 字彙收斂為五態
+(拍板):health 字彙收斂為五態
 ``unknown / healthy / degraded / unhealthy / disabled``。舊三值
 (online/connecting/offline)由 r1_0005 遷移到位;本模組的 probe 直接回五態
 (2xx on real path → healthy、401/403-only → unknown、timeout → degraded、
@@ -12,6 +12,7 @@ anila-studio / ingestion-worker / pptx-renderer / nginx)。model/agent 那一套
 五態語意一個字都沒動 —— 新東西只是**沿用**同一組字彙,見
 ``probe_base_service``。背景迴圈的 session-release 與告警不帶 raw endpoint
 address 不變式維持原樣。
+
 """
 import asyncio
 import logging
@@ -33,7 +34,7 @@ from app.services.proxy.urls import join_upstream_path, strip_trailing_api_versi
 
 logger = logging.getLogger(__name__)
 
-# Model Gateway §9 五態字彙。
+# 五態字彙。
 HEALTH_UNKNOWN = "unknown"
 HEALTH_HEALTHY = "healthy"
 HEALTH_DEGRADED = "degraded"
@@ -44,7 +45,7 @@ FIVE_STATE_HEALTH = frozenset(
     {HEALTH_UNKNOWN, HEALTH_HEALTHY, HEALTH_DEGRADED, HEALTH_UNHEALTHY, HEALTH_DISABLED}
 )
 
-# 舊三值 → 五態(領域模型 §32 拍板映射);讀取端把 DB 殘留舊值正規化。
+# 舊三值 → 五態(拍板映射);讀取端把 DB 殘留舊值正規化。
 _LEGACY_HEALTH_MAP = {
     "online": HEALTH_HEALTHY,
     "connecting": HEALTH_DEGRADED,
@@ -56,7 +57,7 @@ _LEGACY_HEALTH_MAP = {
 def normalize_health_status(raw: str | None, *, is_active: bool = True) -> str:
     """Map any stored health value to the five-state vocabulary.
 
-    - ``is_active=False`` → ``disabled``(承接停用/未核准態,Model Gateway §9)。
+    - ``is_active=False`` → ``disabled``(承接停用/未核准態)。
     - 舊三值 online/connecting/offline → healthy/degraded/unhealthy。
     - 已是五態 → 原樣。
     - None / 未知字串 → ``unknown``(fail-safe)。
@@ -132,7 +133,7 @@ async def probe_model_health_detailed(
       - timeout → ``degraded``
       - unreachable / unsafe endpoint → ``unhealthy``
 
-    Carries NO real user data (Model Gateway §9). Call-time SSRF re-validation
+    Carries NO real user data. Call-time SSRF re-validation
     (TOCTOU/rebinding) runs once against the registered host — an unsafe
     endpoint is reported unhealthy, never probed. Callers that already
     validated may pass ``skip_validate=True`` to keep the once-per-host

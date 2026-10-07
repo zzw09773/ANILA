@@ -1,7 +1,7 @@
 /**
  * 模型健康狀態的中央對照表（Slice 6b · Model Gateway hardening）。
  *
- * 已刪的 doc 04 §2/§9：model 端點 health_status 由現況三值（online/connecting/offline）
+ * model 端點 health_status 由現況三值（online/connecting/offline）
  * 收斂為五態。此模組是純函式（無 Vue／DOM 依賴），故可獨立做單元測試——
  * 風格對齊 src/utils/approvalStatus.js（Slice 5b）。
  *
@@ -13,7 +13,7 @@
  *   unhealthy  異常    danger      紅       探測失敗
  *   disabled   已停用  muted       暗灰     被管理者停用，不做探測
  *
- * 舊資料相容（舊 doc 04 §9 現況字彙）：health loop 舊寫入 online/connecting/offline，
+ * 舊資料相容（現況字彙）：health loop 舊寫入 online/connecting/offline，
  * 正規化為五態；未知／缺值一律回退 unknown（不臆測為健康）。
  */
 

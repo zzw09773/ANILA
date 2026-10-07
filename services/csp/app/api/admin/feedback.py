@@ -13,7 +13,6 @@ model 篩。維運者據此決定要不要調 prompt、換模型,或拿 ``conver
 訊息正文(``Message.content``)是受控對話內容。既有讀取路徑是
 ``GET /api/conversations/{id}``:admin-tier 可讀,且密等 ≥ 營業秘密時會落
 ``access_classified_conversation`` 稽核;單位管理員明確**看不到對話明文**
-(舊 PLAN P1.3)。
 
 因此本列表端點:
 
@@ -31,6 +30,7 @@ model 篩。維運者據此決定要不要調 prompt、換模型,或拿 ``conver
 與「被評分回覆」,對齊畫面上點開查看的那兩段。密等 ≥ 營業秘密時,每一個被
 寫進檔案的對話會落 ``access_classified_conversation`` 稽核(與對話 GET 相同)。
 列數上限見 ``FEEDBACK_EXPORT_MAX_ROWS``。
+
 """
 
 from __future__ import annotations

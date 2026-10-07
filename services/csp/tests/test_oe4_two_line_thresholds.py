@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""OE-4 — 四級分類契約 L241-242，原 SYSTEM-MAP §8 two-line thresholds.
+"""—， two-line thresholds.
 
 Truth table per action face:
   無機密     → allow, no audit
@@ -9,6 +9,7 @@ Truth table per action face:
 
 Covers: share, conversation read-audit, artifact export, G4 task-less
 ceiling PolicyDecision, public share, search snippet.
+
 """
 from __future__ import annotations
 

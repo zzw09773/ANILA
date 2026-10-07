@@ -293,10 +293,11 @@ class CollectionScopedPgVectorStore:
         recases the rows it can vouch for, but it aligns them only to
         what ``model_registry`` held at upgrade time, and
         ``model_registry.name`` still has no case-insensitive uniqueness
-        (FAKE-CONTROLS #56 item 8) — two spellings can be registered
+        — two spellings can be registered
         side by side tomorrow. Rows the migration deliberately left
         alone (ambiguous or naming an unregistered model) also still
-        depend on this. Tighten to ``=`` only after item 8 is closed.
+        depend on this. Tighten to ``=`` only after
+        ``model_registry.name`` has a case-insensitive uniqueness constraint.
         """
         if top_k <= 0:
             return []

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Agent Registry 契約(OE-1 三態 + 自我描述 / 診斷殘餘)。
 
-舊 SYSTEM-MAP §「知識庫怎麼運作」八步表:註冊拿 key → admin 指派誰能用 → 使用者選它。
+註冊拿 key → admin 指派誰能用 → 使用者選它。
 無連線／trace／安全審查三關。``approval_status`` 只認三值:
 
     registered → approved → disabled
@@ -15,6 +15,7 @@ DB 層一律存開放 String / JSON(SQLite create_all 相容,不用 PG 原生 en
 - :class:`AuditLevel`:殘餘欄位字彙(不再是核准硬閘;D1 前仍可能出現在列上)。
 - :class:`AgentManifest`:``GET /.well-known/anila-agent.json`` 的選填自我描述契約
   (仍 fail-closed 驗證;不再驅動核准狀態機)。
+
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ DEFAULT_RUNTIME_TYPE = RuntimeType.OPENAI_COMPATIBLE_AGENT.value
 
 
 class ApprovalStatus(str, enum.Enum):
-    """OE-1:approval_status 三值(舊 SYSTEM-MAP 註冊→指派→可用)。"""
+    """approval_status 三值(註冊→指派→可用)。"""
 
     REGISTERED = "registered"
     APPROVED = "approved"

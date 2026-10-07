@@ -47,11 +47,11 @@ source "$REPO_ROOT/infra/deployment/scripts/prod-env-guard.sh"
 
 # 與 build-and-export-for-intranet.sh 對齊:bundle 的 image tag 是以這個 project name
 # 產出的。INCLUDE_ASR 預設 0——平台開機沒語音;要開是開機後第二步
-# (docs/deploy/UPDATE.md §5.1)。設 1 才帶 --profile asr。
+# (docs/deploy/UPDATE.md)。設 1 才帶 --profile asr。
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-anila}"
 INCLUDE_ASR="${INCLUDE_ASR:-0}"
 # 本機 decoder 與 cpu/gpu overlay 已移除。語音解碼位址在治理中心「外部服務」。
-# 舊的 ASR_OVERLAY 若還指著已刪的檔，下面的存在檢查會停下來。
+# 舊的 ASR_OVERLAY 若還指著已經不在的檔，下面的存在檢查會停下來。
 ASR_OVERLAY="${ASR_OVERLAY-}"
 if [ "$INCLUDE_ASR" = "1" ] && [ -n "$ASR_OVERLAY" ] && [ ! -f "$ASR_OVERLAY" ]; then
   die "ASR overlay 檔案不存在: $ASR_OVERLAY"
@@ -142,7 +142,7 @@ preflight_share_dirs() {
 }
 
 # ── url_guard 的三個 opt-in 旗標:預設 0,但**保留操作者已設的值** ─────────
-# 這三個都是 runbook §3.1b/§3.1c 明文要求現場自己開的。硬寫 0 的版本會讓
+# 這三個旗標要由現場自己開（本機 http 模型、私網 IP、cleartext grpc）。硬寫 0 的版本會讓
 # 「重跑一次部署腳本」把操作者剛剛開起來的東西靜默關掉 —— 症狀只是註冊/健檢
 # 400,現場幾乎不可能反推到「是部署腳本把它改回去了」。缺鍵時仍補 0,所以
 # 全新部署的預設姿態沒有變寬,變的只是「腳本不再推翻現場的決定」。
@@ -153,7 +153,7 @@ preflight_share_dirs() {
 # ⚠ 舊註解寫「ANILA_ENV=production → 模型 http 一律 fail-closed,不受任何旗標
 #    放行」——那句自 2026-07-29 拍板起就不成立了:model kind 的 http
 #    改成純由 ANILA_ALLOW_HTTP_ENDPOINT 決定、與 env 無關,所以那一行真的會把
-#    §3.1b 的本機模型組態關掉。
+#    本機 http 模型組態關掉。
 preserve_flag() {  # preserve_flag KEY 提醒字串
   local key="$1" note="$2"
   if env_has_key "$key"; then
@@ -307,9 +307,9 @@ set_env ANILA_ALLOW_HTTP_AGENT_ENDPOINT 1
 # url_guard 的三個 opt-in 旗標:預設 0,但保留操作者已設的值(preserve_flag
 # 定義在檔案上方,與其他 .env 存取函式放在一起)。
 preserve_flag ANILA_ALLOW_HTTP_ENDPOINT \
-  "放行 http:// 模型端點(runbook §3.1b 本機模型容器);模型走 https gateway 就該是 0"
+  "放行 http:// 模型端點(本機模型容器);模型走 https gateway 就該是 0"
 preserve_flag ANILA_ALLOW_PRIVATE_ENDPOINT \
-  "放行 RFC1918 私網 IP 端點(runbook §3.1c 直連 Triton 用);端點都是 FQDN 就該是 0"
+  "放行 RFC1918 私網 IP 端點(直連 Triton 用);端點都是 FQDN 就該是 0"
 preserve_flag ANILA_ALLOW_GRPC_ENDPOINT \
   "放行 cleartext grpc:// 模型端點(Triton);內網無 TLS 時才需要,有 grpcs:// 請改回 0"
 set_env ANILA_AUTH_MODE             card-only
@@ -385,7 +385,7 @@ if [ -f secrets/jwt-private.pem ] && [ -f secrets/jwt-public.pem ]; then
   ok "已有 JWT keypair (重跑沿用,token 不失效)"
 else
   # --user 0:0 是**必要的**,不是保險。csp image 自 2026-08-06 起預設 uid 10001
-  # (FAKE-CONTROLS #50),而 $PWD/secrets 這個 bind mount 屬於 host 帳號 →
+  # 而 $PWD/secrets 這個 bind mount 屬於 host 帳號 →
   # 不搶回 root 的話,這一步會在寫檔時 PermissionError,整個部署卡在這裡。
   # 產出來的私鑰是 root:root 0600;下一步 [4c] 再把 group 開給 runtime user。
   # image 名跟著 compose project 走(bundle 就是用這個 -p 打的);寫死另一個
@@ -456,7 +456,7 @@ echo "============================================================"
 ok "內網部署完成"
 echo "  • 登入:員工從瀏覽器插卡 + HiPKI(localhost:16888)走卡片登入"
 echo "  • 日常:infra/deployment/scripts/deploy-prod.sh {status | logs <svc> | restart | down}"
-echo "  • 語音／docling 預設沒開(麥克風不出現、匯入走 native)。要開是開機後第二步,見 docs/deploy/UPDATE.md §5.1"
+echo "  • 語音／docling 預設沒開(麥克風不出現、匯入走 native)。要開是開機後第二步,見 docs/deploy/UPDATE.md"
 [ -z "${MGK:-}" ] && echo "  • $(c '1;33' '待辦'):MODEL_GATEWAY_API_KEY 拿到後填 .env → docker compose up -d csp"
 echo "  • DNS:確認 anila.ai.ncsist.org.tw → 本機、aiagent2.ai.ncsist.org.tw → .12"
 echo "============================================================"

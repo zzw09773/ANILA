@@ -5,9 +5,10 @@
 Task / Policy / Trace 契約。模組間交換資料一律透過契約型別,不得直接
 依賴彼此的內部實作。子模組:
 
-- ``classification`` — 四級分類等級(ClassificationLevel; 四級分類契約)
+- ``classification`` — 四級分類等級(ClassificationLevel)
 - ``tasks`` — Task / TaskRun / SourceSnapshot / Citation 契約與 enum
 - ``policy`` — PolicyDecision 契約(九動作 + 三決策 enum)
+
 """
 
 from app.schemas.contracts.classification import (

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.schemas.contracts.classification import ClassificationLevel
 from app.schemas.base import ApiResponseModel
 
-# URL path prefix only — not a wire protocol. See FAKE-CONTROLS.
+# URL path prefix only — not a wire protocol.
 ALLOWED_API_VERSIONS = frozenset({"v1", "v2"})
 # App-level only (no DB CHECK). custom_adapter remains rejected at the API.
 ALLOWED_PROTOCOLS = frozenset({"openai_compatible", "triton_grpc"})
@@ -148,7 +148,7 @@ class ModelCreate(BaseModel):
     # Admin can untick for external on-prem LAN endpoints. DB column default
     # (migration 0033) is False so historical rows aren't auto-flipped.
     is_internal: bool = True
-    # Slice 6a (Model Gateway §2): ModelEndpoint formalized fields.
+    # ModelEndpoint formalized fields.
     # openai_compatible = HTTP OpenAI shape; triton_grpc = Triton/KServe gRPC.
     protocol: str = "openai_compatible"
     classification_ceiling: str | None = None  # 四級字串;None = 不設限
@@ -156,7 +156,7 @@ class ModelCreate(BaseModel):
     supports_streaming: bool = True
     supports_json_schema: bool = False
     supports_tools: bool = False
-    # Model Gateway §3: write-only per-model gateway key. Encrypted to
+    # write-only per-model gateway key. Encrypted to
     # ``api_key_secret_ref`` on create; NEVER returned. Omit to use the
     # global MODEL_GATEWAY_API_KEY fallback.
     api_key: str | None = None
@@ -244,7 +244,6 @@ class ModelUpdate(BaseModel):
     context_window: int | None = None
     base_model_id: int | None = None
     is_internal: bool | None = None
-    # Slice 6a (Model Gateway §2/§3).
     protocol: str | None = None
     classification_ceiling: str | None = None
     owner_department_id: int | None = None
@@ -351,14 +350,14 @@ class ModelResponse(ApiResponseModel):
     base_model_id: int | None = None
     base_model_name: str | None = None
     is_internal: bool = False
-    # Slice 6a (Model Gateway §2): ModelEndpoint formalized fields.
+    # ModelEndpoint formalized fields.
     protocol: str = "openai_compatible"
     classification_ceiling: str | None = None
     owner_department_id: int | None = None
     supports_streaming: bool = True
     supports_json_schema: bool = False
     supports_tools: bool = False
-    # Model Gateway §3: only the presence of a per-model key is exposed — never the
+    # only the presence of a per-model key is exposed — never the
     # ciphertext / secret ref, and never the plaintext.
     has_api_key: bool = False
     thinking_effort: str | None = None
@@ -380,7 +379,7 @@ class ModelResponse(ApiResponseModel):
     model_config = {"from_attributes": True}
 
 
-# ── P4.6 bulk import (模型閘道 §6 / 舊 PLAN P4.6 / OE-2 G5) ───────────────────
+# ──  bulk import  ───────────────────
 
 
 class ModelBulkImportRequest(BaseModel):

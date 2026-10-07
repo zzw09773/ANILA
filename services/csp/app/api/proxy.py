@@ -206,13 +206,13 @@ def _require_conversation_access(
 
 
 def _agent_policy_level(agent) -> ClassificationLevel:
-    """The agent's own four-level classification floor (四級分類契約).
+    """The agent's own four-level classification floor.
 
     ``default_classification_level`` (set by the 3a migration bridge / manual
     inventory) is the source of truth; a ``requires_encryption=true`` agent
     without a manual level still floors at RESTRICTED(密) — preserves the old
     rank-2 floor that previously was 機密 in the five-level set
-    (四級分類契約), so the legacy boolean stays byte-compatible.
+    so the legacy boolean stays byte-compatible.
     """
     level = ClassificationLevel.from_storage(
         getattr(agent, "default_classification_level", None) or "無機密"
@@ -233,7 +233,7 @@ def _latch_agent_classification(
     (``apply_classification`` reason=``agent_policy``) instead of the old raw
     ``UPDATE ... SET classified=TRUE``. The core mirrors the legacy boolean
     (``classified = level >= 密`` / RESTRICTED; old rank-2 floor,
-    四級分類契約) so a hard refresh still latches the UI back into encrypted
+    ) so a hard refresh still latches the UI back into encrypted
     mode; it never lowers (single-direction), and leaves
     ``classification_inherited`` untouched (the source is agent policy, not
     memory inheritance — that path is handled separately below).
@@ -256,7 +256,7 @@ def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
 
     Slice 3b: routes through the four-level one-way core
     (``apply_classification`` reason=``memory_inherited``), which floors the
-    row at RESTRICTED(密) — preserves the old rank-2 floor (四級分類契約),
+    row at RESTRICTED(密) — preserves the old rank-2 floor ,
     mirrors the legacy boolean AND flips ``classification_inherited=TRUE``
     on the raising event. One-way — never lowers a row already at 密 or higher.
     """
@@ -277,10 +277,10 @@ def _propagate_conversation_level_to_task(
     db: Session, task_id: int, conversation_id: int
 ) -> None:
     """Slice 3b: carry the conversation's effective level onto the linked
-    task so later ceiling checks (四級分類 §4/§10) see it.
+    task so later ceiling checks  see it.
 
     reason=``source_selected`` — the runtime conversation is the selected
-    source context feeding the task (四級分類 §4 task.level = max(...,
+    source context feeding the task (task.level = max(...,
     source_snapshot.level, ...)). One-way core → never lowers the task.
     No-op when the conversation is unclassified (nothing to raise to).
     """
@@ -289,7 +289,7 @@ def _propagate_conversation_level_to_task(
         db, resource_type="conversation", resource_id=str(conversation_id)
     )
     # Not an OE-4 outbound gate: one-way latch/propagation skip when there
-    # is nothing above 無機密 to raise the task to (四級分類契約 latch).
+    # is nothing above 無機密 to raise the task to (latch).
     if conv_level <= ClassificationLevel.UNCLASSIFIED:
         return
     apply_classification(
@@ -2179,7 +2179,7 @@ async def chat_completions(
         # Slice 3b: latch the agent's OWN four-level classification onto the
         # conversation (reason=agent_policy) through the one-way core. Uses
         # the agent's default level, floored at RESTRICTED(密) when
-        # requires_encryption — old rank-2 floor preserved (四級分類契約).
+        # requires_encryption — old rank-2 floor preserved.
         # The OR'd ``agent_requires_encryption`` still drives the wire meta
         # below; the memory-inheritance contribution is latched separately.
         if conv_id_int is not None:
@@ -2240,7 +2240,7 @@ async def chat_completions(
             )
         # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
         # contract); a task-linked call without one falls back to the
-        # task row's trace id (Model Gateway AC10 歸戶).
+        # task row's trace id (歸戶).
         usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
         # 逾時／重試在 handler 期解一次。⚠ 串流那條路是 async generator，
         # **在 handler 回傳之後才被抽乾**，那時 request scope 的 session 可能
@@ -2334,7 +2334,7 @@ async def chat_completions(
             user_id=user.id,
             department=department_id,
             agent_id=agent.id,
-            # Slice 2b-C (Agent Registry §4): task/trace ids ride on agent dispatch.
+            # task/trace ids ride on agent dispatch.
             task_id=task_ctx.task_id if task_ctx else None,
             trace_id=task_ctx.trace_id if task_ctx else None,
             conversation_id=conversation_id,
@@ -2465,7 +2465,7 @@ async def chat_completions(
     inherited_encryption = bool(memory_read and memory_read.encryption_inherited)
     # Slice 2b-C: optional X-ANILA-Task-Id — same wiring as the agent
     # branch, dispatch_target/resource_type = "model". Outbound headers to
-    # the model gateway stay minimal (Model Gateway §3/AC5) — the task ids below
+    # the model gateway stay minimal — the task ids below
     # only reach the usage row + run lifecycle, never the gateway headers.
     task_ctx = begin_task_run(
         db,
@@ -2489,7 +2489,7 @@ async def chat_completions(
                 "task classification propagation failed task_id=%s",
                 task_ctx.task_id,
             )
-    # Slice 6a (Model Gateway §5/§8) + OE-4/G4: classification ceiling check BEFORE
+    # + : classification ceiling check BEFORE
     # the outbound model call. Covers task-linked AND legacy traffic. A
     # violation raises 403 + records a model.invoke deny row and never
     # dispatches upstream; a pass records an allow row when task-linked OR

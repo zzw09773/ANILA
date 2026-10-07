@@ -179,7 +179,7 @@ ensure_jwt_keypair() {
 }
 
 # csp / ingestion-worker 自 2026-08-06 起以非 root (uid 10001) 跑
-# (FAKE-CONTROLS #50)。bind mount 的所有權由 **host** 決定,映像裡 chown 沒有用,
+# 。bind mount 的所有權由 **host** 決定,映像裡 chown 沒有用,
 # 所以**每一條會 (re)start 服務的路徑**都要先把 host 端對齊一次
 # (細節與理由都寫在那支腳本的檔頭):
 #   share/uploads/ingestion + share/attachments → chown 給 10001:10001

@@ -1,7 +1,8 @@
 """單位管理員指派 API（P1.3）。
 
-指派是 admin 行為（舊 SYSTEM-MAP「外單位來文,由本組指派」）。額度分配
+指派是 admin 行為（「外單位來文,由本組指派」）。額度分配
 遞延至 credit-ledger epic，本模組不承載。
+
 """
 
 from __future__ import annotations

@@ -5,7 +5,6 @@
  * 那份在兩個 app 之間 vendor;本檔是 anilalm 專屬的 React 綁定,anila-shell
  * 會有一份對應的 .js 版本(它沒有 TypeScript)。
  *
- * 規格見已刪的 ASR 規劃書 §2.5。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'

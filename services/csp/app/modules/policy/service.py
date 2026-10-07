@@ -4,25 +4,25 @@
 Slice 2b-B(裁決紀錄):
 
 1. :func:`record_decision` —— 把一次政策裁決 **append** 進
-   ``policy_decisions``(控制面 §5)。fail-closed:``action`` 九值、
+   ``policy_decisions``。fail-closed:``action`` 九值、
    ``decision`` 三值、``actor_type`` 二值皆以封閉 enum 驗證,非法即
-   ``ValueError``、不落任何列;deny 必附可解釋 ``reason``(控制面 Done
-   Criteria 4)。與 audit 的 fail-soft 不同,policy decision 是治理
-   Done Criteria 資料 —— 寫不進去就讓例外浮上來,不吞。
-2. :func:`evaluate_classification_ceiling` —— 四級分類 §10 的判定式
+   ``ValueError``、不落任何列;deny 必附可解釋 ``reason``。與 audit 的
+   fail-soft 不同,policy decision 是要留下的治理資料 —— 寫不進去就讓
+   例外浮上來,不吞。
+2. :func:`evaluate_classification_ceiling` —— 判定式
    ``allow if task.level <= ceiling`` 純函式(無 ceiling = 不設限)。
 
-Slice 3a(四級分類 latch core,四級分類 §2/§5–§9/§12):
+四級分類 latch core:
 
 3. :func:`apply_classification` —— 單向閂鎖:effective = max(current,
    new),**絕不降級**;升級時寫 ClassificationEvent 並泛型更新資源的
    共通四欄位;資源帶舊 boolean latch 時同步鏡射
-   (``classified = level >= 密``,四級分類 §15 Step 3 舊欄位保留為
+   (``classified = level >= 密``, Step 3 舊欄位保留為
    compatibility read model)。降級嘗試 = no-op、不寫 event、回 None
    (四級分類 未規定降級嘗試要記 event)。
 4. :func:`effective_level` —— 讀資源當前等級(未知資源 fail-closed)。
 5. :func:`create_declassification_request` / :func:`decide_declassification`
-   —— 四級分類 §7 變體 A 最低保證:僅 Admin 可申請、申請人 ≠ 核准人/
+   —— 最低保證:僅 Admin 可申請、申請人 ≠ 核准人/
    代錄人(雙人原則,無例外)、核准權來自「機密審批權責」指派
    (:func:`has_declassification_authority`,與 owner/admin 技術角色
    脫鉤)、無權責 → 申請維持 pending + audit ``supervisor_missing``
@@ -33,6 +33,7 @@ Slice 3a(四級分類 latch core,四級分類 §2/§5–§9/§12):
 
 Append-only:本模組 **不提供** 任何 update / delete 介面;
 ``policy_decisions`` / ``classification_events`` 只 INSERT。
+
 """
 
 from __future__ import annotations
@@ -103,11 +104,11 @@ def record_decision(
     policy_version: str = "r1",
     metadata: dict | None = None,
 ) -> PolicyDecision:
-    """追加一筆政策裁決(append-only;控制面 §5)。
+    """追加一筆政策裁決(append-only)。
 
     - ``action`` / ``decision`` / ``actor_type`` 非法 → ``ValueError``,
       不落任何列(fail-closed)。
-    - ``decision == "deny"`` 必附非空 ``reason``(控制面 Done Criteria 4:
+    - ``decision == "deny"`` 必附非空 ``reason``(
       所有 deny 都有可解釋原因)。``matched_policy_ids`` 在 r1 紀錄階段
       允許空(規則引擎未建,hardcoded guard 沒有 policy id 可填)。
     - 立即 commit:裁決紀錄是治理帳,寫入即須持久,不搭 caller 的交易。
@@ -121,7 +122,7 @@ def record_decision(
         reason and reason.strip()
     ):
         raise ValueError(
-            "policy deny 必須附上可解釋的 reason(控制面 Done Criteria 4)"
+            "policy deny 必須附上可解釋的 reason"
         )
 
     # 不變式:不動 caller 的物件 —— metadata / matched_policy_ids 一律複本。
@@ -157,7 +158,7 @@ def record_decision(
 def evaluate_classification_ceiling(
     *, task_level: str, ceiling: str | None
 ) -> bool:
-    """四級分類 §10 判定式:``allow if task.level <= ceiling``。
+    """判定式:``allow if task.level <= ceiling``。
 
     純函式,無副作用。``ceiling is None`` = 該資源不設分類上限 → True。
     等級字串一律經 :meth:`ClassificationLevel.from_storage` 解析,
@@ -169,9 +170,9 @@ def evaluate_classification_ceiling(
     return level <= ClassificationLevel.from_storage(ceiling)
 
 
-# ── Slice 3a:四級分類 latch core(四級分類 §2/§5–§9/§12)───────────────────────
+# ── 四級分類 latch core───────────────────────
 
-# resource_type → ORM model 的封閉派發表(四級分類 §5 的 11 種資源中,
+# resource_type → ORM model 的封閉派發表(11 種資源中,
 # 現存表的對應;整數 PK)。未列型別一律 ValueError fail-closed:
 # chunk(document_chunks 為 PG-only、非 ORM 建模,走 worker SDK)、
 # service_launch(表在 Slice 7)。artifact / export_record 於 Slice 8a 補上。
@@ -183,8 +184,8 @@ _RESOURCE_MODELS: dict[str, type] = {
     "source_snapshot": SourceSnapshot,
     "collection": IngestionCollection,
     "document": IngestionDocument,
-    "artifact": Artifact,  # 四級分類 §5(Slice 8a)
-    "export_record": ExportRecord,  # 四級分類 §5(Slice 8a)
+    "artifact": Artifact,
+    "export_record": ExportRecord,
     "attachment": Attachment,
 }
 
@@ -245,7 +246,7 @@ def _mirror_legacy_boolean(row, level: ClassificationLevel) -> None:
 
     鏡射規則:``classified = level >= 密``(RESTRICTED)。意圖保留舊行為
     「controlled set = rank >= 2」(舊等級表機密曾為 rank 2);OE-3 對齊
-    四級分類契約 四級後 rank-2 為 RESTRICTED。升級方向由
+    四級後 rank-2 為 RESTRICTED。升級方向由
     :func:`apply_classification` 走到這裡;降級方向只有核准生效的
     :func:`_apply_approved_declassification` 會走到(降到密以下時
     boolean 一併回 false,並清 inherited 旗標,避免舊 read model 殘留
@@ -314,7 +315,7 @@ def apply_classification(
     source: str = "propagation",
     commit: bool = True,
 ) -> ClassificationEvent | None:
-    """單向閂鎖(四級分類 §2):effective = max(current, new),絕不降級。
+    """單向閂鎖:effective = max(current, new),絕不降級。
 
     - 升級(含首次 latch):寫 ClassificationEvent、更新資源共通四欄位、
       鏡射舊 boolean latch(資源有的話),回傳事件。
@@ -324,7 +325,7 @@ def apply_classification(
     - fail-closed:未知 resource_type / reason / level / actor_type、
       查無資源列 → ``ValueError``,不落任何列。
     - ``reason == "memory_inherited"`` 時同步鏡射舊
-      ``classification_inherited`` 旗標(四級分類 §3 bridge)。
+      ``classification_inherited`` 旗標(bridge)。
 
     ``commit=False``(唯一使用者:知識庫升密的文件級聯,見
     ``api/ingestion/collections.py``):只 ``flush``,把 commit 交給呼叫端,
@@ -453,7 +454,7 @@ def effective_level(
 
 
 def has_declassification_authority(db: Session, user_id: int) -> bool:
-    """「機密審批權責」查核 hook(四級分類 §7 第 2 點,與技術角色脫鉤)。
+    """「機密審批權責」查核 hook(與技術角色脫鉤)。
 
     讀 ``classification_authority_assignments``(Slice 3a 只由 migration /
     seed 管理列;admin UI 與 per-department scope 細分在 3b)。無有效
@@ -481,7 +482,7 @@ def create_declassification_request(
     reason: str,
     proposed_redaction_summary: str | None = None,
 ) -> DeclassificationRequest:
-    """建立降級申請(四級分類 §7–§8)。
+    """建立降級申請。
 
     - 僅 Admin 可申請(§7 規則 1–4:一般使用者 / Developer / Service
       Admin 皆不可;本 codebase 角色階層 owner > admin,故 owner 視同
@@ -495,7 +496,7 @@ def create_declassification_request(
     requester = db.get(User, requested_by_admin_id)
     if requester is None or requester.role not in ("admin", "owner"):
         raise ValueError(
-            "僅 Admin 可建立降級申請(四級分類 §7);"
+            "僅 Admin 可建立降級申請;"
             f"user#{requested_by_admin_id} 不具 Admin 角色"
         )
     target = ClassificationLevel.from_storage(to_level)
@@ -508,7 +509,7 @@ def create_declassification_request(
             f"{current.to_storage()} → {target.to_storage()} 不是降級"
         )
     if not (reason and reason.strip()):
-        raise ValueError("降級申請必須附上理由(四級分類 §8 reason 必填)")
+        raise ValueError("降級申請必須附上理由")
 
     request = DeclassificationRequest(
         resource_type=resource_type,
@@ -545,7 +546,7 @@ def _apply_approved_declassification(
 ) -> ClassificationEvent:
     """核准後生效 —— **唯一** 明示繞過單向閂鎖的內部降級路徑。
 
-    四級分類 §9:首選降密副本;通用資源的副本機制與 Artifact 一起在
+    首選降密副本;通用資源的副本機制與 Artifact 一起在
     後續 slice 落地,3a 先支援 in-place 生效(前提已由
     :func:`decide_declassification` 把關:supervisor approval 完成 +
     audit 明確記錄)。事件 reason 用文件 7 值 enum 的
@@ -586,7 +587,7 @@ def decide_declassification(
     paper_doc_no: str | None = None,
     authority_title_name: str | None = None,
 ) -> DeclassificationRequest:
-    """裁決降級申請(四級分類 §7 變體 A + §12)。
+    """裁決降級申請。
 
     最低保證(全部 fail-closed):
 
@@ -614,7 +615,7 @@ def decide_declassification(
     via_value = _validate_enum("approved_via", via, DeclassificationApprovedVia)
     if approver_user_id == request.requested_by_admin_id:
         raise ValueError(
-            "申請人 ≠ 核准人/代錄人(四級分類 §7 變體 A 雙人原則,無例外)"
+            "申請人 ≠ 核准人/代錄人(雙人原則,無例外)"
         )
     is_paper = (
         via_value == DeclassificationApprovedVia.RECORDED_PAPER_DECISION.value
@@ -623,17 +624,17 @@ def decide_declassification(
         if not (paper_doc_no and paper_doc_no.strip()):
             raise ValueError(
                 "recorded_paper_decision 必附核定依據公文文號/簽呈"
-                "(authority_reference,四級分類 §8)"
+                "(authority_reference)"
             )
         if not (authority_title_name and authority_title_name.strip()):
             raise ValueError(
                 "recorded_paper_decision 必附核定者官職＋姓名"
-                "(authority_title_name,四級分類 §8)"
+                "(authority_title_name)"
             )
 
     approver = db.get(User, approver_user_id)
     if not has_declassification_authority(db, approver_user_id):
-        # fail-closed:維持 pending,不升級、不放行(四級分類 §12)。
+        # fail-closed:維持 pending,不升級、不放行。
         log_audit_event(
             db,
             action="supervisor_missing",

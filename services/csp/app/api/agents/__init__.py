@@ -4,7 +4,7 @@ Credential tier: JWT access token for all endpoints here.
 Data plane list endpoint (GET /v1/agents, API Key auth) lives in proxy.py.
 
 Package split (behavior-preserving refactor of the former 1384-line
-``app/api/agents.py`` god-module — doc-10 Slice 1):
+``app/api/agents.py`` god-module —  ):
 
 - ``registration``   register / list / get / update / delete + template / platform-CA / anila-verify download
 - ``approval``       approve / reject
@@ -18,6 +18,7 @@ This ``__init__`` assembles ONE router identical to the old module's
 (same prefix / tags) and re-exports every module-level symbol the old
 module exposed, so ``app.api.agents.<name>`` keeps resolving for both
 imports and test monkeypatching.
+
 """
 import io
 import os as _os

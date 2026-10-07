@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""機敏分類盤點端點測試(四級分類契約 四級字彙)。
+"""機敏分類盤點端點測試(四級字彙)。
 
 覆蓋:
 - admin 取得的計數與 seeded fixtures 相符(含一列刻意 backfill 不一致);
 - 非 admin(一般 user)拿到 403;
 - ``?format=csv`` 回 text/csv 且以 UTF-8 BOM 開頭。
+
 """
 
 from __future__ import annotations

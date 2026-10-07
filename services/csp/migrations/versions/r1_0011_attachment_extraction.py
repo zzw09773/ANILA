@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """P1.5 — attachment text extraction + per-conversation token budget.
 
-舊 SYSTEM-MAP: 丟 PDF 直接叫 LLM 分析。上傳時非同步抽文字、估算 token;
+丟 PDF 直接叫 LLM 分析。上傳時非同步抽文字、估算 token;
 extract_status 只記抽取結果（pending / ok / failed / unsupported /
 too_large）。是否塞進某次對話的 context 由 runtime admit() 依當下模型
 預算推導，不持久化。本 migration 只加 attachments 抽取狀態欄位,
@@ -16,6 +16,7 @@ Upgrade 用 raw ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``,容忍
 
 Revision ID: r1_0011
 Revises: r1_0010
+
 """
 
 from typing import Sequence, Union

@@ -2232,7 +2232,7 @@ _R15_ORDINARY_DOCUMENTS = {
 def test_r15_f1_ordinary_symbol_documents_extract_byte_exact(label: str) -> None:
     """F1: bullet / arrow / box / tree / checkbox / ℃ / table / math docs.
 
-    Every one of these was refused as 「不是可讀的文字檔」 by the deleted
+    Every one of these was refused as 「不是可讀的文字檔」 by a removed
     script-mixing clause. They are the ordinary output of any note-taking
     or diagramming tool and must round-trip byte-exact.
     """

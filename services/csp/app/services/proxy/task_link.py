@@ -1,12 +1,12 @@
 """Slice 2b-C — task_id wiring for the CSP data plane (/v1/chat/completions).
 
-Doc 04 §5 / 邊界守則 Slice 2: every ``/v1/chat/completions`` call MAY carry an
+every ``/v1/chat/completions`` call MAY carry an
 ``X-ANILA-Task-Id`` header. When present, the call is validated against the
 Task spine (``app.modules.tasks``), a ``PolicyDecision(action="task.run")``
 row is recorded (``app.modules.policy``), and a ``TaskRun`` brackets the
 proxied call (started before dispatch, finished on completion / failure).
 When absent, behavior is unchanged except the usage row is marked
-``legacy_runtime_call=true`` (邊界守則 Slice 2 Done).
+``legacy_runtime_call=true`` (Done).
 
 SECURITY:
 - Caller auth is NOT weakened: every request still passes ``get_caller``
@@ -20,8 +20,9 @@ SECURITY:
   (see app/models/token_usage.py caller attribution notes).
 
 ``app.modules.tasks`` / ``app.modules.policy`` are imported lazily at call
-time — they are module-boundary packages (邊界守則 §4) landing in parallel
+time — they are module-boundary packages  landing in parallel
 slices; only their package-root public surface is used.
+
 """
 
 from __future__ import annotations

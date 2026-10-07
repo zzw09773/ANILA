@@ -1,4 +1,4 @@
-"""CSP proxy package (Doc-10 Slice 1 split of the former ``proxy_service.py``).
+"""CSP proxy package (split of the former ``proxy_service.py``).
 
 Layout (behavior-preserving; bodies moved verbatim):
 
@@ -11,6 +11,7 @@ Layout (behavior-preserving; bodies moved verbatim):
 
 ``app.services.proxy_service`` remains as a thin facade over this package so
 legacy import paths keep working.
+
 """
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (

@@ -314,7 +314,7 @@ def test_normal_text_is_not_degenerate():
 
 
 def test_short_repetition_is_a_known_gap():
-    """⚠ 記錄已知缺口(規劃書 §11):40-byte 下限讓短重複漏網。這個測試是在
+    """⚠ 記錄已知缺口:40-byte 下限讓短重複漏網。這個測試是在
     釘住「目前行為」,不是在主張它正確。真實語音驗證後若要收緊門檻,改這裡。"""
     assert not looks_degenerate("詞曲 曲曲 曲曲 曲曲 曲曲")   # 31 bytes < 40
 

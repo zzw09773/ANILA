@@ -1,4 +1,4 @@
-"""#56 — alembic ``r1_0032`` on real PostgreSQL: the data fix itself.
+"""Alembic ``r1_0032`` on real PostgreSQL: the data fix itself.
 
 What this file has to prove that a SQLite test cannot:
 
@@ -9,7 +9,7 @@ What this file has to prove that a SQLite test cannot:
     ``ingestion_images``' FORCE row-level security, so a rewrite that
     forgets the ``anila.collection_id`` GUC updates **zero rows and
     reports success** when the migration role is not a superuser — the
-    same shape as FAKE-CONTROLS #52.
+    same shape as.
 
 ⚠ **The migration is deliberately run by a NOSUPERUSER / NOBYPASSRLS
 role that owns the tables**, not by the DSN's superuser. This is the
@@ -33,6 +33,7 @@ uuid-suffixed scratch database, migrates it, and drops it.
 Skipped unless ``ANILA_TEST_PG_DSN`` is set (superuser, so it can
 CREATE DATABASE and CREATE ROLE) — same contract as
 ``test_platform_embedding_pg.py``.
+
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ pytestmark = pytest.mark.skipif(
 _CSP_ROOT = Path(__file__).resolve().parents[1]
 _ALEMBIC_INI = _CSP_ROOT / "alembic.ini"
 
-# The live pair, recorded in FAKE-CONTROLS #56 — not invented here.
+# The live pair — not invented here.
 REGISTERED = "nvidia/nv-embed-v2"
 MISCASED = "nvidia/NV-embed-V2"
 # A **deactivated chat** model that collides case-insensitively with the
@@ -68,14 +69,14 @@ DECOY_CHAT = "NVIDIA/NV-Embed-V2"
 # No registration at all. Nothing may guess a spelling for it.
 UNREGISTERED = "legacy/old-embedder"
 # Two ACTIVE embedding registrations differing only by case — genuine
-# ambiguity (#56 item 8). Rows naming it must be left alone.
+# ambiguity. Rows naming it must be left alone.
 AMBIG_A = "acme/Emb-1"
 AMBIG_B = "acme/emb-1"
 AMBIG_REQUEST = "ACME/EMB-1"
 # A **deactivated embedding** registration that is the only candidate for
 # its case-folded name. It MUST still be recased: a deactivated embedder
-# is the correct name for the vectors it already produced, and #56 item 9
-# plus the 409 message tell the operator to re-designate — and if
+# is the correct name for the vectors it already produced. The 409
+# message tells the operator to re-designate — and if
 # necessary reactivate — exactly that model. Filtering ``is_active`` out
 # of the candidate set would strand that corpus at the moment the
 # operator is trying to recover it. This category is what makes that
@@ -484,7 +485,7 @@ def test_r1_0032_recases_only_what_the_registry_can_vouch_for(upgraded):
 
 def test_the_migration_reports_what_it_left_alone(upgraded):
     """A data fix that only logs what it changed teaches the operator
-    that silence means "all clean" — the exact habit #56 exists to break.
+    that silence means "all clean" — the exact habit this migration exists to break.
 
     Every table carries exactly one ambiguous row and one unregistered
     row, so every table must produce a WARNING naming both counts.

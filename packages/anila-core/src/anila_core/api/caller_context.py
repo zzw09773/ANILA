@@ -54,7 +54,7 @@ class CallerContext:
     # here so the user_memory_reader factory can construct an httpx
     # client without re-reading env on every call.
     csp_base_url: Optional[str] = None
-    # Full-Trace Protocol correlation (doc-05 §5/§6). CSP forwards these
+    # Full-Trace Protocol correlation. CSP forwards these
     # inbound so the router/agent can attribute spans to the originating
     # task + trace. Optional — absent on non-traced (legacy) requests.
     trace_id: Optional[str] = None

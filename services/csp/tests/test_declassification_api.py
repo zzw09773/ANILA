@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Slice 3b — 降級申請 / 權責指派 API + 四級 runtime latch 測試。
+"""降級申請 / 權責指派 API + 四級 runtime latch 測試。
 
-依四級分類規格(§7 變體 A 雙人原則/權責脫鉤/信任錨/
-fail-closed、§8 DeclassificationRequest、§12 supervisor_missing)與 API 契約
-§11(路由形狀:declassification-requests 建立/列表/approve/reject)。
+變體 A 雙人原則、權責與平台角色脫鉤、信任錨、fail-closed。
+路由形狀:declassification-requests 建立/列表/approve/reject。
 
 涵蓋:
 - 降級申請:僅 Admin 可建立(ADR-0005)、非 Admin 403、非降級 422
@@ -14,6 +13,7 @@ fail-closed、§8 DeclassificationRequest、§12 supervisor_missing)與 API 契�
 - runtime 四級 latch:agent latch 寫等級 + event + boolean 鏡射、
   _agent_policy_level backfill、manual classify 走單向核心、conversation
   payload 帶 classification_level、conversation→task 傳遞
+
 """
 
 from __future__ import annotations

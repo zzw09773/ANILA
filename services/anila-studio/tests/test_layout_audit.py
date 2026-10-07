@@ -158,7 +158,7 @@ def test_v4_keyword_expansion(title, bullets, expected_v4):
     ("執行摘要", [
         "高效能推理：掌握 TensorRT-LLM 並解決 C++ 對齊 Bug",
         "技術突破：實作法律 Agentic RAG",
-        "風險治理：建立模型風險管理機制",
+        "合規治理：導入 ISO 27001",
         "架構演進：提出基於 DDD 的垂直切分架構",
     ], True),  # 4/4 label-pattern, no keyword
     ("底層推理引擎除錯實踐", [
@@ -402,7 +402,7 @@ def test_v4_both_signals_classified_as_content():
             bullets=[
                 "高效能推理：掌握 TensorRT-LLM",
                 "技術突破：實作法律 Agentic RAG",
-                "風險治理：建立模型風險管理機制",
+                "合規治理：導入 ISO 27001",
             ],
         )],
         "palette": "navy_amber",

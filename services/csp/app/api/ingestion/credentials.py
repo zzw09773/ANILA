@@ -39,7 +39,7 @@ from app.schemas.base import ApiResponseModel
 def _check_endpoint_url(url: str) -> None:
     """Translate ``UnsafeEndpointError`` into HTTP 400 for API callers.
 
-    Slice 6a (Model Gateway §8): explicit ``endpoint_kind="generic"`` — BYO judge /
+    explicit ``endpoint_kind="generic"`` — BYO judge /
     external LLM credentials keep the original global http-flag semantics
     (these are not model-gateway endpoints, so model-kind gating does not
     apply to them).

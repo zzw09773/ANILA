@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # 'openai' = POST {base}/v1/audio/transcriptions(multipart WAV + Bearer)
     # ⚠ 認不得的值**開不了機**(app/main.py:_validate_settings)。選錯協定的
     # 症狀是每句話都 404/401 而麥克風看起來正常 —— 這種「設了、沒報錯、其實
-    # 沒生效」的靜默錯誤,本專案已經有一整份紀錄(FAKE-CONTROLS)。
+    # 沒生效」的靜默錯誤,本專案已經有一整份紀錄。
     ASR_DECODE_PROTOCOL: str = "native"
     # openai 協定的 Bearer 金鑰(治理中心沒替該端點掛金鑰時的環境變數退路)。
     # ⚠ 祕密:不進 log、不進 /asr/health、不進錯誤訊息。
@@ -48,19 +48,19 @@ class Settings(BaseSettings):
     ASR_PROBE_TIMEOUT_SECONDS: float = 8.0
 
     # ── 辨識 ────────────────────────────────────────────────────────────
-    # ⚠ 這個 prompt 是通用的,不是領域詞典。實測(規劃書 §10)顯示它讓 CER
+    # ⚠ 這個 prompt 是通用的,不是領域詞典。實測顯示它讓 CER
     # 從 2.74% 降到 1.71%,但價值在語感/標點/數字風格,不在繁化 —— whisper
     # 在真實繁中語料的簡體率本來就是 0%。
     ASR_INITIAL_PROMPT: str = "以下是繁體中文。"
     ASR_BEAM_SIZE: int = 5
-    # 負載過高時的第一個旋鈕:關掉 partial,只留 final(見規劃書 §8.1)。
+    # 負載過高時的第一個旋鈕:關掉 partial,只留 final。
     ASR_PARTIALS_ENABLED: bool = True
     ASR_VAD_AGGRESSIVENESS: int = 2
 
     # ⚠ 預設 off,且不要改成 s2twp。實測:whisper medium 在 1096 句真實繁中
     # 語料的簡體率 0%,而 OpenCC 對正確繁體的誤傷率 s2t 9.85% / s2tw 6.20% /
-    # s2twp 10.58%(s2twp 會把「類型」轉成「型別」)。見規劃書 §10。
-    # 改用 large-v3 後若實測出現簡體才考慮開,開之前先重跑 §10 的誤傷量測。
+    # s2twp 10.58%(s2twp 會把「類型」轉成「型別」)。
+    # 改用 large-v3 後若實測出現簡體才考慮開,開之前先重跑誤傷量測。
     # 非 off 時才 import opencc(它不在 runtime 相依裡 → 沒裝就 ImportError,
     # 這是刻意的 fail-loud,不要加 try/except 吞掉)。
     ASR_OPENCC_MODE: str = "off"

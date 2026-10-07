@@ -43,7 +43,7 @@ dependencies = [
   "numpy>=1.26,<2.6",
   # ⚠ 刻意不列 opencc:實測 whisper medium 在真實繁中語料的簡體率是 0%,而
   # OpenCC 對正確繁體的誤傷率 6~10%(s2twp 甚至把「類型」轉成「型別」)。
-  # 見 ASR 規劃書 §10。ASR_OPENCC_MODE 預設 off;
+  # ASR_OPENCC_MODE 預設 off;
   # 真的要開再把 opencc-python-reimplemented 加回來。
 ]
 

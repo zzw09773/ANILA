@@ -6,7 +6,7 @@ transitions, so it is where the three cross-cutting concerns hang:
 
 1. **Durable persistence** — write a :class:`~app.services.job_store.PersistedJob`
    projection to Redis on *every* transition, so a restarted studio can
-   answer status queries for pre-restart jobs (系統架構 failure model).
+   answer status queries for pre-restart jobs (failure model).
 2. **CSP reporting** — POST /v1/artifact-jobs on create, PATCH on a
    terminal state, POST /v1/artifacts when an artifact lands (with
    task_id / source_snapshot_id passthrough + storage_ref + content_hash).
@@ -20,6 +20,7 @@ pipeline itself is unchanged — the endpoints build a
 calls into here.
 
 Does NOT import ``anila_core``.
+
 """
 
 from __future__ import annotations

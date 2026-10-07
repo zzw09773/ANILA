@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slice 3a — 四級分類 schema 升級 + 治理三表(四級分類契約)。
+"""四級分類 schema 升級 + 治理三表。
 
 新表:
 - ``classification_events``(欄位逐字;reason 7 值封閉 enum 在
@@ -32,7 +32,7 @@ classification_source / classification_event_id)掛載對象 —— 本 slice
 | ServiceLaunch     | ——(Slice 7 才建表)   | 深後補(deferred)           |
 | ExportRecord      | export_records          | 4 欄已於 r1_0007 建(Slice 8a)|
 
-四級字彙(四級分類契約):無機密 / 營業秘密 / 密 / 機密。
+四級字彙:無機密 / 營業秘密 / 密 / 機密。
 
 Backfill(floor=最低安全起點;legacy classified → 最高級 機密):
 - ``conversations.classified=false/null → 無機密``(server_default 即是)
@@ -44,6 +44,7 @@ Backfill(floor=最低安全起點;legacy classified → 最高級 機密):
 
 Revision ID: r1_0003
 Revises: r1_0002
+
 """
 
 from typing import Sequence, Union
@@ -59,7 +60,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 json_type = sa.JSON().with_variant(JSONB, "postgresql")
 
-# 四級分類契約 四級字彙;backfill 只用這兩個端點值。
+# 四級字彙;backfill 只用這兩個端點值。
 _UNCLASSIFIED = "無機密"
 _RESTRICTED = "密"
 _SECRET = "機密"  # legacy classified=true → 最高級(保守)
@@ -117,7 +118,7 @@ def _add_common_tail_columns(table: str) -> None:
 
 
 def upgrade() -> None:
-    # ── 1. classification_events(四級分類 §6;append-only)────────────────
+    # ── 1. classification_events(append-only)────────────────
     op.create_table(
         "classification_events",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -145,7 +146,7 @@ def upgrade() -> None:
         ["resource_type", "resource_id"],
     )
 
-    # ── 2. declassification_requests(四級分類 §8)──────────────────────────
+    # ── 2. declassification_requests──────────────────────────
     op.create_table(
         "declassification_requests",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -201,7 +202,7 @@ def upgrade() -> None:
         ["resource_type", "resource_id"],
     )
 
-    # ── 3. classification_authority_assignments(四級分類 §7/§12)──────────
+    # ── 3. classification_authority_assignments──────────
     op.create_table(
         "classification_authority_assignments",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -247,7 +248,7 @@ def upgrade() -> None:
     for table in _PARTIAL_COLUMN_TABLES:
         _add_common_tail_columns(table)
 
-    # agents.default_classification_level(四級分類 §3 bridge 第 3 列)。
+    # agents.default_classification_level(bridge 第 3 列)。
     op.add_column(
         "agents",
         sa.Column(

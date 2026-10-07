@@ -5,7 +5,7 @@ Revision ID: r1_0029
 Revises: r1_0028
 Create Date: 2026-07-31
 
-舊 SYSTEM-MAP §1 / §5：CSP 專案知識庫與 ANILALM 個人知識庫各自獨立，
+CSP 專案知識庫與 ANILALM 個人知識庫各自獨立，
 但同一張 ``ingestion_collections`` 表、同一支 list API，過去只濾
 ``created_by``，所以治理中心建的庫會出現在 ANILALM「你的知識庫」。
 
@@ -19,6 +19,7 @@ attic ``a76ccb5`` 的第二套機制；本輪跟對話先例走。
 
 ``origin`` 是產品貨架分區，不是授權邊界；ownership / 密等 latch /
 檢索 RLS 都不讀它。
+
 """
 
 from __future__ import annotations

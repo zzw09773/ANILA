@@ -285,7 +285,7 @@ class TestCrossHostAllowlistUnchanged:
         assert resp.json()["detail"] == "服務 entry_url origin 不在 allowed_origins"
 
 
-# ── 2b. 跨主機空名單 fail-closed（A01 / FAKE-CONTROLS #38） ─────────────────
+# ── 2b. 跨主機空名單 fail-closed（A01） ─────────────────
 
 
 class TestCrossHostEmptyAllowlistFailClosed:

@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """Artifact 契約(型別 + 封閉 enum)—— Slice 8a。
 
-依系統架構規格(ArtifactJob schema
-逐欄)、01-domain-model.md(Artifact / ArtifactVersion / ExportRecord)、
-09-api-event-contracts.md(Artifact API 回應契約)、08(分類匯出判定)。
+(ArtifactJob schema
+逐欄)、(Artifact / ArtifactVersion / ExportRecord)、
+(Artifact API 回應契約)、08(分類匯出判定)。
 
 DB 層存開放 String,封閉 enum 在本契約層 fail-closed 把關(同
-``contracts.tasks`` / ``contracts.policy`` 模式)。五類產出名稱以 系統架構/01
+``contracts.tasks`` / ``contracts.policy`` 模式)。五類產出名稱以
 逐字為準:``slides / report / mindmap / infographic / datatable``(task 提示
 的 ``deck`` 是佔位,doc 用 ``slides`` → 從文件)。
+
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from app.schemas.base import ApiResponseModel
 
 
 class ArtifactType(str, enum.Enum):
-    """系統架構/01 五類產出(順序照 系統架構 ArtifactJob.type)。"""
+    """五類產出(順序照  ArtifactJob.type)。"""
 
     SLIDES = "slides"
     REPORT = "report"
@@ -33,7 +34,7 @@ class ArtifactType(str, enum.Enum):
 
 
 class ArtifactJobStatus(str, enum.Enum):
-    """系統架構 ArtifactJob.status 四值(逐字)。"""
+    """ArtifactJob.status 四值(逐字)。"""
 
     QUEUED = "queued"
     RUNNING = "running"
@@ -42,7 +43,7 @@ class ArtifactJobStatus(str, enum.Enum):
 
 
 class ArtifactStatus(str, enum.Enum):
-    """領域模型 Artifact.status 四值(逐字)。"""
+    """Artifact.status 四值(逐字)。"""
 
     QUEUED = "queued"
     GENERATING = "generating"
@@ -99,7 +100,7 @@ class ArtifactIn(BaseModel):
     """``POST /v1/artifacts`` body。
 
     binding 規則(``task_id`` 或 ``source_snapshot_id`` 至少一)在 service 層
-    以 422 把關(constitution §6);此處只定形狀,``metadata`` 落
+    以 422 把關;此處只定形狀,``metadata`` 落
     ``metadata_json``。
     """
 
@@ -134,7 +135,7 @@ class ArtifactVersionIn(BaseModel):
 class ArtifactExportIn(BaseModel):
     """``POST /v1/artifacts/{artifact_id}/exports`` body(匯出 policy gate)。
 
-    OE-4 / 四級分類契約 L241-242，原 SYSTEM-MAP §8:allow iff artifact.level ≤ 營業秘密;
+    allow iff artifact.level ≤ 營業秘密;
     audit iff level ≥ 營業秘密。``target_classification_floor`` 保留為
     目的地空間 metadata,不再作判定軸。
     """
