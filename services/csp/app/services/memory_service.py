@@ -1217,7 +1217,7 @@ async def _write_chunk(
     Embed runs before any INSERT is staged so ``_embed``'s connection-release
     ``commit()`` cannot make a sibling chunk durable mid-pair.
     """
-    # §6-3：assistant chunk 在 embed／落庫前正規化（與 persist_turn 同一契約）
+    # assistant chunk 在 embed／落庫前正規化（與 persist_turn 同一契約）
     content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     if message_id is not None:
         zh_normalize_service.log_if_changed(message_id, zh_changed)
@@ -2521,7 +2521,7 @@ def start_memory_idle_loop():
     return asyncio.create_task(_loop())
 
 
-# ── P4.4: revoke memory when a conversation is upgraded ──────────────────────
+# ── revoke memory when a conversation is upgraded ────────────────────────────
 
 
 def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, int]:
@@ -2531,7 +2531,7 @@ def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, in
     「對話**升密之後,先前萃取的記憶直接刪除**(不是標記不可用)。」
     Real DELETE, not a tombstone or a retrieval-time filter — a filter
     is one forgotten call site away from serving the content again, and
-    記憶 §5 L189 says 撤回, not 隱藏.
+    the ruling says 撤回, not 隱藏.
 
     Both stores the memory subsystem writes are covered:
 
@@ -2539,8 +2539,8 @@ def purge_conversation_memory(db: Session, conversation_id: int) -> dict[str, in
       a column on this table, not a separate store, so the vector dies
       with the row; there is no orphaned index entry to sweep.
     * ``user_facts`` — extracted key/value facts, matched on
-      ``source_conversation_id`` (the provenance column 記憶 §5
-      L189 requires precisely so an upgrade can find them again).
+      ``source_conversation_id`` (the provenance column, so an upgrade
+      can find them again).
 
     Caller owns the transaction — this stages the DELETEs and does not
     commit, so the purge lands in the same transaction as the

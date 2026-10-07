@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Slice 7a — Service Registry (Service Registry §3/§5/§10/§13/§14).
+"""Slice 7a — Service Registry.
 
 Additive upgrade of ``platform_links`` into the full ``registered_services``
 Registry, plus the launch-gateway audit trail tables:
 
-- ``registered_services``      : 33 doc §3 fields + carried-over ``sort_order``.
+- ``registered_services``      : 33 fields + carried-over ``sort_order``.
 - ``service_launches``         : one row per minted launch token (TTL window).
 - ``service_audit_callbacks``  : append-only service→CSP audit events.
-- ``service_project_bindings`` : service ↔ project entry bindings (doc §13).
+- ``service_project_bindings`` : service ↔ project entry bindings.
 
 Existing ``platform_links`` rows are data-migrated into ``registered_services``
 PRESERVING their integer id (grant mapping) and create timestamp, with
@@ -16,7 +16,7 @@ PRESERVING their integer id (grant mapping) and create timestamp, with
 
 ``platform_links`` is KEPT intact (downgrade safety, marked deprecated in the
 model). ``service_access_grants`` gains a ``service_id`` FK with
-``ON DELETE SET NULL`` (preserve-history blocker, doc §14/§15.1) and its legacy
+``ON DELETE SET NULL`` (preserve-history) and its legacy
 ``platform_link_id`` is relaxed to nullable; both are backfilled.
 
 Revision ID: r1_0006

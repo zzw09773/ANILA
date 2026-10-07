@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Pydantic contracts for the Service Registry (Service Registry §3/§6/§10/§13).
+"""Pydantic contracts for the Service Registry.
 
-Enums mirror doc §3's closed value sets and are validated at the API boundary
+Enums mirror the closed value sets and are validated at the API boundary
 (FastAPI 422 on a bad value). ``required_roles`` reuses the same allow-list as
 ``platform_link`` so the compat façade and the registry stay consistent.
 """
@@ -43,7 +43,7 @@ class ConfigSource(str, enum.Enum):
     ENV_SEEDED = "env_seeded"
 
 
-# doc §9 value domains (validated soft — unknown values are rejected).
+# value domains (validated soft — unknown values are rejected).
 _DATA_INGRESS = {"uploaded_file", "task_result", "manual_input", "none"}
 _DATA_EGRESS = {"artifact", "report", "table", "none"}
 
@@ -79,7 +79,7 @@ class RegisteredServiceCreate(BaseModel):
     healthcheck_url: str | None = None
     audit_callback_url: str | None = None
     trace_callback_url: str | None = None
-    # R-SEC (ADR-0008): audit-callback client binding. Admin-tier only.
+    # R-SEC: audit-callback client binding. Admin-tier only.
     service_client_id: int | None = None
     classification_ceiling: ClassificationLevel | None = None
     required_roles: list[str] = Field(default_factory=list)
@@ -138,7 +138,7 @@ class RegisteredServiceUpdate(BaseModel):
     healthcheck_url: str | None = None
     audit_callback_url: str | None = None
     trace_callback_url: str | None = None
-    # R-SEC (ADR-0008): audit-callback client binding. Admin-tier only — the
+    # R-SEC: audit-callback client binding. Admin-tier only — the
     # API layer rejects a per-service admin who tries to set this even when it
     # is whitelisted in ``db_editable_fields``.
     service_client_id: int | None = None
@@ -199,7 +199,7 @@ class RegisteredServiceResponse(ApiResponseModel):
     model_config = {"from_attributes": True}
 
 
-# ── Launch contract (doc §5/§6/§13) ─────────────────────────────────────────
+# ── Launch contract ─────────────────────────────────────────────────────────
 
 
 class LaunchRequest(BaseModel):
@@ -221,7 +221,7 @@ class LaunchResponse(ApiResponseModel):
     expires_at: datetime
 
 
-# ── Audit callback (doc §10) ────────────────────────────────────────────────
+# ── Audit callback ──────────────────────────────────────────────────────────
 
 
 class AuditCallbackActor(BaseModel):
@@ -265,7 +265,7 @@ class AuditCallbackResponse(ApiResponseModel):
     model_config = {"from_attributes": True}
 
 
-# ── Project bindings (doc §13) ──────────────────────────────────────────────
+# ── Project bindings ────────────────────────────────────────────────────────
 
 
 class ProjectBindingCreate(BaseModel):

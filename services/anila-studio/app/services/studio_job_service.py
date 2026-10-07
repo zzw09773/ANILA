@@ -25,8 +25,7 @@ endpoint layer.
 Each `create_job` spawns ONE `asyncio.Task`. Task results land in the
 shared `_jobs` dict via `_update_state`. Reading via `get_job` is safe
 because we never mutate a JobRecord in-place — every state transition
-produces a new dataclass instance (immutability per CLAUDE.md style
-guide). Per-user isolation is enforced at the endpoint layer using
+produces a new dataclass instance (immutability). Per-user isolation is enforced at the endpoint layer using
 `job.user_id`.
 """
 from __future__ import annotations

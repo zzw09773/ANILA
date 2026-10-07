@@ -17,7 +17,7 @@ AGENT_REPLY_OBSERVATION_KEY = "agent_reply_observation"
 AGENT_REPLY_SHORT_FLAG = "short_reply"
 UsageSource = Literal["reported", "estimated", "unavailable"]
 
-# Calibration recorded in 2026-08-11 handoff §八: interception 121;
+# Calibration recorded 2026-08-11: interception 121;
 # model refusals 129 and 138; normal replies 219 and 365. 160 is conservative
 # for the observed gap. The normal-sample n=2 is too small; this value awaits
 # convergence against the real reply distribution.

@@ -1,6 +1,6 @@
 """Router upstream calls carry sampling parameters and survive empty replies.
 
-Harness §6-5 / §9b-2 (wired 2026-09-02). Before: the Router sent only
+Wired 2026-09-02. Before: the Router sent only
 ``model / messages / stream`` upstream, so temperature and max_tokens were
 whatever the model server defaulted to; a thinking model that spent its whole
 budget on reasoning came back ``finish_reason=length`` with empty content and

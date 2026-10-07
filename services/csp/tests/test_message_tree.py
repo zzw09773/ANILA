@@ -1,6 +1,6 @@
 """OW-1 — message history tree backend tests.
 
-Pins ``app/services/message_tree.py`` §5 (20 cases): append chaining,
+Pins ``app/services/message_tree.py`` (20 cases): append chaining,
 branch (edit-re-ask + regenerate), view=active|all, active-leaf switch,
 sibling cap, subtree delete, ANILALM exclusion, attachments, public share,
 search stays all-branches.
@@ -467,7 +467,7 @@ def test_15_anilalm_branch_blocked_plain_append_ok(client: TestClient, db: Sessi
 
 
 def test_15b_anilalm_conversation_classify_rejected(client: TestClient, db: Session):
-    """Q59（2026-08-21）：anilalm 對話不用密等——手動 classify 必須明確失敗。
+    """2026-08-21：anilalm 對話不用密等——手動 classify 必須明確失敗。
 
     與 collection 升密擋線同不變式（seam rule 一次封兩種資源）。origin 是
     列值不靠 payload，所以不是拼錯 product surface：擁有者對自己

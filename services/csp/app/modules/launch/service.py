@@ -74,7 +74,7 @@ def create_service_launch(
 def build_launch_url(entry_url: str, token: str) -> str:
     """Append the launch token to the service entry URL as a query param.
 
-    doc §5 returns "iframe URL + launch token"; we deliver the token via the
+    We deliver the token via the
     ``launch_token`` query parameter (preserving any existing query string) so
     both iframe and new_tab modes carry it. The token is also returned
     standalone in the launch response for shells that prefer fragment delivery.

@@ -7,8 +7,7 @@ Phase 1 (模型 stack 解耦) 加的欄位。三件事要驗:
    ``<internal>`` sentinel,不再是 ``<owner-only>``
 
 走 unit-level test (用 dataclass-shaped stub) 不過 DB,避開既有
-JSONB-on-SQLite infra debt。HTTP 路徑 end-to-end 在 cutover runbook
-上手動驗 (plan §1.5)。
+JSONB-on-SQLite infra debt。HTTP 路徑 end-to-end 手動驗。
 """
 from __future__ import annotations
 

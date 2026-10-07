@@ -1,4 +1,4 @@
-"""Pure target-resolution policy for cross-document relations (document-relations design v2 §6).
+"""Pure target-resolution policy for cross-document relations.
 
 Given a cited regulation NAME and the candidate documents in a collection,
 decide which document a citation resolves to — or that it is *unresolved* /
@@ -12,7 +12,7 @@ Matching policy (Phase 1):
   2. **contains** (only if no exact) — the cited short name is a substring of a
      longer official title, or vice-versa. A convenience, not authoritative.
   3. **>1 match at any tier → ambiguous** (left unresolved; we never silently
-     pick one — design §6 step 4).
+     pick one).
 
 ``target_name`` is assumed already NFKC/bracket-normalized (callers pass
 ``Citation.target_title`` or :func:`ref_title`). A document never resolves to

@@ -1,5 +1,4 @@
-"""OW-3 message-action Pydantic contracts
-(``app/api/message_actions.py`` §4 / §Q5)."""
+"""OW-3 message-action Pydantic contracts."""
 
 from __future__ import annotations
 

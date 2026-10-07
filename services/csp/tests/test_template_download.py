@@ -1,4 +1,4 @@
-"""Download-bundle contract tests (design 2026-09-22 §6).
+"""Download-bundle contract tests.
 
 Two endpoints, two artifacts, both asserted by **reading the produced zip**:
 
@@ -368,7 +368,7 @@ def test_missing_profile_is_503(client, db, monkeypatch, tmp_path):
 
 
 def test_zip_omits_wheelhouse_even_when_wheels_exist(client, db, monkeypatch, tmp_path):
-    """§12: a wheel directory beside the scaffold is not a download input."""
+    """A wheel directory beside the scaffold is not a download input."""
     inputs = build_all_inputs(tmp_path)
     assert any(inputs["wheels"].glob("*.whl"))
     _configure(monkeypatch, inputs)
@@ -846,7 +846,7 @@ def _lock_for_requirements_in(scaffold: Path, wheel_dir: Path) -> None:
 
     The shipped lock is the real Python 3.13 hash lock. This helper still
     substitutes a tiny one so the download test does not depend on wheel
-    files, which §12 no longer puts in the zip.
+    files, which are no longer put in the zip.
     """
     from tests.quickstart_fixtures import make_wheel
 
@@ -931,8 +931,8 @@ def test_real_scaffold_bundles_and_prefills_without_touching_verifier(
 def test_mount_paths_and_env_names_match_compose():
     """The knobs ops must supply, pinned so a rename cannot silently 404.
 
-    ``infra/compose/platform.yml`` and ``dev.yml`` mount the scaffold. §12
-    removes the wheelhouse mount: wheels are an image-build input, not a
+    ``infra/compose/platform.yml`` and ``dev.yml`` mount the scaffold.
+    Wheels are an image-build input, not a
     CSP download input.
     """
     from app.api.agents import _quickstart_bundle as bundle

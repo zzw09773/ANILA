@@ -7,7 +7,7 @@
    audit-logs 慣例)。append-only:只有 GET,永遠不新增 PUT/PATCH/DELETE。
 2. ``/api/classification/declassification-requests`` —— 降級申請三段式
    (路由形狀:建立 / 列表 / approve / reject)。申請僅 Admin
-   (ADR-0005「上鎖後僅 Admin 可申請降級」);裁決繞開平台角色,改由
+   （上鎖後僅 Admin 可申請降級）;裁決繞開平台角色,改由
    「機密審批權責」把關(與平台角色脫鉤)。API 層在 service guard 之上再明確
    暴露:申請人 ≠ 核准/駁回人(403)、核准人無權責 → 申請維持 pending
    + 403(fail-closed)、紙本核定缺文號/官職姓名 → 422。每次裁決落一筆
@@ -126,7 +126,7 @@ def submit_declassification_request(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> DeclassificationRequest:
-    """建立降級申請(ADR-0005:上鎖後僅 Admin 可申請)。
+    """建立降級申請（上鎖後僅 Admin 可申請）。
 
     fail-closed 預設 ``pending_supervisor``;service 再驗申請資格 / 目標等級
     嚴格低於現行等級 / reason 必填,任一不合 → 422。

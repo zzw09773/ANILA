@@ -104,7 +104,7 @@ _UNCLASSIFIED = ClassificationLevel.UNCLASSIFIED.to_storage()
 
 
 def _refuse_classification_for_anilalm(origin: str | None, level: ClassificationLevel) -> None:
-    """ANILALM 不用密等設計（擁有者 2026-08-21 裁決，Q59）——個人知識庫資源不取得任何密等分類。
+    """ANILALM 不用密等設計（擁有者 2026-08-21 裁決）——個人知識庫資源不取得任何密等分類。
 
     「不用密等的設計」不是「不會到達某個等級」，是「這個介面裡沒有密等這個概念」
     （擁有者兩度重申；幕僚長 2026-08-22 就此裁：**全擋，含營業秘密**）。
@@ -433,7 +433,7 @@ def create_collection(
             detail="origin 必須是 'csp' 或 'anilalm'",
         )
 
-    # ANILALM 不用密等（Q59）：個人知識庫不取得密等。擋在寫入前。
+    # ANILALM 不用密等：個人知識庫不取得密等。擋在寫入前。
     # ⚠ 正確性命門，非早閘：建庫直接寫 ORM 列、不經 apply_classification 核心，
     #   正確性不由核心補——刪掉會紅（Reviewer 實測 2 failed），不可刪。
     _refuse_classification_for_anilalm(origin, level)
@@ -706,7 +706,7 @@ def raise_collection_classification(
     # rejects the four-value violation with 422 before the route body runs,
     # so no defensive re-parse of ``payload`` is needed here.
     target = ClassificationLevel.from_storage(payload.classification_level)
-    # ANILALM 不用密等（Q59）：這支路由是「把庫推到密以上」的第二條路。
+    # ANILALM 不用密等：這支路由是「把庫推到密以上」的第二條路。
     # origin 是列值不是 payload，所以不是拼錯 product surface——任何人
     # （含 admin）用這支把 anilalm 庫升到「密」以上都必須明確失敗。
     # ⚠ 這裡是效能／訊息用的早閘：正確性由 apply_classification 核心保證，

@@ -1,7 +1,6 @@
 """Ingestion platform foundation: collections / documents / chunks / jobs + RLS.
 
-Sprint 1 of the Phase 2 ingestion platform (the ingestion platform design
-§3.1–§3.3). This migration replaces AgenticRAG's runtime-`CREATE TABLE`
+Sprint 1 of the Phase 2 ingestion platform. This migration replaces AgenticRAG's runtime-`CREATE TABLE`
 self-bootstrap (which used `(user_id, project_id)` legacy scoping) with a
 proper alembic-managed schema scoped on `agent_id`.
 
@@ -29,8 +28,8 @@ Four tables introduced:
    ingestion through the API, but the table exists so Sprint 2 worker swap is
    schema-compatible.
 
-Two further tables (``ingestion_eval_runs``, ``agent_llm_credentials``) live
-in design doc §3.1 but are deferred to Sprint 3 / Sprint 2 respectively.
+Two further tables (``ingestion_eval_runs``, ``agent_llm_credentials``) are
+deferred to Sprint 3 / Sprint 2 respectively.
 
 PG extension prerequisite: ``CREATE EXTENSION vector``. The csp-db image
 must be ``pgvector/pgvector:pg16`` (or compatible) — the upstream
@@ -337,7 +336,7 @@ def upgrade() -> None:
         """
     )
 
-    # ANN index — HNSW on the 1536-d vector column. design doc §3.2 specified
+    # ANN index — HNSW on the 1536-d vector column.
     # IVFFlat originally; HNSW was the Sprint 4 plan. We adopt HNSW now
     # because:
     #

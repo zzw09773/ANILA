@@ -550,8 +550,7 @@ def test_unreachable_peer_is_bounded_by_the_channel_ready_wait():
 def test_default_ceilings_are_the_documented_ones():
     """35 s per embed call, 10 s per health probe — at default settings.
 
-    These exact numbers are quoted in the module docstring, in the runbook's
-    §3.1c troubleshooting table (「單次請求的執行緒佔用上限為 35 秒」) and in
+    These exact numbers are quoted in the module docstring and in
     the retry arithmetic (3 × 35 ≈ 106.5 s per HTTP request). Changing them is
     allowed; changing them without noticing is not.
     """

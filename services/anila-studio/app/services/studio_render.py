@@ -181,8 +181,8 @@ async def _hydrate_images(
             logger.warning(
                 "Studio diagram path: graphviz render returned None for slide '%s' "
                 "(dot binary missing? CJK font missing? syntax error?). Slide will "
-                "fall back to standard layout. Run scripts/diagnose-graphviz.sh "
-                "(Round 2 Patch G runbook) to identify root cause.",
+                "fall back to standard layout. Run infra/deployment/scripts/diagnose-graphviz.sh "
+                "to identify root cause.",
                 slide.get("title", "<untitled>"),
             )
             slide.pop("diagram_dot", None)

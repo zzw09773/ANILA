@@ -591,7 +591,7 @@ describe("the window goes away mid-stream", () => {
 describe("when the turn cannot be sent", () => {
   it("does not start a stream, and both bubbles say so", async () => {
     // 擋的突變:`if (!head.ok)` → `if (false && !head.ok)`。整段失敗分支
-    // 對測試而言是死碼,而驗證者證明那條路在實務上走得到(§2 的 409)。
+    // 對測試而言是死碼,而驗證者證明那條路在實務上走得到(409)。
     renderRuntime();
     await typeAndSend("先建立對話");
     await waitFor(() => expect(streamControl.pending.length).toBe(1));

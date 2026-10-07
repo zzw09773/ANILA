@@ -1,6 +1,6 @@
 """LLM-as-judge scoring for the Chunking Evaluator.
 
-Sprint 5 / Chunk X. Per the ingestion platform design §6.5:
+Sprint 5 / Chunk X.
 
     Hit@1 / Hit@5 / MRR are pure retrieval metrics — they only ask
     "did we surface the right doc?". They don't ask "is the chunk
@@ -21,7 +21,7 @@ The judge LLM credential lives in ``user_llm_credentials`` (Chunk L);
 the AES-encrypted API key is decrypted just-in-time per call and the
 decrypted key never persists beyond the outbound httpx call.
 
-Cost / throttle (design doc §6.5):
+Cost / throttle:
 - 50 queries × 6 strategies = 300 judge calls per run.
 - gpt-4o-mini ~$0.001/call → ~$0.30/run. Manageable.
 - Sprint 5 X first cut: no caching / throttling. Sprint 6 will add

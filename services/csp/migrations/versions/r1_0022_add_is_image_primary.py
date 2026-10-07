@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Add is_image_primary to model_registry.
 
-Slice 8b (doc 2026-07-06-flux-image-primary-design.md §1) — admins pick
+Slice 8b — admins pick
 which FLUX / OpenAI Images model flux2-dev-agent / anila-studio should
 auto-consume through the CSP Models page. At most one row may carry
 is_image_primary=true at a time — enforced by a partial unique index.

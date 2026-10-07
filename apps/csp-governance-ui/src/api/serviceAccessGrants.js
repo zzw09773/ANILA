@@ -1,6 +1,6 @@
 import client from './client'
 
-// Phase 1 §7.5.3 — admin grant CRUD wrapper. The backend endpoints already
+// Admin grant CRUD wrapper. The backend endpoints already
 // enforce admin role + the XOR (user_id | department_id) shape; this layer
 // exists so the Vue views stay declarative.
 

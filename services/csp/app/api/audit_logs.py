@@ -48,8 +48,7 @@ def _comment_cell(value) -> str:
     is one cell whatever the value contains.
 
     ``\\r``／``\\n`` are handled by :func:`_one_physical_line`.
-    Export-time only — registration and username charset are unchanged
-    (that is an owner decision, owner decision, item 5).
+    Export-time only — registration and username charset are unchanged.
     """
     return _one_physical_line(value).translate(_COMMENT_UNSAFE)
 

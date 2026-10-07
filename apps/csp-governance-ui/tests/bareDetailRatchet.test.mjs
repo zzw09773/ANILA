@@ -9,7 +9,7 @@
 // 既有的兩支 ratchet（healthOverview.test.mjs:190 與 alertSummary.test.mjs 尾巴）
 // 各對一份手寫的四檔清單掃 /response\??\.data\??\.detail/g。Reviewer 記帳：
 // 同一輪在 CollectionDetailView.vue:523 清掉一個裸 detail，但那支檔不在清單裡，
-// 守衛對它失明。手寫清單遲早漏（CLAUDE.md 點名的格）。
+// 守衛對它失明。手寫清單遲早漏。
 //
 // 這支把母集合換成「src/** 全部 .vue/.js 依形狀窮舉」。**豁免只三支**：
 //   - `api/errors.js`         —— `getRawDetail` / `extractError` 的定義處，唯讀點。

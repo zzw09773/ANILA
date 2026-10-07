@@ -1,7 +1,6 @@
 """Add ``is_internal`` flag on ``model_registry``.
 
-Phase 1 of the inference-stack decoupling work (see ANILA root
-docs / README §「模型 stack 維護」). When CSP starts reaching models
+Phase 1 of the inference-stack decoupling work. When CSP starts reaching models
 via docker internal DNS (`http://gemma4:8000/v1`) on a separate
 compose project (``anila-models``), we need a way to mark rows whose
 endpoint is "private internal-network only" — visually distinct from

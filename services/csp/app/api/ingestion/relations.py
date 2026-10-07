@@ -1,4 +1,4 @@
-"""Cross-document relations API (document-relations design v2 §8).
+"""Cross-document relations API.
 
 Endpoints (all under collection access — admin or owner; no reader role yet,
 so list and mutations share ``_require_collection_access``):

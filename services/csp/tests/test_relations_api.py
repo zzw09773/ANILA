@@ -1,4 +1,4 @@
-"""API tests for the cross-document relations endpoints (document-relations design v2 §8).
+"""API tests for the cross-document relations endpoints.
 
 TestClient over the SQLite fixture. Covers: manual create (resolved +
 unresolved), bad src 404, list with flags, delete (manual ok / rule protected /

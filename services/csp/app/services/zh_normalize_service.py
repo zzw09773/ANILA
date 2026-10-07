@@ -1,4 +1,4 @@
-"""聊天落庫前的 zh-TW 靜默正規化（§6-3）。
+"""聊天落庫前的 zh-TW 靜默正規化。
 
 只動 assistant；失敗只記 warning、原文落庫；``intl.zh_normalize`` 關閉時整段跳過。
 

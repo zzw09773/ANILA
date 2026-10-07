@@ -34,7 +34,7 @@ class Message(Base):
         Integer, ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
-    # OW-1 message tree (訊息樹 §46): nullable self-FK; NULL = root.
+    # OW-1 message tree: nullable self-FK; NULL = root.
     # created_at alone is no longer a total order once siblings share a parent.
     parent_id = Column(
         Integer,

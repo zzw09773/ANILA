@@ -1,6 +1,6 @@
 """anila-core tools package.
 
-Sprint 1 boundary cleanup (the boundary design §2.3) removed the
+Sprint 1 boundary cleanup removed the
 RAG-specific tool factories that used to live here:
 
     - create_vector_search_tool

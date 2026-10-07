@@ -1,6 +1,6 @@
 """Sprint 1 Gate G3 — single retrieval entry point.
 
-Per the ingestion platform design §9 G3:
+Retrieval path uniqueness:
 
     grep -rnE "(FROM|INSERT INTO|UPDATE|DELETE FROM|...) document_chunks"
     --include="*.py" packages/anila-core/src packages/anila-agent
@@ -41,7 +41,7 @@ _SQL_PATTERN = re.compile(
 # canonical home of the SDK; anila-agent and ingestion-worker are the
 # two callers that historically had inline SQL.
 #
-# §17.1 laid the top-level dirs out as packages/ + services/, so the
+# The top-level dirs are packages/ + services/, so the
 # repo root is now parents[3] and the old suffixes below both moved:
 #   anila-core/src      → packages/anila-core/src
 #   AgenticRAG/src +
@@ -149,7 +149,7 @@ def test_g3_design_doc_grep_form() -> None:
             continue
         files.add(path)
 
-    # Loose ceiling: 12 files. The §17.1 rescan set is narrower than the
+    # Loose ceiling: 12 files. The rescan set is narrower than the
     # design-doc one (packages/ + services/ only) and sits at 9 files,
     # mostly docstring / settings string mentions — still inside the
     # original ceiling, so it is left unchanged. Bumping past 12 means

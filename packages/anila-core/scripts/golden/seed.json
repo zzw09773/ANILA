@@ -1,5 +1,5 @@
 {
-  "_readme": "Golden set 種子（harness §6-8）。每題只列「機械可驗的性質」，不列標準答案——標準答案要院方出。跑法：python packages/anila-core/scripts/prompt_canary.py --base https://<平台> --key csk-… 。checks: cites=要有 [N] 來源標記（表示查了規章且引用）、no_kb=答案上方應標未檢索、zh=零簡體、terms=零 PRC 框架用語、year=民國→西元換算要對、nonempty=不得空白。",
+  "_readme": "Golden set 種子。每題只列「機械可驗的性質」，不列標準答案——標準答案要院方出。跑法：python packages/anila-core/scripts/prompt_canary.py --base https://<平台> --key csk-… 。checks: cites=要有 [N] 來源標記（表示查了規章且引用）、no_kb=答案上方應標未檢索、zh=零簡體、terms=零 PRC 框架用語、year=民國→西元換算要對、nonempty=不得空白。",
   "questions": [
     {"id": "g01", "q": "軍人有哪些違紀行為會受到懲罰？", "checks": ["nonempty", "zh", "terms", "cites"]},
     {"id": "g02", "q": "陸海空軍懲罰法對於勤務外的違紀行為怎麼規定？", "checks": ["nonempty", "zh", "terms", "cites"]},

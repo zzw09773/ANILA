@@ -1,4 +1,4 @@
-# CSP module boundary 契約(doc 02 §1 / doc 10 §4、§12、§14 lint-boundaries)。
+# CSP module boundary 契約（lint-boundaries）。
 # 由 infra/ci/lint-boundaries.sh 執行;新增 module 時同步補契約。
 
 [importlinter]

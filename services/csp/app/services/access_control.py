@@ -1,15 +1,15 @@
-"""Service-level access control for the Service Registry (Service Registry §12).
+"""Service-level access control for the Service Registry.
 
 Single source of truth for "can this user see / launch this service?". All API
 endpoints that surface or gate on a RegisteredService MUST go through this
 module — never reimplement the algorithm inline. The authoritative algorithm
-(Service Registry §12; steps 1–5 preserved from the legacy platform_links algorithm,
+(steps 1–5 preserved from the legacy platform_links algorithm,
 steps 6–8 added by Slice 7):
 
     1. Service must be active (``is_active = True``). Else: deny.
     2. Admin / owner bypass — ``is_admin_tier(user)`` sees & manages every
        active service, crossing the per-service ``service_admin_user_ids``
-       boundary and grant checks (doc §12; "superuser sees everything").
+       boundary and grant checks ("superuser sees everything").
     3. Role gate — if ``required_roles`` is non-empty, ``user.role`` must be in
        it. Empty list = open gate.
     4. Public bypass — ``is_public`` skips the per-user / per-department grant.
@@ -91,14 +91,14 @@ def can_access_service(
     *,
     context_level: str | None = None,
 ) -> bool:
-    """Return True iff user may see / launch this service (Service Registry §12)."""
+    """Return True iff user may see / launch this service."""
     if not service.is_active:
         return False
     # Step 6 first so the hard classification ceiling binds every tier.
     if not _classification_ok(context_level, service.classification_ceiling):
         return False
     if is_admin_tier(user):
-        return True  # steps 3–5, 7–8 bypass (doc §12)
+        return True  # steps 3–5, 7–8 bypass
     required = service.required_roles or []
     if required and user.role not in required:
         return False

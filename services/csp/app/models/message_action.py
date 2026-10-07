@@ -1,4 +1,4 @@
-"""OW-3 訊息級自訂動作（``app/api/message_actions.py`` §Q1）。
+"""OW-3 訊息級自訂動作。
 
 兩表：``message_actions``（可變列 + version/body_sha256）與
 ``message_action_bindings``（role／department 子樹／user 聯集可見性）。

@@ -7,7 +7,7 @@ registry create / update — 之前完全沒守,admin 可以填任何 URL
 這檔走 ``_enforce_endpoint_url()`` 直接 unit test (不過 HTTP / DB),
 因為平台 conftest 在 SQLite 上跑會卡到既有 platform_links.required_roles
 的 JSONB → SQLite 渲染問題,屬 pre-existing infra debt;本 PR 不修。
-HTTP 路徑的端到端驗證在 cutover runbook 上手動跑 (見 plan §1.5)。
+HTTP 路徑的端到端驗證手動跑。
 """
 from __future__ import annotations
 

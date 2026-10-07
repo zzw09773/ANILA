@@ -192,13 +192,13 @@ services:
       # 放行走 ANILA_ALLOW_HTTP_AGENT_ENDPOINT（內網 agent 用；legacy
       # ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可放行但記 deprecation warning）。
 
-      # ── 削減之後才需要的 passthrough(Q46)────────────────────────────────
+      # ── 削減之後才需要的 passthrough ────────────────────────────────
       # 警報寄信不在這裡：治理中心「警報」頁的「警報寄信」。
       # 這十行在的理由是「沒有 env_file，.env 寫了而這裡沒有對應的一行，值到不了容器」:
       # **沒有 env_file**,所以 `.env` 裡寫了而這裡沒有對應的一行,值根本到不了
       # 容器,而畫面與日誌看起來像是設好了。
       # 削減前它們的通道是設定頁的開機覆蓋(`app.site_url` 曾是頁面可編輯);
-      # Q46 把整套開機覆蓋退役之後,compose 是它們唯一的入口。
+      # 整套開機覆蓋退役之後,compose 是它們唯一的入口。
       # 正式 CORS 預設同源（空清單）。要跨來源才在 .env 設 ALLOWED_ORIGINS。
       # 本機開發來源寫在 dev.yml，不放在這裡。
       SITE_URL: "${SITE_URL:-http://localhost}"
@@ -282,7 +282,7 @@ services:
       ANILA_QUICKSTART_PROFILE: /app/anila-quickstart-profile/profile.json
     volumes:
       # 進階範例與獨立快速骨架，由 CSP 的兩個下載端點分別讀取。
-      # wheelhouse 不掛進 CSP：相依在建置 MLSteam lab 映像時安裝（設計 §12）。
+      # wheelhouse 不掛進 CSP：相依在建置 MLSteam lab 映像時安裝。
       - ../../packages/anila-agent:/app/anila-template:ro
       - ../../packages/anila-agent-quickstart:/app/anila-quickstart:ro
       # 預設在 gitignore 的 share/quickstart/。改 host 目錄：ANILA_QUICKSTART_PROFILE_DIR。
@@ -424,7 +424,7 @@ services:
     environment:
       CSP_BASE_URL: http://csp:8000
       # 多輪派工的中途狀態（/v1/sessions/{id}/state、/answer）存在這個 SQLite；
-      # 2026-09-02 之前沒有 volume，recreate 一次就全部消失（harness M2）。
+      # 2026-09-02 之前沒有 volume，recreate 一次就全部消失。
       ANILA_SESSION_DB_PATH: /app/.anila/sessions.db
       ANILA_SERVICE_TOKEN_FILE: /run/anila/service-clients/router-primary/token
     volumes:

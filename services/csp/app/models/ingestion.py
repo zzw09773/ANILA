@@ -134,7 +134,7 @@ class IngestionCollection(Base):
         ForeignKey("classification_events.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # 管理員明示把這個庫公開給全院聊天檢索（規章檢索 §3 的「不需要 agent」）。
+    # 管理員明示把這個庫公開給全院聊天檢索（不需要 agent 時用院內知識庫直答）。
     # 意思是全院，不是單位內。有 department_id 的庫不能標記；已標記的院級庫
     # （department_id 為 NULL）也不能再綁單位。既有的院級庫不回填、不取消。
     # ⚠ 只有「無機密」能開,由 DB CHECK ck_ingestion_collections_anila_searchable_unclassified
@@ -354,13 +354,13 @@ class IngestionJob(Base):
 class DocumentRelation(Base):
     """A directed edge between documents in the same collection.
 
-    The shared substrate for cross-document relations (document-relations design v2 §3): both
+    The shared substrate for cross-document relations: both
     A (rule/manual edges from the regex citation extractor or a human) and a
     future B (LLM/GraphRAG edges) write the SAME table, distinguished by
     ``source`` (rule / manual / llm) and graded by ``confidence``. Retrieval
     expands along edges once, regardless of who authored them.
 
-    Resolution is order-independent (document-relations design v2 §7): an edge is recorded with
+    Resolution is order-independent: an edge is recorded with
     ``target_ref`` (the normalized "title [+ article]" the source text cited)
     even before the target document exists; ``dst_document_id`` is back-filled
     when a matching ``normalized_title`` is later ingested, and nulled again on

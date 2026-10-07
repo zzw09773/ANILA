@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """OW-1 — message history tree (parent_id + active_leaf_message_id).
 
-訊息樹 §46 / ``app/services/message_tree.py``: editing re-asks
+``app/services/message_tree.py``: editing re-asks
 as a sibling branch; regenerate creates an assistant sibling; both variants
 are queryable, switchable, and independently deletable.
 

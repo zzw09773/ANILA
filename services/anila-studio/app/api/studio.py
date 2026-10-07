@@ -324,8 +324,8 @@ async def _generate_validated_spec(
             )
 
     if validated is None:
-        # Both attempts failed. Per the research file (compass_artifact §F /
-        # Self-Correction Bench arXiv 2507.02778), a third attempt has 64.5%
+        # Both attempts failed. Per Self-Correction Bench
+        # arXiv 2507.02778, a third attempt has 64.5%
         # blind-spot rate and tends to reinforce the original error rather
         # than fix it. The right move is to FALLBACK to a sane default deck
         # so the user gets a usable .pptx with a clear explanation of what

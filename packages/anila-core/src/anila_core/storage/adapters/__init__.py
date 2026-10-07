@@ -2,7 +2,7 @@
 
 History:
 
-- v0.5.0 boundary cleanup (the boundary design §2.3) removed the
+- v0.5.0 boundary cleanup removed the
   RAG-flavour PG adapters: ``PgPool``, ``PgVectorStore``,
   ``PgSessionStore``, ``PgMessageStore``, ``PgRetrievalTraceStore``,
   ``initialize_schema``. They lived under the assumption that anila-core
@@ -17,7 +17,7 @@ What lives here today:
 
 - ``PgPool`` — asyncpg pool wrapper with the pgvector codec auto-registered.
 - ``AgentScopedPgVectorStore`` — agent-scoped, RLS-enforcing vector store
-  (Layer 3 of the the ingestion platform design §3.3 defence stack).
+  (Layer 3 of the defence stack).
 - ``MemoryFileStore`` — filesystem MemoryStore impl used by the memdir /
   extract / relevance / consolidation modules. Platform memory infra; a
   PostgresMemoryStore impl will land in Phase 3+.

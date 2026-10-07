@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""P4.5 —— ANILALM 的記憶只在同一個對話框內。
+"""ANILALM 的記憶只在同一個對話框內。
 
-擁有者裁定(P4.4/P4.5,2026-07-30):
+擁有者裁定(2026-07-30):
 
     ANILALM 的「同一 session」= **同一個對話框**;不是關分頁,也不是登出。
 
-記憶 §5 L51 同一條規則:長期記憶 ANILA ✓ /
+長期記憶 ANILA ✓ /
 ANILALM「—(只在同一 session 內,不跨 session)」。
 
 所以規則有**兩邊**,兩邊都要驗:
@@ -135,7 +135,7 @@ class TestAnilalmMemoryIsConfinedToItsOwnConversation:
 class TestAnilaSideKeepsCrossConversationMemory:
     @pytest.mark.asyncio
     async def test_anila_ui_still_sees_memory_from_other_conversations(self, db):
-        """ANILA 的長期記憶是規格給的功能(記憶 §5 L51 ✓),不能被這包收掉。"""
+        """ANILA 的長期記憶是規格給的功能,不能被這包收掉。"""
         user = make_user(db)
         ui_conv = make_conversation(db, user, origin="anila-ui", title="ui")
         elsewhere = make_conversation(db, user, origin="anila-ui", title="other")

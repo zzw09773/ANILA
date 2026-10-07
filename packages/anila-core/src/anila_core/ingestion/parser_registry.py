@@ -89,7 +89,7 @@ _MIN_RATIO_LENGTH = 200  # below this, do not hard-reject on ratio alone
 _MAX_RAW_NUL_RATIO = 0.005  # 0.5%
 _MAX_CONTROL_RATIO = 0.05  # reject C0-heavy clean UTF-8 / UTF-16 decodes
 # Legacy 8-bit encodings (Big5/CP950/GBK/cp1252/latin-1) are deliberately
-# NOT supported — owner decision 2026-08-01 (Q24):
+# NOT supported — owner decision 2026-08-01:
 # Prefer a visible unsupported failure over wrong text.
 #
 # UTF-16 SUPPORT CONTRACT (owner ruling 2026-08-02, rounds 8-13):

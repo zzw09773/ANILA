@@ -53,7 +53,7 @@ def _drain_queue(queue: asyncio.Queue[Any]) -> None:
 
     Required after cancelling the engine task: a full bounded queue otherwise
     leaves the producer wedged on ``await put(...)``, and the canceller that
-    ``await``s that task waits forever (the Q23 one-liner deadlock).
+    ``await``s that task waits forever (the one-liner deadlock).
     """
     while True:
         try:
@@ -325,7 +325,7 @@ def create_app(
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
-    Sprint 1 boundary cleanup (the boundary design §2.3) removed the
+    Sprint 1 boundary cleanup removed the
     RAG kwargs (ingestion_service / document_store / embedding_provider /
     retrieval_provider / db_pool / upload_dir) and the corresponding
     routers. The runtime is now a pure agent loop — hosts that need
@@ -417,7 +417,7 @@ def create_app(
         """Tool-driven chat endpoint — runs the agent loop with whatever
         tools the host registered into the global ToolRegistry.
 
-        Sprint 1 boundary cleanup (the boundary design Grey Zone B)
+        Sprint 1 boundary cleanup
         moved RAG tool wiring out of core: this endpoint no longer knows
         about vector_search / keyword_search / read_document. Callers
         building RAG agents (e.g. AgenticRAG template) register their

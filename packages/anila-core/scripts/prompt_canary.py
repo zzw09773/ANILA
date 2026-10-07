@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prompt canary + golden-set runner (harness §6-2 / §6-8).
+"""Prompt canary + golden-set runner.
 
 The Router's three system templates are live-editable in the governance
 center; this script is the mechanical check to run after editing them, after

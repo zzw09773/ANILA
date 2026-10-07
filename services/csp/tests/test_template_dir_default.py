@@ -6,7 +6,7 @@ developer's "download the agent template" click when csp is started any
 other way (bare uvicorn, a demo box). The existing
 ``tests/test_template_download.py`` cannot catch it here: both of its cases
 error at fixture setup in this environment, which is precisely why the
-stale path survived the §17.1 directory move.
+stale path survived the directory move.
 
 This module deliberately avoids the TestClient fixture so it runs
 everywhere and is a pure statement about the path.

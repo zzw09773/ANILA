@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """RegisteredService — the Slice 7 additive upgrade of ``platform_links``.
 
-Service Registry §3 defines ``RegisteredService`` as a superset of the legacy
+``RegisteredService`` is a superset of the legacy
 ``platform_links`` row: the same nine visible-link fields plus 14 new
 target fields (slug, owner department / admin, service_admin list, service
 type, project entry, origin allow-list, launch mode, iframe flag, sso mode,
@@ -15,9 +15,9 @@ The table is the single source of truth for the Service Registry; the legacy
 seed or the ``/api/platform-links`` compat façade — both now operate on
 ``registered_services``.
 
-``sort_order`` is carried over from ``platform_links`` even though doc §3's
-schema block omits it, because §2 / §14 say to keep the existing link fields
-and the doc's own ``db_editable_fields`` example references ``sort_order``.
+``sort_order`` is carried over from ``platform_links`` even though the
+schema block omits it, to keep the existing link fields,
+and ``db_editable_fields`` references ``sort_order``.
 It powers the compat ``PlatformLinkResponse`` shape and list ordering.
 """
 
@@ -50,7 +50,7 @@ def _utcnow() -> datetime:
 class RegisteredService(Base):
     __tablename__ = "registered_services"
 
-    # ── doc §3 schema (33 fields) + carried-over sort_order ──────────────────
+    # ── schema (33 fields) + carried-over sort_order ──────────────────────────
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     # ``slug`` is the stable string service identifier used as the launch
@@ -59,7 +59,7 @@ class RegisteredService(Base):
     description = Column(String(255), nullable=True)
     icon = Column(String(50), nullable=True)
 
-    # doc §3 types owner_department_id / owner_admin_user_id as required, but
+    # owner_department_id / owner_admin_user_id are not required here, but
     # legacy platform_links carry neither — nullable so the data-migration of
     # existing rows can't invent an owner. New rows may enforce at the API.
     owner_department_id = Column(
@@ -68,7 +68,7 @@ class RegisteredService(Base):
     owner_admin_user_id = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    # per-service delegation list, NOT a global role (doc §3 note / §11).
+    # per-service delegation list, NOT a global role.
     service_admin_user_ids = Column(_JSON_LIST, nullable=False, default=list)
 
     service_type = Column(
@@ -101,7 +101,7 @@ class RegisteredService(Base):
     audit_callback_url = Column(String(500), nullable=True)
     trace_callback_url = Column(String(500), nullable=True)
 
-    # R-SEC (ADR-0008): the Service Client that owns this service's audit-write
+    # R-SEC: the Service Client that owns this service's audit-write
     # identity. The ``/audit-callbacks`` endpoint requires the presented Service
     # Client Token to resolve to THIS client id (fail-closed: NULL → reject all
     # callbacks). Admin-tier only — a per-service admin may NOT self-bind
@@ -122,7 +122,7 @@ class RegisteredService(Base):
         Boolean, nullable=False, default=True, server_default="true"
     )
 
-    # v0.2 source-of-truth trio (doc §3 + §15.1). "env_seeded" rows are the
+    # v0.2 source-of-truth trio. "env_seeded" rows are the
     # only ones the seed may upsert; "db" rows are the UI's single source of
     # truth and must survive restarts untouched.
     config_source = Column(String(20), nullable=False, server_default="db")
@@ -152,7 +152,7 @@ class RegisteredService(Base):
 
 
 class ServiceProjectBinding(Base):
-    """Binds a RegisteredService to a project (doc §13 project-entry).
+    """Binds a RegisteredService to a project (project-entry).
 
     ``project_id`` is a free-form string because projects are not yet a first
     class table in this slice; the binding still powers the access-algorithm

@@ -1,6 +1,6 @@
 import client from './client'
 
-// Cross-document relations (document-relations design v2 §8).
+// Cross-document relations.
 // Edges live in document_relations; rule edges are extracted at ingest, manual
 // edges are created here. The relations tab in CollectionDetailView is the only
 // consumer. Auth + CSRF are handled by the shared axios `client`.

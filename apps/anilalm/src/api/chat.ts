@@ -336,7 +336,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
  *
  * When the stream ends with empty content and finish_reason === 'length',
  * throws Error('EMPTY_LENGTH') — thinking models can burn the whole
- * budget on reasoning before any content (設計文件 §9b).
+ * budget on reasoning before any content.
  *
  * onDelta 的第三個參數帶目前的可見回答與推理累積。只有推理進來時 delta
  * 是空字串，呼叫端用它把氣泡留在「思考中」，不要把推理寫進回答。

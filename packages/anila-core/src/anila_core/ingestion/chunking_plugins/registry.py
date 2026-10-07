@@ -1,4 +1,4 @@
-"""Chunker strategy registry (the ingestion platform design §5.2).
+"""Chunker strategy registry.
 
 Plug-ins register at import time via ``@register_chunker``; the worker
 and the API layer look strategies up by name. Built-in strategies are

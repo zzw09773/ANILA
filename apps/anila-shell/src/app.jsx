@@ -4124,7 +4124,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // steer:guided regenerate 的調整指令(更詳細/更簡潔/換個說法/自由文字);
   // 空 = 盲目重試(原行為)。non-empty 時附加到使用者原文後重新生成。
   //
-  // forceKbSearch:「改用院內規章重查」(設計 §8 的事後自救、擁有者 Q40)。
+  // forceKbSearch:「改用院內規章重查」(事後自救：Router 判錯時改走院內規章)。
   // ⚠ 它**不是**第五個 steer。steer 的通道是「把字串進使用者訊息」,而重查要
   // 改變的是後端行為(CSP 檢索院內規章),那個開關只認標頭。走 steer 的話問句
   // 會被改寫、CSP 什麼也收不到,而畫面上看起來一切正常——本專案第四條教訓

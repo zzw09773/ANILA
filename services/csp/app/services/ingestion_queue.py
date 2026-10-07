@@ -88,7 +88,7 @@ async def enqueue_embedding_rebuild() -> str | None:
 
 
 async def enqueue_reresolve_relations(collection_id: int) -> str:
-    """Enqueue a ``reresolve_collection_relations`` job (document-relations §8).
+    """Enqueue a ``reresolve_collection_relations`` job.
 
     The worker re-parses every document in the collection, re-extracts rule
     citation edges (delete-then-insert, manual untouched) and reconciles. The

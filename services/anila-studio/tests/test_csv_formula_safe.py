@@ -98,7 +98,7 @@ def test_twin_docstrings_name_the_other_copy():
     assert "services/anila-studio/app/services/csv_formula.py:26" in twin
     assert "這兩份會漂開，改一邊要改另一邊" in local
     assert "這兩份會漂開，改一邊要改另一邊" in twin
-    # 2026-09-02 (materials §七): the coverage caveat must be in BOTH copies.
+    # 2026-09-02: the coverage caveat must be in BOTH copies.
     # The logic-twin test strips docstrings and this test only checked the
     # cross-reference, so a note added to one side alone stayed green.
     for text in (local, twin):

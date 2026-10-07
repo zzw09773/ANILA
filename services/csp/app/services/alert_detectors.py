@@ -35,7 +35,7 @@ from app.services.storage_paths import (
 
 logger = logging.getLogger(__name__)
 
-# ── Thresholds (justification in w-alerts-report.md) ─────────────────────────
+# ── Thresholds ───────────────────────────────────────────────────────────────
 
 #: nginx probe consecutive unhealthy before "平台入口無回應".
 PLATFORM_INGRESS_STREAK = 3

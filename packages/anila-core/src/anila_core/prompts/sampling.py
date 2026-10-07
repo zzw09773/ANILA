@@ -1,7 +1,5 @@
 """任務別取樣參數表。
 
-設計依據：``the prompt localization design`` §6-5、§9b。
-
 **已接線**：``router``（2026-09-02，`api/router_server.py` 送上游的每一通
 主模型呼叫都帶這一列；呼叫端請求本身有帶 temperature／max_tokens 時以呼叫端為準）、
 ``chips``（``PromptSuggestion``）。

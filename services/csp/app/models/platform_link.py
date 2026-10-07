@@ -13,7 +13,7 @@ _REQUIRED_ROLES_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
 
 class PlatformLink(Base):
-    """DEPRECATED (Slice 7, Service Registry §14). Superseded by
+    """DEPRECATED (Slice 7). Superseded by
     ``models.registered_service.RegisteredService`` (``registered_services``).
 
     The table is KEPT intact for downgrade safety and data-migration source,

@@ -14,7 +14,7 @@
 #     docker network create anila-models-net
 #     docker compose restart csp   # CSP joins the net (repo 根,經 root shim)
 #
-# 目錄佈局 (2026-07 §17.1 重組):
+# 目錄佈局 (2026-07 重組):
 #     models/model/      權重 (ANILA_HF_DIR 預設指這;dev 機放 symlink 也通,不搬)
 #     infra/models/      本檔 + src/ (trtllm/triton/proxy 設定)
 #

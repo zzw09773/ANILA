@@ -57,7 +57,7 @@ and `storage/adapters/pgvector_store` had been removed. They were not —
 ingestion-worker imports the chunking plugins and pg adapters directly.
 The Sprint 8 X audit re-affirmed they belong here as shared
 infrastructure (Pillar 2 above) and the v0.5.0 framing was aspirational
-rather than executed. See README "Release Notes" for the correction.
+rather than executed.
 """
 
 __version__ = "0.7.0"

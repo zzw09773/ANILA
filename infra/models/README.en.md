@@ -114,5 +114,4 @@ CSP's **Model Gateway (治理中心, Model Gateway)** is where "registration, ro
 
 ## Related docs
 
-- Redesign docs: `04-model-gateway-design.md`, `00-product-constitution.md`
 - Deploy scripts: `infra/deployment/archive/model-side/model-serve.sh` (model lifecycle), `infra/deployment/scripts/deploy-prod.sh` (platform lifecycle) · Platform overview: [`../../README.md`](../../README.md)

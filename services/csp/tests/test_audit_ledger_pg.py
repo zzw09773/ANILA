@@ -402,7 +402,7 @@ def test_backdated_insert_into_a_sealed_day_is_caught(migrated_pg, clean_ledger)
         audit_ledger.seal_due_checkpoints(db)
         db.rollback()
         assert audit_ledger.verify_chain(db).ok
-        # 補插只需要 INSERT 權限 —— csp_app 就做得到（見設計文件對「捏造」的誠實承認）
+        # 補插只需要 INSERT 權限 —— csp_app 就做得到
         _insert_audit(cur, detail="fabricated alibi", days_ago=2)
         db.rollback()
         result = audit_ledger.verify_chain(db)

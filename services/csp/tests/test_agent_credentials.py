@@ -1,6 +1,6 @@
 """Sprint 8 X / Phase A — bootstrap-then-provision tests.
 
-Covers the critical paths that the cutover runbook depends on:
+Covers the critical paths:
 
 1. Admin issue-bootstrap → returns plaintext + sets DB hash + expiry.
 2. Bootstrap exchange happy path.

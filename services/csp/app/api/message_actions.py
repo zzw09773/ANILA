@@ -1,7 +1,5 @@
 """``/api/message-actions`` — OW-3 message-level custom actions.
 
-``app/api/message_actions.py`` §4.
-
 * Create: developer and above (``_require_developer_or_admin``).
 * Update / delete / bindings: developer for own actions; admin-tier for any
   (ownership enforced in the service layer).

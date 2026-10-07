@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Launch token issuance — short-lived CSP-signed RS256 JWT (Service Registry §6).
+"""Launch token issuance — short-lived CSP-signed RS256 JWT.
 
 The launch token rides the same RS256 keypair / ``kid`` as CSP's access
 tokens, so registered services verify it LOCALLY via the existing
 ``GET /.well-known/jwks.json`` (checking ``aud`` / ``iss`` / ``exp`` /
-signature — doc §6, §15.5). There is no server-side verify/consume endpoint in
+signature). There is no server-side verify/consume endpoint in
 this slice; ``service_launches.consumed_at`` is reserved for future one-time
 semantics.
 
-Hard rules (doc §6): TTL 5–10 min; NEVER embed a model API key or a long-lived
-user JWT. The 14 claims are taken verbatim from doc §6.
+Hard rules: TTL 5–10 min; NEVER embed a model API key or a long-lived
+user JWT. ``build_launch_claims`` mints exactly those 14 claims.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from jose import jwt
 from app.utils.security import ALGORITHM
 
 LAUNCH_TOKEN_ISSUER = "anila-csp"
-# doc §6 recommends 5–10 min; we mint at the 10-min upper bound.
+# TTL is 5–10 min; we mint at the 10-min upper bound.
 LAUNCH_TOKEN_TTL_MINUTES = 10
 
 
@@ -41,10 +41,10 @@ def build_launch_claims(
     issued_at: datetime,
     expires_at: datetime,
 ) -> dict:
-    """The 14 launch-token claims (doc §6, verbatim order).
+    """The 14 launch-token claims, in this order.
 
     No model API key, no long-lived user JWT — this function only accepts the
-    identity/context fields listed in the doc, so neither can leak in.
+    identity/context fields named in its signature, so neither can leak in.
     """
     return {
         "iss": LAUNCH_TOKEN_ISSUER,

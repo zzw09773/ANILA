@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Service manifest fetch — ``GET {origin}/.well-known/anila-service.json``.
 
-Service Registry §4. Fetched THROUGH the central outbound SSRF guard
+Fetched THROUGH the central outbound SSRF guard
 (``anila_core.security.validate_outbound_url``) — the same call-time guard the
 CSP proxy uses — so registering a service can't be turned into an SSRF probe
 of the internal network.

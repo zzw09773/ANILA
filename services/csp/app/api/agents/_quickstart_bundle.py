@@ -1,11 +1,11 @@
-"""Assembly of the two agent download bundles (design 2026-09-22 §6).
+"""Assembly of the two agent download bundles.
 
 Two independent artifacts, both plain allow-list ZIPs:
 
 1. quickstart — ``packages/anila-agent-quickstart/`` + the vendored canonical
    ``anila_verify.py`` + generated ``deployment.env`` / ``ca.pem`` /
    ``bundle.json``. No wheelhouse: dependencies are installed into the
-   MLSteam lab image (design §12). The zip root is ``anila-agent-quickstart/``.
+   MLSteam lab image. The zip root is ``anila-agent-quickstart/``.
 2. advanced example — ``packages/anila-agent/`` mirrored as-is, zip root
    ``anila-agent-advanced-example/``, import package still ``anila_agent``.
 
@@ -21,7 +21,7 @@ site facts only (``csp_base_url``, optional ``csp_ca_file``) — never the
 request ``Host``, and never a credential. The platform does not choose the
 model. ``LLM_BASE_URL`` is ``<csp_base_url>/v1`` so usage and audit stay on
 CSP; the developer fills ``LLM_MODEL`` and exports their own ``sk-`` key in
-the lab. That key is never written into the zip (design §1, §6).
+the lab. That key is never written into the zip.
 """
 from __future__ import annotations
 

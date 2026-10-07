@@ -1,6 +1,6 @@
 """Sprint 1 Gate G2 (Sprint 4 rebase) — raw-SQL bypass attempts blocked.
 
-Per the ingestion platform design §3.3 Layer 2 (Sprint 4 update):
+RLS bypass (Sprint 4 update):
 
     DBA / any caller using a regular asyncpg connection cannot
     enumerate ``document_chunks`` rows by skipping the

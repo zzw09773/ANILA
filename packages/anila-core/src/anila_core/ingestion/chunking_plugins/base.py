@@ -1,4 +1,4 @@
-"""Chunker plug-in interface (the ingestion platform design §5.1).
+"""Chunker plug-in interface.
 
 Two public types:
 

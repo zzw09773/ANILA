@@ -1,7 +1,7 @@
-"""Backpressure + disconnect-cancellation for the agent SSE path (Q23).
+"""Backpressure + disconnect-cancellation for the agent SSE path.
 
 All awaits are wrapped in ``asyncio.wait_for`` so a regression fails fast
-instead of hanging the suite (the failure mode of the Q23 one-liner).
+instead of hanging the suite (the failure mode of the one-liner).
 """
 
 from __future__ import annotations
@@ -217,7 +217,7 @@ async def test_cancel_while_queue_full_does_not_deadlock(
     assert not producer_finished.is_set()
     assert emitted == bound + 1
 
-    # The Q23 failure mode: cancel while full must not hang.
+    # The failure mode: cancel while full must not hang.
     await asyncio.wait_for(agen.aclose(), timeout=TIMEOUT)
     await asyncio.wait_for(producer_finished.wait(), timeout=TIMEOUT)
     assert tasks[0].done()

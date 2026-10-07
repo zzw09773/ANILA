@@ -1,4 +1,4 @@
-"""Chunking plug-in layer (the ingestion platform design §5).
+"""Chunking plug-in layer.
 
 Public surface:
 

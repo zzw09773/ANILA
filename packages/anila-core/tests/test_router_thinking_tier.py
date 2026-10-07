@@ -1,6 +1,6 @@
 """Router passthrough of a single-turn ``anila_thinking_tier`` override.
 
-Contract (blueprint §2.3 Router):
+Contract:
   * caller body may send ``anila_thinking_tier`` = default|off|standard|deep
     (case-insensitive, trimmed). Other values are ignored.
   * Router forwards the canonical value on primary-model calls only

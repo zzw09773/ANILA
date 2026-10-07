@@ -1,6 +1,6 @@
 """「改用院內規章重查」——a forced turn answers, it never gets dispatched away.
 
-Owner ruling Q40 (2026-08-07): when the reader presses the retry button, *that
+Owner ruling (2026-08-07): when the reader presses the retry button, *that
 turn* is answered directly with institutional-regulation retrieval attached. It
 is never handed to an agent. The button's whole point is that the Router already
 guessed wrong once; letting the same guess run again would make the button a
@@ -421,7 +421,7 @@ def test_forced_multi_turn_streaming_answers_instead_of_dispatching(
 #
 # Unreachable from the API on a forced turn (the loop is only entered *after* a
 # first dispatch, which forced prevents), so an end-to-end test cannot see it —
-# delete the guard there and every test above stays green. Q40 names multi-turn
+# delete the guard there and every test above stays green. The ruling names multi-turn
 # explicitly and the guard must die red when removed, so the loop is driven
 # directly. It is reachable in production the moment any future change lets a
 # forced turn reach the loop by another door.
@@ -659,7 +659,7 @@ def test_kb_fields_survive_the_multi_turn_streaming_meta_exit(
 #
 # The Router issues its routing call to CSP *before* it knows whether the turn
 # will be answered here or handed to an agent, so CSP attaches regulation
-# retrieval to a call whose output is sometimes thrown away (Task 5 §1, an
+# retrieval to a call whose output is sometimes thrown away (an
 # accepted cost). What must never happen is the opposite of this whole feature:
 # the agent's answer arriving decorated with regulations it never consulted.
 # "An answer wearing the wrong sources" is worse than "an answer with no
@@ -843,7 +843,7 @@ def test_a_route_miss_streaming_fallback_does_not_wear_the_routing_calls_kb_meta
 #
 # The cause is a deliberate skip: when content carries a DISPATCH directive the
 # Router leaves it untouched so the parser downstream can see it. On a forced
-# turn there is no parser left to serve — Q40 already guaranteed no dispatch —
+# turn there is no parser left to serve — a forced turn already guaranteed no dispatch —
 # so the skip has only its cost. Cleaning is scoped to forced turns; the
 # ordinary dispatch flow must keep seeing the raw text, and the controls above
 # (``test_the_bait_really_dispatches…``, the three streaming bait controls)

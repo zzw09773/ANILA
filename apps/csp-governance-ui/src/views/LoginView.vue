@@ -1,7 +1,7 @@
 <template>
   <div class="login">
     <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
-         removed per redesign §3.2). ------------------------------------- -->
+         removed). ------------------------------------- -->
     <header class="login__topbar">
       <a class="skip-link" href="#login-main">跳到登入表單</a>
       <TermLogo :size="14" subtitle="AI 工作平台" />

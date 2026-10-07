@@ -376,13 +376,13 @@ def _extract_latest_user_message(body: dict) -> str | None:
 def _memory_confined_to_conversation(
     db: Session, conversation_id: int | None
 ) -> int | None:
-    """P4.5 — return the conversation memory recall may not leave, else None.
+    """Return the conversation memory recall may not leave, else None.
 
     Owner rule (擁有者裁定, 2026-07-30):「ANILALM 的「同一 session」=
     **同一個對話框**;不是關分頁,也不是登出。」So an ANILALM conversation
-    recalls from itself and from nowhere else, while ANILA keeps the
-    cross-conversation long-term memory 記憶 §5 grants it (L51:
-    長期記憶 ANILA ✓ / ANILALM 只在同一 session 內).
+    recalls from itself and from nowhere else, while ANILA keeps
+    cross-conversation long-term memory (長期記憶 ANILA ✓ /
+    ANILALM 只在同一 session 內).
 
     ``origin`` on the conversation row is the only signal that says which
     front end a completion came from; without a conversation id there is
@@ -416,7 +416,7 @@ async def _inject_memory(
 ) -> memory_service.MemoryReadResult | None:
     """把記憶區塊插在系統訊息之後、第一則非系統訊息之前。
 
-    2026-09-02 (harness §6-1): 系統提示的前綴要保持逐字相同，前綴快取才打得中。
+    2026-09-02: 系統提示的前綴要保持逐字相同，前綴快取才打得中。
     記憶是使用者衍生的文字，另外放進標成不可遵循的 user 訊息，不寫進 system。
 
     Returns the read result (so the caller can inspect
@@ -794,10 +794,10 @@ async def _sse_with_attachment_trace(
         yield buf
 
 
-# ── 院內規章檢索與注入（規章檢索 §3 的「不需要 agent」那條路，Q39）─────────
+# ── 院內規章檢索與注入（不需要 agent 時用院內知識庫直答）────────────────────
 #
 # 觸發條件是 **``X-ANILA-Route`` 這個 header 在**，不是「router 已經決定直答」
-# ——那個判定在時序上晚於這通呼叫（task-5-report.md §1：判定就是從這通呼叫的
+# ——那個判定在時序上晚於這通呼叫（判定就是從這通呼叫的
 # 回覆解析出來的）。header 的語意是「這是 router 的答案通道」。代價講明白：
 # 派工收尾的回合會白做一次檢索，離題的問題靠分數門檻擋掉。
 #
@@ -899,7 +899,7 @@ async def _retrieve_institutional_kb(
         threshold = get_kb_threshold(db)
         return await retrieve_institutional(db, user, query, threshold=threshold)
     except Exception:
-        # 設計 §5：檢索失敗**絕不擋回答**。查不了與沒命中是兩件事，所以這裡是
+        # 檢索失敗**絕不擋回答**。查不了與沒命中是兩件事，所以這裡是
         # SEARCH_ERROR 而不是靜靜地當作沒命中。
         logger.exception("institutional_kb: 檢索失敗 user_id=%s", getattr(user, "id", None))
         return KbResult(state=KbState.SEARCH_ERROR)
@@ -924,7 +924,7 @@ def _build_kb_block(result: KbResult) -> str | None:
     return "\n\n".join(parts)
 
 
-# 規章段落之後再提醒一次語言（harness §6-4）：長 context 下小模型會忘記前導
+# 規章段落之後再提醒一次語言：長 context 下小模型會忘記前導
 # 開頭的語言規則，這一行是最便宜的修法。它永遠是 system 訊息的最後一行。
 KB_LANGUAGE_REMINDER = "預設使用繁體中文（台灣用語）；使用者明確指定語言時依其指定。"
 
@@ -934,7 +934,7 @@ def _inject_kb_block(body: dict, block: str) -> None:
 
     照 ``_inject_memory`` 的樣板：有 system 訊息就 **append**，沒有就在 index 0
     插一則；區塊之後補一行語言提醒。**只動 messages[0]**。
-    2026-09-02 之前是 prepend，把 Router 的靜態前導推到中段（見 harness §6-1）。
+    2026-09-02 之前是 prepend，把 Router 的靜態前導推到中段。
     """
     tail = f"{block}\n\n{KB_LANGUAGE_REMINDER}"
     messages = list(body.get("messages") or [])
@@ -2119,7 +2119,7 @@ async def chat_completions(
             )
         except SkillAccessError:
             raise HTTPException(status_code=403, detail="無法套用這個 skill")
-    # 院內規章檢索（Q39）：header 在就檢索並注入；不在就一次都不查。狀態在下面
+    # 院內規章檢索：header 在就檢索並注入；不在就一次都不查。狀態在下面
     # 四個出口上明帶。詳見 ``_route_marked`` 上方那一段。
     pause_request_session(db)
     kb_result = await _retrieve_institutional_kb(

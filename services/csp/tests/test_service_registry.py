@@ -159,7 +159,7 @@ class TestDataMigration:
         assert grant.platform_link_id == link_id
         s2.close()
 
-# ── access algorithm matrix (doc §12) ───────────────────────────────────────
+# ── access algorithm matrix ─────────────────────────────────────────────────
 
 
 class TestAccessAlgorithm:
@@ -264,11 +264,11 @@ class TestLaunch:
         assert claims["iss"] == "anila-csp"
         assert claims["aud"] == svc.slug
         assert claims["launch_id"] == body["launch_id"]
-        # TTL within doc §6 5–10 min (we mint the 10-min upper bound).
+        # TTL within 5–10 min (we mint the 10-min upper bound).
         ttl = claims["exp"] - claims["iat"]
         assert 300 <= ttl <= 600
         assert ttl == 600
-        # no forbidden claims (doc §6): no model key, no long-lived user JWT.
+        # no forbidden claims: no model key, no long-lived user JWT.
         assert "api_key" not in claims and "access_token" not in claims
 
         # server-side records: launch row + PolicyDecision(allow) + audit.
@@ -360,7 +360,7 @@ class TestLaunch:
         assert db.query(ServiceLaunch).count() == 0
 
 
-# ── audit callback (doc §10) ────────────────────────────────────────────────
+# ── audit callback ──────────────────────────────────────────────────────────
 
 
 class TestAuditCallback:
@@ -403,7 +403,7 @@ class TestAuditCallback:
 
     def test_valid_key_appends_row(self, client, db, monkeypatch):
         sc = self._setup(db, monkeypatch)
-        # R-SEC (ADR-0008): the service must be bound to the presenting client.
+        # R-SEC: the service must be bound to the presenting client.
         svc = _make_service(db, service_client_id=sc.id)
         resp = client.post(
             f"/api/services/{svc.slug}/audit-callbacks",
@@ -456,7 +456,7 @@ class TestAuditCallback:
         )
         assert resp.status_code == 413
 
-    # ── R-SEC (ADR-0008): fail-closed client↔service binding ─────────────────
+    # ── R-SEC: fail-closed client↔service binding ──────────────────────────
 
     def test_unbound_service_rejected_403(self, client, db, monkeypatch):
         """A service with NULL binding rejects ALL callbacks — even with a
@@ -537,13 +537,13 @@ class TestAuditCallback:
         assert meta["presented_client_id"] == sc_a.id
 
 
-# ── R-SEC binding governance (ADR-0008): who may set the binding ─────────────
+# ── R-SEC binding governance: who may set the binding ───────────────────────
 
 
 class TestAuditCallbackBindingGovernance:
     """Admin-tier owns the client↔service binding; a per-service admin may NOT
     self-bind — binding grants audit-write identity, so delegation must not
-    self-serve (ADR-0008)."""
+    self-serve."""
 
     def _client_row(self, db, name="bind-target") -> ServiceClient:
         sc = ServiceClient(

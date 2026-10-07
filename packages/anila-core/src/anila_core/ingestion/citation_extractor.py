@@ -4,8 +4,6 @@ Pure text → ``list[Citation]``. No DB, no resolution (that lives in the
 worker/CSP layer, which matches ``target_title`` against
 ``ingestion_documents.normalized_title``).
 
-Design: the document-relations design §5/§6.
-
 Approach (codex review #6): anchor each citation on a **cue verb**
 (依/依據/修正/廢止/準用/補充 …) and capture the regulation name that FOLLOWS
 it. This avoids matching the document's own self-reference ("本辦法" / "本規定")
@@ -139,7 +137,7 @@ _GENERIC_NAMES = {"法律規定", "法律", "規定", "辦法", "規則"}
 
 def _is_noise_name(name: str) -> bool:
     """True if a captured name is a self-reference / generic / fragment, not a
-    citable other document (design §5: avoid self-references + clause fragments)."""
+    citable other document (avoid self-references + clause fragments)."""
     return (
         bool(_SELF_REF_RE.match(name))
         or bool(_GENERIC_PREFIX_RE.match(name))
@@ -207,7 +205,7 @@ def extract_citations(
         raw_name = m.group("name")
         # Drop self-references ("本法/前二項/該辦法"), generic determiners
         # ("其他法/相關規定") and clause fragments ("民法之規定/…或法") — none are
-        # citable other documents (design §5).
+        # citable other documents.
         if _is_noise_name(raw_name):
             continue
         title = normalize_title(raw_name)

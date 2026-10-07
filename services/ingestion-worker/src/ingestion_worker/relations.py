@@ -1,4 +1,4 @@
-"""Worker-side citation extraction + edge deposit (document-relations design v2 §5/§6).
+"""Worker-side citation extraction + edge deposit.
 
 Runs inside ``ingest_document`` once a document is indexed — this is the only
 place the parsed text exists. Extraction uses the shared

@@ -1814,7 +1814,7 @@ export const MessageBubble = ({
                       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                     >{opt.label}</button>
                   ))}
-                  {/* 「改用院內規章重查」——設計 §8 的事後自救。Router 判錯
+                  {/* 「改用院內規章重查」——事後自救。Router 判錯
                       (該查院內規章而沒查)時畫面上什麼標記都不會有,使用者是
                       看到答案才知道自己需要這一顆的,所以它出現在這裡而不是
                       輸入框旁邊。

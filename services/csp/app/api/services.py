@@ -67,7 +67,7 @@ router = APIRouter(prefix="/api/services", tags=["Service Registry"])
 _UNCLASSIFIED = _CL.UNCLASSIFIED.value
 _AUDIT_MAX_BYTES = 16 * 1024
 
-# R-SEC (ADR-0008): fields a per-service admin may NEVER edit, even when an
+# R-SEC: fields a per-service admin may NEVER edit, even when an
 # admin whitelists them in ``db_editable_fields``. ``service_client_id`` binds
 # the service's audit-write identity — a delegate self-binding would grant
 # themselves the audit-write channel (self-serving delegation), so this stays
@@ -79,8 +79,8 @@ _ADMIN_ONLY_FIELDS = frozenset({"service_client_id"})
 
 
 def _resolve_service(db: Session, service_id: str) -> RegisteredService | None:
-    """Resolve a {service_id} path param by numeric id or by slug (doc §10
-    uses the slug, e.g. "material-analysis")."""
+    """Resolve a {service_id} path param by numeric id or by slug
+    (for example "material-analysis")."""
     q = db.query(RegisteredService)
     if service_id.isdigit():
         row = q.filter(RegisteredService.id == int(service_id)).first()
@@ -97,7 +97,7 @@ def _service_or_404(db: Session, service_id: str) -> RegisteredService:
 
 
 def _is_service_admin(user: User, service: RegisteredService) -> bool:
-    """Per-service delegation (doc §3 note): membership in the service's own
+    """Per-service delegation: membership in the service's own
     ``service_admin_user_ids`` — NOT a global role."""
     return user.id in (service.service_admin_user_ids or [])
 
@@ -314,12 +314,12 @@ def create_service(
         healthcheck_url=None,
         audit_callback_url=data.get("audit_callback_url"),
         trace_callback_url=data.get("trace_callback_url"),
-        # R-SEC (ADR-0008): admin-tier only — create_service is require_admin.
+        # R-SEC: admin-tier only — create_service is require_admin.
         service_client_id=data.get("service_client_id"),
         classification_ceiling=(ceiling.value if hasattr(ceiling, "value") else ceiling),
         required_roles=data.get("required_roles") or [],
         is_public=data.get("is_public", False),
-        # doc §11: default private (default-deny access grants).
+        # default private (default-deny access grants).
         is_active=True,
         config_source="db",
         db_editable_fields=[],
@@ -374,7 +374,7 @@ def update_service(
             detail="healthcheck_url 已退場:平台不會探測此欄位,請勿再傳送",
         )
     if not admin_tier:
-        # R-SEC (ADR-0008): admin-only fields are off-limits to a per-service
+        # R-SEC: admin-only fields are off-limits to a per-service
         # admin BEFORE the db_editable_fields whitelist is even consulted — so
         # a delegate cannot self-bind their audit-write identity even if an
         # admin mistakenly whitelisted service_client_id in db_editable_fields.
@@ -433,8 +433,8 @@ def deactivate_service(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Soft-delete (deactivate). Grants/launches/audit history are preserved
-    (doc §14 blocker); a hard purge lives on the compat /api/platform-links."""
+    """Soft-delete (deactivate). Grants/launches/audit history are preserved;
+    a hard purge lives on the compat /api/platform-links."""
     service = _service_or_404(db, service_id)
     service.is_active = False
     db.commit()
@@ -661,7 +661,7 @@ def launch_service(
     )
 
 
-# ── Audit callback (doc §10) ────────────────────────────────────────────────
+# ── Audit callback ──────────────────────────────────────────────────────────
 
 
 @router.post(
@@ -684,7 +684,7 @@ def audit_callback(
 
     service = _service_or_404(db, service_id)
 
-    # R-SEC (ADR-0008): fail-closed client↔service binding. Authenticating a
+    # R-SEC: fail-closed client↔service binding. Authenticating a
     # valid Service Client Token is NOT sufficient — the presented client must
     # be the one bound to THIS service, else any integration-key holder could
     # inject audit events for any service (cross-service audit-trail pollution).
@@ -761,7 +761,7 @@ def audit_callback(
     return row
 
 
-# ── Manifest fetch (doc §4) ─────────────────────────────────────────────────
+# ── Manifest fetch ──────────────────────────────────────────────────────────
 
 
 @router.get("/{service_id}/manifest")
@@ -777,7 +777,7 @@ def get_service_manifest(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-# ── Project bindings (doc §13) ──────────────────────────────────────────────
+# ── Project bindings ────────────────────────────────────────────────────────
 
 
 @router.get(

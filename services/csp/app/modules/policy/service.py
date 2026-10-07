@@ -351,7 +351,7 @@ def apply_classification(
             db, resource_type, resource_id, for_update=True
         )
 
-        # ── ANILALM 不用密等（Q59；閘下移核心）──────────────────────────────
+        # ── ANILALM 不用密等（閘下移核心）──────────────────────────────
         # 不變式：``origin='anilalm'`` 的資源，**任何路徑**都不得取得高於
         # 無機密的等級。把關點在此（四級單向閂鎖的唯一入口）而不是 API 層：
         # conversation 的 agent_policy／memory_inherited 等 latch 直接呼叫
@@ -405,7 +405,7 @@ def apply_classification(
         row.classification_source = source
         row.classification_event_id = event.id
         _mirror_legacy_boolean(row, effective)
-        # P4.4:對話升密 → 先前萃取的記憶直接刪除(PLAN §4.4)。掛在這裡而不是
+        # 對話升密 → 先前萃取的記憶直接刪除。掛在這裡而不是
         # 掛在 classify_conversation,因為這裡是四級單向閂鎖的**唯一**入口——
         # 手動標記、memory_inherited、propagation 全走這條,少掛一條路徑就等於
         # 留一個升密後記憶還活著的洞。只在真的升級時執行(上面的 no-op 分支已
@@ -418,7 +418,7 @@ def apply_classification(
             purged = purge_conversation_memory(db, int(resource_id))
             if purged["chunks"] or purged["facts"]:
                 logger.info(
-                    "P4.4: purged memory on classification upgrade "
+                    "purged memory on classification upgrade "
                     "conversation_id=%s chunks=%d facts=%d %s→%s",
                     resource_id,
                     purged["chunks"],
@@ -484,7 +484,7 @@ def create_declassification_request(
 ) -> DeclassificationRequest:
     """建立降級申請。
 
-    - 僅 Admin 可申請(§7 規則 1–4:一般使用者 / Developer / Service
+    - 僅 Admin 可申請(一般使用者 / Developer / Service
       Admin 皆不可;本 codebase 角色階層 owner > admin,故 owner 視同
       具 Admin)→ 否則 ``ValueError``。
     - ``to_level`` 必須嚴格低於資源現行等級(這是降級申請)。

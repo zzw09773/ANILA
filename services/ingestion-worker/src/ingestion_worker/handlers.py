@@ -1509,7 +1509,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             pool, collection_id, document_count_delta=1, chunk_count_delta=total_chunks
         )
 
-        # 6. Cross-document relations (best-effort — document-relations design v2 §5/§6). The
+        # 6. Cross-document relations (best-effort). The
         #    parsed text only exists here, so we extract citations + deposit
         #    rule edges + reconcile the collection now. A failure must NOT fail
         #    ingest: the chunks are already indexed and relations are an
@@ -1661,7 +1661,7 @@ async def reresolve_collection_relations(
     ctx: dict[str, Any], collection_id: int
 ) -> dict[str, Any]:
     """Re-extract + reconcile cross-document relations for a whole collection
-    (document-relations §8 ``:reresolve``).
+    (``:reresolve``).
 
     Re-parses every indexed document's blob, re-extracts rule citation edges
     (delete-then-insert per doc, ``manual`` untouched) and reconciles dst

@@ -1,12 +1,12 @@
-"""Add ``ingestion_eval_runs`` for the Chunking Evaluator (§3.1, §6).
+"""Add ``ingestion_eval_runs`` for the Chunking Evaluator.
 
-Per the ingestion platform design §6: dev uploads sample documents
+Dev uploads sample documents
 + a list of (query, expected_doc_id) pairs, picks N strategies, and
 the evaluator scores each strategy by Hit@1 / Hit@5 / MRR. The eval
 run row carries the input set + the computed results JSONB so the
 results page can render a comparison table without re-running.
 
-Schema follows the design doc shape but stays minimal — Sprint-3 first
+Schema stays minimal — Sprint-3 first
 cut excludes ``judge_llm_config`` because the LLM-as-judge path is
 deferred to a follow-up. The column is added now anyway as nullable
 JSONB so adding judge later doesn't need a schema migration.

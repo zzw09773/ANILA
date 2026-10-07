@@ -5,7 +5,7 @@
 路由形狀:declassification-requests 建立/列表/approve/reject。
 
 涵蓋:
-- 降級申請:僅 Admin 可建立(ADR-0005)、非 Admin 403、非降級 422
+- 降級申請:僅 Admin 可建立、非 Admin 403、非降級 422
 - 裁決:in_system happy path、紙本代錄有/無文號、申請人 ≠ 核准人 403、
   無權責 fail-closed 維持 pending + 403、駁回不動等級 + PolicyDecision 記帳
 - 權責指派:owner-only 授予、必附核定依據、雙人控制(登錄 → 另一人確認才

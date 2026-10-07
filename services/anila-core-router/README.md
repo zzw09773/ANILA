@@ -98,7 +98,7 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | `ANILA_SERVICE_TOKEN_FILE` | CSP 寫好的憑證檔。compose 為 `/run/anila/service-clients/router-primary/token` | 未設 |
 | `ANILA_SERVICE_TOKEN_RELOAD_SECONDS` | 週期重讀憑證檔的間隔,最短 5 秒 | `30` |
 
-SDK(`router_server`)另讀 **Full Trace opt-in** env(見 API 契約 §10 凍結線):
+SDK(`router_server`)另讀 **Full Trace opt-in** env:
 
 | 變數 | 說明 | 預設 |
 |---|---|---|

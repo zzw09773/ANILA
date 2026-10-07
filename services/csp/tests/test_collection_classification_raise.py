@@ -268,7 +268,7 @@ class TestRaiseCollectionClassification:
 
 
 class TestAnilalmNoClassification:
-    """Q59（2026-08-21 擁有者裁決）：ANILALM 不用密等設計。
+    """2026-08-21 擁有者裁決：ANILALM 不用密等設計。
 
     主判準不是「測試綠」:把一份「密」塞進 origin='anilalm' 的資源,它會不會紅。
     - 建立 collection 帶密等 → 403(擋在寫入前,不落地任何列)。

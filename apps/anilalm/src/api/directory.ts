@@ -1,6 +1,6 @@
 import { client } from './client'
 
-/** Narrow directory row — id / username / department only (OWNER Q9). */
+/** Narrow directory row — id / username / department only. */
 export interface DirectoryEntry {
   id: number
   username: string

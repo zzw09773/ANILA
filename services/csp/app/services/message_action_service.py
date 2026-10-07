@@ -1,5 +1,4 @@
 """OW-3 message-action CRUD, visibility, invoke
-(``app/api/message_actions.py`` §Q1–Q2 / §Q9).
 
 Authoring audit = fail-closed (commit=False + return-check → None ⇒ 500 +
 rollback, same transaction; P1.4 idiom). Invoke audit = write-ahead
@@ -79,12 +78,12 @@ def render_template(
     *,
     content: str = "",
     choice: str = "",
-    input: str = "",  # noqa: A002 — blueprint placeholder name
+    input: str = "",  # noqa: A002 — parameter name matches the {input} token
 ) -> str:
     """Single-pass substitution of {content}/{choice}/{input} ONLY.
 
     Never str.format, f-strings on user data, or any template engine
-    (``app/api/message_actions.py`` §Q2). Values that
+    Values that
     themselves contain those tokens are not re-scanned.
     """
     values = {"content": content, "choice": choice, "input": input}
@@ -835,7 +834,7 @@ async def invoke_action(
     actor: User,
     ip_address: str | None = None,
 ) -> dict:
-    """Gate order per blueprint §4 / NON-NEGOTIABLES.
+    """Gate order.
 
     Rate limit sits immediately after action resolution so refusal-audit
     paths cannot be flooded; 429 itself leaves no audit row.
@@ -922,7 +921,7 @@ async def invoke_action(
             )
         raise
 
-    # 7. choice validation (400s before input-length 413; blueprint §4 table)
+    # 7. choice validation (400s before input-length 413)
     choice_prompt, resolved_choice_id, _choice = _resolve_choice(
         action, choice_id, user_input
     )

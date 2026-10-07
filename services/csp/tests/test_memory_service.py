@@ -16,8 +16,7 @@ Each test exercises one boundary of the service contract:
 
 These run in ~1 ms each on the SQLite fixture and don't require any
 mocked HTTP — they protect the rules whose violation has historically
-been a source of "memory feels weird" bugs (see CLAUDE.md feedback
-about agent name hallucination from in-context examples).
+been a source of "memory feels weird" bugs.
 """
 from __future__ import annotations
 

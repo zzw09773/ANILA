@@ -92,7 +92,7 @@ def _default_template_dir() -> Path:
     """Locate the bundled agent template without a runtime path knob.
 
     The tree used to keep the agent template at ``<repo-root>/anila-agent``;
-    the §17.1 directory move (b5c5e32e, a pure ``git mv``) relocated it to
+    the directory move (b5c5e32e, a pure ``git mv``) relocated it to
     ``packages/anila-agent``. The image mount is fixed at
     ``/app/anila-template``; a source checkout uses the repository package path.
     """
@@ -122,7 +122,7 @@ def _default_quickstart_dir() -> Path:
 # scaffold has a repo-checkout fallback so a bare uvicorn run works; the
 # profile stays ops-supplied with no fallback — it is a release input with
 # no in-repo default. Wheels are installed into the MLSteam lab image and
-# are not a download input (design §12).
+# are not a download input.
 _QUICKSTART_DIR = _bundle.quickstart_source_dir()
 if not _QUICKSTART_DIR.is_dir():
     _QUICKSTART_DIR = _default_quickstart_dir()
@@ -130,7 +130,7 @@ if not _QUICKSTART_DIR.is_dir():
 _QUICKSTART_PROFILE = _bundle.profile_path()
 
 # Public trust anchors. Only their bytes are used, and they are parsed — a path
-# that exists is not proof that it holds a usable chain (design §6).
+# that exists is not proof that it holds a usable chain.
 _PLATFORM_CA_BUNDLE = (
     Path(__file__).resolve().parent.parent.parent / "services" / "cspki_ca_bundle.pem"
 )

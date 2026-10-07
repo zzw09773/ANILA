@@ -832,7 +832,7 @@ deleted. Sprint 1 ships:
     — RLS bypass is a security incident, never auto-recovered.
   - `chunking_plugins` — Protocol + idempotent registry + 3 built-in
     strategies (`hierarchical`, `fixed`, `markdown-aware`). The 3
-    remaining strategies from the design doc (`pdf-page`, `cjk-sentence`,
+    remaining strategies (`pdf-page`, `cjk-sentence`,
     `semantic`) live in the worker service alongside their heavier deps.
 
 - **`anila_core.storage.adapters`** — agent-scoped pgvector access.
@@ -947,7 +947,7 @@ The previous lifespan (PG pool init, pgvector schema bootstrap), `LazyStoreProxy
  ) -> FastAPI:
 ```
 
-#### `/agentic-chat` endpoint — RAG wiring removed (Grey Zone B resolution)
+#### `/agentic-chat` endpoint — RAG wiring removed
 
 The endpoint stays. Inside, it no longer imports the RAG factories or wires per-request RAG tools. It just runs the agent loop with whatever ToolRegistry the host configured at app-factory time. `request.system_prompt` is now **required** (422 on missing) — anila-core no longer ships a RAG default.
 
@@ -997,4 +997,3 @@ Settings now has 8 fields covering LLM provider, CSP plumbing, and auth.
 
 ## v0.4.x and earlier
 
-See `README.md` § Release Notes for Wave A / Wave B history.

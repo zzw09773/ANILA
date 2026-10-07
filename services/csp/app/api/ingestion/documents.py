@@ -150,7 +150,7 @@ def _derive_title(filename: str, explicit: str | None = None) -> tuple[str | Non
     every document needs a best-effort title. Source priority:
 
     1. ``explicit`` — the uploader knows the real regulation name (the most
-       reliable source per design §13; ROC regs are often named by 字號 inside
+       reliable source; ROC regs are often named by 字號 inside
        the file but the human knows the canonical name).
     2. filename stem — strip the extension and any path; a deterministic
        fallback so the column is never null.

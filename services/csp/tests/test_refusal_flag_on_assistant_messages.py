@@ -1,4 +1,4 @@
-"""Refusal monitoring (harness §6-9, wired 2026-09-02): measure, never bypass.
+"""Refusal monitoring (wired 2026-09-02): measure, never bypass.
 
 ``refusal_detector.looks_like_refusal`` existed but nothing called it. Now:
   1. an assistant message whose content looks like a refusal is stored with

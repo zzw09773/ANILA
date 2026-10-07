@@ -1,10 +1,9 @@
-"""System-message assembly order (harness §6-1 / §6-4, wired 2026-09-02).
+"""System-message assembly order (wired 2026-09-02).
 
 Before: csp *prepended* the memory block and the regulation block to the
 caller's system message, so the static common preamble the Router ships
 ended up in the middle of every request and the model server's prefix cache
-never hit. The design (``packages/anila-core/src/anila_core/prompts/``
-§6-1) says: static prefix first, dynamic content after; §6-4 says: repeat the
+never hit. Static prefix first, dynamic content after; repeat the
 language instruction once after the retrieved passages.
 
 Invariants:

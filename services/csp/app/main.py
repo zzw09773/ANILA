@@ -348,7 +348,7 @@ async def lifespan(app: FastAPI):
 
     # Now — and not at import time, and not before the line above — is the
     # first moment a log record from this module actually reaches docker
-    # logs. The runbook's "is the Host allow-list on?" check greps for
+    # logs. The install doc's "is the Host allow-list on?" check greps for
     # this line, so it has to be emitted where logging works.
     log_host_allowlist_state(_allowed_hosts)
 
@@ -598,7 +598,7 @@ _INTERNAL_HOSTS = ("localhost", "127.0.0.1", "::1", "csp")
 # cannot be used for the DNS-rebinding attack this list exists to stop.
 IP_LITERAL_FLAG = "ip-literal"
 
-# The log line the runbook greps for. One token, two verdicts, so that
+# The log line the install doc greps for. One token, two verdicts, so that
 # "no line at all" reads as "something is wrong" rather than as "off".
 HOST_ALLOWLIST_LOG_TAG = "host allow-list:"
 

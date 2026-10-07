@@ -1,10 +1,10 @@
-"""Resolution + reconciliation for cross-document relations (document-relations design v2 §6).
+"""Resolution + reconciliation for cross-document relations.
 
 The *tested reference* for turning extracted citations into resolved
 ``document_relations`` edges. Order-independent and idempotent:
 
   * :func:`replace_rule_edges` — delete-then-insert this document's
-    ``source='rule'`` edges, leaving ``source='manual'`` untouched (§6 step 1):
+    ``source='rule'`` edges, leaving ``source='manual'`` untouched:
     re-extract stays clean, never duplicates, never clobbers human edges.
   * :func:`resolve_pending` — match every dst-NULL rule/manual edge's target
     name against the collection's document titles and back-fill
@@ -22,7 +22,7 @@ path is exercised by the CSP SQLite test suite, which the worker's DB layer
 can't be stood up for deterministically.
 
 All functions ``flush`` but never ``commit`` — the caller owns the
-transaction boundary (one transaction per ingest / request, per §6).
+transaction boundary (one transaction per ingest / request).
 """
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def resolve_pending(db: Session, *, collection_id: int) -> ResolveCounts:
 
     Idempotent + order-independent: matches each edge's target name against the
     collection's current document titles. Ambiguous (>1 match) and unresolved
-    (0 matches) edges are left NULL — we never silently pick one (§6 step 4).
+    (0 matches) edges are left NULL — we never silently pick one.
     """
     scope_collection_rls(db, collection_id)
     candidates = _collection_candidates(db, collection_id)

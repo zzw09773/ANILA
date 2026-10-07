@@ -130,7 +130,7 @@ export function appendMessage(authRequest, convId, payload) {
     agent_name: payload.agentName || null,
     metadata: payload.metadata || null,
   };
-  // OW-1: optional parent_id / set_active (blueprint §4).
+  // OW-1: optional parent_id / set_active.
   if (payload.parentId !== undefined) body.parent_id = payload.parentId;
   if (payload.setActive !== undefined) body.set_active = payload.setActive;
   return authRequest(`/api/conversations/${convId}/messages`, {

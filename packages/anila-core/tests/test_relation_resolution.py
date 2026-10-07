@@ -2,7 +2,7 @@
 target-resolution policy shared by the worker and the CSP service.
 
 No DB: we hand :func:`match_target` candidate lists directly and assert the
-resolve / unresolved / ambiguous decision (document-relations design v2 §6 step 2-4). Fixtures use
+resolve / unresolved / ambiguous decision. Fixtures use
 NEUTRAL regulation names (generic, no real-world labels).
 """
 from __future__ import annotations

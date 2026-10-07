@@ -81,7 +81,7 @@ def upgrade() -> None:
     op.execute("ALTER TABLE document_chunks DROP COLUMN agent_id")
 
     # ── 3. Recreate RLS keyed on collection_id ──────────────────────────────
-    # Same defence-in-depth pattern as Sprint 1 § 3.3 Layer 2 — engine
+    # Same defence-in-depth pattern as Sprint 1 Layer 2 — engine
     # filters rows even if the application code forgets to scope. Just
     # the GUC name changes.
     op.execute(

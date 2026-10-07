@@ -70,7 +70,7 @@ def test_pg_connect_is_retryable() -> None:
 def test_rls_violation_is_critical_and_never_retryable() -> None:
     """Security-relevant invariant — DO NOT relax in future refactors.
 
-    RLS bypass means §3.3 Layer 1+2 failed; retrying would just trigger
+    RLS bypass means Layer 1+2 failed; retrying would just trigger
     the same defect, and the severity must always be high enough to page
     on-call. The test name documents the contract so anyone changing
     the factory has to read the rationale first.

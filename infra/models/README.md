@@ -113,5 +113,4 @@ CSP 的 **Model Gateway（治理中心，Model Gateway）** 才是「註冊、�
 
 ## 相關文件
 
-- 重設計文件：`04-model-gateway-design.md`、`00-product-constitution.md`
 - 部署腳本：`infra/deployment/archive/model-side/model-serve.sh`（模型生命週期）、`infra/deployment/scripts/deploy-prod.sh`（平台生命週期） · 平台整體：[`../../README.md`](../../README.md)

@@ -393,7 +393,7 @@ def test_build_default_anila_meta_declares_the_state(db):
 def test_no_header_means_no_retrieval_at_all(
     client, db, actor, model_target, agent_target, kb, exit_kind
 ):
-    """Q39 的洩漏防線：無 header（派工／ANILALM）不只標 not_searched，
+    """洩漏防線：無 header（派工／ANILALM）不只標 not_searched，
     ``retrieve_institutional`` 根本不得被呼叫——派工回合的命中絕不能漏進 payload。"""
     kb.result = KbResult(state=KbState.SEARCHED_HIT, hits=[_hit(1), _hit(2)])
     _run_exit(client, actor, model_target, agent_target, exit_kind)
@@ -417,7 +417,7 @@ def test_a_blank_route_header_is_treated_as_absent(
 def test_both_marker_values_trigger_retrieval(
     client, db, actor, model_target, kb, route
 ):
-    """``direct`` 與 ``forced`` 都是答案通道（task-5-report §1）。"""
+    """``direct`` 與 ``forced`` 都是答案通道。"""
     _chat(client, actor, target=model_target.name, route=route)
     assert len(kb.calls) == 1
 
@@ -455,7 +455,7 @@ def test_the_retrieval_is_attributed_to_the_asking_user(
 def test_threshold_change_takes_effect_next_request(
     client, db, actor, model_target, kb
 ):
-    """設計 §7 的驗收釘：從設定改完，檢索行為真的變了（不重啟）——
+    """從設定改完，檢索行為真的變了（不重啟）——
     否則門檻設定就是假控制項的第一塊磚。"""
     _chat(client, actor, target=model_target.name, route="direct")
     assert kb.calls[-1]["threshold"] == KB_THRESHOLD_DEFAULT
@@ -642,7 +642,7 @@ def test_existing_system_prompt_is_kept(
     client, db, actor, model_target, kb
 ):
     """注入是 append（照 ``_inject_memory`` 樣板），不是覆蓋，也不再 prepend：
-    呼叫端的靜態前導必須留在最前面（harness §6-1，2026-09-02）。"""
+    呼叫端的靜態前導必須留在最前面（2026-09-02）。"""
     kb.result = KbResult(state=KbState.SEARCHED_HIT, hits=[_hit(1), _hit(2)])
     _chat(
         client,
@@ -664,7 +664,7 @@ def test_existing_system_prompt_is_kept(
 def test_search_error_does_not_block_the_answer(
     client, db, actor, model_target, kb
 ):
-    """設計 §5：檢索失敗明示，但照答。"""
+    """檢索失敗明示，但照答。"""
     kb.result = KbResult(state=KbState.SEARCH_ERROR, failed_collections=[1])
     resp = _chat(client, actor, target=model_target.name, route="direct")
     assert resp.status_code == 200
@@ -825,7 +825,7 @@ def test_the_trace_entry_tells_the_same_story_as_the_state(
 ):
     """trace 是使用者真的會讀到的**第三個表面**（``apps/anila-shell/src/chat.jsx``
     的 RoutingTrace／ReasoningSummary 逐則渲染）。payload 與提示詞都套了誠實
-    紀律，trace 漏掉就會出現「payload 說查不了、畫面上寫查過沒有」——設計 §5
+    紀律，trace 漏掉就會出現「payload 說查不了、畫面上寫查過沒有」——
     「沒命中與查不了是兩件事」的逐字違反。
     """
     hits = [_hit(1), _hit(2)] if state in (

@@ -1,6 +1,6 @@
 """``/api/platform-links`` — compat façade over ``registered_services``.
 
-Slice 7 (Service Registry §14): ``PlatformLink`` is superseded by ``RegisteredService``
+Slice 7: ``PlatformLink`` is superseded by ``RegisteredService``
 but the legacy CRUD surface stays byte-compatible so existing CSP admin UI and
 any callers keep working with zero changes. Every handler here now reads/writes
 ``registered_services`` and serialises through ``PlatformLinkResponse`` (the
@@ -169,7 +169,7 @@ def purge_link(
 ):
     """Hard-delete a registered service, irreversible.
 
-    Slice 7 preserve-history (doc §14 blocker): ``service_access_grants``
+    Slice 7 preserve-history: ``service_access_grants``
     reference the service via ``service_id`` with ``ON DELETE SET NULL`` and
     ``service_launches`` / ``service_audit_callbacks`` likewise, so the grant
     and launch/audit history rows SURVIVE this purge (their ``service_id`` is

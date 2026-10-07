@@ -1,4 +1,4 @@
-"""Collection-scoped pgvector store (the ingestion platform design §3.3 Layer 3).
+"""Collection-scoped pgvector store (defence stack Layer 3).
 
 Sprint 4 refactor renamed this class from ``AgentScopedPgVectorStore``
 when the platform's ownership model moved from agent-scoped collections
@@ -447,7 +447,7 @@ class CollectionScopedPgVectorStore:
     ) -> list[SearchHit]:
         """Top-``k`` leaf chunks **per document** for a doc-id set, in ONE query.
 
-        Relation expansion (document-relations design v2 §7): once the main top-k surfaces a set of
+        Relation expansion: once the main top-k surfaces a set of
         related documents, fetch each related document's best chunk(s) to drop
         into context — WITHOUT N separate full scans, and WITHOUT losing a
         target chunk that simply isn't in the global top-k (the failure mode of

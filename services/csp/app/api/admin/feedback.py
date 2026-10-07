@@ -141,7 +141,7 @@ class FeedbackSummary(BaseModel):
     up: int
     down: int
     with_comment: int
-    # 拒答監測（harness §6-9）：同一時間窗內被標 ``refusal_suspected`` 的
+    # 拒答監測：同一時間窗內被標 ``refusal_suspected`` 的
     # assistant 訊息數——不限有沒有評分，因為拒答很少被按拇指。
     refusal_suspected: int = 0
 

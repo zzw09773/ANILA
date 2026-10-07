@@ -568,7 +568,7 @@ def _provision_external_user(
 ) -> User:
     """Resolve / create the local user backing this external identity.
 
-    Identity binding strategy (Sprint 5 X security review §H2):
+    Identity binding strategy:
 
     1. The only identity key we accept is ``(provider_id, subject)``. Any
        previously-bound identity is reused as-is.

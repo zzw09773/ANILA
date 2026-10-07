@@ -1,4 +1,4 @@
-"""Router session state must outlive a container recreate (harness M2).
+"""Router session state must outlive a container recreate.
 
 docker inspect on the live router showed Mounts=[]: the multi-turn dispatch
 state (/v1/sessions/{id}/state and /answer) lived in ./.anila/sessions.db

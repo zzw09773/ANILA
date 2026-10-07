@@ -1,7 +1,6 @@
 """呼叫端 LLM 守則（純函式，無 I/O）。
 
-設計依據：``the prompt localization design`` §9b-2
-——思考型模型可能把 completion tokens 全燒在 reasoning，回傳
+思考型模型可能把 completion tokens 全燒在 reasoning，回傳
 ``finish_reason=length`` 且 content 全空；不可把空字串當「模型沒話說」。
 """
 

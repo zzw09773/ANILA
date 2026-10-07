@@ -1,13 +1,12 @@
 """NCSIST 共同前導——平台所有 system prompt 的單一事實來源（SSOT）。
 
-設計依據與活體驗證證據：``the prompt localization design``
-（§3 文本、§9 對 gemma26／gemma26-nothink 的行為驗證，2026-08-01）。
+活體驗證：2026-08-01 對 gemma26／gemma26-nothink 核過行為。
 之前 ``ZHTW_DIRECTIVE`` 在 ``apps/anilalm`` 有兩份複製品開始漂移；
 之後所有入口一律 import 這裡，前端經 build-time 產物或 API 取得。
 
-⚠ 【國家與用語規範】段的措辭定稿待 **Q26**。
+⚠ 【國家與用語規範】段的措辭尚未定稿。
 接線作業已依 2026-08-02 指示於 `wt/prompt-wire` 進行；該分支**合併與部署**
-仍以 Q26 定稿為前提（措辭若改，只改本檔文字，接線不動）。
+仍以措辭定稿為前提（措辭若改，只改本檔文字，接線不動）。
 
 用法::
 
@@ -18,7 +17,7 @@
 
 放置原則：前導是**靜態前綴**，一律放 system prompt 最前面（吃 vLLM prefix
 cache）；動態內容（檢索段落、記憶）放在其後；語言指令在長 context 尾端
-應再重複一行（recency，小模型有效——見設計文件 §6-4）。
+應再重複一行（recency，小模型有效）。
 """
 
 from __future__ import annotations

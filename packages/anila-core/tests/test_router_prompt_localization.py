@@ -1,7 +1,7 @@
 """Router system-prompt 繁中化＋共同前導接線的守護測試。
 
 只驗提示詞字串組裝（.format 安全、前導／語言／DISPATCH 契約），
-不碰路由控制流（Q7 凍結）。
+不碰路由控制流（凍結）。
 """
 
 from anila_core.api.router_prompts import (

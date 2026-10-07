@@ -156,7 +156,7 @@ def _max_siblings(db: Session) -> int:
 
 
 def _require_branchable(conv: Conversation) -> None:
-    """ANILALM conversations do not support message branching (訊息樹 §47).
+    """ANILALM conversations do not support message branching.
 
     NULL origin = legacy ANILA (same semantics as list_conversations exclude).
     """
@@ -712,7 +712,6 @@ def delete_conversation(db: Session, conv_id: int, user: User) -> None:
     break per-row ORM delete. Null the pointer → flush → null attachment
     message_ids → bulk delete messages → bulk delete attachments → delete conv.
     (SQLite tests do not fire DB CASCADE; Python must own the cleanup.)
-    ``app/services/message_tree.py`` Q4.
     """
     conv = get_conversation(db, conv_id, user)
     conv.active_leaf_message_id = None
@@ -744,7 +743,7 @@ def delete_conversation(db: Session, conv_id: int, user: User) -> None:
 # ── Message persistence ───────────────────────────────────────────────────────
 
 def _with_refusal_flag(role: str, content: Optional[str], metadata: Optional[dict]) -> Optional[dict]:
-    """拒答監測（harness §6-9）：assistant 內容看起來像拒答就在 metadata 標
+    """拒答監測：assistant 內容看起來像拒答就在 metadata 標
     ``refusal_suspected``。只量測、不改內容、不擋——治理中心回饋頁讀這個計數。
     非 assistant、或不像拒答：原樣回傳（不動既有 metadata）。"""
     if role != "assistant" or not content:
@@ -789,7 +788,7 @@ def append_message(
     if parent_id_explicit:
         _enforce_explicit_parent_role(db, conv.id, resolved_parent, role)
     _enforce_sibling_cap(db, conv.id, resolved_parent)
-    # §6-3：assistant 落庫前靜默 s2twp＋域內用語；user 原文不動（fail-open）
+    # assistant 落庫前靜默 s2twp＋域內用語；user 原文不動（fail-open）
     content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     metadata = _with_refusal_flag(role, content, metadata)
     metadata = _check_metadata_size(metadata)
@@ -981,7 +980,7 @@ def start_turn(
     conv = get_conversation(db, conv_id, user)
     conv_pk = conv.id
     metadata = _check_metadata_size(_reserved_metadata(writer))
-    # §6-3：user 原文不動（fail-open），與 append_message 同一條正規化邊界。
+    # user 原文不動（fail-open），與 append_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
         db, "user", content,
     )
@@ -1103,7 +1102,7 @@ def branch_turn(
     parent_id = target.parent_id
     _enforce_sibling_cap(db, conv.id, parent_id)
     metadata = _check_metadata_size(_reserved_metadata(writer))
-    # §6-3：與 branch_message 同一條正規化邊界。
+    # 與 branch_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
         db, "user", content,
     )
@@ -1154,7 +1153,6 @@ def branch_message(
     """Create a sibling of ``message_id`` (edit-re-ask and regenerate).
 
     Server sets ``parent_id = target.parent_id``. Role must match the target.
-    ``app/services/message_tree.py`` Q2/Q3/Q5.
     """
     conv = get_conversation(db, conv_id, user)
     # Serialize concurrent branches so sibling cap / pointer cannot race.
@@ -1179,7 +1177,7 @@ def branch_message(
         )
     parent = target.parent_id
     _enforce_sibling_cap(db, conv.id, parent)
-    # §6-3：與 append_message 同一落庫邊界（regenerate / edit-re-ask）
+    # 與 append_message 同一落庫邊界（regenerate / edit-re-ask）
     content, zh_changed = zh_normalize_service.prepare_message_content(db, role, content)
     metadata = _check_metadata_size(metadata)
     msg = Message(
@@ -1238,10 +1236,7 @@ def delete_message_branch(
     message_id: int,
     user: User,
 ) -> tuple[Conversation, list[Message]]:
-    """Subtree-delete ``message_id`` and descendants (Python-side; SQLite-safe).
-
-    ``app/services/message_tree.py`` Q4.
-    """
+    """Subtree-delete ``message_id`` and descendants (Python-side; SQLite-safe)."""
     conv = get_conversation(db, conv_id, user)
     conv = _lock_conversation(db, conv.id)
     _require_branchable(conv)
@@ -1361,7 +1356,7 @@ def update_message_content(
         )
     zh_changed = 0
     if content is not None:
-        # §6-3：依既有訊息角色正規化（ANILALM finalize 等 in-place 寫入）
+        # 依既有訊息角色正規化（ANILALM finalize 等 in-place 寫入）
         content, zh_changed = zh_normalize_service.prepare_message_content(
             db, msg.role, content,
         )
@@ -1555,7 +1550,7 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
     from app.schemas.contracts.classification import ClassificationLevel
 
     conv = get_conversation(db, conv_id, user)
-    # ANILALM 不用密等（Q59）：個人知識庫的對話與其庫同源，不取得密等。
+    # ANILALM 不用密等：個人知識庫的對話與其庫同源，不取得密等。
     # 這支是「把對話推到密」的寫入點，origin 是列值不靠 payload，必須在
     # 寫入前擋下——與 collection 的升密／建立擋線同不變式（seam rule，
     # 一次實作把兩種資源一起封住）。

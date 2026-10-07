@@ -4,8 +4,8 @@ Three concerns, in priority order:
 
 1. Registry contract — duplicate names fail loudly, lookups round-trip,
    the catalog is API-shaped.
-2. Each built-in strategy's *contract* (the ``chunk()`` invariants
-   written into design doc §5): determinism, non-empty content,
+2. Each built-in strategy's *contract* (the ``chunk()`` invariants):
+   determinism, non-empty content,
    monotonic offset, parent heading preserved on splits.
 3. The shared invariant that overlap < size in fixed-size windowing —
    a regression here would silently produce duplicate chunks.

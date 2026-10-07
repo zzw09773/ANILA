@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """OW-3 — message_actions + message_action_bindings（訊息級自訂動作）.
 
-``app/api/message_actions.py`` §3：兩表 + version/body_sha256；
+兩表 + version/body_sha256；
 可見性靠 bindings 聯集、零綁定 fail-closed；無 seed（舊 SPA 三鈕進 runbook）。
 
 ``body`` 刻意不落庫加密：威脅模型是能寫入的作者（owner），不是能讀 DB
-的營運角色——完整程式碼快照已進 audit_logs；詳見
-docs/security/ow3-exec-risk-acceptance.md。
+的營運角色——完整程式碼快照已進 audit_logs。
 
 Idempotency
 ===========

@@ -2,7 +2,7 @@
 """Slice 2a — Task / Trace / Policy 六表基礎(redesign r1 系列首發)。
 
 (Task 主脊椎、SourceSnapshot 三規則)、
-03 §5(PolicyDecision append-only + 可查詢索引)、05 §6 / 09(TraceSpan)。
+(PolicyDecision append-only + 可查詢索引)、(TraceSpan)。
 
 - tasks / task_runs / source_snapshots / citations / policy_decisions /
   trace_spans 六表;enum 欄位一律開放 String(封閉 enum 在 Pydantic 契約

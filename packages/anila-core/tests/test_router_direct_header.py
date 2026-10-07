@@ -273,7 +273,7 @@ def test_dispatch_path_does_not_forward_it_to_agent_or_recompose(
 # A client value that is visibly not the Router's own, on a turn that still
 # dispatches.
 #
-# Task 9 (owner ruling Q40) made ``forced`` unable to reach the dispatch path at
+# Task 9 (owner ruling) made ``forced`` unable to reach the dispatch path at
 # all — a forced turn is answered by the Router, never handed to an agent — so
 # these fixtures can no longer use ``forced`` as bait and still produce a
 # dispatch. What the leak tests need is only that the inbound value be
@@ -490,7 +490,7 @@ def test_multi_turn_streaming_keeps_the_two_origins_distinguishable(
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     ("sent", "expected"),
-    # ``forced`` was a third case here until Task 9. Owner ruling Q40 made it
+    # ``forced`` was a third case here until Task 9. Owner ruling made it
     # unreachable rather than wrong: a forced turn never dispatches, so it never
     # arrives at a synthesis call to be marked. The scenario is not dropped —
     # it moved one test down, where it now asserts the stronger fact.
@@ -517,7 +517,7 @@ def test_the_multi_turn_synthesis_call_is_marked(
 def test_a_forced_turn_never_reaches_the_multi_turn_synthesis_call(
     db_path: Path, stream: bool
 ) -> None:
-    """Q40 (Task 9), asserted from this file's own vantage point.
+    """Task 9, asserted from this file's own vantage point.
 
     The synthesis call only exists downstream of a dispatch, and a forced turn
     has none — so the whole multi-turn machine stays folded up. Kept here rather

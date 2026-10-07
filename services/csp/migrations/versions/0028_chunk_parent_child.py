@@ -28,7 +28,7 @@ returns top-k leaves, then a single ``id = ANY(...)`` lookup pulls
 the matching parent rows so the API response can include both
 ``content`` (precise leaf) and ``parent_content`` (section-level
 context). LLM context-assembly logic is deferred to a follow-up
-AgenticRAG sprint per design doc decision #3.
+AgenticRAG sprint.
 
 Schema decisions
 ================
@@ -48,8 +48,7 @@ Schema decisions
     children of a given parent, and the NULL parents (root rows or
     legacy leaves) don't need to be in that index.
   * Defaults: ``chunk_type='leaf'``, ``chunk_level=0``,
-    ``parent_chunk_id=NULL``. Any existing rows (per design doc
-    decision #1, the production DB has none today) would behave
+    ``parent_chunk_id=NULL``. Any existing rows (the production DB has none today) would behave
     exactly like classic leaves under the new retrieval path —
     ``parent_content`` returns ``None``, ``content`` returns as-is.
 

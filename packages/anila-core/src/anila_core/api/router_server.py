@@ -342,7 +342,7 @@ async def refresh_router_prompts() -> None:
 
 
 # Used for a **forced** turn — the reader pressed「改用院內規章重查」after the
-# Router's own answer disappointed them (owner ruling Q40). That turn is
+# Router's own answer disappointed them. That turn is
 # answered directly and never dispatched, so the model is not handed the routing
 # machinery at all: no agent list, no DISPATCH rule. This is defence layer (a);
 # ``_parse_dispatch_unless_forced`` is layer (b) and holds even when a model
@@ -643,7 +643,7 @@ def _has_ask_signal(
     in its suffix is still being emitted and yields None, keeping the streaming
     state machine in ``detecting``. ``final=True`` is the end-of-stream form and
     accepts a last line that never got its newline. On a forced turn ASK still
-    fires (Q40 suppresses *dispatch* only).
+    fires (a forced turn suppresses *dispatch* only).
 
     ``route_signal`` is accepted for call-site parity with
     :func:`_has_dispatch_signal`.
@@ -1710,7 +1710,7 @@ def _parse_dispatch_unless_forced(
 ) -> tuple[str, str, int, int] | None:
     """``_parse_dispatch``, except a forced turn can never produce a dispatch.
 
-    Owner ruling Q40: pressing「改用院內規章重查」means *this turn is answered
+    Owner ruling: pressing「改用院內規章重查」means *this turn is answered
     here, with the regulations attached*. Handing it to an agent anyway would
     make the button a placebo — the user pressed it precisely because the
     Router's routing guess was the thing that let them down.
@@ -1789,7 +1789,7 @@ def _strip_dispatch_syntax(text: str) -> str:
 
     ``_call_llm_non_stream`` deliberately skips its thought-sanitizer when the
     content carries a directive, so the caller's parser can still see it. On a
-    forced turn there is no parser left to serve — Q40 already guaranteed the
+    forced turn there is no parser left to serve — a forced turn already guaranteed the
     turn will not dispatch — so that skip keeps only its cost: the directive
     rides all the way into the bubble. A compliant model whose whole reply *is*
     the directive therefore hands the reader a protocol string where their
@@ -3070,7 +3070,7 @@ def create_router_app(
 
         agents = registry.list_agents(caller_api_key)
 
-        # Defence layer (a) for owner ruling Q40 — a forced turn is asked with a
+        # Defence layer (a) — a forced turn is asked with a
         # prompt that has no routing machinery in it. Chosen here rather than
         # inside ``_build_system_prompt`` because the swap is about *this
         # request's* route signal, not about the agent list that function reads.
@@ -5097,7 +5097,7 @@ async def _multi_turn_dispatch(
     # mode this header exists to prevent. Pass ``None`` to mean "no headers".
     router_llm_headers: dict[str, str] | None,
     # Also required, same reason: the loop is a place a turn can reach an agent,
-    # so a caller that forgot it would re-open the door Q40 closed.
+    # so a caller that forgot it would re-open the door a forced turn closed.
     route_signal: str,
     routing_messages: list[dict[str, Any]],
     first_llm_text: str,
@@ -5397,7 +5397,7 @@ async def _recompose_reply(
 
 
 # ---------------------------------------------------------------------------
-# Sampling parameters (harness §6-5) and the empty-reply rule (§9b-2)
+# Sampling parameters and the empty-reply rule
 # ---------------------------------------------------------------------------
 # Every upstream call carries temperature / max_tokens from the ``router`` row
 # of the sampling table; a caller that sends its own values on the inbound

@@ -1,6 +1,6 @@
 """Structured ingestion error taxonomy.
 
-Per the ingestion platform design §8.1, every failure path inside the
+Every failure path inside the
 ingestion pipeline is wrapped into a stable error code so:
 
 - The worker's retry policy is decided by ``retryable`` (not by guessing
@@ -8,10 +8,10 @@ ingestion pipeline is wrapped into a stable error code so:
 - Dev UIs render ``user_message`` directly without leaking stack traces.
 - Audit / alert pipelines key off ``code`` for stable filtering and severity
   triage. ``E_PG_RLS_VIOLATION`` always raises a critical alert because it
-  means §3.3 Layer 1 + Layer 2 isolation has been bypassed — that is a
+  means Layer 1 + Layer 2 isolation has been bypassed — that is a
   security incident, not a normal failure.
 
-Sprint 1 ships the 5 most common codes (out of 15 in the design doc table).
+Sprint 1 ships the 5 most common codes.
 The remaining codes are added in subsequent sprints as the parser, chunker,
 embedder and store layers each ship — keeping the taxonomy small until
 each layer actually needs to raise.
