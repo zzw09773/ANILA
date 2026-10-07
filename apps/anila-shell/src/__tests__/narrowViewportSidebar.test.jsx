@@ -30,7 +30,8 @@ describe("窄視窗時側欄自動收合", () => {
   it("≤900px：一開始就是收合（工具列顯示「展開側邊」）", async () => {
     stubMatchMedia(true);
     await mountOrchestrator();
-    expect(screen.getAllByTitle("展開側邊").length).toBeGreaterThan(0);
+    // 收合是掛載後的 effect 做的。整套並行時它可能晚一拍，所以等它出現。
+    expect((await screen.findAllByTitle("展開側邊")).length).toBeGreaterThan(0);
     expect(screen.queryByTitle("收合側邊")).toBeNull();
   });
 

@@ -170,3 +170,5 @@ class ClassificationAuthorityAssignment(Base):
     )
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    # manual：核定流程寫入。hr：人資職稱對出來的，登入時會收回不再符合的列。
+    source = Column(String(16), nullable=False, default="manual", server_default="manual")

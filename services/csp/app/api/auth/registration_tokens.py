@@ -96,6 +96,7 @@ def card_complete_registration(
         )
 
     user.department_id = department.id
+    user.department_source = "manual"
     db.commit()
     log_audit_event(
         db,

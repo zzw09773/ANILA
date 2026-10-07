@@ -157,7 +157,7 @@ docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'
 0. **信任主機**：內網模型與外部服務都在私有 IP，要先在治理中心「信任主機」加入每一台的 IP（例如模型主機、文件解析、語音解碼端）。沒加的話，註冊模型或設定外部服務會被拒絕。安裝時已開 `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_ALLOW_HTTP_ENDPOINT`、`ANILA_ALLOW_HTTP_AGENT_ENDPOINT`、`ANILA_ALLOW_GRPC_ENDPOINT`。入向 Host 白名單不用另外設：`ALLOWED_HOSTS` 由安裝時輸入的 `ANILA_HOST` 推出來，compose 直接寫死 `${ANILA_HOST:?...},localhost,127.0.0.1,::1,csp,router,anila-studio,asr-gateway,ingestion-worker,ip-literal`。
    csp 開機時會用 `host allow-list: ENFORCED — N host(s)…` 或 `host allow-list: DISABLED` 其中一種字樣記一行（`docker logs <csp 容器> 2>&1 | grep "host allow-list:"`）；兩者都沒有代表開機沒走到那裡。
 1. **模型**：治理中心「模型」→「註冊模型」，登錄模型主機提供的端點。然後在同一頁「模型角色」指定七個角色（畫面標籤）：主路由模型、平台嵌入模型、簡報模型、生圖模型、視覺模型、摘要模型、知識庫對話模型。沒指定主路由時，同仁只要沒在對話裡另選已授權的模型，第一個問題就會失敗（Router 只在未明確選模型時擋 `POST /v1/chat/completions`）。指定主路由時，若這顆模型還沒有有效的全院授權，而且操作者可以管理該模型的授權，平台會在同一筆交易裡建立「全院」授權並寫稽核，再完成指定。沒有授權管理權限時，到該模型的授權設定加入「全院」。
-2. **單位**：治理中心「部門」建立單位清單。沒有單位，同仁插卡註冊時選不到單位。
+2. **單位**：治理中心「部門」建立單位清單。人資沒有這個人的單位時，同仁插卡仍要自己選；清單是空的就選不到。
 3. **卡片首次擁有者**：把負責核准同仁的人的員工編號填進 `.env`（權限 600，用 `sudo` 編輯），再重建 CSP：
    ```bash
    cd /opt/anila/current
@@ -172,6 +172,7 @@ docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'
    cd /opt/anila/current
    sudo docker compose -f compose.yaml -f .anila-images.yml -p anila up -d --no-build --pull never --force-recreate nginx
    ```
+6. **人資資料庫**：治理中心「人資資料庫」填主機、埠、服務名稱、帳號、密碼與資料表，並啟用。Oracle 主機要先加到「信任主機」。沒填時，同仁第一次刷卡仍自己選單位。
 
 code-server 與 n8n 的映像已載入，預設不啟動。要用時的指令在安裝結束時會印出，也寫在 [`UPDATE.md`](UPDATE.md)。
 

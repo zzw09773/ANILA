@@ -50,6 +50,7 @@ import app.models.service_access_grant  # noqa: F401
 import app.models.token_usage      # noqa: F401
 import app.models.unit_admin_assignment  # noqa: F401
 import app.models.user             # noqa: F401
+import app.models.hr_oracle        # noqa: F401
 
 # ─────────────────────────────────────────────────────────────────────────────
 

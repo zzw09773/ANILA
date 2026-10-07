@@ -1,6 +1,7 @@
 # 正式 compose 要的映像。start=yes 才會被 anila-update.sh 拉起來。
 # codeserver / n8n 進包，預設不起（最後演練才手動起）。
-# service  compose 映像名  壓縮檔名  是否預設啟動
+# service  compose 映像名  壓縮檔名  是否預設啟動  是否必須健康
+# 第五欄 no：會啟動，但不健康或沒起來也不擋安裝與更新。空著表示必須健康。
 csp-db anila-pgvector:local pgvector yes
 backup anila-pgvector:local pgvector yes
 pgbouncer anila-pgbouncer:latest pgbouncer yes
@@ -11,6 +12,7 @@ ingestion-worker anila-ingestion-worker:latest ingestion-worker yes
 router anila-router:latest router yes
 nginx anila-nginx:latest nginx yes
 pptx-renderer anila-pptx-renderer:latest pptx-renderer yes
+hr-lookup anila-hr-lookup:latest hr-lookup yes no
 anila-studio anila-anila-studio:latest anila-studio yes
 anilalm anila-anilalm:latest anilalm yes
 anila-ui anila-anila-ui:latest anila-ui yes

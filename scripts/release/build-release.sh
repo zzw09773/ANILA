@@ -59,7 +59,7 @@ PY
 
 _release_build_images_impl() {
   local repo="$1" stage="$2" ver="$3" lines="$4" src="$5"
-  local override build_env bake_json map scan svc image archive start plain target out raw
+  local override build_env bake_json map scan svc image archive start required plain target out raw
   local cfg man got tag
   override="$(mktemp)"
   : > "$lines"
@@ -74,7 +74,7 @@ _release_build_images_impl() {
   # 建置上下文是 HEAD 的乾淨檢出，不是工作目錄。被忽略的檔進不了映像。
   docker compose --env-file "$build_env" -f "$src/compose.yaml" -f "$override" build --print \
     csp-db pgbouncer csp-credential-dirs csp ingestion-worker router nginx \
-    pptx-renderer anila-studio anilalm anila-ui codeserver n8n asr-gateway > "$bake_json" \
+    pptx-renderer hr-lookup anila-studio anilalm anila-ui codeserver n8n asr-gateway > "$bake_json" \
     || die "無法產生建置定義（compose build --print）"
   rm -f "$override" "$build_env"
   map="$(python3 - "$bake_json" <<'PY'
@@ -100,7 +100,7 @@ PY
   # 上游映像不是本機建的，照舊 pull 再 save。
   docker pull redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
   declare -A built=()
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     [[ -n "${built[$archive]:-}" ]] && continue
     built["$archive"]=1
     plain="${image%@sha256:*}"
@@ -132,7 +132,7 @@ PY
   fi
   [[ -f "$scan" ]] || die "找不到映像掃描腳本"
   declare -A checked=()
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     out="$stage/images/${archive}.tar.gz"
     read -r cfg man < <(release_archive_digests "$out") || die "讀不到映像雜湊：${archive}"
     [[ "$cfg" =~ ^sha256:[0-9a-f]+$ && "$man" =~ ^sha256:[0-9a-f]+$ ]] || die "映像雜湊格式不對：${archive}"

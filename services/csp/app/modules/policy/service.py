@@ -576,6 +576,40 @@ def _apply_approved_declassification(
     return event
 
 
+def _recheck_hr_authority_if_needed(db: Session, approver_user_id: int, request_id: int) -> None:
+    """只有人資授與的降密權時，先再查一次再決定。另有手授與的列則不查。"""
+    rows = (
+        db.query(ClassificationAuthorityAssignment)
+        .filter(
+            ClassificationAuthorityAssignment.user_id == approver_user_id,
+            ClassificationAuthorityAssignment.is_active.is_(True),
+            ClassificationAuthorityAssignment.revoked_at.is_(None),
+        )
+        .all()
+    )
+    if not rows or any(row.source != "hr" for row in rows):
+        return
+    from app.services.hr_login import confirm_hr_authority_for_approval
+    from app.services.hr_lookup import HrUnavailable
+
+    try:
+        confirm_hr_authority_for_approval(db, approver_user_id)
+    except HrUnavailable as exc:
+        approver = db.get(User, approver_user_id)
+        # 類型代碼是我們自己的短字，不放例外原文，避免把連線內容寫進稽核。
+        log_audit_event(
+            db,
+            action="hr_lookup_unavailable",
+            resource_type="declassification_request",
+            actor=approver,
+            resource_id=request_id,
+            status="denied",
+            detail=f"人資資料庫連不上，無法確認核准人的職稱（{exc.error_type}）",
+            commit=True,
+        )
+        raise ValueError("人資資料庫連不上，無法確認核准人的職稱")
+
+
 def decide_declassification(
     db: Session,
     *,
@@ -633,6 +667,13 @@ def decide_declassification(
             )
 
     approver = db.get(User, approver_user_id)
+    _recheck_hr_authority_if_needed(db, approver_user_id, request.id)
+    request = db.get(DeclassificationRequest, request_id)
+    approver = db.get(User, approver_user_id)
+    if request is None or request.status != DeclassificationStatus.PENDING_SUPERVISOR.value:
+        raise ValueError(
+            f"降級申請 #{request_id} 已裁決或找不到，不可繼續(fail-closed)"
+        )
     if not has_declassification_authority(db, approver_user_id):
         # fail-closed:維持 pending,不升級、不放行。
         log_audit_event(

@@ -101,6 +101,7 @@ recreate 換掉的是**容器**,不是**映像**。程式碼是 build 當下拷�
 | `services/asr-gateway/` | `asr-gateway` | `asr-gateway/Dockerfile:27-28` `COPY services/asr-gateway/app/ ./app/` | repo 根(`platform.yml:735-736`) |
 | `services/anila-studio/` | `anila-studio` | `anila-studio/Dockerfile:64-65` `COPY app/ ./app/` | `../../services/anila-studio`(`platform.yml:459`) |
 | `services/pptx-renderer/` | `pptx-renderer` | `pptx-renderer/Dockerfile:66` `COPY server.js ./`(另有 `:63` `:69` `:75`) | `../../services/pptx-renderer`(`platform.yml:439`) |
+| `services/hr-lookup/` | `hr-lookup` | `hr-lookup/Dockerfile:27` `COPY server.py ./` | `../../services/hr-lookup`(`platform.yml:528`) |
 | ⚠ `apps/anila-shell/` | **`anila-ui`** | `anila-shell/Dockerfile:25` `COPY . ./` | `../../apps/anila-shell`(`platform.yml:530`) |
 | `apps/anilalm/` | `anilalm` | `anilalm/Dockerfile:35` `COPY src ./src` | `../../apps/anilalm`(`platform.yml:509`) |
 | ⚠ `infra/codeserver/` | `codeserver`＋`codeserver-init`(同一張) | `codeserver/Dockerfile:38` —— 整張映像**只有這一條 COPY**,搬的是 docker CLI,沒有任何 repo 原始碼 | `../codeserver`(`platform.yml:572-576`、`:597-598`) |

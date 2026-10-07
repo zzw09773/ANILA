@@ -233,6 +233,7 @@ def update_user(
     # 只在離開 admin-tier 時 (admin→user / developer 或 owner→user / developer)
     # 才需要把 API key 權限收斂回 user allowlist 並讓舊 JWT 失效。
     was_admin_tier = is_admin_tier(user)
+    previous_department_id = user.department_id
     # 只寫這次有送的欄位。明確的 null 只接受信箱與單位。
     # is_active / local_password_disabled 設成 null 會把停用帳號寫壞。
     explicit_active = update_data.get("is_active") if "is_active" in update_data else None
@@ -240,6 +241,11 @@ def update_user(
         if value is None and field not in ("department_id", "email"):
             continue
         setattr(user, field, value)
+    if (
+        "department_id" in update_data
+        and update_data["department_id"] != previous_department_id
+    ):
+        user.department_source = "manual"
     # 有送 is_active 就跟停用／恢復同一套收尾：清掉閒置原因。
     # 停用還要作廢舊權杖，否則刷卡會把閒置停用誤當成重新待審。
     if explicit_active is True:

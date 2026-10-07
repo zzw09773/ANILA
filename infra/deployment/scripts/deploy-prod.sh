@@ -207,7 +207,7 @@ check_departments() {
 cmd_deploy() {
   cmd_preflight
 
-  section "Build images (csp / router / ingestion-worker / pptx-renderer / anila-studio / anilalm / anila-ui)"
+  section "Build images (csp / router / ingestion-worker / pptx-renderer / hr-lookup / anila-studio / anilalm / anila-ui)"
   docker compose build
 
   section "JWT 簽章金鑰"
@@ -309,26 +309,76 @@ cmd_logs() {
 }
 
 # ── Subcommand: wait healthy + verify ──────────────────────────────────────
+# 健康狀態要比對括號裡的整詞。unhealthy 含有 healthy，不能用子字串。
+_status_health_token() {
+  local status="$1"
+  if [[ "$status" =~ \(([A-Za-z]+)\) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  printf '%s' ""
+}
+
+_service_optional() {
+  local name="$1" item
+  shift
+  for item in "$@"; do
+    [[ "$item" == "$name" ]] && return 0
+  done
+  return 1
+}
+
 cmd_wait_healthy() {
   section "等所有 service healthy(最多 5 分鐘)"
   local deadline=$(( $(date +%s) + 300 ))
-  local services=(csp-db redis pptx-renderer csp router anilalm anila-ui anila-studio nginx)
+  # hr-lookup 會啟動，但不健康或沒起來也不擋部署。
+  local services=(csp-db redis pptx-renderer hr-lookup csp router anilalm anila-ui anila-studio nginx)
+  local optional=(hr-lookup)
+  local -a pending=()
+  local noted=""
   while (( $(date +%s) < deadline )); do
-    local pending=()
+    pending=()
     for s in "${services[@]}"; do
-      local status
+      local status token
       status=$(docker compose ps "$s" --format '{{.Status}}' 2>/dev/null || echo "")
-      if [[ -z "$status" ]] || [[ "$status" != *"healthy"* ]]; then
-        if [[ "$status" == *"unhealthy"* ]] || [[ "$status" == *"Restarting"* ]]; then
-          err "$s: $status"
-          warn "看 logs 找原因: bash $0 logs $s"
-          return 1
+      token="$(_status_health_token "$status")"
+      if [[ "$token" == "healthy" ]]; then
+        continue
+      fi
+      if _service_optional "$s" "${optional[@]}"; then
+        if [[ -z "$status" || "$token" == "unhealthy" || "$status" == *"Restarting"* ]]; then
+          case " $noted " in
+            *" $s "*) ;;
+            *)
+              noted="$noted $s"
+              warn "選用服務 ${s} 未就緒（${status:-未啟動}）。部署繼續，這項功能先停著。"
+              ;;
+          esac
+          continue
         fi
         pending+=("$s")
+        continue
       fi
+      if [[ "$token" == "unhealthy" || "$status" == *"Restarting"* ]]; then
+        err "$s: $status"
+        warn "看 logs 找原因: bash $0 logs $s"
+        return 1
+      fi
+      pending+=("$s")
     done
     if (( ${#pending[@]} == 0 )); then
-      ok "全部 healthy"
+      ok "必要服務已 healthy"
+      check_departments
+      return 0
+    fi
+    local only_optional=1
+    local left
+    for left in "${pending[@]}"; do
+      _service_optional "$left" "${optional[@]}" || only_optional=0
+    done
+    if (( only_optional == 1 )); then
+      warn "選用服務仍未就緒（${pending[*]}）。部署繼續，這項功能先停著。"
+      ok "必要服務已 healthy"
       check_departments
       return 0
     fi

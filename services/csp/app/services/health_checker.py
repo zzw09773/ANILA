@@ -8,7 +8,7 @@ unreachable/unsafe → unhealthy),``unknown`` 亦含「碰到但無法確認會�
 ``disabled`` 由讀取端依 ``is_active`` 呈現。
 
 P3.3 / attic W3-3⑦ 追加**基礎服務**探測(csp-db / redis / router /
-anila-studio / ingestion-worker / pptx-renderer / nginx)。model/agent 那一套
+anila-studio / ingestion-worker / pptx-renderer / hr-lookup / nginx)。model/agent 那一套
 五態語意一個字都沒動 —— 新東西只是**沿用**同一組字彙,見
 ``probe_base_service``。背景迴圈的 session-release 與告警不帶 raw endpoint
 address 不變式維持原樣。
@@ -563,6 +563,7 @@ BASE_SERVICE_SPECS: tuple[BaseServiceSpec, ...] = (
     BaseServiceSpec("ingestion-worker", "文件匯入工作者", SERVICE_KIND_QUEUE),
     BaseServiceSpec("anila-studio", "簡報產生服務", SERVICE_KIND_HTTP),
     BaseServiceSpec("pptx-renderer", "簡報渲染服務", SERVICE_KIND_HTTP),
+    BaseServiceSpec("hr-lookup", "人資查詢", SERVICE_KIND_HTTP),
 )
 
 
@@ -608,6 +609,10 @@ _HTTP_PROBE_TARGETS: dict[str, _HttpProbeTarget] = {
     ),
     "pptx-renderer": _HttpProbeTarget(
         "http://pptx-renderer:7100/health", frozenset({200})
+    ),
+    # 只問服務自己還在不在，不連 Oracle。
+    "hr-lookup": _HttpProbeTarget(
+        "http://hr-lookup:8091/health", frozenset({200})
     ),
 }
 

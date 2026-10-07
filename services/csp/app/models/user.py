@@ -32,6 +32,17 @@ class User(Base):
         nullable=True,
         index=True,
     )
+    # 卡片上的姓名不另存。人資查到的姓名放這裡，沒查到就留空。
+    display_name = Column(String(100), nullable=True)
+    # hr：單位來自人資。manual：管理員或本人選的。空：還沒定過。
+    department_source = Column(String(16), nullable=True)
+    # 這個人上次從人資看到的職稱。空陣列表示查過、沒有職稱。
+    hr_titles = Column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
+    )
+    # 上次成功套用的人資查詢是什麼時候開始的。比較晚開始的那次已經寫入時，較早的結果丟掉。
+    hr_lookup_started_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True)
     is_approved = Column(Boolean, nullable=False, default=True, server_default="true")
     token_version = Column(Integer, nullable=False, default=0, server_default="0")

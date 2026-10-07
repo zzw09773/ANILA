@@ -838,7 +838,7 @@ stop_writers() {
     nginx anila-ui anilalm anila-studio router ingestion-worker
     csp pptx-renderer backup
   )
-  local -a optional=(codeserver n8n asr-gateway)
+  local -a optional=(codeserver n8n asr-gateway hr-lookup)
   for svc in "${must[@]}"; do
     dc "$tree" stop "$svc" || die "停不了 ${svc}，不能在它還在寫的時候備份或還原"
   done
@@ -866,8 +866,8 @@ studio_volume_name() {
 # 借 csp 映像的 tar 讀寫 studio volume。主機上只有載入時標的專案標籤，
 # 清單裡的 anila-csp:latest 只存在開發機（2026-10-01 .35 更新演練：快照是空的）。
 studio_helper_image() {
-  local svc image archive start
-  while read -r svc image archive start; do
+  local svc image archive start required
+  while read -r svc image archive start required; do
     if [[ "$svc" == "csp" ]]; then
       image_project_ref csp running
       return 0
@@ -1171,21 +1171,21 @@ docker_rmi_project() {
 
 # compose 用的映像名是這次載入後實際標上的專案標籤，不是 manifest-list digest。
 write_image_override() {
-  local tree="$1" svc image archive start dest
+  local tree="$1" svc image archive start required dest
   dest="$tree/.anila-images.yml"
   {
     printf 'services:\n'
-    while read -r svc image archive start; do
+    while read -r svc image archive start required; do
       printf '  %s:\n    image: %s\n' "$svc" "$(image_project_ref "$svc" running)"
     done < <(release_catalog)
   } > "$dest"
 }
 
 tag_running_as_version() {
-  local ver="$1" svc image archive start plain running
+  local ver="$1" svc image archive start required plain running
   assert_destructive_allowed
   [[ -n "$ver" ]] || return 0
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     running="$(image_project_ref "$svc" running)"
     plain="${image%@sha256:*}"
     if docker image inspect "$running" >/dev/null 2>&1; then
@@ -1197,10 +1197,10 @@ tag_running_as_version() {
 }
 
 retag_compose_from_version() {
-  local ver="$1" svc image archive start ref
+  local ver="$1" svc image archive start required ref
   assert_destructive_allowed
   [[ -n "$ver" ]] || return 0
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     ref="$(image_project_ref "$svc" "$ver")"
     if docker image inspect "$ref" >/dev/null 2>&1; then
       docker_tag_project "$ref" "$(image_project_ref "$svc" running)"
@@ -1596,20 +1596,59 @@ service_is_ready() {
   [[ "$low" == up* || "$low" == *running* ]]
 }
 
+_note_optional_unready() {
+  local svc="$1" status="$2" file op oldmask
+  case " ${_optional_noted:-} " in
+    *" ${svc} "*) return 0 ;;
+  esac
+  _optional_noted="${_optional_noted:-} ${svc}"
+  warn "選用服務 ${svc} 未就緒（${status:-未啟動}）。平台仍會啟動，這項功能先停著。"
+  [[ -d "$(install_root)/state" ]] || return 0
+  file="$(install_root)/state/operations.log"
+  oldmask="$(umask)"
+  umask 077
+  touch "$file"
+  chmod 600 "$file"
+  op="$(id -un)"
+  printf '%s\t%s\twarning\t%s\t%s\twarning\t選用服務 %s 未就緒（%s），不阻擋更新\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$op" "${_ops_from:-none}" "${_ops_to:-none}" \
+    "$svc" "${status:-未啟動}" >> "$file"
+  chmod 600 "$file"
+  umask "$oldmask"
+}
+
 health_ok() {
-  local tree="$1" line svc status
-  declare -A want=()
+  local tree="$1" line svc status failed=0
+  declare -A want=() optional=()
   while IFS= read -r svc; do
     [[ -n "$svc" && "$svc" != "nginx" ]] && want["$svc"]=1
   done < <(services_to_start)
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] && optional["$svc"]=1
+  done < <(services_not_required)
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     svc="${line%% *}"
     status="${line#* }"
     [[ -n "${want[$svc]:-}" ]] || continue
-    service_is_ready "$svc" "$status" || return 1
-    unset "want[$svc]"
+    if service_is_ready "$svc" "$status"; then
+      unset "want[$svc]"
+      continue
+    fi
+    if [[ -n "${optional[$svc]:-}" ]]; then
+      _note_optional_unready "$svc" "$status"
+      unset "want[$svc]"
+      continue
+    fi
+    failed=1
   done < <(dc "$tree" ps -a --format '{{.Service}} {{.Status}}' 2>/dev/null || true)
+  for svc in "${!want[@]}"; do
+    if [[ -n "${optional[$svc]:-}" ]]; then
+      _note_optional_unready "$svc" "未啟動"
+      unset "want[$svc]"
+    fi
+  done
+  (( failed == 0 )) || return 1
   (( ${#want[@]} == 0 )) || return 1
   dc "$tree" exec -T csp curl -sf http://127.0.0.1:8000/health >/dev/null
 }
@@ -1869,9 +1908,9 @@ record_audit() {
 }
 
 prune_old_images() {
-  local keep_a="$1" keep_b="$2" svc image archive start ref tag ns
+  local keep_a="$1" keep_b="$2" svc image archive start required ref tag ns
   ns="$(compose_project)"
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     while IFS= read -r ref; do
       [[ "$ref" == "${ns}/${svc}:"* ]] || continue
       tag="${ref##*:}"

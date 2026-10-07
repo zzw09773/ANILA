@@ -129,6 +129,7 @@ const menuGroups = computed(() => {
       { path: '/service-clients', label: '服務客戶端' },
       { path: '/trusted-hosts', label: '信任主機' },
       { path: '/external-services', label: '外部服務' },
+      { path: '/hr-database', label: '人資資料庫' },
       { path: '/platform-settings', label: '平台設定' },
     ]
     groups.push({

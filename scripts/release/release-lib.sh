@@ -117,9 +117,18 @@ release_catalog() {
 }
 
 services_to_start() {
-  local svc image archive start
-  while read -r svc image archive start; do
+  local svc image archive start required
+  while read -r svc image archive start required; do
     [[ "$start" == "yes" ]] || continue
+    printf '%s\n' "$svc"
+  done < <(release_catalog)
+}
+
+# 第五欄 no：會啟動，但不健康或沒起來也不擋安裝與更新。空著表示必須健康。
+services_not_required() {
+  local svc image archive start required
+  while read -r svc image archive start required; do
+    [[ "$start" == "yes" && "$required" == "no" ]] || continue
     printf '%s\n' "$svc"
   done < <(release_catalog)
 }
@@ -663,7 +672,7 @@ release_verify_bundle() {
 # 出貨包自己的 images.tsv（清單裡的 SHA256 已核對）與每一條 image 行逐欄比對。
 # 服務、映像名、封存路徑、digest 都要對上。停寫入之前就要過；缺一條或重複都拒絕。
 release_verify_image_catalog() {
-  local root="$1" manifest tsv listed got line kind svc image digest archive alt extra
+  local root="$1" manifest tsv listed got line kind svc image digest archive alt extra required
   local -A want_image=() want_archive=() seen=()
   manifest="$root/manifest.txt"
   tsv="$root/images.tsv"
@@ -681,7 +690,7 @@ release_verify_image_catalog() {
     printf 'images.tsv 的 SHA256 尚未核對，拒絕更新。\n' >&2
     return 1
   fi
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     [[ -n "$svc" ]] || continue
     want_image["$svc"]="$image"
     want_archive["$svc"]="$archive"

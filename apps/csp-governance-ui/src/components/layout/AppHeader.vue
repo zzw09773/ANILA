@@ -170,7 +170,7 @@ const PAGE_LABELS = {
   '/feedback': '使用者回饋', '/banners': '公告橫幅', '/skill-review': 'skill 審核', '/audit-logs': '稽核紀錄',
   '/platform-links': '平台連結', '/service-access': '服務存取',
   '/service-clients': '服務客戶端', '/trusted-hosts': '信任主機',
-  '/external-services': '外部服務', '/platform-settings': '平台設定',
+  '/external-services': '外部服務', '/hr-database': '人資資料庫', '/platform-settings': '平台設定',
 }
 const currentPageLabel = computed(() => {
   const path = route.path

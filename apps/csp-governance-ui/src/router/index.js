@@ -99,6 +99,12 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
+        path: 'hr-database',
+        name: 'HrDatabase',
+        component: () => import('../views/HrDatabaseView.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'audit-logs',
         name: 'AuditLogs',
         component: () => import('../views/AuditLogsView.vue'),

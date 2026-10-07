@@ -22,6 +22,7 @@ from app.schemas.card import (
 )
 from app.services.inactivity_service import resume_after_inactivity
 from app.services.audit_service import log_audit_event
+from app.services.hr_login import apply_hr_on_card_login
 from app.services.auth_service import create_tokens
 from app.services.card_auth import CardAuthError
 from app.services.card_auth_service import (
@@ -122,6 +123,17 @@ def card_verify(
             detail=str(exc),
         ) from exc
 
+    # 人資只補這一個人的姓名、信箱、單位與職稱權限。連不上也不擋登入。
+    try:
+        user = apply_hr_on_card_login(db, user, claims, ip_address=ip_address)
+    except Exception:
+        # apply 自己會吞掉人資失敗。這裡只守住沒料到的例外，避免登入被拖垮。
+        pass
+
+    # 驗章回傳的物件有時只是登入當下的快照，沒有人資欄位。沒有就用卡片上的值。
+    shown_name = getattr(user, "display_name", None) or claims.display_name
+    shown_email = getattr(user, "email", None) or claims.email
+
     # 停用帳號不能拿到權杖。閒置停用改回待審，錨點改成這次登入。
     # 管理員若已重新啟用，以資料庫現況為準，不要沿用驗章當下的停用快照。
     if not user.is_active:
@@ -130,8 +142,8 @@ def card_verify(
             payload = {
                 "status": "pending_approval",
                 "employee_id": claims.employee_id,
-                "display_name": claims.display_name,
-                "email": claims.email,
+                "display_name": shown_name,
+                "email": shown_email,
                 "registration_token": None,
                 "expires_in": None,
                 "message": message,
@@ -164,8 +176,8 @@ def card_verify(
             payload = {
                 "status": "pending_registration",
                 "employee_id": claims.employee_id,
-                "display_name": claims.display_name,
-                "email": claims.email,
+                "display_name": shown_name,
+                "email": shown_email,
                 "registration_token": reg_token,
                 "expires_in": expires_in,
                 "message": CARD_PENDING_REGISTRATION_MESSAGE,
@@ -179,8 +191,8 @@ def card_verify(
             payload = {
                 "status": "pending_approval",
                 "employee_id": claims.employee_id,
-                "display_name": claims.display_name,
-                "email": claims.email,
+                "display_name": shown_name,
+                "email": shown_email,
                 "registration_token": None,
                 "expires_in": None,
                 "message": CARD_PENDING_APPROVAL_MESSAGE,

@@ -323,6 +323,9 @@ services:
       timeout: 5s
       retries: 12
       start_period: 180s
+    networks:
+      - default
+      - hr-oracle
     restart: unless-stopped
     logging: *anila-logging
 
@@ -515,6 +518,24 @@ services:
       timeout: 5s
       retries: 6
       start_period: 30s
+    restart: unless-stopped
+    logging: *anila-logging
+
+  # ── hr-lookup（人資查詢。只給 csp 呼叫，沒有對外埠）────────────────────
+  hr-lookup:
+    build:
+      context: ../../services/hr-lookup
+      dockerfile: Dockerfile
+    expose:
+      - "8091"
+    networks:
+      - hr-oracle
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
     logging: *anila-logging
 
@@ -809,6 +830,10 @@ services:
 networks:
   default:
     name: anila-net
+  # 不設 internal：hr-lookup 要連到區域網路裡的 Oracle。
+  # 只有 csp 與 hr-lookup 可以加入 hr-oracle。
+  hr-oracle:
+    name: anila-hr-oracle
 
 volumes:
   csp-pgdata:

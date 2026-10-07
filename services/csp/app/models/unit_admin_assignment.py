@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     text,
 )
 from sqlalchemy.orm import relationship
@@ -68,6 +69,8 @@ class UnitAdminAssignment(Base):
     granted_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
     revoked_at = Column(DateTime(timezone=True), nullable=True)
+    # manual：畫面上授與。hr：人資職稱對出來的，登入時會收回不再符合的列。
+    source = Column(String(16), nullable=False, default="manual", server_default="manual")
 
     user = relationship("User", foreign_keys=[user_id])
     department = relationship("Department", foreign_keys=[department_id])

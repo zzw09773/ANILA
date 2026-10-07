@@ -30,6 +30,7 @@ from app.models.user import User
 import app.models.jwt_signing_key  # noqa: F401  註冊 jwt_signing_keys
 import app.models.alert_mail  # noqa: F401  註冊警報寄信表
 import app.models.feedback_read  # noqa: F401  註冊管理員的回饋已讀水位
+import app.models.hr_oracle  # noqa: F401  註冊人資資料庫設定
 from app.services.auth_service import require_admin
 from app.spa_fallback import (
     FrontendAssetFiles,

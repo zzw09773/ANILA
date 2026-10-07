@@ -3,7 +3,8 @@
 為什麼有這支端點
 ----------------
 稽核的 admin-journey D1:**22 個治理視圖沒有一個**顯示 router /
-anila-studio / ingestion-worker / csp-db / redis / nginx / pptx-renderer 的
+anila-studio / ingestion-worker / csp-db / redis / nginx / pptx-renderer /
+hr-lookup 的
 狀態(``健康總覽|服務健康`` 全域命中 0)。管理者要知道「平台現在活著嗎」,
 唯一的真實工具是 SSH 進平台主機跑 ``anila-ops.sh health``。這支端點是那件事
 的直接解:治理首頁一張卡就能回答。

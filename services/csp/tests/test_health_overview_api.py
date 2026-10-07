@@ -114,6 +114,7 @@ def test_overview_admin_gets_every_service_with_checked_at(
         "ingestion-worker",
         "anila-studio",
         "pptx-renderer",
+        "hr-lookup",
     ):
         assert expected in names, f"總覽缺少 {expected}"
     assert body["overall"] == "healthy"
@@ -313,7 +314,7 @@ def test_response_leaks_no_connection_string_password_or_internal_ip(
     for scheme in ("postgresql://", "postgres://", "redis://", "http://", "https://"):
         assert scheme not in raw, f"回應含 {scheme} —— 探測目標不得外洩"
     # (c) port 與內部 IP。
-    for port in (":5432", ":6379", ":8000", ":8081", ":8100", ":9000", ":7100"):
+    for port in (":5432", ":6379", ":8000", ":8081", ":8100", ":9000", ":7100", ":8091"):
         assert port not in raw, f"回應含 {port} —— 部署細節不得外洩"
     assert not re.search(r"\b(?:10|127|192)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", raw), (
         "回應含內部 IP"
@@ -483,7 +484,15 @@ def test_outbound_probes_do_not_receive_the_request_db(client, db: Session, monk
     assert client.get(OVERVIEW_URL, headers=_bearer(admin)).status_code == 200
 
     assert seen["csp-db"] is not None  # DB probe uses the request session
-    for name in ("redis", "nginx", "router", "ingestion-worker", "anila-studio", "pptx-renderer"):
+    for name in (
+        "redis",
+        "nginx",
+        "router",
+        "ingestion-worker",
+        "anila-studio",
+        "pptx-renderer",
+        "hr-lookup",
+    ):
         assert name in seen
         assert seen[name] is None, f"{name} must not receive the request db"
 

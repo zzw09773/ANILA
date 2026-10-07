@@ -35,8 +35,11 @@ class UserUpdate(BaseModel):
 
 class UserResponse(ApiResponseModel, UserBase):
     id: int
+    display_name: str | None = None
     department_id: int | None = None
     department_name: str | None = None
+    department_source: str | None = None
+    hr_titles: list[str] | None = None
     is_active: bool
     is_approved: bool = True
     local_password_disabled: bool = False

@@ -87,6 +87,8 @@
             <td><input type="checkbox" :checked="selectedUserIds.includes(user.id)" @change="toggleUserSelection(user.id, $event.target.checked)" :aria-label="'選取 ' + user.username" /></td>
             <td>
               <div class="cell-strong">{{ user.username }}</div>
+              <div v-if="user.display_name" class="cell-meta">{{ user.display_name }}</div>
+              <div v-if="hrTitlesLabel(user)" class="cell-meta">{{ hrTitlesLabel(user) }}</div>
               <div class="cell-meta">id #{{ user.id }}</div>
             </td>
             <td class="cell-meta">{{ user.email || '—' }}</td>
@@ -426,9 +428,16 @@ const savingAgents = ref(false)
 // 所以選單與列表一律攤開完整祖先路徑，綁在哪一層是看得出來的選擇。
 const departmentIndex = computed(() => indexById(departments.value))
 const departmentChoices = computed(() => departmentOptions(departments.value))
+function hrTitlesLabel(user) {
+  if (!Array.isArray(user.hr_titles) || user.hr_titles.length === 0) return ''
+  return user.hr_titles.join('、')
+}
 function departmentLabel(user) {
-  if (user.department_id == null) return user.department_name || '—'
-  return departmentPath(user.department_id, departmentIndex.value) || user.department_name || '—'
+  const base = user.department_id == null
+    ? (user.department_name || '—')
+    : (departmentPath(user.department_id, departmentIndex.value) || user.department_name || '—')
+  if (user.department_source === 'hr' && base !== '—') return `${base}（人資）`
+  return base
 }
 const pendingCount = computed(() => users.value.filter(u => !u.is_approved).length)
 const developerCount = computed(() => users.value.filter(u => u.role === 'developer').length)
@@ -442,7 +451,8 @@ const filteredUsers = computed(() => {
     if (filters.value.status === 'active' && (!u.is_approved || !u.is_active)) return false
     if (filters.value.status === 'inactive' && (!u.is_approved || u.is_active)) return false
     if (!query) return true
-    return [u.username, u.email, u.department_name, u.role].filter(Boolean).join(' ').toLowerCase().includes(query)
+    const titles = Array.isArray(u.hr_titles) ? u.hr_titles.join(' ') : ''
+    return [u.username, u.display_name, u.email, u.department_name, titles, u.role].filter(Boolean).join(' ').toLowerCase().includes(query)
   })
   next = [...next].sort((a, b) => {
     if (filters.value.sort === 'oldest') return new Date(a.created_at) - new Date(b.created_at)

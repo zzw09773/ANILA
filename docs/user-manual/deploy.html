@@ -264,7 +264,7 @@ sudo -E bash /opt/anila/anila-YYYY.MM.DD-N/anila-update.sh /opt/anila/anila-YYYY
 <h3>6.1 容器</h3>
 <pre><code>docker compose -p anila ps
 # 期望：csp / csp-db / redis / nginx / router / anila-ui / ingestion-worker /
-#       anila-studio / pptx-renderer / asr-gateway 全部 healthy 或 running
+#       anila-studio / pptx-renderer / hr-lookup / asr-gateway 全部 healthy 或 running
 #       （解碼端不在這台，不會有 asr-decoder 容器）</code></pre>
 <h3>6.2 五個入口（看 Content-Type，不要只看 200）</h3>
 <pre><code>H=https://anila.ai.ncsist.org.tw
@@ -276,7 +276,7 @@ curl -sk $H/.well-known/jwks.json | head -c 80                            # 要�
 <h3>6.3 治理中心</h3>
 <p>用擁有者的卡刷進治理中心（網址根目錄）。<strong>不應有任何憑證警告</strong>；有＝憑證沒換到 wildcard 或 DNS 沒生效。</p>
 <figure><img src="img/login-card.png" alt="登入頁只有偵測憑證卡一顆按鈕"><figcaption>正式姿態的登入頁：只有卡片登入。<strong>如果看得到帳號密碼欄位，這台不是 card-only</strong>，回頭查 <code>.env</code>。</figcaption></figure>
-<figure><img src="img/gov-dashboard.png" alt="儀表板服務健康全綠"><figcaption>儀表板 → 服務健康：八個基礎服務都要綠（csp、csp-db、redis、nginx、router、ingestion-worker、anila-studio、pptx-renderer）。</figcaption></figure>
+<figure><img src="img/gov-dashboard.png" alt="儀表板服務健康全綠"><figcaption>儀表板 → 服務健康：九個基礎服務都要綠（csp、csp-db、redis、nginx、router、ingestion-worker、anila-studio、pptx-renderer、人資查詢）。人資查詢綠只表示查詢服務在，不表示 Oracle 已連上。</figcaption></figure>
 <div class="box warn"><p><strong>在內網主機上，模型的健康燈應該是綠的</strong>；不是綠的先查 <code>MODEL_GATEWAY_API_KEY</code>、模型主機 DNS 與 <code>share/pki/model-ca.pem</code>，不是平台本身。（開發機上這一格必然紅，因為連不到模型主機。）</p></div>
 
 <h2 id="s7"><span class="num">7</span>初裝六件（腳本不會替你做的）</h2>

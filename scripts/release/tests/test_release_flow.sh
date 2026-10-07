@@ -641,7 +641,7 @@ test_backup_stops_writers_and_records_cutoff() {
     echo "停寫入的順序不對 csp=$csp_at pgbouncer=$pgb_at dump=$dump_at" >&2
     return 1
   }
-  for svc in nginx anila-ui anilalm anila-studio router ingestion-worker csp pptx-renderer backup codeserver n8n asr-gateway; do
+  for svc in nginx anila-ui anilalm anila-studio router ingestion-worker csp pptx-renderer backup codeserver n8n asr-gateway hr-lookup; do
     at="$(awk -v svc="$svc" '
       {
         stopat = 0
@@ -1079,10 +1079,10 @@ test_recorded_project_is_what_docker_stops() {
 }
 
 make_min_bundle() {
-  local dest="$1" ver="$2" lines svc image archive start digest
+  local dest="$1" ver="$2" lines svc image archive start required digest
   mkdir -p "$dest/images"
   lines="$(mktemp "${HOME}/.anila-image-lines.XXXXXX")"
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     printf 'img\n' > "$dest/images/${archive}.tar.gz"
     digest="$(printf '%s' "$svc" | sha256sum | awk '{print $1}')"
     printf 'image %s %s sha256:%s images/%s.tar.gz\n' \
@@ -1166,7 +1166,7 @@ test_host_steps_use_project_image_tags() {
 # Docker 29 新裝預設 containerd 儲存：載入後的映像 ID 是 manifest 雜湊，不是設定檔雜湊。
 # 2026-09-30 演練機 .35 實測。第四欄對不上時要改用第六欄；兩個都對不上就停。
 test_load_accepts_containerd_manifest_digest() {
-  local root bundle log svc image archive start cfg man missing="" want
+  local root bundle log svc image archive start required cfg man missing="" want
   root="$tmp/ctrd-root"
   bundle="$tmp/ctrd-bundle"
   log="$tmp/ctrd.log"
@@ -1174,7 +1174,7 @@ test_load_accepts_containerd_manifest_digest() {
   use_version_tree "$root" >/dev/null
   mkdir -p "$bundle/images"
   : > "$bundle/manifest.txt"
-  while read -r svc image archive start; do
+  while read -r svc image archive start required; do
     printf 'img\n' | gzip -c > "$bundle/images/${archive}.tar.gz"
     cfg="sha256:$(printf 'cfg-%s' "$svc" | sha256sum | awk '{print $1}')"
     man="sha256:$(printf 'man-%s' "$svc" | sha256sum | awk '{print $1}')"
@@ -2483,6 +2483,67 @@ EOF
   fi
 }
 
+test_optional_hr_lookup_does_not_block_update_health() {
+  local root tree ps err log mode
+  root="$tmp/hr-optional-root"
+  ps="$tmp/hr-optional-ps"
+  err="$tmp/hr-optional.err"
+  log="$tmp/hr-optional.log"
+  arm_test_install "$root"
+  tree="$(use_version_tree "$root" "2026.09.29-1")"
+  # 清單先收進變數再比對。grep -q 直接接函數管道時，對到就關管道，
+  # pipefail 會把左邊的 SIGPIPE 算成失敗（hr-lookup 不是最後一項）。
+  local started optional
+  started="$(services_to_start)"
+  optional="$(services_not_required)"
+  grep -qx hr-lookup <<<"$started" || { echo "hr-lookup 沒有被啟動" >&2; return 1; }
+  grep -qx hr-lookup <<<"$optional" || { echo "hr-lookup 仍被當成必須健康" >&2; return 1; }
+  if grep -qx csp <<<"$optional"; then
+    echo "csp 不該是選用服務" >&2
+    return 1
+  fi
+  write_ps_file "$ps"
+  awk '$1=="hr-lookup" { $0="hr-lookup Up (unhealthy)" } { print }' "$ps" > "$tmp/hr-unhealthy-ps"
+  export DOCKER_PS_FILE="$tmp/hr-unhealthy-ps"
+  export DOCKER_LOG="$log"
+  export ANILA_HEALTH_TIMEOUT=0
+  export ANILA_HEALTH_POLL=0
+  _optional_noted=""
+  if ! wait_healthy "$tree" >"$tmp/hr-optional.out" 2>"$err"; then
+    echo "hr-lookup 不健康仍擋更新" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q 'hr-lookup' "$err" || { echo "stderr 沒有 hr-lookup 警告" >&2; cat "$err" >&2; return 1; }
+  grep -q 'hr-lookup' "$root/state/operations.log" || {
+    echo "operations.log 沒有 hr-lookup 警告" >&2
+    cat "$root/state/operations.log" >&2
+    return 1
+  }
+  mode="$(stat -c %a "$root/state/operations.log")"
+  [[ "$mode" == "600" ]] || { echo "operations.log 權限是 $mode" >&2; return 1; }
+  awk '$1!="hr-lookup"' "$ps" > "$tmp/hr-absent-ps"
+  export DOCKER_PS_FILE="$tmp/hr-absent-ps"
+  _optional_noted=""
+  if ! wait_healthy "$tree" >"$tmp/hr-absent.out" 2>"$err"; then
+    echo "hr-lookup 沒起來仍擋更新" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '未啟動' "$err" || { echo "沒有把缺席的選用服務記成警告" >&2; cat "$err" >&2; return 1; }
+  grep -q '未啟動' "$root/state/operations.log" || return 1
+  awk '$1=="csp" { $0="csp Up (unhealthy)" } { print }' "$ps" > "$tmp/csp-unhealthy-ps"
+  export DOCKER_PS_FILE="$tmp/csp-unhealthy-ps"
+  _optional_noted=""
+  if wait_healthy "$tree" >"$tmp/csp-unhealthy.out" 2>"$err"; then
+    echo "必要服務不健康仍當作成功" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  grep -q '健康檢查逾時' "$err" || { echo "必要服務失敗沒有逾時訊息" >&2; cat "$err" >&2; return 1; }
+  unset DOCKER_PS_FILE
+}
+
 test_manual_rollback_health_failure_restores_previous_state() {
   local root log err dump
   root="$tmp/health-fail-root"
@@ -2650,6 +2711,7 @@ test_retired_scripts_refuse_when_sourced() {
 check "redis 用映像 ID 核對並標進專案" test_redis_load_verifies_image_id_and_project_tag
 check "清理只刪這個專案的映像標籤" test_prune_only_removes_project_tags
 check "手動回復健康檢查沒過會切回" test_manual_rollback_health_failure_restores_previous_state
+check "hr-lookup 不健康或沒起來不擋更新，必要服務不健康仍失敗" test_optional_hr_lookup_does_not_block_update_health
 check "跨裝置還原改成複製" test_share_restore_stage_falls_back_on_exdev
 check "第二個更新拿不到鎖就停" test_second_run_stops_without_touching_incoming
 check "沒人持有鎖才清暫存" test_stale_incoming_removed_when_lock_is_free

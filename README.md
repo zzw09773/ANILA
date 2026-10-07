@@ -23,6 +23,7 @@ ANILA 是給同仁在瀏覽器裡使用的 AI 工作平台。管理員與開發�
 | `services/anila-core-router` | 對話路由。compose 服務名 `router`，容器埠 9000。平台入口模型 `anila-router` 指到這裡 |
 | `services/anila-studio` | 簡報、報告、心智圖、資訊圖、資料表。容器埠 8100 |
 | `services/pptx-renderer` | 把簡報規格畫成檔案。容器埠 7100，只給 studio 呼叫 |
+| `services/hr-lookup` | 卡片登入時向人資 Oracle 查一個人。容器埠 8091，只給 CSP 呼叫 |
 | `services/ingestion-worker` | 文件解析、切塊、嵌入、寫入向量 |
 | `services/asr-gateway` | 語音切句並轉到治理中心登錄的解碼端。容器埠 8200，nginx 路徑 `/asr/` |
 | `packages/anila-core` | 路由、記憶、文件處理與出向位址檢查的 Python 程式庫。router、CSP、匯入工作會用到 |
@@ -58,10 +59,11 @@ cd apps/anila-shell && npm test
 cd apps/csp-governance-ui && npm test
 cd apps/anilalm && npm test
 cd services/pptx-renderer && npm test
+cd services/hr-lookup && python -m pytest
 bash scripts/release/tests/test_release_flow.sh
 ```
 
-`anila-shell` 的 `npm test` 是 `vitest run`。`anilalm` 的 `npm test` 含 `vitest run` 與 `node --test`。`csp-governance-ui` 的 `npm test` 是 `node --test tests/*.test.mjs`。`anila-studio`、`asr-gateway`、`ingestion-worker`、`anila-core-router` 也是在該目錄執行 `python -m pytest`。
+`anila-shell` 的 `npm test` 是 `vitest run`。`anilalm` 的 `npm test` 含 `vitest run` 與 `node --test`。`csp-governance-ui` 的 `npm test` 是 `node --test tests/*.test.mjs`。`anila-studio`、`asr-gateway`、`ingestion-worker`、`anila-core-router`、`hr-lookup` 也是在該目錄執行 `python -m pytest`。
 
 ## 安全邊界
 
