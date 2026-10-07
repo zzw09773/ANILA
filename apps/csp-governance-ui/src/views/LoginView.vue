@@ -4,7 +4,7 @@
          removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
       <a class="skip-link" href="#login-main">跳到登入表單</a>
-      <TermLogo :size="14" subtitle="院內 AI 工作平台" />
+      <TermLogo :size="14" subtitle="AI 工作平台" />
       <span class="login__topbar-spacer" />
       <button
         class="login__theme"
@@ -201,7 +201,7 @@
         </details>
 
         <p class="login__legal">
-          ANILA &nbsp;·&nbsp; 院內部署 &nbsp;·&nbsp; 首次登入需管理員核准
+          首次登入需管理員核准
         </p>
       </section>
     </main>
