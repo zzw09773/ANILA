@@ -6,6 +6,7 @@ verbatim; only this import header is new.
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.utils.client_ip import client_ip
 from app.database import get_db
 from app.models.department import Department
 from app.models.user import User
@@ -62,7 +63,7 @@ def card_complete_registration(
     刷卡時 ``/card/verify`` 會直接回 ``pending_approval`` 訊息（不再要表單）。
     """
     _require_card_login_enabled()
-    ip_address = http_request.client.host if http_request.client else None
+    ip_address = client_ip(http_request)
 
     try:
         user_id = decode_registration_token(request.registration_token)

@@ -276,3 +276,9 @@
 修正：頁籤補上 skill 審核，並用測試盯住每個有畫面的路由都要有中文名稱。（commit a3742457）
 
 補充（不是缺陷）：`/codeserver/` 與 `/n8n/` 回 502，是因為這兩個服務掛在 compose 的 `ops` profile，這次部署沒開；`infra/nginx/anila.conf` 的註解已寫明沒開 profile 時這兩個路徑就是 502。`/classification-inventory` 會導回儀表板，是 2026-09-14 刻意下線、路由改成 `redirect: '/'`。
+
+**F-35　登入稽核的來源位址是 Docker 內部位址，不是同仁的電腦**
+在哪：治理中心稽核頁，登入相關的紀錄（密碼登入、插卡登入、註冊）。
+發生：每一筆登入紀錄的 IP 都是同一個 172.x 位址。
+反直覺：其他稽核紀錄的位址是對的。平台有一支專門取來源位址的函式（`services/csp/app/utils/client_ip.py`，讀 nginx 帶進來的 `X-Real-IP`），但登入這五處直接讀連線對端，拿到的是 nginx 容器在 Docker 網路上的位址。
+修正：五處改用同一支函式，並加測試擋住之後再有程式直接讀連線對端。（commit 待補）

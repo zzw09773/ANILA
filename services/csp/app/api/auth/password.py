@@ -7,6 +7,7 @@ verbatim; only this import header is new.
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
+from app.utils.client_ip import client_ip
 from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import (
@@ -78,7 +79,7 @@ def register(request: RegisterRequest, http_request: Request, db: Session = Depe
         actor=user,
         resource_id=user.id,
         detail="使用者送出註冊申請",
-        ip_address=http_request.client.host if http_request.client else None,
+        ip_address=client_ip(http_request),
         commit=True,
     )
     return {"message": "註冊成功，請等待管理員核准後再登入"}
@@ -97,7 +98,7 @@ def login(
     # 甚至帳密完全正確 — 一律回與「功能不存在」相同的 404,讓外部探測無法
     # 區分「密碼錯 / 權限不足 / 端點關閉」;只有 owner 完整登入成功會放行。
     card_only = settings.ANILA_AUTH_MODE == "card-only"
-    ip_address = http_request.client.host if http_request.client else None
+    ip_address = client_ip(http_request)
 
     if request.auth_source not in (None, "", "local"):
         if card_only:
@@ -279,7 +280,7 @@ def logout(
             resource_type="auth",
             resource_id=current_user.id,
             detail="使用者登出（cookie 清除 + token_version++）",
-            ip_address=http_request.client.host if http_request.client else None,
+            ip_address=client_ip(http_request),
             commit=True,
         )
 

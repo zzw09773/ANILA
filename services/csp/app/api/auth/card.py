@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.utils.client_ip import client_ip
 from app.database import get_db
 from app.models.user import User
 from app.schemas.card import (
@@ -83,7 +84,7 @@ def card_verify(
       - ``CardLoginRejected`` (challenge 過期 / email 衝突 / 設定錯誤) → ``400``
     """
     _require_card_login_enabled()
-    ip_address = http_request.client.host if http_request.client else None
+    ip_address = client_ip(http_request)
 
     try:
         user, claims = verify_card_and_resolve_user(
