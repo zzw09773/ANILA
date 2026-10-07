@@ -1,29 +1,27 @@
 # ANILA LM — 我的知識庫 / 產出中心（`anilalm`）
 
-> ANILA 的知識與產出 SPA（Vite + React + TypeScript，v1.0.0）。承載「**我的知識庫**」（collection／文件／檢索／對話）與「**產出中心**」（Studio：簡報 / 報告 / 心智圖 / 資訊圖 / 資料表五種 artifact）。掛載於 nginx 同源子路徑 `/anilalm/`，由 ANILA Shell 的四入口導覽進入。
+> ANILA 的知識與產出 SPA（Vite + React + TypeScript，v1.0.0）。這一頁有知識庫（collection、文件、檢索、對話）和五種產出：簡報、報告、心智圖、資訊圖、資料表。掛在 nginx 同源子路徑 `/anilalm/`，從 Shell 側欄「我的知識庫」進來。
 
 > English mirror: [`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本子專案存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`；**`trial-military` 精簡版不含本子專案**。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
->
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
 ---
 
 ## 1. 產品定位
 
-本 SPA 提供「文件 → 對話 → 產出」一站式流程：上傳建知識庫 → 對話查詢 → 生成 artifact。它**只是前端**，串接 [`services/csp`](../../services/csp/)（CSP）做認證 / ingestion / 對話 / LLM proxy，artifact 生成走 [`services/anila-studio`](../../services/anila-studio/)。
+使用順序是：上傳文件建立知識庫、在對話裡查詢、再產生簡報、報告、心智圖、資訊圖或資料表。它只是前端，認證、ingestion、對話、模型代理走 [`services/csp`](../../services/csp/)，產出走 [`services/anila-studio`](../../services/anila-studio/)。
 
-在 ANILA 產品憲章（產品憲章 §2）中，本 SPA 同時實作兩個一級使用者入口 —「我的知識庫」與「產出中心」；ANILA Shell 的側欄以同源絕對路徑 `/anilalm` 進入。
+Shell 側欄「我的知識庫」以同源路徑 `/anilalm` 打開這一頁。五種產出也在這裡，側欄沒有另一列。
 
 ---
 
-## 2. Task-first 產出（redesign Slice 8b）
+## 2. 產出先建立任務
 
-**每一次 Studio 產出 job 送出前，先在 CSP 建立一個 Task**，讓後續的 artifact-job / artifact / trace 全部掛回同一個治理單元（API 契約 §2 Task API）。
+**每一次產出 job 送出前，先在 CSP 建立一個 Task**，讓後面的 artifact-job、artifact、trace 掛在同一個任務上。
 
 - `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks`（`task_type:'generate_artifact'`、`source_scope` 預設 `'project'`、`selected_collection_ids`、`requested_output_type`）。回傳 `TaskBinding { taskId, sourceSnapshotId?, traceId? }`，再 thread 進 Studio job body。型別對映 `services/csp/app/schemas/contracts/tasks.py` 與領域模型（`TaskType` / `SourceScope` / `RequestedOutputType`）。
-- **韌性契約**：任何失敗（端點未上線 / 認證 / 網路）回傳 `null` ＋ zh-TW `console.warn`，產出**以無任務綁定方式照常繼續**，絕不因治理 metadata 掛不上而中斷生成。
+- 建立 Task 失敗（路由不在、認證、網路）時回傳 `null`，並在 console 以繁體中文警告。產出照常繼續，沒有任務編號。
 - 呼叫點：`src/workspace/CommandModal.tsx`（簡報）與 `src/studio/generators.ts`（報告 / 心智圖 / 資訊圖 / 資料表）——五種 artifact 皆先建 Task。
 
 ### Artifact 皆 async job 模式
@@ -46,11 +44,11 @@
 | 路由 | `react-router` 7.18.2（`>=7.18.2 <8`；`BrowserRouter` + 巢狀 Outlet 守衛） |
 | 狀態 | **Zustand 5.0.2**（auth / workspace / artifacts） |
 | HTTP | `axios` 1.7.9 + 攔截器（401 refresh、`withCredentials`） |
-| Markdown | `marked` 14.1.3 + `DOMPurify` 3.2.3（LLM 輸出視為 untrusted，雙層防 XSS） |
+| Markdown | `marked` 14.1.3 + `DOMPurify` 3.4.13（模型輸出先消毒再渲染） |
 | 型別 codegen | `openapi-typescript` 7.13.0（dev） |
 | 圖示 | inline SVG（自製，0 套件） |
 
-`scripts`：`dev` / `build`（**`tsc -b && vite build`**）/ `preview` / `typecheck`（`tsc -b --noEmit`）/ `gen:studio-types`。**驗證閘門 = `typecheck` + `build`**（本子專案無單元測試框架）。
+`scripts`：`dev` / `build`（`tsc -b && vite build`）/ `preview` / `typecheck`（`tsc -b --noEmit`）/ `gen:studio-types` / `test`（`vitest run`，再加上 `node --test src/**/*.node.test.mjs`）。
 
 ### `gen:studio-types` 流程
 
@@ -128,11 +126,8 @@ npm run build          # tsc -b && vite build（正式驗證用；非只 tsc）
 
 ## 7. 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 - 後端服務：CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
 - 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 治理中心 [`../csp-governance-ui/README.md`](../csp-governance-ui/README.md)
-- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
+- 平台整體：[`../../README.md`](../../README.md)
 
----
-
-**Framework**：Vite + React + TypeScript · **Serves**：我的知識庫 + 產出中心 · **Talks to**：CSP（`/api`、`/v1`、`/v2`）+ anila-studio（`/api/studio/*`、`/api/{reports,mindmaps,infographics,datatables}/*`），皆先建 CSP Task。

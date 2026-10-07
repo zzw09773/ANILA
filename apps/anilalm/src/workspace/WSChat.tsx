@@ -238,7 +238,7 @@ export function WSChat({ flex }: WSChatProps) {
   const handleCreateShare = useCallback(
     async (payload: Parameters<typeof createShare>[1]) => {
       if (activeConversationId == null) {
-        throw new Error('尚未建立後端對話 — 請先送出第一則訊息。')
+        throw new Error('這則對話還沒建立，請先送出第一則訊息。')
       }
       await createShare(activeConversationId, payload)
     },

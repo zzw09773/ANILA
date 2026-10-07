@@ -4436,7 +4436,7 @@ export const Sidebar = ({
                         if (acting) return;
                         const count = conversations.filter((c) => c.folder === f.id).length;
                         const msg = count > 0
-                          ? `確定刪除「${f.name}」？資料夾內的 ${count} 則對話也會一併移除（後端紀錄不受影響）。`
+                          ? `確定刪除「${f.name}」？資料夾內的 ${count} 則對話會從清單拿掉，伺服器上的對話不會刪除。`
                           : `確定刪除「${f.name}」？`;
                         if (!(await confirm({ title: "刪除資料夾", message: msg, confirmText: "刪除", tone: "danger" }))) return;
                         onDeleteFolder(f.id);

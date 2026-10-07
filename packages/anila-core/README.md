@@ -4,8 +4,6 @@
 
 > English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
-> 🌿 **分支對照**:本 SDK 存在於所有 ANILA 部署分支,內容跨分支一致(runtime 基座不隨部署情境而異)。新功能一律先進 `main`,再 sync 進 downstream。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
 ## 簡介
@@ -18,10 +16,10 @@
 平台各角色與 anila-core 的關係:
 
 - **Router 部署**([`anila-core-router`](../../services/anila-core-router/)):`api/router_server.py` 是一個手寫的派工器,實際只用到 `prompts`、`registry.remote_agent_manifest`、`tools.dispatch_tool`、`memory.short_term`、`api/session_owner`、`api/events`、`http_pool` 與 Pillar 2。**它不建在 QueryEngine／Coordinator 上**(2026-09-02 量測:Router 程序載入的模組集合裡沒有 `engine.*`)。
-- **Agent 開發者**:fork [`anila-agent`](../anila-agent/)(官方 RAG agent starter template,治理中心「開發指南」教的就是這條)。`anila-core init` CLI 已於 2026-09-02 移除(無任何流程使用)。Pillar 1 的 QueryEngine／tools／workspace 仍可 import,但平台本身沒有任何服務用它們——是否保留為 SDK 待擁有者裁決。
+- **Agent 開發者**:fork [`anila-agent`](../anila-agent/)(官方 RAG agent starter template,治理中心「開發指南」教的就是這條)。套件裡沒有 `anila-core init`。Pillar 1 的 QueryEngine、tools、workspace 仍可 import，平台裡沒有服務用它們。
 - **ingestion-worker**(Arq 非同步 pipeline):只消費 Pillar 2(`chunking_plugins`、`IngestionError`、`pg_pool`、`pgvector_store`、`credential_crypto`),不碰 Pillar 1。
 
-> **Redesign 後倉庫佈局(§17.1)**:monorepo 採 `services/`(可部署服務,含 `csp` / `anila-core-router`)、`apps/`(前端)、`packages/`(可 import 的套件,本 SDK 在此)、`infra/`(compose / 部署腳本 / nginx / models)四分層。根目錄 [`compose.yaml`](../../compose.yaml) 是 shim → `include: infra/compose/platform.yml`;部署腳本在 `infra/deployment/{scripts,intranet}/`。repo 根定位見 [`../../README.md`](../../README.md)。
+倉庫分成四層：`services/`（可部署服務，含 `csp`、`anila-core-router`）、`apps/`（前端）、`packages/`（可 import 的套件，本 SDK 在此）、`infra/`（compose、部署腳本、nginx、models）。根目錄 [`compose.yaml`](../../compose.yaml) 只做 `include: infra/compose/platform.yml`。部署腳本在 `infra/deployment/{scripts,intranet}/`。平台概觀見 [`../../README.md`](../../README.md)。
 
 ---
 
@@ -92,7 +90,6 @@ packages/anila-core/
     ├── registry/             # agent_registry + remote_agent_manifest(從 CSP /v1/agents 撈)
     ├── runtime_config/       # snapshot · poller · apply(hot-reload)
     ├── models/               # pydantic DTOs
-    ├── cli/                  # init / register / status / bootstrap（legacy）+ templates/
     │
     └── ──── Pillar 2 · shared infrastructure ────
         ├── security/         # credential_crypto(AES-GCM + PBKDF2)+ url_guard(SSRF,含 endpoint_kind 分域)
@@ -102,21 +99,21 @@ packages/anila-core/
             └── chunking_plugins/  # base · registry(@register_chunker)· builtins
 ```
 
-- 模組責任與邊界見 `src/anila_core/` 各套件的 docstring;舊 `docs/archive/anila-core/anila-core-boundary.md` 已刪,對照表見 `docs/CURRENT-STATUS.md`。
+- 模組責任與邊界見 `src/anila_core/` 各套件的 docstring。
 
 ---
 
-## Redesign 能力對應(anila-core 承擔的部分)
+## 平台能力裡 anila-core 負責的部分
 
-平台能力多數落在 CSP／前端,anila-core 只提供 runtime 生產者面;舊 redesign doc 的章號(doc 05／08 等)已刪,對照表見 `docs/CURRENT-STATUS.md`。
+平台能力多數在 CSP 與前端。anila-core 提供 runtime 這一側。
 
 | 能力 | anila-core 承擔的面向 | 程式碼 / 文件 |
 |---|---|---|
 | Full Trace span 匯出 | 已移除。不 POST `/v1/traces`。程序內的 `Tracer`／`Span` 仍可在行程裡用，不會外送 | `tracing/` |
 | **Task spine**(`X-ANILA-Task-Id`) | runtime 由 `CallerContext` 讀入並沿 turn 傳遞 task-id | `api/caller_context.py` |
-| **四級分類 + 單向 latch** | agent runtime 守 per-turn classified 單向 latch(`ctx.classified_latch` → `anila_meta.classified`);`register` CLI 帶 `--classification-level`（無機密／營業秘密／密／機密,寫入 `default_classification_level`）。**latch 執法 / 解密權威在 CSP** | `context/agent_context.py`;doc `08` |
-| **Agent Registry**(OE-1 三態:registered / approved / disabled) | `register` / `status` CLI 送件進 CSP registry;底層模型可用名稱(`base_model`)指定,由 CSP 解析成 id。**核准態機在 CSP** | `cli/register_cmd.py`;doc `05` |
-| **Model Gateway**(http 旗標分域) | `url_guard` 對 `endpoint_kind='model'` 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(2026-07-29 拍板:production 與 dev 同準)。**per-model key / 5 態健康在 CSP** | `security/url_guard.py`;Model Gateway §8 |
+| **四級分類 + 單向 latch** | `AgentContext.classified_latch` 沿這一輪傳遞。latch 的執行與解密在 CSP | `context/agent_context.py` |
+| **Agent Registry** | 套件裡沒有 `register` 指令。註冊在治理中心，或 `POST /api/agents/register`。核准狀態在 CSP | `services/csp/app/api/agents/` |
+| **Model Gateway**（http 旗標分域） | `url_guard` 對 `endpoint_kind='model'` 預設拒 http，要 `ANILA_ALLOW_HTTP_ENDPOINT=1` 才放行。正式環境與 dev 同一套。每模型的 key 與五態健康在 CSP | `security/url_guard.py` |
 
 ---
 
@@ -172,7 +169,7 @@ result = await engine.run([UserMessage(content="say hi")], on_stream_delta=on_de
 print(result.stop_reason, result.turn_count)
 ```
 
-> ⚠️ QueryEngine **沒有** `run_stream()`;入口是 `await engine.run(messages, on_stream_delta=...)`(見 [`e2e_smoke.py`](./e2e_smoke.py))。
+QueryEngine 沒有 `run_stream()`。入口是 `await engine.run(messages, on_stream_delta=...)`（見 [`e2e_smoke.py`](./e2e_smoke.py)）。
 
 ### Full Trace
 
@@ -180,14 +177,14 @@ print(result.stop_reason, result.turn_count)
 
 ### 新 agent 從哪裡開始
 
-`anila-core init` 與 `anila-core register` 已移除(2026-09-02)。新 agent 一律 fork
+套件裡沒有 `anila-core init` 與 `anila-core register`。新 agent 從 fork
 [`anila-agent`](../anila-agent/),註冊走治理中心 → Agent → 註冊 Agent(或 `POST /api/agents/register`)。
 
 ## 安全:outbound URL guard(SSRF)
 
-`security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` 是使用者提供之 endpoint URL 的中央 allow-list(CSP 建憑證時 + worker 呼叫時各驗一次,defense in depth)。**Slice 6a** 依 `endpoint_kind` 把 http 放寬旗標分域(僅影響 scheme;host / IP / DNS / trusted-host 檢查跨 kind 一致):
+`security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` 是使用者提供之 endpoint URL 的中央 allow-list(CSP 建憑證時 + worker 呼叫時各驗一次,defense in depth)。依 `endpoint_kind` 把 http 放寬旗標分域(僅影響 scheme;host / IP / DNS / trusted-host 檢查跨 kind 一致):
 
-- **`model`** — 預設拒 http,由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行(2026-07-29 拍板:production 與 dev 同準)。
+- **`model`** — 預設拒 http，要 `ANILA_ALLOW_HTTP_ENDPOINT=1` 才放行。正式環境與 dev 同一套。
 - **`agent`** — http 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` 放行(內網 MLSteam 純 http NodePort agent);legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 deprecated fallback。
 - **`generic`**(預設)— 既有全域語意,`ANILA_ALLOW_HTTP_ENDPOINT` 放行;既有呼叫端零行為變更。
 
@@ -208,7 +205,7 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 
 ## 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 - 官方 RAG agent template:[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼:[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 - 平台總覽:[`../../README.md`](../../README.md) · 版本沿革:[`CHANGELOG.md`](./CHANGELOG.md)
 

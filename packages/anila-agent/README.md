@@ -4,11 +4,11 @@
 
 **繁體中文** · [English](README.en.md)。這是進階範例。要掛上平台的最短路徑是 `packages/anila-agent-quickstart`，步驟在治理中心「開發指南」。
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
-## 在 redesign 版圖中的定位
+## 在平台裡的位置
 
-- **位置**：monorepo `packages/anila-agent/`（§17.1 版圖：`services/` · `apps/` · `packages/` · `infra/`）。
+- **位置**：`packages/anila-agent/`，與 `services/`、`apps/`、`infra/` 並列。
 - **相依與部署**：本進階範例目前同時依賴 `openai-agents==0.17.5` 與 `anila-core>=0.14,<0.15`；要在獨立內網主機部署，必須備妥相容 wheel、平台簽章信任與模型連線。不要把它當成零平台相依的單檔骨架。
 - **對平台的角色**：由 `services/csp`（治理中心 CSP）的 **Agent Registry** 核准上架、由 `apps/csp-governance-ui`
   （治理中心前端）的開發者精靈註冊。審批是三態，沒有 trace-test 關卡，也不再上傳 span。

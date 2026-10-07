@@ -4,8 +4,6 @@
 
 > 中文為主版;English mirror:[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
-> 🌿 **分支對照**:本服務存在於所有 ANILA 部署分支,內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
 ## 簡介
@@ -132,7 +130,7 @@ router (:9000)
 
 ## 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 - Runtime foundation(SDK):[`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP:[`../csp/README.md`](../csp/README.md) · Shell:[`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)
 
 ---

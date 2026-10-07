@@ -358,7 +358,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
               {format.l} 尚未開放
             </div>
             <div style={{ fontSize: 12, marginTop: 6 }}>
-              此輸出類型尚未開放;待後端對應 endpoint 就緒後解鎖。
+              目前不能產生這種檔案。
             </div>
           </div>
         ) : step === 0 ? (
@@ -576,7 +576,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                 <div style={{ color: t.textMuted }}>
                   {indexedDocs.length} 份已索引文件
                   {format?.k === 'slides'
-                    ? ' · 簡報走後端 pipeline（檢索 → LLM → 渲染 → 視覺檢查），需 60-120 秒'
+                    ? ' · 簡報會依知識庫產生，大約需要 60–120 秒'
                     : ' · 預估 30-90 秒'}
                 </div>
               </div>

@@ -4,8 +4,6 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: This service exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
 ## Overview
@@ -127,8 +125,8 @@ router (:9000)
 
 ## Related docs
 
-- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Platform: [`../../README.md`](../../README.md)
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 - Runtime foundation (SDK): [`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP: [`../csp/README.md`](../csp/README.md) · Shell: [`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)
 
 ---

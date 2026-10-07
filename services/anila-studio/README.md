@@ -1,14 +1,12 @@
 # anila-studio
 
-> 從 `myCSPPlatform/backend` 抽出的**內容生成服務**（即重構後的「產出中心／產出引擎」）：RAG 找你上傳過的文件 → LLM 生內容 → 渲染成多種產出。原本只生簡報，現為**五種 artifact**：簡報（slides）、報告（reports）、心智圖（mindmaps）、資訊圖（infographics）、資料表（datatables）。
+> 內容生成服務。先從上傳的文件檢索，再由模型起草，最後渲染成檔案。五種產出：簡報（slides）、報告（reports）、心智圖（mindmaps）、資訊圖（infographics）、資料表（datatables）。
 
 > 中文為主版 · [English version](README.en.md)
 
-> 🌿 **分支對照**：本服務存在於多數部署分支；精簡的 `trial-military` build 不含本服務。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
-## 在 monorepo 的位置（重構後 §17.1 版圖）
+## 在 monorepo 的位置
 
 ```
 services/anila-studio/         ← 本服務（FastAPI，port 8100）
@@ -29,9 +27,9 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 
 ---
 
-## 重構帶來的能力（本服務相關的 Slice）
+## 這個服務做的事
 
-| Slice 能力 | 在本服務的落點 |
+| 能力 | 在本服務的落點 |
 |---|---|
 | **Artifact 合約 + Redis job store** | `job_store.py`：`PersistedJob` 投影寫 Redis（key 前綴 `anila-studio:jobs:`、TTL 7 天），studio **重啟後**仍能回答重啟前 job 的狀態查詢；best-effort，Redis 斷線只退化為 in-memory、不阻擋啟動。`job_reporting.py`：向 CSP 回報 `POST /v1/artifact-jobs`（建立）、`PATCH /v1/artifact-jobs/{id}`（終態 / 進度）、`POST /v1/artifacts`（產出落地）。 |
 | **trace_id** | 只當 artifact job 的關聯 id 送給 CSP，不再 POST span。 |
@@ -40,7 +38,7 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 | **Model Gateway** | LLM 一律走 CSP `POST /v1/chat/completions` proxy（維持 token 計費），不直連模型。 |
 | **JWKS / 撤銷認證** | `jwks_client`（拉 csp JWKS + cache）＋ `revocation_cache`（Redis pub/sub + cold-start，**fail-closed**）。 |
 
-> 上述 (2)(3) 與 CSP 回報皆 **fire-and-forget**（retry-once、log-not-raise）：CSP 掛掉絕不能弄壞生成。`STUDIO_ARTIFACT_REPORTING=false` 可整組靜音（含 spans）。跨切面協調集中在 `job_lifecycle.py`，各管線本身不變。
+> trace_id、task_id 與對 CSP 的回報都是送出後不等回應：失敗重試一次，只記日誌、不往外拋。CSP 掛了不能弄壞生成。`STUDIO_ARTIFACT_REPORTING=false` 把這整組關掉。協調集中在 `job_lifecycle.py`，各管線本身不改。
 
 ---
 
@@ -51,7 +49,7 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 - **版型**：standard / section_break / stat_callout / quote / two_column / icon_rows / image_focus / **process**（流程步驟）/ **table**（原生表格）/ **sources**（結尾資料來源，管線自己寫）。每張內容頁底部有「資料來源：檔名」腳註，來自模型寫的 `[N]`。
 - **品質檢查**：幾何檢查（渲染器 `/qa-geometric`，會拿到每頁版型，封面／章節頁不判留白）＋視覺檢查（每頁一通 VLM）。修正失敗不會丟掉已渲染的簡報，只加 warning。
 - **成品與預覽**：`.pptx` 落在 `ARTIFACTS_DIR/slides/{job_id}.pptx`，每頁 PNG 在 `slides/{job_id}/NN.png`；`GET /api/studio/slides/jobs/{id}/preview`（清單）、`/preview/{n}`（PNG）。studio 重啟後仍可下載。
-- **治理回報**：`POST /v1/artifact-jobs` 用 `requester_user_id`（＋卡片使用者的 `employee_id`）、整數 `task_id`；`POST /v1/artifacts` 仍要求綁 task 或 snapshot（CSP 產品憲章 §6），沒有 ALM task 的簡報不會登記成 artifact。
+- **治理回報**：`POST /v1/artifact-jobs` 用 `requester_user_id`（＋卡片使用者的 `employee_id`）、整數 `task_id`；`POST /v1/artifacts` 仍要求綁 task 或 snapshot，沒有 ALM task 的簡報不會登記成 artifact。
 - **繁體轉換**：OpenCC `s2tw`（只轉字形）＋一張自己維護的技術詞表；「程序」「項目」「文件」這類法規本義詞不動。
 
 ## 技術棧
@@ -137,8 +135,7 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 | `POST /v1/chat/completions` | LLM（走 csp proxy 維持計費；**無 `/api/proxy` 前綴**） |
 | `GET /api/models/roles/image_generation` | 生圖角色；健康才配圖 |
 | `POST /v1/images/generations` | 經 CSP 生圖（使用者憑證） |
-| `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact 回報（Slice 8b，fire-and-forget） |
-
+| `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact 回報（送出後不等待） |
 
 另直連下游 `pptx-renderer`（`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`）。生圖不直連模型主機。CSP 回報 / trace 的認證沿用使用者 bearer JWT（CSP 以 RS256 + JWKS 重驗，維持代理語意），服務身分只讀 `ANILA_SERVICE_TOKEN_FILE`。
 
@@ -190,5 +187,5 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 ## 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
-- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
+- 平台整體：[`../../README.md`](../../README.md)

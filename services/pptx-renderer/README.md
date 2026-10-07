@@ -4,11 +4,9 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本服務跨 ANILA 部署分支內容一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
-## 在 monorepo 的位置（重構後 §17.1 版圖）
+## 在 monorepo 的位置
 
 ```
 services/pptx-renderer/        ← 本服務（Node 22 + LibreOffice + Poppler，port 7100）
@@ -104,7 +102,7 @@ curl http://localhost:7100/health   # → ok
 - **anila-studio（唯一上游）**：slide 管線 `studio_render.py` `POST {RENDERER_BASE_URL}/render` 取 `.pptx`；vision-QA 走 `/screenshots`；`geometric_qa.py` `POST /qa-geometric` 取瑕疵清單。`RENDERER_BASE_URL` 預設 `http://pptx-renderer:7100`。
 - **無 DB、無 auth**：純內部 server-to-server；compose 不對 host 開 port，只由 stack 內的 anila-studio 走 docker 網路呼叫。它**不**參與 CSP 的 JWKS / 撤銷 / Task / Trace / 分類機制——那些都在上游 studio 完成後才把 spec 送進來。
 
-> 重構脈絡：本服務是「產出中心」把簡報 spec 落地成檔案與截圖的渲染引擎；與 Slice 的關聯僅止於 §17.1 版圖與 compose shim。它**不是** Service Registry 的「專案入口」GUI 服務（那類需院內憑證卡 SSO + Launch Token + iframe policy 註冊）。
+> 這個服務把簡報 spec 做成檔案與截圖。它不是 Service Registry 裡的「專案入口」。那一類是要院內憑證卡登入、Launch Token 和 iframe 政策的網頁服務。
 
 ---
 
@@ -112,5 +110,5 @@ curl http://localhost:7100/health   # → ok
 
 - `SKILL.md` / `pptxgenjs.md` / `editing.md`：產生與編修 `.pptx` 的技術參考。
 - 上游引擎：[`../anila-studio/README.md`](../anila-studio/README.md)
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
-- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
+- 平台整體：[`../../README.md`](../../README.md)

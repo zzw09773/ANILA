@@ -570,8 +570,9 @@ def test_bulk_import_upstream_error_message_has_no_address(monkeypatch):
     assert "gateway.example.com" not in detail
     assert "8443" not in detail
     assert "/v1/models" not in detail
-    assert "無法從上游取得模型清單" in detail
-    assert "ConnectError" in detail
+    assert detail == "無法從上游取得模型清單"
+    assert "ConnectError" not in detail
+    assert "Connection refused" not in detail
 
 
 # ── caps + truncated ──────────────────────────────────────────────────────────

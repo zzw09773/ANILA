@@ -44,7 +44,7 @@
           <li>
             <span class="guide__step">02</span>
             <div>
-              <p><strong>只改回答</strong> · 快速起步已接好平台契約。五分鐘路徑只改 <code>agent.py</code> 的回答，不改接線程式。通用包的 <code>AGENT_NAME</code> 是範例名稱；要改的話，改完再用同一個名字註冊。</p>
+              <p><strong>只改回答</strong> · 快速起步已接好平台。五分鐘路徑只改 <code>agent.py</code> 的回答，不改接線程式。通用包的 <code>AGENT_NAME</code> 是範例名稱；要改的話，改完再用同一個名字註冊。</p>
             </div>
           </li>
           <li>
@@ -188,7 +188,7 @@
     <!-- Register: single step — name / endpoint / base model（不發任何祕密） -->
     <TermModal
       :visible="showRegisterModal"
-      title="註冊 · Agent"
+      title="註冊助手"
       width="720px"
       @close="finishRegister"
     >
@@ -197,7 +197,7 @@
           架構不限。只要端點是 OpenAI 相容 <code>/v1/chat/completions</code>，平台就能派工。
           派工時會現簽 5 分鐘憑條；你不需要領取或保管任何長效祕密。
         </p>
-        <TermSection title="平台契約 · 必實作端點" />
+        <TermSection title="助手要提供的路徑" />
         <table class="term-table guide__table">
           <thead>
             <tr><th style="width: 56px">方法</th><th>路徑</th><th>必填</th></tr>
@@ -231,7 +231,7 @@
         <TermField label="端點 URL" :error="formErrors.endpoint_url">
           <input v-model="form.endpoint_url" class="term-input" placeholder="http://host:port" />
         </TermField>
-        <TermField label="router 說明" hint="一行能力描述，最多 200 字；不要貼 system prompt" :error="formErrors.description_for_router">
+        <TermField label="給平台的說明" hint="一行能力描述，最多 200 字；不要貼系統指示全文" :error="formErrors.description_for_router">
           <textarea v-model="form.description_for_router" rows="2" maxlength="200" class="term-textarea" />
         </TermField>
         <p class="cell-meta">{{ routerDescriptionPreview(form.name, form.name, form.description_for_router) }}</p>
@@ -248,7 +248,7 @@
             </select>
           </TermField>
         </div>
-        <TermField label="RAG 知識庫（選填）" hint="可綁定多個；非 RAG agent 不勾選。任務內回呼沿用派工憑條">
+        <TermField label="知識庫（選填）" hint="可綁定多個。不查知識庫就不用勾。查詢時沿用這次派工的憑證">
           <div v-if="collections.length" class="collection-checks">
             <label v-for="c in collections" :key="c.id" class="collection-check">
               <input type="checkbox" :value="c.id" v-model="form.collection_ids" />
@@ -258,7 +258,7 @@
           <p v-else class="collection-checks__empty">尚無可選知識庫</p>
         </TermField>
 
-        <TermSection title="治理設定 · governance" />
+        <TermSection title="列管" />
         <TermField
           label="預設分類等級"
           hint="此 agent 回覆的對話會以所選等級列管記錄；營業秘密起的讀取與外流會落稽核，密與機密另會阻擋複製、匯出與分享。對已列管的對話，效果不可自行逆轉。"
@@ -296,7 +296,7 @@
         <TermField label="端點 URL">
           <input v-model="editForm.endpoint_url" class="term-input" />
         </TermField>
-        <TermField label="router 說明" hint="一行能力描述，最多 200 字；不要貼 system prompt">
+        <TermField label="給平台的說明" hint="一行能力描述，最多 200 字；不要貼系統指示全文">
           <textarea v-model="editForm.description_for_router" rows="2" maxlength="200" class="term-textarea" />
         </TermField>
         <p class="cell-meta">{{ routerDescriptionPreview(editTarget.name, editTarget.id, editForm.description_for_router) }}</p>
@@ -321,7 +321,7 @@
             <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
           </select>
         </TermField>
-        <TermField label="RAG 知識庫（選填）" hint="可綁定多個；目前已綁定的會預先勾選 · 全部取消＝解除綁定">
+        <TermField label="知識庫（選填）" hint="可綁定多個；目前已綁定的會預先勾選 · 全部取消＝解除綁定">
           <div v-if="collections.length" class="collection-checks">
             <label v-for="c in collections" :key="c.id" class="collection-check">
               <input type="checkbox" :value="c.id" v-model="editForm.collection_ids" />
@@ -391,7 +391,7 @@
           </div>
         </dl>
 
-        <TermSection title="router 說明" />
+        <TermSection title="給平台的說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
         <p class="cell-meta">{{ routerDescriptionPreview(detailAgent.name, detailAgent.id, detailAgent.description_for_router) }}</p>
 

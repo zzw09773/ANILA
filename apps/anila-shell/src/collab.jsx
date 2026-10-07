@@ -281,7 +281,7 @@ export const HandoffToColleague = ({ conversationId, authRequest, onClose }) => 
     // 送出鍵本來就 disabled；這裡再擋一次，避免鍵盤 Enter 繞過去。
     if (!selected) return;
     if (typeof conversationId !== "number") {
-      setError("尚未建立後端對話 — 請先送出第一則訊息。");
+      setError("這則對話還沒建立，請先送出第一則訊息。");
       return;
     }
     setBusy(true);

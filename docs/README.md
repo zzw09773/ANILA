@@ -1,14 +1,10 @@
 # 文件
 
-接手的人只需要這些。舊的計畫、規格、交接、稽核草稿已經刪除，留在 git 歷史裡。
-
 ## 現在怎麼跑
 
 [`CURRENT-STATUS.md`](CURRENT-STATUS.md)
 
-操作時覺得不該這樣，記在 [`FRICTION-LOG.md`](FRICTION-LOG.md)。
-
-舊 `PLAN.md`／`SYSTEM-MAP.md` 等已刪文檔去哪看：見 [`CURRENT-STATUS.md`](CURRENT-STATUS.md) 的〈舊文檔去哪了〉。
+操作時覺得不該這樣，記在 [`FRICTION-LOG.md`](FRICTION-LOG.md)。2026-10 刪除的文件與現在出處的對照，在 [`CURRENT-STATUS.md`](CURRENT-STATUS.md) 的〈舊文檔去哪了〉。
 
 ## 給人用的手冊
 

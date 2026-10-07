@@ -48,7 +48,7 @@ Check 4（幾何）同樣**不新增 npm／pip 相依**——用系統既有的 
 
 **不修什麼**
 
-有發現 → 先記下來（`PLAN.md` 已於這輪文檔清理刪除），不要在檢查當下順手改 production schema。
+有發現就先記在 [`FRICTION-LOG.md`](../FRICTION-LOG.md)，不要在檢查當下改正式環境的 schema。
 
 ⚠ **要先起 throwaway Postgres（`127.0.0.1:55441`），否則這一格恆 `BROKEN`**：
 

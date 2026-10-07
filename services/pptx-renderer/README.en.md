@@ -4,11 +4,9 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This service is content-identical across ANILA deployment branches. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
-## Where it sits in the monorepo (post-redesign §17.1 layout)
+## Where it sits in the monorepo
 
 ```
 services/pptx-renderer/        ← this service (Node 22 + LibreOffice + Poppler, port 7100)
@@ -104,7 +102,7 @@ curl http://localhost:7100/health   # → ok
 - **anila-studio (the only upstream)**: the slide pipeline `studio_render.py` `POST {RENDERER_BASE_URL}/render` for the `.pptx`; vision-QA uses `/screenshots`; `geometric_qa.py` `POST /qa-geometric` for the defect list. `RENDERER_BASE_URL` defaults to `http://pptx-renderer:7100`.
 - **No DB, no auth**: purely internal server-to-server; compose does not publish a host port, so only the in-stack anila-studio calls it over the docker network. It does **not** participate in CSP's JWKS / revocation / Task / Trace / classification machinery — those all happen upstream in studio before a spec is handed here.
 
-> Redesign context: this service is the Artifact Center's engine for materialising slide specs into files and screenshots; its only Slice ties are the §17.1 layout and the compose shim. It is **not** a Service Registry "project entry" (`專案入口`) GUI service (those register via in-house PKI-card SSO + Launch Token + iframe policy).
+> This service turns a slide spec into a file and screenshots. It is not a Service Registry project entry (`專案入口`). Those are web apps that sign in with the institute card, a Launch Token, and an iframe policy.
 
 ---
 
@@ -112,5 +110,5 @@ curl http://localhost:7100/health   # → ok
 
 - `SKILL.md` / `pptxgenjs.md` / `editing.md`: technical reference for generating and editing `.pptx`.
 - Upstream engine: [`../anila-studio/README.en.md`](../anila-studio/README.en.md)
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
-- Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
+- Platform overview: [`../../README.md`](../../README.md)

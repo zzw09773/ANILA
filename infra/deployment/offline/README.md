@@ -2,7 +2,7 @@
 
 這一包的承諾很窄：在有網路的建置端，把平台 Python 服務的相依閉包收成 cp313 wheelhouse，讓已出貨映像可以在氣隙內做 Python 依賴的 overlay patch。它不是從零離線重建方案；Dockerfile 在 pip 之前仍有 apt 等建置步驟，這一階不處理那條路。
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../../docs/CURRENT-STATUS.md)。
 
 ## 內容與收集
 

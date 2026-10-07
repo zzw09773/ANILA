@@ -471,8 +471,8 @@
             留空＝沿用上游預設。
           </p>
           <TermField
-            label="thinking_effort"
-            hint="原字串送上游 reasoning_effort；NONE＝enable_thinking=false。各後端支援的等級不同（院內 Qwen vLLM：low／medium／xhigh，預設 xhigh，不收 high／max；gemma 一律忽略）。儲存時會向模型探測一次，被拒絕的等級存不進去。"
+            label="思考等級"
+            hint="NONE 表示不開啟思考。院內 Qwen 接受 low、medium、xhigh，預設 xhigh，不接受 high、max。gemma 忽略這項。儲存時會向模型確認一次，被拒絕的等級存不進去。"
           >
             <select v-model="form.thinking_effort" class="term-select">
               <option
@@ -1235,7 +1235,7 @@ function buildModelPayload() {
 function noticeThinkingProbe(saved) {
   if (saved?.thinking_probe?.status !== 'unreachable') return
   const why = saved.thinking_probe.detail ? `（${saved.thinking_probe.detail}）` : ''
-  toast(`模型目前連不上，thinking_effort 未經探測${why}`, { tone: 'warn' })
+  toast(`模型目前連不上，思考等級尚未向模型確認${why}`, { tone: 'warn' })
 }
 
 function applyThinkingProbeResult(saved) {

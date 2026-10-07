@@ -1,28 +1,29 @@
 # ANILA Shell — Task Center Runtime (`anila-runtime-ui`)
 
-> The end-user frontend of the ANILA platform (React + Vite, v1.0.0). After signing in, users **raise tasks, converse with models/Agents, inspect traces, and launch registered project-entry services** here. This is ANILA's single end-user shell — it hosts the default "Task Center" view and same-origin navigation to "My Knowledge Base / Output Center / Project Entry".
+> The end-user interface of ANILA (React + Vite, v1.0.0). After signing in, people chat with a model or an assistant, open usage and memory, launch a registered project entry, and open the knowledge base from the sidebar. Slides, reports, and the other outputs live on that knowledge-base page.
 
 > 繁體中文原文: [`README.md`](./README.md)
 
-> 🌿 **Branch note**: This UI exists on every ANILA deployment branch; see the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired) for branch policy. **Login is unified into the governance console** — this shell no longer owns a login page (see "No login page" below).
->
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 
 ---
 
 ## 1. Product role
 
-Per the product constitution (product constitution §2), regular users see one product — **ANILA** — with four first-class entries:
+The sidebar (`buildShellEntries()` in `src/shellNav.jsx`) is these five items:
 
 ```text
 ANILA
-├── Task Center       ← this shell's default view (chat = task workbench)
-├── My Knowledge Base → same-origin knowledge SPA (/anilalm)
-├── Output Center     → the knowledge SPA's Studio surface (/anilalm)
-└── Project Entry     → ServicesPanel (registered service cards)
+├── 對話 (Chat)           ← default view
+├── 我的知識庫            → /anilalm (knowledge base and outputs share this page; when the gate is off the row shows「即將推出」and cannot be clicked)
+├── 專案入口              → ServicesPanel
+├── 用量
+└── 記憶
 ```
 
-The shell **holds no business logic or models**. It handles session guarding, conversation creation + streamed rendering, visualizing typed SSE events (trace / interrupt / todos / tool call / spans), and wiring the Task spine into the governance substrate (classification watermarks, trace, audit). Labels always use product vocabulary; technical brand names (ANILALM / Studio / CSP) are never exposed to users (`src/shellNav.jsx`).
+owner, admin, developer, and unit admins also see 治理中心, which links to the same origin `/`.
+
+The shell holds no models. It guards the session, creates conversations, renders the stream (trace, interrupt, todos, tool call, spans), and shows the classification watermark, trace, and audit. Labels use product words. ANILALM, Studio, and CSP do not appear on screen.
 
 ### No login page (unified SSO)
 
@@ -30,15 +31,15 @@ The shell **holds no business logic or models**. It handles session guarding, co
 
 ---
 
-## 2. Core capabilities (mapped to redesign slices)
+## 2. Core capabilities
 
 | Capability | Files | Summary |
 |---|---|---|
-| **Four-entry ShellNav** | `src/shellNav.jsx` | `buildShellEntries()` yields the four entries; `canSeeGovernance()` (owner/admin/developer) appends "Governance Center"; `originHref()` links external same-origin surfaces via origin-absolute paths. Mounted in `src/chat.jsx` sidebar (expanded + collapsed). |
+| **Sidebar** | `src/shellNav.jsx` | `buildShellEntries()` yields chat, knowledge base, project entry, usage, and memory. `canSeeGovernance()` (owner, admin, developer, and `is_unit_admin`) appends 治理中心. `originHref()` links `/anilalm` and `/` with origin-absolute paths. Mounted in the `src/chat.jsx` sidebar. |
 | **Task spine** | `src/runtime/tasks.js`, `src/runtime/sse.js`, `src/app.jsx` | On first send, `createTaskForConversation()` → `POST /api/tasks` (`task_type:"query"`, `source_scope:"none"`); `taskId` is cached on conversation state; `sse.js` sends the **`X-ANILA-Task-Id`** header so CSP binds the dispatch to the same Task. Any failure returns `null` + a zh-TW `console.warn`; chat continues task-less. |
 | **Trace Explorer** | `src/runtime/traces.js`, `src/spanTree.jsx` | `fetchTrace()` → `GET /api/traces/{trace_id}` returns persisted `{trace_id, task_id, spans[]}`; `spansToTree()` builds a tree from flat spans; `TraceExplorer` renders a "檢視軌跡 (View trace)" control backed by `SpanTreeViewer`. Failures degrade to a "no trace data" notice — never throws. |
-| **Four-level classification** | `src/trust.jsx`, `src/runtime/classified.js`, `src/runtime/classifyRetryQueue.js` | `watermarkLevel()` derives the real zh-TW level; `ClassificationWatermark` is a **real four-level corner badge** (密=warn / 機密=danger-strong; 無機密/營業秘密 skip the full watermark), replacing the decorative English "CONFIDENTIAL"; `ConfidentialWatermark` is a **full-screen forensic watermark** tiling "level · reader · read time (minute precision)" for screenshot-leak tracing (time re-freezes when the displayed conversation changes). The one-way latch is backend-driven; `classifyRetryQueue` guarantees the latch reaches CSP. |
-| **Project Entry (ServicesPanel)** | `src/services.jsx` | `fetchServices()` → `GET /api/services`, falling back on 404 to legacy `GET /api/platform-links`; `resolveLaunch()` calls `POST /api/services/{id}/launch` for registry services. `new_tab` → `window.open(_,'_blank','noopener')`; `iframe` → an in-site sandboxed overlay (`sandbox="allow-scripts allow-same-origin allow-forms"`, `referrerPolicy="no-referrer"`) with a "provided by <name>" safety banner. |
+| **Four-level classification** | `src/trust.jsx`, `src/runtime/classified.js`, `src/runtime/classifyRetryQueue.js` | `watermarkLevel()` derives the Traditional Chinese level from the conversation. `ClassificationWatermark` is a corner badge (密 = warn, 機密 = danger-strong; 無機密 and 營業秘密 do not get the full-screen watermark). `ConfidentialWatermark` tiles "level · reader · read time (to the minute)" across the screen, and recomputes the time when the conversation changes. The server decides the latch. `classifyRetryQueue` delivers it to CSP. |
+| **Project Entry (ServicesPanel)** | `src/services.jsx` | `fetchServices()` → `GET /api/services`, and on 404 falls back to `GET /api/platform-links`. `resolveLaunch()` calls `POST /api/services/{id}/launch` for registry services. `new_tab` → `window.open(_,'_blank','noopener')`; `iframe` → an in-site sandboxed overlay (`sandbox="allow-scripts allow-same-origin allow-forms"`, `referrerPolicy="no-referrer"`) with a "provided by <name>" notice. |
 
 ---
 
@@ -49,7 +50,7 @@ The shell **holds no business logic or models**. It handles session guarding, co
 | Framework / router | **React 18.3.1** · `react-router` 7.18.2 (`>=7.18.2 <8`) |
 | Build | **Vite 6.3.5** (`@vitejs/plugin-react` 4.4.1) |
 | Markdown / math / highlight | `react-markdown` 9 + `remark-gfm`/`remark-math` + `rehype-katex`/`rehype-highlight` + `katex` + `highlight.js` |
-| Diagrams | **`mermaid` 11.15.0** |
+| Diagrams | **`mermaid` 11.16.1** |
 | Testing | **Vitest 3.1.3** + `@testing-library/react` + `jest-dom` + `jsdom` |
 
 `scripts`: `dev` / `build` / `preview` / `test` (`vitest run`). **No `lint` script**. No Tailwind / global stylesheet — inline component styles + base CSS in `index.html` with system `--font-sans/--font-mono` stacks (air-gap safe, no external fonts).
@@ -125,11 +126,8 @@ Endpoints actually called (from `src/runtime/*.js` and components): `/api/tasks`
 
 ## 7. Related docs
 
-- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Platform: [`../../README.md`](../../README.md)
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 - Adjacent entries: knowledge base / output center [`../anilalm/README.en.md`](../anilalm/README.en.md) · governance [`../csp-governance-ui/README.en.md`](../csp-governance-ui/README.en.md)
 - Backend: [`../../services/csp/README.md`](../../services/csp/README.md) · Router [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 
----
-
-**Framework**: React + Vite · **Serves**: Task Center (Shell IA) · **Talks to**: CSP (`/api/*` + `/v1/*` cookie) + Router (`/v1/sessions/*`) — all fronted same-origin by `nginx`.

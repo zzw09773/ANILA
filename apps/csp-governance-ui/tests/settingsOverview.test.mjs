@@ -133,7 +133,7 @@ test('overview state and count mismatch expose incomplete backend payloads', () 
   assert.equal(overviewState({ loaded: false, error: null, items: [] }), 'loading')
   assert.equal(overviewState({ loaded: true, error: new Error('x'), items: [] }), 'failed')
   assert.equal(overviewState({ loaded: true, error: null, items: [] }), 'empty')
-  assert.equal(countMismatchWarning({ total: 12, items: [row('proxy.llm_timeout')] }), '後端說有 12 顆設定，這一頁只收到 1 顆 —— 下面不是全部。')
+  assert.equal(countMismatchWarning({ total: 12, items: [row('proxy.llm_timeout')] }), '清單寫明有 12 項設定，這一頁只收到 1 項，下面不是全部。')
 })
 
 test('save replaces the complete row returned by the backend', () => {

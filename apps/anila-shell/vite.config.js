@@ -28,6 +28,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: "./vitest.setup.js",
+    // 預設 5 秒。整套與其他套件同時跑時，多步驟的畫面測試會超過，單獨跑則都在 3 秒內。
+    testTimeout: 20000,
     // `*.node.test.mjs` 是給 `node --test` 跑的(需要真實的 Intl/時區行為,
     // jsdom 下沒有意義)。vitest 的預設樣式會撿到它們然後回報
     // 「No test suite found」——於是 `npm test` 永遠掛著一個紅的,

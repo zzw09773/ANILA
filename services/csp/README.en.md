@@ -4,7 +4,7 @@
 
 > 繁體中文版：[`README.md`](./README.md)
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 
 ---
 
@@ -45,7 +45,7 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Item | Detail (from `requirements.txt` / `infra/docker/csp.Dockerfile`) |
 |------|------|
 | Language / framework | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
-| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (legacy `0001`–`0046` [no 0025] then redesign `r1_0001`–`r1_0008`) |
+| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (`0001`–`0046` [no 0025], then `r1_0001`; later files in `migrations/versions/`, currently through `r1_0069`) |
 | Config | pydantic-settings 2.7.1 (`app/config.py`) |
 | Auth | **JWT is RS256** (asymmetric, `app/utils/security.py` + JWKS; `python-jose[cryptography] 3.5.0`) · bcrypt 5.0.0 (direct, cost 12) |
 | DB drivers | psycopg2-binary 2.9.10 (PostgreSQL 16 + pgvector) + asyncpg (`csp_app` RLS pool, ingestion) |
@@ -54,7 +54,7 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Text post-processing | opencc-python-reimplemented 0.1.7 |
 | Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`), and it is now the **only** one — a second `services/csp/Dockerfile` that compose never built was deleted on 2026-08-06. The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
+> The deployed image is [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`). The governance frontend is [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite), served as static files by Nginx.
 >
 > The container runs as **uid 10001 (non-root)**. `/app/logs` is the only writable path baked into the image; uploads, attachments, `share/pki` and `secrets/` all live on bind mounts whose ownership is decided by the host — so [`infra/deployment/scripts/fix-runtime-ownership.sh`](../../infra/deployment/scripts/fix-runtime-ownership.sh) must run before the stack comes up (deploy-prod.sh's `deploy`/`up`/`rebuild` paths and intranet-deploy.sh `[4c]` all call it).
 >
@@ -64,13 +64,13 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 
 ## 2. Module boundaries (`app/modules/`)
 
-The redesign carves the four MVP cores into **mutually independent** modules, enforced by an import-linter contract ([`.importlinter`](./.importlinter), run by `infra/ci/lint-boundaries.sh`): `tasks / policy / launch / artifacts` **must not import one another**, and `app.modules.*` **must not import `app.api`** (one-way `api → modules` layering).
+`tasks`, `policy`, `launch`, and `artifacts` must not import one another. The import-linter contract ([`.importlinter`](./.importlinter), run by `infra/ci/lint-boundaries.sh`) also requires that `app.modules.*` not import `app.api` (only `api → modules`).
 
 | Module | Files | Responsibility |
 |--------|-------|----------------|
 | `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun lifecycle (ten-value state machine), the three SourceSnapshot rules, mandatory `trace_id` (domain model / control plane). |
 | `app.modules.policy` | `router.py` · `service.py` | Append-only PolicyDecision record (fail-closed; a deny must carry a reason), ceiling pure functions, and the four-level classification latch core (`apply_classification`, one-way; `無機密 < 營業秘密 < 密 < 機密`). |
-| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway primitives: `service_launches` rows, launch URLs, RS256 launch token (Service Registry §6). **Zero** policy/task/api coupling — access control is orchestrated by `app.api.services`. |
+| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway: `service_launches` rows, launch URLs, RS256 launch token. It does not import policy, task, or api. Access control is in `app.api.services`. |
 | `app.modules.artifacts` | `service.py` | Persistence of the four artifact tables, fail-closed binding, owner-scoped reads. The classification latch and PolicyDecision are done by the orchestrator (`app.api.artifacts`) calling policy. |
 
 ---
@@ -87,7 +87,7 @@ The auth router was split from a single file into a package, one submodule per a
 | `registration_tokens.py` | one-time registration-token surface | Controlled self-service registration. |
 | `revocations.py` | `GET /revocations` | Service-token-authenticated revocation cold-start sync (consumed by anila-studio). |
 
-> All three login forms (password / oidc / card) **coexist in the redesign tree's code**; enablement is decided by the single `ANILA_AUTH_MODE` (`password` / `mixed` / `card-only`) and whether an SSO provider is registered. The admin CRUD for SSO / OIDC providers is the separate `app/api/auth_providers.py` (prefix `/api/auth-providers`).
+> All three login forms (password, oidc, card) are in the code. Which one is on is decided by `ANILA_AUTH_MODE` (`password` / `mixed` / `card-only`) and whether an SSO provider is registered. SSO / OIDC provider admin is `app/api/auth_providers.py` (prefix `/api/auth-providers`).
 
 ---
 
@@ -107,8 +107,8 @@ Full Trace span ingest (`POST /v1/traces`, `trace_spans`) is removed. `tasks.tra
 
 ### Control Plane (`/api/*`)
 
-- **New in the redesign**: `/api/tasks` (`tasks` module: create / list / get / `/{id}/runs`), `/api/policy-decisions`, `/api/classification/inventory` (classification stock-take), `/api/classification/declassification-requests` (declassification request + supervisor approval), `/api/classification-authorities` (classification approval authority), `/api/services` (Service Registry: CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`), `/api/artifacts` (+ data-plane `POST /v1/artifact-jobs` etc. as the Studio report surface).
-- **Existing governance**: `/api/auth`, `/api/auth-providers`, `/api/keys`, `/api/models` (incl. `set-router-primary` / `activate` / `purge`), `/api/agents` (register / approve / reject / health-check / credentials / template), `/api/users`, `/api/departments`, `/api/usage`, `/api/alerts`, `/api/audit-logs`, `/api/banners`, `/api/memory`, `/api/platform-links`, `/api/service-clients`, `/api/service-access-grants`, `/api/trusted-hosts`, `/api/conversations` (incl. `/search`, shares, ratings), `/api/attachments`, `/api/handoffs` + `/api/notifications`, `/api/public/share/{token}` (unauthenticated, gated by `ENABLE_PUBLIC_SHARE`), `/api/ingestion/*`.
+- **Tasks, registries, and artifacts**: `/api/tasks` (`tasks` module: create / list / get / `/{id}/runs`), `/api/policy-decisions`, `/api/classification/inventory` (classification stock-take), `/api/classification/declassification-requests` (declassification request + supervisor approval), `/api/classification-authorities` (classification approval authority), `/api/services` (Service Registry: CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`), `/api/artifacts` (+ data-plane `POST /v1/artifact-jobs` etc. as the Studio report surface).
+- **Governance**: `/api/auth`, `/api/auth-providers`, `/api/keys`, `/api/models` (incl. `set-router-primary` / `activate` / `purge`), `/api/agents` (register / approve / reject / health-check / credentials / template), `/api/users`, `/api/departments`, `/api/usage`, `/api/alerts`, `/api/audit-logs`, `/api/banners`, `/api/memory`, `/api/platform-links`, `/api/service-clients`, `/api/service-access-grants`, `/api/trusted-hosts`, `/api/conversations` (incl. `/search`, shares, ratings), `/api/attachments`, `/api/handoffs` + `/api/notifications`, `/api/public/share/{token}` (unauthenticated, gated by `ENABLE_PUBLIC_SHARE`), `/api/ingestion/*`.
 - **Other**: `GET /.well-known/jwks.json` (RFC 7517, unauthenticated, `max-age=3600`), `GET /health`, `GET /docs` + `/openapi.json` (admin tier only), SPA catch-all (with path-traversal guard).
 
 Proxy example:
@@ -121,20 +121,22 @@ curl http://localhost/v1/chat/completions \
 
 ---
 
-## 5. New tables / migrations (`r1_0001`–`r1_0008`, one line each)
+## 5. Tables / migrations
 
-The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`), staying linear; enums are always stored as open `String` (closed enums are enforced at the Pydantic contract layer `app/schemas/contracts/`), and JSON uses `with_variant(JSONB, "postgresql")` to stay portable.
+`r1_` continues after the numeric filenames (`r1_0001` revises `0046`), as one chain. The table below is `r1_0001`–`r1_0008`. Later revisions are in `migrations/versions/`, currently through `r1_0069`. Enums are stored as open `String` (closed enums live in `app/schemas/contracts/`). JSON uses `with_variant(JSONB, "postgresql")`.
 
-| Revision | Slice | What it does |
-|----------|-------|--------------|
-| `r1_0001` | 2a | Task / Trace / Policy six-table foundation: `tasks` · `task_runs` · `source_snapshots` · `citations` · `policy_decisions` · `trace_spans`; `classification_level` defaults to `無機密`. |
-| `r1_0002` | 2b-C | `token_usage` ↔ task link: `task_id` (FK `ON DELETE SET NULL` + partial index) and a `legacy_runtime_call` boolean flag (marks task-less `/v1` chat legacy traffic). |
-| `r1_0003` | 3a | Four-level classification schema upgrade (`無機密` / `營業秘密` / `密` / `機密`) + three governance tables: `classification_events` · `declassification_requests` · `classification_authority_assignments`; adds the four common classification columns to existing resources (conversations / messages / collections / documents …) and backfills (`classified=true → 機密` floor; `requires_encryption=true → 密`). |
-| `r1_0004` | 5a | Agent Registry upgrade: `agents.approval_status` grows from three values into a **seven-state machine** (`draft` / `pending_connection_test` / `pending_trace_test` / `pending_security_review` / `approved` / `rejected` / `disabled`), plus manifest / trace-test / runtime columns. |
-| `r1_0005` | 6a | Model Gateway hardening: `model_registry` formalized into `ModelEndpoint` (`protocol` / per-model `api_key_secret_ref` AES-GCM envelope / `classification_ceiling` / `supports_*`); `health_status` collapses to **five states** (`healthy` / `degraded` / `unhealthy` / `unknown` / `disabled`). |
-| `r1_0006` | 7a | Service Registry: `platform_links` additively upgraded into `registered_services` (33 fields, id preserved) + `service_launches` · `service_audit_callbacks` · `service_project_bindings`; `service_access_grants` gains a `service_id` FK. |
-| `r1_0007` | 8a | Artifact contract, four tables: `artifacts` · `artifact_versions` · `export_records` · `artifact_jobs` (**durable** state for Studio's five job pipelines → satisfies "restart never loses a job"; Studio reports over HTTP with its service token, never reading the CSP DB directly). |
-| `r1_0008` | R-SEC | `registered_services.service_client_id` FK: binds audit-callbacks to the Service Client that *belongs to* the target service; fail-closed / default-deny, an unbound service rejects all callbacks (`403`). |
+| Revision | What it does |
+|----------|--------------|
+| `r1_0001` | Six tables for tasks, traces, and policy: `tasks`, `task_runs`, `source_snapshots`, `citations`, `policy_decisions`, `trace_spans`. `classification_level` defaults to `無機密`. |
+| `r1_0002` | Links `token_usage` to a task: `task_id` (FK `ON DELETE SET NULL` + partial index) and `legacy_runtime_call` (marks a `/v1` chat that had no task). |
+| `r1_0003` | Four classification levels (`無機密` / `營業秘密` / `密` / `機密`) and three governance tables: `classification_events`, `declassification_requests`, `classification_authority_assignments`. Existing conversations, messages, collections, and documents gain the four classification columns, backfilled (`classified=true` → `機密`; `requires_encryption=true` → `密`). |
+| `r1_0004` | `agents.approval_status` grows from three values to seven: `draft`, `pending_connection_test`, `pending_trace_test`, `pending_security_review`, `approved`, `rejected`, `disabled`. Manifest, trace-test, and runtime columns are added. |
+| `r1_0005` | `model_registry` becomes `ModelEndpoint` (`protocol`, per-model `api_key_secret_ref` AES-GCM, `classification_ceiling`, `supports_*`). `health_status` is `healthy`, `degraded`, `unhealthy`, `unknown`, or `disabled`. |
+| `r1_0006` | `platform_links` grows into `registered_services` (33 columns, id kept), plus `service_launches`, `service_audit_callbacks`, `service_project_bindings`. `service_access_grants` gains a `service_id` FK. |
+| `r1_0007` | Four artifact tables: `artifacts`, `artifact_versions`, `export_records`, `artifact_jobs`. Studio jobs are stored here and survive a restart. Studio reports over HTTP with its service token and does not read the CSP database. |
+| `r1_0008` | `registered_services.service_client_id` FK: an audit callback can bind only to that service's own Service Client. An unbound service rejects callbacks (`403`). |
+
+`r1_0004` widened agent approval to seven values. `r1_0020` folded that back to the three values in the code now: `registered`, `approved`, `disabled` (`app/models/agent.py`).
 
 ---
 
@@ -145,7 +147,7 @@ The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`),
 - **JWT / JWKS**: RS256 (access + refresh, `tv` token-version revocation claim); `GET /.well-known/jwks.json` publishes the verification keys. The launch token reuses the same RS256 keypair / `kid`, so registered services verify it **locally** via JWKS (`aud` / `iss` / `exp` / signature); TTL 10 min, and it **never** embeds a model key or a long-lived user JWT.
 - **CSRF**: cookie-authenticated mutating requests use double-submit (`X-CSRF-Token`, constant-time compare, `CsrfMiddleware`).
 - **RLS / `csp_app`**: the runtime uses the non-privileged `csp_app` role (so RLS actually fires); only migrations use the escalated `csp` superuser (see §8).
-- **SSRF url_guard kind split (Slice 6a, Model Gateway §8)**: `anila_core.security.validate_outbound_url(url, endpoint_kind=...)` domain-splits the http flag across `model` / `agent` / `generic` — a model endpoint rejects http by default and **admits it only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (2026-07-29: uniform across production and dev; the intranet model gateway speaks plain http)**; an agent endpoint is allowed over http via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` (legacy `ANILA_ALLOW_HTTP_ENDPOINT` still works as a deprecation-warned fallback, for the intranet MLSteam plain-http NodePort agent). The allow-list = the `trusted_hosts` table + the `ANILA_TRUSTED_HOSTS` env; `host.docker.internal` is a structural deny and cannot be allow-listed.
+- **SSRF url_guard kind split **: `anila_core.security.validate_outbound_url(url, endpoint_kind=...)` domain-splits the http flag across `model` / `agent` / `generic` — a model endpoint rejects http by default and **admits it only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (production and dev use the same rule; the intranet model gateway speaks plain http)**; an agent endpoint is allowed over http via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` (legacy `ANILA_ALLOW_HTTP_ENDPOINT` still works as a deprecation-warned fallback, for the intranet MLSteam plain-http NodePort agent). The allow-list = the `trusted_hosts` table + the `ANILA_TRUSTED_HOSTS` env; `host.docker.internal` is a structural deny and cannot be allow-listed.
 - **Credential encryption**: AES-256-GCM (`anila-core` `credential_crypto` / `service_token_envelope`; covers per-model `api_key_secret_ref`, `csk-` agent credentials, ingestion credentials).
 - **Token revocation**: durable `token_revocations` table + JWT `tv` enforcement + Redis fan-out; `/api/auth/revocations` for cold-start sync.
 - **startup_security**: in prod, dev defaults for `SECRET_KEY` / `ADMIN_PASSWORD` / DB passwords refuse to boot (an empty `SECRET_KEY` is always fatal; `ANILA_ALLOW_DEV_SECRET=1` downgrades to a warning). Inbound hardening also includes a CORS allow-list (no `*` fallback), optional TrustedHostMiddleware, SPA path-traversal guard, and nginx security headers + rate-limit.
@@ -161,15 +163,13 @@ python -m pytest services/csp/tests -q   # from the repo root
 cd services/csp && python -m pytest -q   # or from here; both MUST agree
 ```
 
-**Current baseline (measured 2026-07-31)**: **1 failed · 1296 passed · 13 skipped · 0 errors** (~8 min). The single red is `test_template_download.py::test_developer_can_download_template` — a **real production defect** (template directory resolution returns 404), not a test problem.
-
-📌 Full write-up in **[`tests/README.md`](tests/README.md)** — why the old "26 failing" baseline was fiction (the same code gave 27 vs 14 depending on which directory you ran from), the execution-order pollution and its fix, and the two-layer structure of the card-login tests.
+Why the two working directories must agree, and how the card-login tests are split, is in [`tests/README.md`](tests/README.md).
 
 ---
 
 ## 8. Alembic notes
 
-- **`r1_` namespace**: redesign migrations use the `r1_` prefix and chain linearly after the legacy numeric series (`r1_0001` has `Revises: 0046`). When adding a module / table, update the `.importlinter` contract and `app/schemas/contracts/` in lockstep.
+- **`r1_` namespace**: `r1_` continues after the numeric filenames (`r1_0001` has `Revises: 0046`). When adding a module or a table, update `.importlinter` and `app/schemas/contracts/` in the same change.
 - **`MIGRATION_DATABASE_URL` (escalated, alembic-only)**: migrations need a superuser-class connection (`0014` runs `CREATE EXTENSION` / `CREATE ROLE csp_app`). The runtime `DATABASE_URL` points at the non-privileged `csp_app` (so RLS fires); `MIGRATION_DATABASE_URL` is alembic's escalated stand-in, falling back to `DATABASE_URL` when unset (`migrations/env.py`). Compose splits the two: runtime `csp_app:...`, migration `csp:...`.
 - **Auto-upgrade on boot**: the `app/main.py` lifespan runs `alembic upgrade head` programmatically via `command.upgrade(cfg, "head")`. Empty databases also go through alembic (`MIGRATION_DATABASE_URL` / superuser); failure refuses to start. `create_all` happens only on the pytest sqlite host with an empty file (see `_apply_startup_schema`). `ANILA_SKIP_STARTUP_MIGRATIONS=1` (compose default `0`) starts the service without migrating.
 
@@ -195,7 +195,7 @@ Local backend (no container, bring your own PostgreSQL): `cd services/csp && .ve
 
 ## 10. Related docs
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 - Platform overview: [`../../README.md`](../../README.md).
 - Module boundary contract: [`.importlinter`](./.importlinter) (`infra/ci/lint-boundaries.sh`).
 

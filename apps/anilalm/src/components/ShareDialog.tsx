@@ -464,7 +464,7 @@ function HandoffToColleague({
   const submit = async () => {
     if (!selected) return
     if (typeof conversationId !== 'number') {
-      setError('尚未建立後端對話 — 請先送出第一則訊息。')
+      setError('這則對話還沒建立，請先送出第一則訊息。')
       return
     }
     setBusy(true)

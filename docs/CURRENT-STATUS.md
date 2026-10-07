@@ -1,13 +1,12 @@
 # 目前狀態
 
-> 這一頁才是「現在這棵樹怎麼跑」。不要再去找 `PLAN.md`、`SYSTEM-MAP.md` 或舊交接；那些會和現在的程式衝突，已於 2026-10 文檔清理刪除，去哪看下節〈舊文檔去哪了〉。
-> 更新：2026-10-06。HEAD 以 `git log -1` 為準。
+本頁記錄平台在 2026-10-06 的運行方式。提交以 `git log -1` 為準。2026-10 刪除的文件與現在出處的對照在下一節。
 
 ## 舊文檔去哪了
 
-下表把 2026-10 文檔清理刪掉的舊計畫、規格與交接對到現在的出處；路徑相對 repo 根目錄，都是現存路徑，舊檔名只當歷史對照。
+下表是 2026-10 刪除的文件，以及那些內容現在所在的程式或文件。路徑相對 repo 根目錄。
 
-文檔內容以現存程式碼為準；本頁與程式衝突時以程式為準。容量數字、負載實測、出貨流程，以及備份保留份數、稽核保留天數、磁碟與憑證門檻這類設定，都只是執行紀錄或可由程式碼與腳本核對的值，不是規格。
+容量、負載實測、出貨流程，以及備份保留份數、稽核保留天數、磁碟與憑證門檻，是當時的執行紀錄，或可由程式與腳本核對的值。
 
 | 舊文檔 | 現在看哪裡 |
 |---|---|
@@ -18,7 +17,7 @@
 | `OWNER-QUESTIONS.md` | 程式碼註解已內嵌決策，例如 `services/csp/app/api/directory.py`、`packages/anila-agent/anila_agent/dispatch_token.py`、`packages/anila-core/src/anila_core/ingestion/parser_registry.py` |
 | 其他舊說明 `packages/anila-agent/REBUILD_PLAN.md`、`services/anila-studio/MIGRATION_BASELINE.md`、`services/csp/migrations/versions/0035_iso_42001_traceability.py` | `packages/anila-agent/README.md`、`packages/anila-agent/CHANGELOG.md`（`make test`）；另兩者看該服務的程式碼與測試（現行 migration 在 `services/csp/migrations/versions/`） |
 | `docs/archive/`（含 `anila-core/`、`handoffs/`、`agent-framework/`、`anila_plan.md`） | `packages/anila-core/src/anila_core/` 與 `services/` 的實作；其餘只留 git 歷史 |
-| `docs/anila-redesign-docs/README.md`、`00-product-constitution.md` | `apps/anila-shell/src/shellNav.jsx`（四入口 IA）與本頁 |
+| `docs/anila-redesign-docs/README.md`、`00-product-constitution.md` | `apps/anila-shell/src/shellNav.jsx`（側欄）與本頁 |
 | `docs/anila-redesign-docs/01-domain-model.md` | `services/csp/app/models/task.py`、`services/csp/app/models/source_snapshot.py` |
 | `docs/anila-redesign-docs/02-system-architecture.md`、`03-csp-governance-control-plane.md`、`06-openwebui-agent-migration.md` | `services/csp/app/main.py`、`services/csp/app/modules/`、`services/csp/.importlinter`、`infra/compose/platform.yml`、`services/csp/app/api/`、`apps/anila-shell/src/app.jsx` |
 | `docs/anila-redesign-docs/04-model-gateway-design.md` | `services/csp/app/api/models.py`、`services/csp/app/services/model_gate.py` |
@@ -51,7 +50,7 @@
 - 絕不提交 `.env`、`secrets/`、`*.pem`、`*.key`、API 金鑰、JWT 私鑰。
 - `anila-studio` 不可 import `anila_core`（有守門測試）。產品程式不可呼叫任何院外服務。
 - schema 改動一定要有 Alembic migration；多人並行時編號接在目前 head 後面。
-- 改完跑對應測試，合併前跑全部（指令見下方「啟動與測試」）。驗證走正式 HTTP API 與登入，不要直連資料庫假裝完成。
+- 改完跑對應測試，合併前跑全部（指令見下方「啟動與測試」）。驗證走正式 HTTP API 與登入。
 - compose／`.env`／nginx 變更用 `docker compose up -d` 重建，不要只 `docker restart`；nginx 設定是單檔掛載，改了要 `--force-recreate nginx`。
 
 ## 開發線
@@ -91,7 +90,7 @@ TTFT 變長是 32 個 process 一起消化 3000 條串流，不是資料庫池�
 docker compose up -d --build
 # （dev 站改用 `docker compose -f compose.dev.yaml up -d --build`，project `anila-platform-dev`）
 
-# Shell 主流程（Vitest orchestrator，不是已刪的 Playwright functions.spec.js）
+# Shell 主流程（Vitest）
 cd apps/anila-shell && npm test
 
 # 治理前端

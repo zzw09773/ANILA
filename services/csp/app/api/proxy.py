@@ -687,7 +687,7 @@ async def _inject_attachments_async(
         return attachment_context.AttachmentInjectResult(
             status="error",
             label="附件注入",
-            detail=f"注入失敗：{type(exc).__name__}",
+            detail="附件沒有納入這次回答",
             skipped=True,
         )
 
@@ -2764,8 +2764,7 @@ async def resume_agent_session(
             yield (
                 f"event: error\n"
                 f"data: {{\"status\": 502, "
-                f"\"detail\": \"agent connection error: "
-                f"{type(exc).__name__}\"}}\n\n"
+                f"\"detail\": \"助手連線失敗\"}}\n\n"
             )
 
     return StreamingResponse(

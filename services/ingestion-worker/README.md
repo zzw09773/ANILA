@@ -4,13 +4,11 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本 worker 存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
-## 在 monorepo 的位置（重構後 §17.1 版圖）
+## 在 monorepo 的位置
 
-重構把原始碼收斂為 `services/` · `apps/` · `packages/` · `infra/` 四層。本服務落在：
+本服務在：
 
 ```
 services/ingestion-worker/     ← 本服務（Arq worker，無 HTTP 對外）
@@ -229,12 +227,12 @@ compose 中（`infra/compose/platform.yml`）：build context = repo root；`dep
 - **共用上傳目錄**：CSP 寫、worker 讀；captioned 圖存 `<UPLOAD_DIR>/anila-images/<doc_id>/`。
 - **Judge / relation LLM 的使用者憑證**：使用者自帶憑證（`user_llm_credentials`，AES）即時解密；外連前 `validate_outbound_url`（SSRF），憑證物件 `__repr__` 遮罩 key。
 
-> 本 worker 早於重構的 Task spine / Full Trace / Artifact 合約，且**不參與**它們：它不讀 `X-ANILA-Task-Id`、不發 trace span、不設定分類等級。與重構相關的只有 §17.1 版圖、compose shim，以及經 CSP 的 Model Gateway 金鑰與 `ANILA_ALLOW_*` 出向守衛。
+> 這個 worker 不讀 `X-ANILA-Task-Id`、不發 trace span、也不設定分類等級。模型呼叫走 CSP 的 Model Gateway 金鑰，出向受 `ANILA_ALLOW_*` 限制。
 
 ---
 
 ## 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
 - 平台整體：[`../../README.md`](../../README.md)

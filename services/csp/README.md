@@ -4,7 +4,7 @@
 
 > English version：[`README.en.md`](./README.en.md)
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
 ---
 
@@ -45,7 +45,7 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 項目 | 內容（取自 `requirements.txt` / `infra/docker/csp.Dockerfile`） |
 |------|------|
 | 語言 / 框架 | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
-| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（legacy `0001`–`0046`〔無 0025〕接 redesign `r1_0001`–`r1_0008`） |
+| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（`0001`–`0046`〔無 0025〕之後接 `r1_0001`；後續在 `migrations/versions/`，目前到 `r1_0069`） |
 | 設定 | pydantic-settings 2.7.1（`app/config.py`） |
 | 認證 | **JWT 為 RS256**（非對稱，`app/utils/security.py` + JWKS；`python-jose[cryptography] 3.5.0`）· bcrypt 5.0.0（直接使用，cost 12） |
 | 資料庫驅動 | psycopg2-binary 2.9.10（PostgreSQL 16 + pgvector）+ asyncpg（`csp_app` RLS pool，ingestion 用） |
@@ -54,7 +54,7 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 文字後處理 | opencc-python-reimplemented 0.1.7 |
 | 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`），而且**只有這一份**——曾經另有一份 compose 從不建的 `services/csp/Dockerfile`，已於 2026-08-06 刪除。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
+> 部署 image 是 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`）。治理介面在 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite），由 Nginx 提供靜態檔。
 >
 > 容器以 **uid 10001（非 root）** 跑。映像裡只有 `/app/logs` 是可寫的；上傳、附件、`share/pki`、`secrets/` 四個都在 bind mount 上，所有權由 host 決定 → 部署前要跑 [`infra/deployment/scripts/fix-runtime-ownership.sh`](../../infra/deployment/scripts/fix-runtime-ownership.sh)（deploy-prod.sh 的 `deploy`/`up`/`rebuild` 與 intranet-deploy.sh `[4c]` 都已接進去）。
 >
@@ -64,13 +64,13 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 
 ## 2. 模組邊界（`app/modules/`）
 
-redesign 把四個 MVP 核心切成**互不相依**的 module，並以 import-linter 契約（[`.importlinter`](./.importlinter)，`infra/ci/lint-boundaries.sh` 執行）強制：`tasks / policy / launch / artifacts` **彼此不得互相 import**，且 `app.modules.*` **不得反向 import `app.api`**（`api → modules` 單向分層）。
+`tasks`、`policy`、`launch`、`artifacts` 四個 module 彼此不得互相 import。import-linter 契約（[`.importlinter`](./.importlinter)，由 `infra/ci/lint-boundaries.sh` 執行）同時要求 `app.modules.*` 不得 import `app.api`（只有 `api → modules`）。
 
 | Module | 檔案 | 職責 |
 |--------|------|------|
 | `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun 生命週期（十值狀態機）、SourceSnapshot 三規則、`trace_id` 必產生（領域模型／控制面）。 |
 | `app.modules.policy` | `router.py` · `service.py` | PolicyDecision **append-only** 裁決紀錄（fail-closed，deny 必附 reason）、ceiling 純函式、四級分類 latch core（`apply_classification` 單向閂鎖；無機密＜營業秘密＜密＜機密）。 |
-| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway 原語：`service_launches` 落列、啟動 URL、RS256 launch token（Service Registry §6）。**零** policy/task/api 耦合，存取控制由 orchestrator（`app.api.services`）圍事。 |
+| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway：`service_launches` 落列、啟動 URL、RS256 launch token。不 import policy、task、api。存取控制在 `app.api.services`。 |
 | `app.modules.artifacts` | `service.py` | Artifact 四表持久化、binding fail-closed、owner-scope 讀面。分類閂鎖與 PolicyDecision 由 orchestrator（`app.api.artifacts`）呼叫 policy 完成。 |
 
 ---
@@ -87,7 +87,7 @@ auth router 已由單檔拆成套件，各認證形態獨立成子模組，全�
 | `registration_tokens.py` | 一次性註冊 token 面 | 受控自助註冊。 |
 | `revocations.py` | `GET /revocations` | service-token 認證的撤銷冷啟同步（anila-studio 消化）。 |
 
-> 三種登入形態（password / oidc / card）在 redesign 樹中**並存於程式碼**，由單一 `ANILA_AUTH_MODE`（`password` / `mixed` / `card-only`）與 SSO provider 是否註冊決定啟用。SSO / OIDC provider 的管理 CRUD 在獨立的 `app/api/auth_providers.py`（前綴 `/api/auth-providers`）。
+> 三種登入（password、oidc、card）都在程式裡。啟用哪一種由 `ANILA_AUTH_MODE`（`password` / `mixed` / `card-only`）和有沒有登記 SSO provider 決定。SSO / OIDC provider 的管理在 `app/api/auth_providers.py`（前綴 `/api/auth-providers`）。
 
 ---
 
@@ -107,8 +107,8 @@ Full Trace span 收攏（`POST /v1/traces`、`trace_spans`）已移除。`tasks.
 
 ### Control Plane（`/api/*`）
 
-- **redesign 新增**：`/api/tasks`（`tasks` module：建立 / 列出 / 取單 / `/{id}/runs`）、`/api/policy-decisions`、`/api/classification/inventory`（機敏盤點）、`/api/classification/declassification-requests`（解密申請 + 主管核准）、`/api/classification-authorities`（機密審批權責）、`/api/services`（Service Registry：CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`）、`/api/artifacts`（+ data-plane `POST /v1/artifact-jobs` 等 Studio 回報面）。
-- **既有治理面**：`/api/auth`、`/api/auth-providers`、`/api/keys`、`/api/models`（含模型角色 `GET/PUT/DELETE /api/models/roles`、`set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / health-check / credentials / template）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
+- **任務、登錄與產出**：`/api/tasks`（`tasks` module：建立 / 列出 / 取單 / `/{id}/runs`）、`/api/policy-decisions`、`/api/classification/inventory`（機敏盤點）、`/api/classification/declassification-requests`（解密申請 + 主管核准）、`/api/classification-authorities`（機密審批權責）、`/api/services`（Service Registry：CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`）、`/api/artifacts`（+ data-plane `POST /v1/artifact-jobs` 等 Studio 回報面）。
+- **治理面**：`/api/auth`、`/api/auth-providers`、`/api/keys`、`/api/models`（含模型角色 `GET/PUT/DELETE /api/models/roles`、`set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / health-check / credentials / template）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
 - **其他**：`GET /.well-known/jwks.json`（RFC 7517，未認證，`max-age=3600`）、`GET /health`、`GET /docs` + `/openapi.json`（admin tier 才可）、SPA catch-all（含路徑遍歷防護）。
 
 代理使用範例：
@@ -121,20 +121,22 @@ curl http://localhost/v1/chat/completions \
 
 ---
 
-## 5. 新資料表 / Migration（`r1_0001`–`r1_0008`，逐檔一行）
+## 5. 資料表 / Migration
 
-redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保持線性；enum 一律開放 `String`（封閉 enum 在 Pydantic 契約層 `app/schemas/contracts/` 把關），JSON 走 `with_variant(JSONB, "postgresql")` 保持可攜。
+`r1_` 接在數字檔名之後（`r1_0001` revises `0046`），一條鏈走下去。下表是 `r1_0001`–`r1_0008`。其後的 revision 在 `migrations/versions/`，目前到 `r1_0069`。enum 存成開放的 `String`（封閉 enum 在 `app/schemas/contracts/`），JSON 用 `with_variant(JSONB, "postgresql")`。
 
-| Revision | Slice | 內容 |
-|----------|-------|------|
-| `r1_0001` | 2a | Task / Trace / Policy 六表基礎：`tasks` · `task_runs` · `source_snapshots` · `citations` · `policy_decisions` · `trace_spans`；`classification_level` 預設 `無機密`。 |
-| `r1_0002` | 2b-C | `token_usage` ↔ task 連結：`task_id`（FK `ON DELETE SET NULL` + partial index）與 `legacy_runtime_call` 布林旗標（標記無 task 的 `/v1` chat 舊流量）。 |
-| `r1_0003` | 3a | 四級分類 schema 升級（無機密／營業秘密／密／機密）+ 治理三表：`classification_events` · `declassification_requests` · `classification_authority_assignments`；於現存資源（conversations / messages / collections / documents …）補四共通分類欄位並 backfill（`classified=true → 機密`；`requires_encryption=true → 密`）。 |
-| `r1_0004` | 5a | Agent Registry 升級：`agents.approval_status` 由三值擴為**七值狀態機**（`draft` / `pending_connection_test` / `pending_trace_test` / `pending_security_review` / `approved` / `rejected` / `disabled`），並補 manifest / trace-test / runtime 欄位。 |
-| `r1_0005` | 6a | Model Gateway Hardening：`model_registry` formalize 成 `ModelEndpoint`（`protocol` / per-model `api_key_secret_ref` AES-GCM envelope / `classification_ceiling` / `supports_*`）；`health_status` 收斂為**五態**（`healthy` / `degraded` / `unhealthy` / `unknown` / `disabled`）。 |
-| `r1_0006` | 7a | Service Registry：`platform_links` additive 升級為 `registered_services`（33 欄，保留原 id）+ `service_launches` · `service_audit_callbacks` · `service_project_bindings`；`service_access_grants` 加 `service_id` FK。 |
-| `r1_0007` | 8a | Artifact 契約四表：`artifacts` · `artifact_versions` · `export_records` · `artifact_jobs`（**持久化** Studio 五 pipeline job → 滿足「restart 不丟 job」；Studio 走 HTTP service token 回報，不直讀 CSP DB）。 |
-| `r1_0008` | R-SEC | `registered_services.service_client_id` FK：把 audit-callback 綁定到「屬於該服務」的 Service Client；fail-closed / default-deny，未綁定服務一律拒收 callback（`403`）。 |
+| Revision | 內容 |
+|----------|------|
+| `r1_0001` | Task / Trace / Policy 六表：`tasks`、`task_runs`、`source_snapshots`、`citations`、`policy_decisions`、`trace_spans`。`classification_level` 預設 `無機密`。 |
+| `r1_0002` | `token_usage` 連到 task：`task_id`（FK `ON DELETE SET NULL` + partial index）與 `legacy_runtime_call`（標記沒有 task 的 `/v1` chat）。 |
+| `r1_0003` | 四級分類（無機密／營業秘密／密／機密）與三張治理表：`classification_events`、`declassification_requests`、`classification_authority_assignments`。既有 conversations、messages、collections、documents 補四個分類欄並回填（`classified=true` → `機密`；`requires_encryption=true` → `密`）。 |
+| `r1_0004` | `agents.approval_status` 從三值擴成七值：`draft`、`pending_connection_test`、`pending_trace_test`、`pending_security_review`、`approved`、`rejected`、`disabled`。另補 manifest、trace-test、runtime 欄位。 |
+| `r1_0005` | `model_registry` 收成 `ModelEndpoint`（`protocol`、每模型 `api_key_secret_ref` AES-GCM、`classification_ceiling`、`supports_*`）。`health_status` 為 `healthy`、`degraded`、`unhealthy`、`unknown`、`disabled`。 |
+| `r1_0006` | `platform_links` 擴成 `registered_services`（33 欄，id 保留），加上 `service_launches`、`service_audit_callbacks`、`service_project_bindings`。`service_access_grants` 加 `service_id` FK。 |
+| `r1_0007` | 四張產出表：`artifacts`、`artifact_versions`、`export_records`、`artifact_jobs`。Studio 的 job 寫在這裡，重啟後還在。Studio 用 HTTP service token 回報，不讀 CSP 的資料庫。 |
+| `r1_0008` | `registered_services.service_client_id` FK：audit-callback 只能綁到該服務自己的 Service Client。沒綁定就拒收 callback（`403`）。 |
+
+`r1_0004` 把助手核准狀態擴成七值。`r1_0020` 收成現在的三值：`registered`、`approved`、`disabled`（`app/models/agent.py`）。
 
 ---
 
@@ -145,7 +147,7 @@ redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保
 - **JWT / JWKS**：RS256（access + refresh，`tv` token-version 撤銷 claim），`GET /.well-known/jwks.json` 公開驗章。Launch token 共用同一 RS256 keypair / `kid`，registered service 以 JWKS **本地**驗（`aud` / `iss` / `exp` / 簽章）；TTL 10 分、**絕不**內嵌模型金鑰或長效 user JWT。
 - **CSRF**：cookie 認證的變更請求走 double-submit（`X-CSRF-Token`，constant-time 比對，`CsrfMiddleware`）。
 - **RLS / `csp_app`**：runtime 用非特權 `csp_app` role（RLS 才會生效）；migration 才用升權 `csp` superuser（見 §7）。
-- **SSRF url_guard 分域（Slice 6a，Model Gateway §8）**：`anila_core.security.validate_outbound_url(url, endpoint_kind=...)` 把 http 旗標按 `model` / `agent` / `generic` 分域——model endpoint 預設拒 http，**由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（2026-07-29 拍板：production 與 dev 同準，內網模型 gateway 走 http）**；agent endpoint 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` 放行（legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 fallback 但帶 deprecation 警告，供內網 MLSteam 純 http NodePort agent）。allow-list = `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env；`host.docker.internal` 為結構性拒絕，allow-list 解不開。
+- **SSRF url_guard 分域**：`anila_core.security.validate_outbound_url(url, endpoint_kind=...)` 把 http 旗標按 `model` / `agent` / `generic` 分域——model endpoint 預設拒 http，**由 `ANILA_ALLOW_HTTP_ENDPOINT=1` 明確放行（正式環境與 dev 同一套；內網模型 gateway 走 http）**；agent endpoint 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` 放行（legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 fallback 但帶 deprecation 警告，供內網 MLSteam 純 http NodePort agent）。allow-list = `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env；`host.docker.internal` 為結構性拒絕，allow-list 解不開。
 - **Credential 加密**：AES-256-GCM（`anila-core` `credential_crypto` / `service_token_envelope`；涵蓋 per-model `api_key_secret_ref`、`csk-` agent 憑證、ingestion 憑證）。
 - **Token 撤銷**：持久 `token_revocations` 表 + JWT `tv` 強制 + Redis fan-out；`/api/auth/revocations` cold-start sync。
 - **startup_security**：prod 對 `SECRET_KEY` / `ADMIN_PASSWORD` / DB 密碼等 dev 預設值拒絕啟動（空 `SECRET_KEY` 永遠 fatal；`ANILA_ALLOW_DEV_SECRET=1` 降為 warn）。入站另有 CORS allowlist（無 `*` fallback）、選用 TrustedHostMiddleware、SPA 路徑遍歷防護、nginx 安全 header + rate-limit。
@@ -161,15 +163,13 @@ python -m pytest services/csp/tests -q   # 從 repo 根目錄
 cd services/csp && python -m pytest -q   # 或從這裡；兩者結果必須一致
 ```
 
-**目前基準線（2026-07-31 實跑）**：**1 failed · 1296 passed · 13 skipped · 0 errors**（約 8 分鐘）。唯一的紅燈是 `test_template_download.py::test_developer_can_download_template`，那是 **production 真缺陷**（template 目錄解析回 404），不是測試問題。
-
-📌 完整說明看 **[`tests/README.md`](tests/README.md)** —— 包含為什麼舊的「26 failing」基準線是假的（同一份碼從不同目錄跑會得到 27 vs 14 兩個答案）、執行順序污染的成因與修法、以及卡登測試的兩層結構。
+兩種 cwd 為什麼必須一致、卡登測試怎麼分兩層，見 [`tests/README.md`](tests/README.md)。
 
 ---
 
 ## 8. Alembic 注意事項
 
-- **`r1_` 命名空間**：redesign migration 以 `r1_` 前綴、線性接在 legacy 數字鏈之後（`r1_0001` `Revises: 0046`）。新增 module / 表時同步補 `.importlinter` 契約與 `app/schemas/contracts/`。
+- **`r1_` 命名空間**：`r1_` 接在數字檔名之後（`r1_0001` 的 `Revises` 是 `0046`）。新增 module 或表時，同時改 `.importlinter` 與 `app/schemas/contracts/`。
 - **`MIGRATION_DATABASE_URL`（升權，僅 alembic 讀）**：migration 需 superuser 級連線（`0014` 要 `CREATE EXTENSION` / `CREATE ROLE csp_app`）。runtime `DATABASE_URL` 指非特權 `csp_app`（RLS 才會 fire）；`MIGRATION_DATABASE_URL` 是 alembic 專用的升權替身，未設時退回 `DATABASE_URL`（`migrations/env.py`）。compose 兩者拆開：runtime `csp_app:...`、migration `csp:...`。
 - **啟動自動升級**：`app/main.py` lifespan 以 `command.upgrade(cfg, "head")` 程式化跑 `alembic upgrade head`。空庫也走 alembic（`MIGRATION_DATABASE_URL`／superuser）；失敗則拒絕啟動。`create_all` 只在 pytest 的 sqlite、且檔案是空的時當逃生口（見 `_apply_startup_schema`）。`ANILA_SKIP_STARTUP_MIGRATIONS=1`（compose 預設 `0`）＝起服務但不遷移。
 
@@ -195,7 +195,7 @@ CSP 只在 compose 的 default network。模型在遠端，由治理中心登記
 
 ## 10. 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 - 平台整體：[`../../README.md`](../../README.md)。
 - 模組邊界契約：[`.importlinter`](./.importlinter)（`infra/ci/lint-boundaries.sh`）。
 

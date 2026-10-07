@@ -1,20 +1,10 @@
-# ANILA load test (k6) — pool-fix concurrency probe
+# ANILA load test (k6)
 
-Reclaimed from the attic W2-8 load test package (`infra/loadtest/`),
-adapted 2026-07-31 for the redesign stack on the running `anila` compose project.
+Concurrent collection search against the running `anila` compose project. The embedder is a local stub. The numbers are relative to that stub. They are not a capacity figure for production.
 
-> Numbers are **relative / regression** measurements against a **stubbed**
-> embedder. They are not a production capacity commitment for 3000 users.
+`setup-stub.sh` registers `loadtest-embed-stub` and calls `set-platform-embedding`. `AUTO_REGISTER` overwrites `nvidia/nv-embed-v2` on every CSP start. The seed script does not insert clearance grants.
 
-## What changed vs attic
-
-| Attic (2026-07) | This package |
-|---|---|
-| Isolated `anila-loadtest` compose stack | Drives the running `anila` compose project (owner-approved); throwaway stub only |
-| Real external gateway + Triton embed | Local OpenAI-compatible **stub** (`stub/`) with configurable `EMBED_DELAY_MS` |
-| Primary probe: RAG chat SSE (`profile2`) | Primary probe: `POST /api/ingestion/collections/{id}/search` (`profile-search.js`) — exact `_embed_query` path of tonight's pool fix |
-| Rewrote catalogue embed endpoint | Registers dedicated `loadtest-embed-stub` + `set-platform-embedding` (AUTO_REGISTER overwrites `nvidia/nv-embed-v2` on every CSP start) |
-| Clearance grants in seed | Dropped — redesign owner path does not need them for admin uploads |
+Primary probe: `POST /api/ingestion/collections/{id}/search` (`profile-search.js`). The stub is an OpenAI-compatible server under `stub/`; `EMBED_DELAY_MS` sets its delay.
 
 ## Files
 

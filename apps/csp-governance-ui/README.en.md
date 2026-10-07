@@ -1,18 +1,16 @@
 # ANILA Governance Center — CSP Governance Console (`csp-platform`)
 
-> The governance console for CSP (Control / Security Plane) (Vue 3 + Vite, v1.0.0). This is ANILA's **Admin / Developer / Service Admin control plane**, managing identity, models, the Agent Registry, the Service Registry, knowledge governance, classification & the one-way latch, and Trace / Audit / Usage. **It is not a regular user's day-to-day entry** (product constitution §2).
+> The governance console for CSP (Control / Security Plane) (Vue 3 + Vite, v1.0.0). Administrators use it for identity, models, the agent registry, the service registry, knowledge governance, classification and the one-way latch, and trace, audit, and usage. It is not the day-to-day page for a regular user.
 
 > 繁體中文原文: [`README.md`](./README.md)
 
-> 🌿 **Branch note**: The governance center exists on every deployment branch (login method varies by branch; `prod-intranet-card` uses the PKI ID card). See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
->
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 
 ---
 
 ## 1. Product role
 
-Per the product constitution (product constitution §2), the governance center is an **admin-facing control plane** hosting these governance domains:
+The governance center is the administrator's console. It covers:
 
 ```text
 Governance Center (CSP)
@@ -25,20 +23,17 @@ Governance Center (CSP)
 └── Trace / Audit / Usage
 ```
 
-Regular users work from ANILA Shell's four entries and **do not enter** the governance center; access here is role-tiered (owner / admin / developer).
+Regular users stay in ANILA Shell. owner, admin, developer, and unit admins can open this console from the Shell.
 
 ---
 
-## 2. Institutional-blue visual redesign (visual redesign)
+## 2. Visual system
 
-The console moved from a "terminal / hacker" aesthetic (carbon-black base + mint terminal-green + all-monospace) to a neutral, official, trustworthy **institutional-blue console**:
+The default theme is light. Tokens live in `src/assets/styles/tokens.css`: `:root` is light, `[data-theme="dark"]` is blue-grey. `src/composables/useTheme.js` defaults to light (`localStorage` key `anila.theme`; dark is used only when nothing is stored and the OS is dark). `index.html` sets `data-theme` in an inline script before Vue mounts, so the first paint does not flash from dark to light.
 
-- **Light-first**: `src/assets/styles/tokens.css` was rewritten (all variable names kept, so styles cascade automatically); `:root` = light (official blue), `[data-theme="dark"]` retained but retuned to soft blue-grey.
-- **Theme resolution**: `src/composables/useTheme.js` defaults to light (`localStorage` key `anila.theme`; only flips to dark when there's no stored preference and the OS is dark); `index.html` applies `data-theme` in an inline pre-mount script to avoid a dark→light first-paint flash.
-- **Typography**: system font stacks (`--font-sans` for the UI, `--font-mono` only for IDs, tokens, timestamps, numerics) — air-gap safe, no external webfonts.
-- **Language**: full Traditional Chinese, Taiwan usage (zh-TW language policy); `index.html` `lang="zh-TW"`.
+Type is the system font (`--font-sans` for the UI, `--font-mono` only for IDs, tokens, timestamps, and numbers). No webfont is downloaded. `index.html` sets `lang="zh-TW"`.
 
-> The `Term*` components under `src/components/cli/` (Badge / Field / Modal / Stat …) are a shared UI kit; the **names are historical** — the visual is now institutional blue, not a terminal.
+The `Term*` components under `src/components/cli/` (Badge, Field, Modal, Stat) are a shared UI kit. The names are older than the light theme.
 
 ### Login (card-first)
 
@@ -139,11 +134,8 @@ npm test && npm run build
 
 ## 7. Related docs
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 - Backend: [`../../services/csp/README.md`](../../services/csp/README.md)
 - Adjacent entries: task center [`../anila-shell/README.en.md`](../anila-shell/README.en.md) · knowledge base / output center [`../anilalm/README.en.md`](../anilalm/README.en.md)
-- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
+- Platform: [`../../README.md`](../../README.md)
 
----
-
-**Framework**: Vue 3 + Vite · **Serves**: Governance Center (admin control plane, origin `/`) · **Talks to**: CSP (`/api`, `/v1`, `/v2`) · **Ships in**: the CSP image (not a standalone service).

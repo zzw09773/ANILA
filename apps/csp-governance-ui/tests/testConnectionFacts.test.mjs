@@ -144,7 +144,7 @@ test('非物件 body／空 detail → 說明列有後備文案（不可空白）
     detail: '',
   })
   assert.notEqual(emptyDetail.detail.trim(), '')
-  assert.equal(resolveTestConnectionDetail({}), '後端未提供說明文字')
+  assert.equal(resolveTestConnectionDetail({}), '沒有說明文字')
 })
 
 test('SSR 真實模板：null／缺鍵不得渲染成成功態（is-ok／通過）', async () => {

@@ -1,29 +1,27 @@
 # ANILA LM — My Knowledge Base / Output Center (`anilalm`)
 
-> ANILA's knowledge & output SPA (Vite + React + TypeScript, v1.0.0). Hosts "**My Knowledge Base**" (collections / documents / search / chat) and the "**Output Center**" (Studio: five artifact kinds — slides / report / mindmap / infographic / datatable). Mounted at the same-origin nginx subpath `/anilalm/`, reached from ANILA Shell's four-entry navigation.
+> ANILA's knowledge and output SPA (Vite + React + TypeScript, v1.0.0). This page holds the knowledge base (collections, documents, search, chat) and five outputs: slides, reports, mind maps, infographics, and data tables. It is mounted at the same-origin nginx path `/anilalm/` and opened from the Shell sidebar item 我的知識庫.
 
 > 繁體中文原文: [`README.md`](./README.md)
 
-> 🌿 **Branch note**: This subproject exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`; the slim **`trial-military`** build does **not** include it. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
->
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 
 ---
 
 ## 1. Product role
 
-The SPA delivers a "documents → conversation → output" flow: upload to build a knowledge base → query by chat → generate artifacts. It is **frontend only**, wiring into [`services/csp`](../../services/csp/) (CSP) for auth / ingestion / conversation / LLM proxy, and [`services/anila-studio`](../../services/anila-studio/) for artifact generation.
+The order of use is: upload documents into a knowledge base, ask questions in chat, then generate slides, a report, a mind map, an infographic, or a data table. It is frontend only. Auth, ingestion, conversation, and the model proxy go through [`services/csp`](../../services/csp/). Outputs go through [`services/anila-studio`](../../services/anila-studio/).
 
-In the ANILA product constitution (product constitution §2) this SPA implements two first-class user entries at once — "My Knowledge Base" and "Output Center"; ANILA Shell's sidebar enters via the origin-absolute path `/anilalm`.
+The Shell sidebar item 我的知識庫 opens this page at the same-origin path `/anilalm`. The five outputs live here too. The sidebar has no second row for them.
 
 ---
 
-## 2. Task-first output (redesign slice 8b)
+## 2. Output creates a task first
 
-**Before every Studio output job, a CSP Task is created first**, so the resulting artifact-job / artifact / trace all bind to one governance unit (API contract §2 Task API).
+**Before every output job, a CSP Task is created first**, so the later artifact-job, artifact, and trace hang off the same task.
 
 - `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks` (`task_type:'generate_artifact'`, `source_scope` defaults to `'project'`, `selected_collection_ids`, `requested_output_type`). Returns `TaskBinding { taskId, sourceSnapshotId?, traceId? }`, threaded into the Studio job body. Types mirror `services/csp/app/schemas/contracts/tasks.py` and the domain model (`TaskType` / `SourceScope` / `RequestedOutputType`).
-- **Resilience contract**: any failure (endpoint not yet deployed / auth / network) returns `null` + a zh-TW `console.warn`; generation **proceeds without a task binding** — it must never break because governance metadata could not attach.
+- If creating the Task fails (route missing, auth, network) the call returns `null` and writes a Traditional Chinese `console.warn`. Generation continues without a task id.
 - Call sites: `src/workspace/CommandModal.tsx` (slides) and `src/studio/generators.ts` (report / mindmap / infographic / datatable) — all five kinds create a Task first.
 
 ### Every artifact is an async job
@@ -46,11 +44,11 @@ In the ANILA product constitution (product constitution §2) this SPA implements
 | Router | `react-router` 7.18.2 (`>=7.18.2 <8`; `BrowserRouter` + nested Outlet guards) |
 | State | **Zustand 5.0.2** (auth / workspace / artifacts) |
 | HTTP | `axios` 1.7.9 + interceptors (401 refresh, `withCredentials`) |
-| Markdown | `marked` 14.1.3 + `DOMPurify` 3.2.3 (LLM output treated as untrusted, double-layer XSS defense) |
+| Markdown | `marked` 14.1.3 + `DOMPurify` 3.4.13 (model output is sanitized before render) |
 | Type codegen | `openapi-typescript` 7.13.0 (dev) |
 | Icons | inline SVG (hand-rolled, 0 packages) |
 
-`scripts`: `dev` / `build` (**`tsc -b && vite build`**) / `preview` / `typecheck` (`tsc -b --noEmit`) / `gen:studio-types`. **Verification gates = `typecheck` + `build`** (this subproject has no unit-test framework).
+`scripts`: `dev` / `build` (`tsc -b && vite build`) / `preview` / `typecheck` (`tsc -b --noEmit`) / `gen:studio-types` / `test` (`vitest run`, then `node --test src/**/*.node.test.mjs`).
 
 ### `gen:studio-types` flow
 
@@ -128,11 +126,8 @@ npm run build          # tsc -b && vite build (the real gate; not tsc alone)
 
 ## 7. Related docs
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 - Backend services: CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
 - Adjacent entries: task center [`../anila-shell/README.en.md`](../anila-shell/README.en.md) · governance [`../csp-governance-ui/README.en.md`](../csp-governance-ui/README.en.md)
-- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
+- Platform: [`../../README.md`](../../README.md)
 
----
-
-**Framework**: Vite + React + TypeScript · **Serves**: My Knowledge Base + Output Center · **Talks to**: CSP (`/api`, `/v1`, `/v2`) + anila-studio (`/api/studio/*`, `/api/{reports,mindmaps,infographics,datatables}/*`), all creating a CSP Task first.

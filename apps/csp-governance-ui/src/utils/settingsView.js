@@ -31,7 +31,7 @@ const UNKNOWN_SECTION = {
   id: UNKNOWN_SECTION_ID,
   classes: [],
   title: '未識別的設定類別',
-  hint: '後端回傳了尚未核准顯示或編輯方式的類別。',
+  hint: '這個類別尚未開放顯示或編輯。',
   editable: false,
 }
 
@@ -140,7 +140,7 @@ export function countMismatchWarning(overview) {
   const received = Array.isArray(overview.items) ? overview.items.length : 0
   return received === total
     ? null
-    : `後端說有 ${total} 顆設定，這一頁只收到 ${received} 顆 —— 下面不是全部。`
+    : `清單寫明有 ${total} 項設定，這一頁只收到 ${received} 項，下面不是全部。`
 }
 
 export function overviewState({ loaded, error, items }) {
@@ -153,7 +153,7 @@ export function overviewState({ loaded, error, items }) {
 export function overviewStateMessage(state) {
   return {
     loading: '正在讀取設定…',
-    failed: '後端沒有回傳可用的設定總覽。',
+    failed: '沒有取得設定總覽。',
     empty: '目前沒有可顯示的設定。',
   }[state] ?? ''
 }

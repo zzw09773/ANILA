@@ -1,18 +1,16 @@
 # ANILA 治理中心 — CSP Governance Console（`csp-platform`）
 
-> CSP（Control / Security Plane）的治理控制台（Vue 3 + Vite，v1.0.0）。這是 ANILA 的 **Admin / Developer / Service Admin 控制面**，管理身份、模型、Agent Registry、Service Registry、知識治理、機敏分類與單向閂鎖，以及 Trace / Audit / Usage。**它不是一般使用者的日常入口**（產品憲章 §2）。
+> CSP（Control / Security Plane）的治理控制台（Vue 3 + Vite，v1.0.0）。這是 ANILA 的 **Admin / Developer / Service Admin 控制面**，管理身份、模型、Agent Registry、Service Registry、知識治理、機敏分類與單向閂鎖，以及 Trace / Audit / Usage。**它不是一般使用者的日常入口**。
 
 > English mirror: [`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：治理中心存在於各部署分支（登入方式依分支而異；`prod-intranet-card` 走自然人憑證卡）。分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
->
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
 ---
 
 ## 1. 產品定位
 
-依產品憲章（產品憲章 §2），治理中心是 **Admin-facing 控制面**，承載以下治理域：
+治理中心是 **Admin-facing 控制面**，承載以下治理域：
 
 ```text
 治理中心（CSP）
@@ -25,20 +23,17 @@
 └── Trace / Audit / Usage
 ```
 
-一般使用者從 ANILA Shell 的四入口操作，**不進治理中心**；治理中心以角色分級（owner / admin / developer）開放。
+一般使用者在 ANILA Shell 裡工作，不進治理中心。owner、admin、developer，以及單位管理員，從 Shell 看得到入口。
 
 ---
 
-## 2. 官方藍視覺重設計（視覺重設計）
+## 2. 視覺
 
-治理中心已從「終端機／駭客風」（碳黑深底 + 薄荷終端綠 + 全等寬字）改為**中性、官方、可信的「官方藍」institutional console**：
+預設是淺色。色票在 `src/assets/styles/tokens.css`：`:root` 為淺色，`[data-theme="dark"]` 為藍灰。`src/composables/useTheme.js` 以淺色為預設（`localStorage` 鍵 `anila.theme`；沒有存過、而且作業系統是深色時才用深色）。`index.html` 在 Vue 掛載前用 inline script 設 `data-theme`，避免第一屏先深後淺。
 
-- **淺色優先**：`src/assets/styles/tokens.css` 重寫（保留全部變數名以自動 cascade）；`:root` = 淺色（官方藍），`[data-theme="dark"]` 保留但重調為柔和藍灰。
-- **主題解析**：`src/composables/useTheme.js` 淺色為預設（`localStorage` 鍵 `anila.theme`，僅在無偏好且 OS 為深色時翻 dark）；`index.html` 於 Vue mount 前以 inline script 同步套 `data-theme`，避免首屏 dark→light 閃爍。
-- **字型**：系統字型堆疊（`--font-sans` 介面主字型 / `--font-mono` 只給 ID、token、時間戳、數值），air-gap 安全、不下載外部 webfont。
-- **語言**：全繁體中文台灣用語（zh-TW 語言政策）；`index.html` `lang="zh-TW"`。
+字型用系統字（`--font-sans` 給介面，`--font-mono` 只給 ID、token、時間戳、數值），不下載外部字型。`index.html` 的 `lang` 是 `zh-TW`。
 
-> `src/components/cli/` 下的 `Term*` 元件（Badge / Field / Modal / Stat …）是共用 UI kit，**名稱為歷史沿用**，視覺已是官方藍非終端機。
+`src/components/cli/` 的 `Term*` 元件（Badge、Field、Modal、Stat）是共用 UI kit。名稱沿用舊的，畫面是淺色。
 
 ### 登入（card-first）
 
@@ -139,11 +134,8 @@ npm test && npm run build
 
 ## 7. 相關文件
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 - 後端：[`../../services/csp/README.md`](../../services/csp/README.md)
 - 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 我的知識庫／產出中心 [`../anilalm/README.md`](../anilalm/README.md)
-- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
+- 平台整體：[`../../README.md`](../../README.md)
 
----
-
-**Framework**：Vue 3 + Vite · **Serves**：治理中心（Admin 控制面，origin `/`）· **Talks to**：CSP（`/api`、`/v1`、`/v2`）· **Ships in**：CSP 映像（非獨立服務）。

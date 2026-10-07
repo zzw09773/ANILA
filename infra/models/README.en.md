@@ -4,11 +4,9 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: `infra/models/` (formerly `models/`, moved under `infra/` in the §17.1 reorg) exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 
 ## Position
 
@@ -16,7 +14,7 @@
 
 - Running `docker compose down` at the repo root only stops the platform — it does **not** kill the model containers here.
 - The two projects communicate over the shared external network `anila-models-net`; CSP / Router / Studio reach the models via docker DNS (e.g. `http://gemma4:8000`), with no host port exposed.
-- **Weights location is unchanged**: `ANILA_HF_DIR` defaults to `../../models/model` (resolved relative to this compose file). The §17.1 reorg only moved the compose and `src/`, not the weights directory.
+- **Weights are not in this directory**: `ANILA_HF_DIR` defaults to `../../models/model` (resolved relative to this compose file).
 
 ---
 

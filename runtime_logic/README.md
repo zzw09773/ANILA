@@ -6,8 +6,6 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本目錄存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`。**`trial-military` 精簡版不含本目錄**。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
 ## 簡介
@@ -101,9 +99,9 @@
 
 ## 相關文件
 
-- 平台總覽：[`../README.md`](../README.md) · 現行 `main`（舊七分支模型已失效）
+- 平台總覽：[`../README.md`](../README.md)
 - Python runtime（移植目的地）：[`../packages/anila-core/README.md`](../packages/anila-core/README.md)
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../docs/CURRENT-STATUS.md)。
 
 ---
 

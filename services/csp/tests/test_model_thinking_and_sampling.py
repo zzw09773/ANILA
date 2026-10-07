@@ -607,7 +607,8 @@ def test_probe_reports_unreachable_on_transport_failure(monkeypatch):
         thinking_probe.probe_thinking_effort(_probe_target(), "high")
     )
     assert result.status == "unreachable"
-    assert "ConnectError" in (result.detail or "")
+    assert result.detail == "無法連線"
+    assert "no route to host" not in (result.detail or "")
 
 
 def test_probe_does_not_call_an_endpoint_the_guard_refuses(monkeypatch):

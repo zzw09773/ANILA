@@ -171,7 +171,7 @@ async def probe_thinking_effort(model_like: Any, level: str) -> ProbeResult:
         logger.warning(
             "thinking probe transport error type=%s", type(exc).__name__
         )
-        return ProbeResult("unreachable", f"無法連線（{type(exc).__name__}）")
+        return ProbeResult("unreachable", "無法連線")
 
     if resp.status_code == 400:
         body_text = (resp.text or "")[:_BODY_SCAN_MAX_CHARS]

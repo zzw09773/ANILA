@@ -76,7 +76,7 @@
           <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('entry_url')" />
         </TermField>
         <div class="form-row-2">
-          <TermField label="圖示" hint="清單來自伺服器 GET /api/platform-links/icons">
+          <TermField label="圖示" hint="從平台提供的清單裡選一個。">
             <select v-model="form.icon" class="term-select" :disabled="locked('icon')">
               <option value="">— 無圖示 —</option>
               <option v-for="ic in iconOptions" :key="ic" :value="ic">{{ ic }}</option>

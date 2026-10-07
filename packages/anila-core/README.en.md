@@ -4,8 +4,6 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: This SDK exists on every ANILA deployment branch and is identical across branches (the runtime base does not vary by deployment context). New features always land in `main` first, then sync downstream. See the root [`README.md`](../../README.md) (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
 ## Overview
@@ -17,11 +15,11 @@
 
 How each role relates to anila-core:
 
-- **Router deployment** ([`anila-core-router`](../../services/anila-core-router/)): directly `import`s Pillar 1 + Pillar 2.
-- **Agent developers**: fork [`anila-agent`](../anila-agent/) (the official RAG agent starter; the governance guide teaches this path). There is no `anila-core init` / `register` CLI. `pip install "anila-core[rag]"` provides the heavyweight document-parsing packages.
-- **ingestion-worker** (Arq async pipeline): consumes only Pillar 2 (`chunking_plugins`, `IngestionError`, `pg_pool`, `pgvector_store`, `credential_crypto`); never touches Pillar 1.
+- **Router deployment** ([`anila-core-router`](../../services/anila-core-router/)): `api/router_server.py` is a hand-written dispatcher. It uses `prompts`, `registry.remote_agent_manifest`, `tools.dispatch_tool`, `memory.short_term`, `api/session_owner`, `api/events`, `http_pool`, and Pillar 2. It is not built on QueryEngine or Coordinator. A running router process does not load `engine.*`.
+- **Agent developers**: fork [`anila-agent`](../anila-agent/) (the RAG agent starter the governance guide teaches). Nothing calls `anila-core init`; that command is not in the package. Pillar 1 (QueryEngine, tools, workspace) can still be imported, and no service in the platform uses it.
+- **ingestion-worker** (Arq async pipeline): consumes only Pillar 2 (`chunking_plugins`, `IngestionError`, `pg_pool`, `pgvector_store`, `credential_crypto`); it does not touch Pillar 1.
 
-> **Post-redesign repo layout (§17.1)**: the monorepo uses four tiers — `services/` (deployable services, incl. `csp` / `anila-core-router`), `apps/` (frontends), `packages/` (importable packages; this SDK lives here), `infra/` (compose / deploy scripts / nginx / models). The root [`compose.yaml`](../../compose.yaml) is a shim → `include: infra/compose/platform.yml`; deploy scripts live under `infra/deployment/{scripts,intranet}/`. Repo-root positioning: [`../../README.md`](../../README.md).
+The repo has four layers: `services/` (deployable services, including `csp` and `anila-core-router`), `apps/` (frontends), `packages/` (importable packages; this SDK lives here), `infra/` (compose, deploy scripts, nginx, models). The root [`compose.yaml`](../../compose.yaml) only does `include: infra/compose/platform.yml`. Deploy scripts live under `infra/deployment/{scripts,intranet}/`. The platform overview is [`../../README.md`](../../README.md).
 
 ---
 
@@ -108,21 +106,21 @@ packages/anila-core/
             └── chunking_plugins/  # base · registry (@register_chunker) · builtins
 ```
 
-- Module responsibility and boundary live in each `src/anila_core/` package docstring; the old `docs/archive/anila-core/anila-core-boundary.md` is deleted — mapping table in `docs/CURRENT-STATUS.md`.
+- Module responsibility and boundary live in each `src/anila_core/` package docstring.
 
 ---
 
-## Redesign capability mapping (what anila-core owns)
+## What anila-core owns
 
-Most platform capability lives in CSP / the frontends; anila-core only provides the runtime producer surface. The old redesign docs' chapter numbers (doc 05 / 08 …) are gone; see `docs/CURRENT-STATUS.md` for the mapping table.
+Most of the platform lives in CSP and the frontends. anila-core is the runtime side.
 
 | Capability | What anila-core owns | Code / doc |
 |---|---|---|
 | Full Trace span export | Removed. Nothing posts to `/v1/traces`. In-process `Tracer` / `Span` stay local | `tracing/` |
 | **Task spine** (`X-ANILA-Task-Id`) | the runtime reads it via `CallerContext` and threads the task-id through the turn | `api/caller_context.py` |
-| **Four-level classification + one-way latch** | the agent runtime honours the per-turn classified one-way latch (`ctx.classified_latch` → `anila_meta.classified`); `register` carries `--classification-level` (`無機密` / `營業秘密` / `密` / `機密`) (written to `default_classification_level`). **Latch enforcement / declassification authority is CSP** | `context/agent_context.py`; doc `08` |
-| **Agent Registry** (OE-1 three states: registered / approved / disabled) | No `anila-core register` CLI. Registration is the governance UI or `POST /api/agents/register`. **The state machine lives in CSP** | `services/csp/app/models/agent.py` |
-| **Model Gateway** (http fail-closed) | `url_guard` rejects http unless `ANILA_ALLOW_HTTP_ENDPOINT=1`. **Per-model keys / 5-state health live in CSP** | `security/url_guard.py`; Model Gateway §8 |
+| **Four-level classification + one-way latch** | `AgentContext.classified_latch` is carried through the turn. Latch enforcement and declassification are in CSP | `context/agent_context.py` |
+| **Agent Registry** | The package has no `register` command. Registration is the governance console, or `POST /api/agents/register`. Approval state lives in CSP | `services/csp/app/api/agents/` |
+| **Model Gateway** (http flag by endpoint kind) | `url_guard` rejects http for `endpoint_kind='model'` unless `ANILA_ALLOW_HTTP_ENDPOINT=1`. Production and dev use the same rule. Per-model keys and the five health states live in CSP | `security/url_guard.py` |
 
 ---
 
@@ -175,7 +173,7 @@ result = await engine.run([UserMessage(content="say hi")], on_stream_delta=on_de
 print(result.stop_reason, result.turn_count)
 ```
 
-> ⚠️ QueryEngine has **no** `run_stream()`; the entrypoint is `await engine.run(messages, on_stream_delta=...)` (see [`e2e_smoke.py`](./e2e_smoke.py)).
+QueryEngine has no `run_stream()`. The entry point is `await engine.run(messages, on_stream_delta=...)` (see [`e2e_smoke.py`](./e2e_smoke.py)).
 
 ### Full Trace
 
@@ -193,7 +191,7 @@ seven-state machine and no trace-test gate.
 
 ## Security: outbound URL guard (SSRF)
 
-`security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` is the central allow-list for user-supplied endpoint URLs (validated once by CSP at credential create and again by the worker at call time — defense in depth). **Slice 6a** domain-splits the http-relaxation flag by `endpoint_kind` (scheme only; host / IP / DNS / trusted-host checks are identical across kinds):
+`security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` is the central allow-list for user-supplied endpoint URLs (validated once by CSP at credential create and again by the worker at call time — defense in depth). domain-splits the http-relaxation flag by `endpoint_kind` (scheme only; host / IP / DNS / trusted-host checks are identical across kinds):
 
 - **`model`** — rejects http by default; admitted only via an explicit `ANILA_ALLOW_HTTP_ENDPOINT=1` (decided 2026-07-29: uniform across production and dev).
 - **`agent`** — http is allowed via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` (for on-prem MLSteam plain-http NodePort agents); legacy `ANILA_ALLOW_HTTP_ENDPOINT` remains a deprecated fallback.
@@ -216,8 +214,8 @@ Fixed host rules: deny list (loopback / `169.254.169.254` metadata / mDNS), inte
 
 ## Related docs
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 - RAG agent template: [`../anila-agent/README.md`](../anila-agent/README.md) · Router shell: [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
-- Platform: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
+- Platform: [`../../README.md`](../../README.md)
 
 > Version authority is `pyproject.toml` (v0.14.0); the latest `CHANGELOG.md` entry is v0.13.0. ⚠️ Known code inconsistency (not a README issue): `src/anila_core/__init__.py` still hard-codes `__version__ = "0.7.0"`, so reading `anila_core.__version__` programmatically returns the stale value.

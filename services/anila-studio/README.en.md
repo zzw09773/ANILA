@@ -1,14 +1,12 @@
 # anila-studio
 
-> The **content-generation service** extracted from `myCSPPlatform/backend` — the redesign's "Artifact Center / production engine" (`產出中心`): RAG finds your uploaded documents → an LLM drafts content → it renders multiple artifact types. Originally slides-only, it has grown into **five artifacts**: slides, reports, mindmaps, infographics, datatables.
+> The content-generation service. It retrieves from uploaded documents, asks a model to draft, then renders a file. Five outputs: slides, reports, mindmaps, infographics, datatables.
 
 > 中文版本：[README.md](README.md)
 
-> 🌿 **Branch note**: This service exists on most deployment branches; the slim `trial-military` build does not include it. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
-## Where it sits in the monorepo (post-redesign §17.1 layout)
+## Where it sits in the monorepo
 
 ```
 services/anila-studio/         ← this service (FastAPI, port 8100)
@@ -29,9 +27,9 @@ Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health`
 
 ---
 
-## What the redesign added (Slices relevant to this service)
+## What this service does
 
-| Slice capability | Where it lands here |
+| Capability | Where it lands here |
 |---|---|
 | **Artifact contract + Redis job store** | `job_store.py`: a `PersistedJob` projection is written to Redis (key prefix `anila-studio:jobs:`, 7-day TTL) so a **restarted** studio can still answer status queries for pre-restart jobs; best-effort — a Redis outage degrades to in-memory only and does NOT block startup. `job_reporting.py`: reports to CSP via `POST /v1/artifact-jobs` (create), `PATCH /v1/artifact-jobs/{id}` (terminal / progress), `POST /v1/artifacts` (artifact landed). |
 | **trace_id** | Correlation id on the artifact job sent to CSP. Studio does not POST spans. |
@@ -40,7 +38,7 @@ Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health`
 | **Model Gateway** | All LLM traffic goes through the CSP `POST /v1/chat/completions` proxy (keeping token billing); studio never talks to a model directly. |
 | **JWKS / revocation auth** | `jwks_client` (fetch csp JWKS + cache) + `revocation_cache` (Redis pub/sub + cold-start, **fail-closed**). |
 
-> (2), (3) and the CSP reporting are all **fire-and-forget** (retry-once, log-not-raise): CSP being down must never break generation. `STUDIO_ARTIFACT_REPORTING=false` silences the whole group (spans included). The cross-cutting coordination lives in `job_lifecycle.py`; the pipelines themselves are unchanged.
+> `trace_id`, `task_id`, and the reports to CSP are sent without waiting for a response: one retry, then a log line, and the exception is not raised. CSP being down must not break generation. `STUDIO_ARTIFACT_REPORTING=false` turns the whole group off. The coordination lives in `job_lifecycle.py`; the pipelines themselves stay as they are.
 
 ---
 
@@ -127,7 +125,7 @@ Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila
 | `GET /api/models/roles/image_generation` | image-generation role; images are requested only when it is healthy |
 | `POST /v1/images/generations` | generated slide images via CSP, using the caller's credential |
 | `POST /v1/chat/completions` | LLM (via csp proxy for billing; **no `/api/proxy` prefix**) |
-| `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact reporting (Slice 8b, fire-and-forget). `trace_id` on the body is a correlation id; spans are not posted |
+| `POST /v1/artifact-jobs` · `PATCH /v1/artifact-jobs/{id}` · `POST /v1/artifacts` | artifact-job / artifact reporting (sent without waiting). `trace_id` on the body is a correlation id; spans are not posted |
 
 It also talks directly to the downstream `pptx-renderer` (`{RENDERER_BASE_URL}/render` · `/screenshots` · `/qa-geometric`). Generated images go through CSP, not a model host. CSP artifact reporting reuses the user's bearer JWT (CSP re-verifies with RS256 + JWKS, preserving on-behalf-of semantics). The shared `CSP_SERVICE_TOKEN` is retired; service calls use the token in `ANILA_SERVICE_TOKEN_FILE`.
 
@@ -179,5 +177,5 @@ cd ../../apps/anilalm && npm run gen:studio-types                        # → s
 
 ## Related docs
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
-- Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
+- Platform overview: [`../../README.md`](../../README.md)

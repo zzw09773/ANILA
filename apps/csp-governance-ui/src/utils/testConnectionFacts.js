@@ -57,7 +57,7 @@ export function resolveTestConnectionDetail(result) {
   if (result == null || typeof result !== 'object' || Array.isArray(result)) {
     return '回應不是預期的探測結果（可能收到 HTML 或其他非 JSON），三事實皆無法判定'
   }
-  return '後端未提供說明文字'
+  return '沒有說明文字'
 }
 
 export function formatTestConnectionFacts(result) {

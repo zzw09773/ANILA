@@ -4,13 +4,11 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This worker exists on every ANILA deployment branch with identical content. See the root [`README.md`](../../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
-## Where it sits in the monorepo (post-redesign §17.1 layout)
+## Where it sits in the monorepo
 
-The redesign collapsed the tree into four layers — `services/` · `apps/` · `packages/` · `infra/`. This service lives at:
+This service lives at:
 
 ```
 services/ingestion-worker/     ← this service (Arq worker, no HTTP surface)
@@ -229,11 +227,11 @@ In compose (`infra/compose/platform.yml`): build context = repo root; `depends_o
 - **Shared upload dir**: CSP writes, worker reads; captioned images land in `<UPLOAD_DIR>/anila-images/<doc_id>/`.
 - **User credentials for judge / relation LLM**: user-supplied credentials (`user_llm_credentials`, AES) are decrypted just-in-time; `validate_outbound_url` (SSRF) runs before egress, and the credential object's `__repr__` masks the key.
 
-> This worker predates the redesign's Task spine / Full Trace / Artifact contract and **does not** participate in them: it reads no `X-ANILA-Task-Id`, emits no trace spans, and sets no classification level. Its only redesign touch-points are the §17.1 layout, the compose shim, and the CSP Model Gateway key plus `ANILA_ALLOW_*` egress guards.
+> This worker does not read `X-ANILA-Task-Id`, does not emit trace spans, and does not set a classification level. Model calls use the CSP Model Gateway key. Outbound calls are limited by `ANILA_ALLOW_*`.
 
 ---
 
 ## Related docs
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
-- Platform overview: [`../../README.md`](../../README.md) · current `main` (old seven-branch model retired)
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
+- Platform overview: [`../../README.md`](../../README.md)

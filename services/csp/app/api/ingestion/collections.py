@@ -353,8 +353,7 @@ def _abort_raise_rolled_back(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=(
             f"升密失敗，已整批回復：知識庫仍為「{previous.to_storage()}」，"
-            f"庫內文件密等一律未變更，重試是安全的。"
-            f"錯誤類型 {type(exc).__name__}，細節見伺服器日誌。"
+            f"庫內文件密等一律未變更，重試是安全的。細節見伺服器日誌。"
         ),
     ) from exc
 

@@ -6,8 +6,6 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This directory exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it.** See the root [`README.md`](../README.md) branch matrix (current line is a single `main`; the old seven-branch model is retired).
-
 ---
 
 ## Overview
@@ -101,9 +99,9 @@ The two references cover two dimensions:
 
 ## Related docs
 
-- Platform: [`../README.md`](../README.md) · current `main` (old seven-branch model retired)
+- Platform: [`../README.md`](../README.md)
 - Python runtime (porting destination): [`../packages/anila-core/README.md`](../packages/anila-core/README.md)
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../docs/CURRENT-STATUS.md).
 
 ---
 

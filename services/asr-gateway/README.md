@@ -73,7 +73,7 @@ refresh token、fail-closed 撤銷查核)。長連線特有的兩點:
 
 ⚠ **`app/services/jwks_client.py` 與 `revocation_cache.py` 是 anila-studio 的
 vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,反之亦然 ——
-兩份分歧 = 兩個服務對「什麼是有效權杖」認定不同。見規劃書 §12。
+兩份分歧，兩個服務對「什麼是有效權杖」的認定就不同。改一邊要同時改另一邊。
 
 ## 併發與資源
 
@@ -97,7 +97,7 @@ vendored 副本**(檔頭有 VENDORED 警告)。改動必須同步 studio 那份,
 | `ASR_INITIAL_PROMPT` | `以下是繁體中文。` | 通用 prompt,非領域詞典。 |
 | `ASR_BEAM_SIZE` | `5` | final 解碼的 beam。 |
 | `ASR_PARTIALS_ENABLED` | `1` | 負載旋鈕:設 0 只留定稿,GPU 壓力大減。 |
-| `ASR_OPENCC_MODE` | `off` | `off`/`s2t`/`s2tw`。⚠ 不要用 s2twp(見規劃書 §10)。 |
+| `ASR_OPENCC_MODE` | `off` | `off`／`s2t`／`s2tw`。不要設 `s2twp`：會把已經正確的繁體改掉（例如「類型」變成「型別」）。程式遇到 `s2twp` 會拒絕。 |
 | `ASR_MAX_SESSION_SECONDS` | `300` | 單次語音上限;逾時先 flush 再斷。 |
 | `ANILA_SERVICE_TOKEN_FILE` | — | 撤銷 cache 冷啟動同步讀這個憑證檔。路徑有設而檔案不在時失敗即關閉,cache 不 ready,所有 WS 被拒。 |
 | `CSP_BASE_URL` / `REDIS_URL` / `JWT_*` | — | 與 anila-studio 同名同義。 |

@@ -1,28 +1,29 @@
 # ANILA Shell — 任務中心 Runtime（`anila-runtime-ui`）
 
-> ANILA 平台的終端使用者前端（React + Vite，v1.0.0）。使用者登入後在此**提出任務、與模型／Agent 對話、檢視軌跡、啟動專案入口服務**。這是 ANILA 唯一的一般使用者入口殼層（Shell），承載「任務中心」預設視圖，並以同源導覽連到「我的知識庫／產出中心／專案入口」。
+> ANILA 的一般使用者介面（React + Vite，v1.0.0）。登入後在這裡與模型或助手對話、看用量與記憶、開啟已登記的專案入口，並從側欄進到知識庫。簡報、報告等產出在知識庫那一頁。
 
 > English mirror: [`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本 UI 存在於所有 ANILA 部署分支；分支策略見根目錄 [`README.md`](../../README.md) （現行單一 `main`；舊七分支模型已失效，見根目錄 README）。**登入已統一交給治理中心**：本 Shell 不再持有登入頁（見下方「無登入頁」）。
->
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
 ---
 
 ## 1. 產品定位
 
-依產品憲章（產品憲章 §2），正式使用者只看到 **ANILA** 一個產品，四個一級入口：
+側欄（`src/shellNav.jsx` 的 `buildShellEntries()`）是這五項：
 
 ```text
 ANILA
-├── 任務中心    ← 本 Shell 的預設視圖（chat = 任務工作台）
-├── 我的知識庫  → 同源知識 SPA（/anilalm）
-├── 產出中心    → 同源知識 SPA 的 Studio 面（/anilalm）
-└── 專案入口    → ServicesPanel（Registry 服務卡片）
+├── 對話        ← 預設視圖
+├── 我的知識庫  → /anilalm（知識庫與產出都在這一頁；開關關掉時這一列顯示「即將推出」、不能點）
+├── 專案入口    → ServicesPanel
+├── 用量
+└── 記憶
 ```
 
-本 Shell **不持有業務邏輯或模型**，只負責：工作階段守衛、對話建立／串流渲染、把後端 typed SSE 事件（trace／interrupt／todos／tool call／spans）視覺化，並串起 Task 主流程與治理底座（分類浮水印、trace、審計）。標籤一律用產品語彙，不對使用者暴露 ANILALM／Studio／CSP 等技術品牌名（`src/shellNav.jsx`）。
+owner、admin、developer，以及單位管理員，另外看得到「治理中心」（連到同源 `/`）。
+
+本 Shell 不持有模型。它負責工作階段守衛、建立對話、把串流畫出來（trace、interrupt、todos、tool call、spans），並帶上分類浮水印、trace、審計。畫面上的標籤用產品用語，不出現 ANILALM、Studio、CSP。
 
 ### 無登入頁（統一 SSO）
 
@@ -30,15 +31,15 @@ ANILA
 
 ---
 
-## 2. 核心能力（對應 redesign Slices）
+## 2. 核心能力
 
 | 能力 | 檔案 | 摘要 |
 |---|---|---|
-| **四入口 ShellNav** | `src/shellNav.jsx` | `buildShellEntries()` 產生四大入口；`canSeeGovernance()`（owner／admin／developer）才追加「治理中心」；`originHref()` 以 origin 絕對路徑連外部同源介面。掛載於 `src/chat.jsx` 側欄（展開＋收合兩態）。 |
+| **側欄** | `src/shellNav.jsx` | `buildShellEntries()` 產生對話、我的知識庫、專案入口、用量、記憶。`canSeeGovernance()`（owner、admin、developer，以及 `is_unit_admin`）才追加「治理中心」。`originHref()` 用 origin 絕對路徑連到 `/anilalm` 與 `/`。掛在 `src/chat.jsx` 側欄。 |
 | **Task 主流程** | `src/runtime/tasks.js`、`src/runtime/sse.js`、`src/app.jsx` | 首次送訊息時 `createTaskForConversation()` → `POST /api/tasks`（`task_type:"query"`、`source_scope:"none"`），`taskId` 快取於對話狀態；`sse.js` 於串流帶 **`X-ANILA-Task-Id`** 讓 CSP 把派發掛回同一 Task。任何失敗回傳 `null`＋zh-TW `console.warn`，聊天以無任務模式照常運作。 |
 | **Trace Explorer** | `src/runtime/traces.js`、`src/spanTree.jsx` | `fetchTrace()` → `GET /api/traces/{trace_id}` 取持久化 `{trace_id, task_id, spans[]}`；`spansToTree()` 把扁平 spans 組成樹；`TraceExplorer` 提供「**檢視軌跡**」控制並以 `SpanTreeViewer` 呈現。取軌跡失敗降級為「尚無軌跡資料」，絕不崩潰。 |
-| **四級機敏分類** | `src/trust.jsx`、`src/runtime/classified.js`、`src/runtime/classifyRetryQueue.js` | `watermarkLevel()` 由對話狀態推導真實中文級別；`ClassificationWatermark` 為**真四級角標**（密＝warn／機密＝danger-strong；無機密／營業秘密不上全浮水印），取代裝飾性英文 CONFIDENTIAL；`ConfidentialWatermark` 為**全螢幕鑑識浮水印**，對角平鋪帶「密等 · 讀取者 · 讀取時間（分鐘精度）」以供截圖外洩溯源（換對話才重凍時間）。單向閂鎖由後端決定，`classifyRetryQueue` 確保 latch 抵達 CSP。 |
-| **專案入口 ServicesPanel** | `src/services.jsx` | `fetchServices()` → `GET /api/services`，7a 後端未上線（404）退回 `GET /api/platform-links`（legacy）；`resolveLaunch()` 對 registry 服務走 `POST /api/services/{id}/launch`。`new_tab` → `window.open(_,'_blank','noopener')`；`iframe` → 站內沙箱覆蓋層（`sandbox="allow-scripts allow-same-origin allow-forms"`、`referrerPolicy="no-referrer"`）＋「此服務由 <name> 提供」安全提示。 |
+| **四級機敏分類** | `src/trust.jsx`、`src/runtime/classified.js`、`src/runtime/classifyRetryQueue.js` | `watermarkLevel()` 由對話狀態推出中文級別。`ClassificationWatermark` 是角標（密＝warn、機密＝danger-strong；無機密與營業秘密不上全螢幕浮水印）。`ConfidentialWatermark` 全螢幕斜向重複「密等 · 讀取者 · 讀取時間（到分鐘）」，換對話才重算時間。閂鎖由伺服器決定，`classifyRetryQueue` 負責送到 CSP。 |
+| **專案入口 ServicesPanel** | `src/services.jsx` | `fetchServices()` → `GET /api/services`；該路由回 404 時改走 `GET /api/platform-links`。`resolveLaunch()` 對 registry 服務走 `POST /api/services/{id}/launch`。`new_tab` → `window.open(_,'_blank','noopener')`；`iframe` → 站內沙箱覆蓋層（`sandbox="allow-scripts allow-same-origin allow-forms"`、`referrerPolicy="no-referrer"`）＋「此服務由 <name> 提供」。 |
 
 ---
 
@@ -49,7 +50,7 @@ ANILA
 | 框架 / 路由 | **React 18.3.1** · `react-router` 7.18.2（`>=7.18.2 <8`） |
 | 建置 | **Vite 6.3.5**（`@vitejs/plugin-react` 4.4.1） |
 | Markdown / 數學 / 高亮 | `react-markdown` 9 + `remark-gfm` 4 / `remark-math` 6 + `rehype-katex` 7 + `rehype-highlight` 7 + `katex` 0.16 + `highlight.js` 11 |
-| 圖表 | **`mermaid` 11.15.0** |
+| 圖表 | **`mermaid` 11.16.1** |
 | 測試 | **Vitest 3.1.3** + `@testing-library/react` 16 + `jest-dom` 6 + `jsdom` 26 |
 
 `scripts`：`dev` / `build` / `preview` / `test`（`vitest run`）。**無 `lint` script**。無 Tailwind／全域 stylesheet — UI 走 inline 元件樣式 + `index.html` 內含 base CSS 與 `--font-sans/--font-mono` 系統字型堆疊（air-gap，不載外部字型）。
@@ -102,7 +103,7 @@ docker compose -f compose.yaml up -d anila-ui        # 隨全棧一起 build/up
 ### 測試
 
 ```bash
-npm test        # vitest run — 17 檔 / 222 個測試（截至撰稿全綠）
+npm test
 ```
 
 僅 Vitest 單元測試；本子專案沒有 Playwright E2E。
@@ -125,11 +126,8 @@ npm test        # vitest run — 17 檔 / 222 個測試（截至撰稿全綠）
 
 ## 7. 相關文件
 
-- 平台整體：[`../../README.md`](../../README.md) · 現行 `main`（舊七分支模型已失效）
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台整體：[`../../README.md`](../../README.md)
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 - 相鄰入口：知識庫／產出中心 [`../anilalm/README.md`](../anilalm/README.md) · 治理中心 [`../csp-governance-ui/README.md`](../csp-governance-ui/README.md)
 - 後端：[`../../services/csp/README.md`](../../services/csp/README.md) · Router [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
 
----
-
-**Framework**：React + Vite · **Serves**：任務中心（Shell IA）· **Talks to**：CSP（`/api/*` + `/v1/*` cookie）+ Router（`/v1/sessions/*`）— 皆經 `nginx` 同源前置。

@@ -4,11 +4,9 @@
 
 > 中文為主版；English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
-> 🌿 **分支對照**：`infra/models/`（前身 `models/`，§17.1 重組後遷入 `infra/`）存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表（現行單一 `main`；舊七分支模型已失效，見根目錄 README）。
-
 ---
 
-- 現行說明見 `docs/CURRENT-STATUS.md`；舊 PLAN.md／SYSTEM-MAP.md 等對照表也在那裡。
+- 平台現況見 [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md)。
 
 ## 定位
 
@@ -16,7 +14,7 @@
 
 - 在 repo 根跑 `docker compose down` 只會停平台，**不會誤殺**這裡的模型容器。
 - 兩個 project 靠共用的 external network `anila-models-net` 互通；CSP／Router／Studio 以 docker DNS（如 `http://gemma4:8000`）連上模型，host port 完全沒開。
-- **權重位置未變**：`ANILA_HF_DIR` 預設 `../../models/model`（相對本 compose 檔解析），§17.1 重組只搬了 compose 與 `src/`，沒動權重目錄。
+- **權重不在這個目錄**：`ANILA_HF_DIR` 預設 `../../models/model`（相對本 compose 檔解析）。
 
 ---
 

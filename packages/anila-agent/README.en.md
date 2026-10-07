@@ -4,11 +4,11 @@
 
 [繁體中文](README.md) · English. This package is the advanced example. The short path onto the platform is `packages/anila-agent-quickstart`; the steps live on the governance「開發指南」page.
 
-- Current state: `docs/CURRENT-STATUS.md` (includes the mapping table for the deleted PLAN.md / SYSTEM-MAP.md and friends).
+- Current state: [`docs/CURRENT-STATUS.md`](../../docs/CURRENT-STATUS.md).
 
-## Where it sits in the redesign
+## Where it sits
 
-- **Location**: monorepo `packages/anila-agent/` (§17.1 layout: `services/` · `apps/` · `packages/` · `infra/`).
+- **Location**: `packages/anila-agent/`, next to `services/`, `apps/`, and `infra/`.
 - **Dependencies and deployment**: this advanced example depends on both `openai-agents==0.17.5` and `anila-core>=0.14,<0.15`. Standalone deployment requires compatible offline wheels, trust configuration, and a working model endpoint; this is not a zero-dependency scaffold.
 - **Role in the platform**: approved by the **Agent Registry** in `services/csp` (the CSP governance service)
   and registered via the developer wizard in `apps/csp-governance-ui` (the governance UI). Approval is

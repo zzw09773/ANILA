@@ -2389,7 +2389,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const idx = existing.findIndex((m) => m.id === userMsg.id);
     if (idx < 0) return;
     if (typeof convId !== "number" || typeof userMsg.dbId !== "number") {
-      setRuntimeError("此訊息尚未儲存至後端，無法編輯重問。");
+      setRuntimeError("這則訊息還沒寫入對話，無法編輯重問。");
       return;
     }
 
@@ -4392,7 +4392,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   async function deleteBranch(msg) {
     const convId = msg.conversationId;
     if (typeof convId !== "number" || typeof msg.dbId !== "number") {
-      setRuntimeError("此訊息尚未儲存至後端，無法刪除分支。");
+      setRuntimeError("這則訊息還沒寫入對話，無法刪除分支。");
       return;
     }
     if (!(await confirm({
@@ -4435,7 +4435,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     updateMsg(convId, targetMsg.id, { rating: nextRating, ratingScore: nextScore });
 
     if (typeof convId !== "number" || typeof targetMsg.dbId !== "number") {
-      setRuntimeError("此訊息尚未儲存至後端，反饋僅保留於本地。");
+      setRuntimeError("這則訊息還沒寫入對話，這次評分不會保存。");
       return false;
     }
     try {
@@ -4630,7 +4630,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         makeTitle: makeConversationTitle,
       });
       if (!detail || typeof detail.id !== "number") {
-        throw new Error("採用回答失敗：伺服器未回傳對話");
+        throw new Error("採用回答失敗：沒有取得更新後的對話");
       }
       const lookupName = (id) =>
         agents.find((a) => a.id === id)?.name || agentName || null;
@@ -4978,7 +4978,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               </button>
               {selectedConv.classified && (
                 <span
-                  title="此對話已鎖為列管（由後端依 agent 預設分類等級強制啟用）。"
+                  title="此對話已鎖為列管（依助手的預設分類等級鎖定，無法自行關閉）。"
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
                     padding: "3px 9px",
@@ -5416,7 +5416,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           expiresAt,
         }) => {
           if (!selectedConvId || typeof selectedConvId !== "number") {
-            throw new Error("尚未建立後端對話 — 請先送出第一則訊息");
+            throw new Error("這則對話還沒建立，請先送出第一則訊息。");
           }
           return apiCreateShare(authRequest, selectedConvId, {
             targetUsername,

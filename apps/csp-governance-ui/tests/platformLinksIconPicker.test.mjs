@@ -20,10 +20,11 @@ test('圖示欄是 select,不是自由文字 input', () => {
   assert.doesNotMatch(src, /placeholder="workflow"/)
 })
 
-test('圖示清單來自伺服器 GET /api/platform-links/icons', () => {
+test('圖示欄從平台清單選，不把網址寫在畫面上', () => {
   const view = readView()
   const api = readApi()
-  assert.match(view, /清單來自伺服器 GET \/api\/platform-links\/icons/)
+  assert.match(view, /從平台提供的清單裡選一個/)
+  assert.doesNotMatch(view, /GET \/api\/platform-links\/icons/)
   assert.match(api, /\/api\/platform-links\/icons/)
   assert.match(view, /listPlatformLinkIcons/)
 })
