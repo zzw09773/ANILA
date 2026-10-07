@@ -595,7 +595,7 @@ def _client_safe_upstream_error(
     """Fixed client-facing message — never interpolate exception text (URLs)."""
     if http_status is not None:
         return f"無法從上游取得模型清單（HTTP {http_status}）"
-    return "無法從上游取得模型清單"
+    return f"無法從上游取得模型清單（錯誤類型 {type(exc).__name__}）"
 
 
 async def _fetch_upstream_model_listing(
@@ -1715,7 +1715,7 @@ async def _probe_embedding_native_dim(
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail="探測 embedding 維度失敗",
+            detail=f"探測 embedding 維度失敗（錯誤類型 {type(exc).__name__}）",
         ) from exc
     if not isinstance(vec, list) or not vec:
         raise HTTPException(

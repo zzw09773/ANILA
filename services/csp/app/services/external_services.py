@@ -397,7 +397,7 @@ def _probe_http(row: ExternalService) -> tuple[str, str]:
             finished - started
         ) >= deadline:
             return "unhealthy", PROBE_TIMEOUT_DETAIL
-        return "unhealthy", "連線失敗"
+        return "unhealthy", _scrub(f"連線失敗（錯誤類型 {type(exc).__name__}）", secret)
 
     response = payload
     if 300 <= response.status_code < 400:

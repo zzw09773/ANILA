@@ -235,7 +235,7 @@ def verify_pkcs7_signature(
         raise  # 我們自己的錯誤(含 CardConfigError)照原樣往上
     except Exception as exc:  # noqa: BLE001 - 不可信 DER:任何非預期解析錯誤都當驗證失敗(401),不可洩成 500
         raise InvalidSignatureError(
-            "卡片簽章無法驗證"
+            f"卡片簽章無法驗證（錯誤類型 {type(exc).__name__}）"
         ) from exc
     claims = _extract_claims(signer_cert, card_serial=card_serial)
     logger.info(

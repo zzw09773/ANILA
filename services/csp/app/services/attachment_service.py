@@ -306,7 +306,7 @@ def extract_attachment_text(
             )
             att.extract_status = "failed"
             att.extract_error = _truncate_error(
-                "附件解析失敗"
+                f"附件解析失敗（錯誤類型 {type(exc).__name__}）"
             )
             att.token_count = None
             att.extracted_text = None
@@ -353,7 +353,7 @@ def extract_attachment_text(
             _record_extract_failure(
                 db,
                 attachment_id,
-                "附件抽取結果寫入失敗",
+                f"附件抽取結果寫入失敗（錯誤類型 {type(exc).__name__}）",
             )
     except Exception:
         logger.exception(
