@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from anila_core.security.url_guard import UnsafeEndpointError
 
 from app.models.department import Department
-from app.models.hr_oracle import DEFAULT_HR_TITLES, DEFAULT_ROOT_UNIT_NAME, HrOracleSettings
+from app.models.hr_oracle import DEFAULT_ROOT_UNIT_NAME, HrOracleSettings
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.external_service_crypto import (
@@ -59,8 +59,15 @@ def _clean_titles(value) -> list[str]:
 
 def _public_titles(value) -> list[str]:
     if not isinstance(value, list):
-        return list(DEFAULT_HR_TITLES)
-    return [item for item in value if isinstance(item, str)]
+        return []
+    found: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        title = item.strip()
+        if title and title not in found:
+            found.append(title)
+    return found
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -112,8 +119,10 @@ def public_view(row: HrOracleSettings | None, db: Session | None = None) -> dict
             "user": "",
             "has_password": False,
             "table_name": "",
-            "unit_admin_titles": list(DEFAULT_HR_TITLES),
-            "declass_titles": list(DEFAULT_HR_TITLES),
+            "auto_unit_admin": True,
+            "auto_declass": True,
+            "unit_admin_titles": [],
+            "declass_titles": [],
             "root_unit_name": DEFAULT_ROOT_UNIT_NAME,
             "health_status": "unknown",
             "health_checked_at": None,
@@ -129,6 +138,8 @@ def public_view(row: HrOracleSettings | None, db: Session | None = None) -> dict
             "user": row.db_user or "",
             "has_password": bool(row.password_envelope),
             "table_name": row.table_name or "",
+            "auto_unit_admin": bool(row.auto_unit_admin),
+            "auto_declass": bool(row.auto_declass),
             "unit_admin_titles": _public_titles(row.unit_admin_titles),
             "declass_titles": _public_titles(row.declass_titles),
             "root_unit_name": row.root_unit_name or DEFAULT_ROOT_UNIT_NAME,
@@ -160,6 +171,8 @@ def update_settings(
     service_name: str,
     db_user: str,
     table_name: str,
+    auto_unit_admin: bool,
+    auto_declass: bool,
     unit_admin_titles,
     declass_titles,
     root_unit_name: str,
@@ -201,6 +214,8 @@ def update_settings(
     row.service_name = service_name
     row.db_user = db_user
     row.table_name = table_name
+    row.auto_unit_admin = bool(auto_unit_admin)
+    row.auto_declass = bool(auto_declass)
     row.unit_admin_titles = titles_admin
     row.declass_titles = titles_declass
     row.root_unit_name = root_name
@@ -217,6 +232,7 @@ def update_settings(
         detail=(
             f"人資資料庫設定 enabled={row.enabled} host={row.host} "
             f"port={row.port} table={row.table_name} root={row.root_unit_name} "
+            f"auto_unit_admin={row.auto_unit_admin} auto_declass={row.auto_declass} "
             f"password={password_state}"
         ),
         ip_address=ip_address,

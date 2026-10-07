@@ -45,7 +45,7 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Item | Detail (from `requirements.txt` / `infra/docker/csp.Dockerfile`) |
 |------|------|
 | Language / framework | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
-| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (`0001`–`0046` [no 0025], then `r1_0001`; later files in `migrations/versions/`, currently through `r1_0071`) |
+| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (`0001`–`0046` [no 0025], then `r1_0001`; later files in `migrations/versions/`, currently through `r1_0072`) |
 | Config | pydantic-settings 2.7.1 (`app/config.py`) |
 | Auth | **JWT is RS256** (asymmetric, `app/utils/security.py` + JWKS; `python-jose[cryptography] 3.5.0`) · bcrypt 5.0.0 (direct, cost 12) |
 | DB drivers | psycopg2-binary 2.9.10 (PostgreSQL 16 + pgvector) + asyncpg (`csp_app` RLS pool, ingestion) |
@@ -123,7 +123,7 @@ curl http://localhost/v1/chat/completions \
 
 ## 5. Tables / migrations
 
-`r1_` continues after the numeric filenames (`r1_0001` revises `0046`), as one chain. The table below is `r1_0001`–`r1_0008`. Later revisions are in `migrations/versions/`, currently through `r1_0071`. Enums are stored as open `String` (closed enums live in `app/schemas/contracts/`). JSON uses `with_variant(JSONB, "postgresql")`.
+`r1_` continues after the numeric filenames (`r1_0001` revises `0046`), as one chain. The table below is `r1_0001`–`r1_0008`. Later revisions are in `migrations/versions/`, currently through `r1_0072`. Enums are stored as open `String` (closed enums live in `app/schemas/contracts/`). JSON uses `with_variant(JSONB, "postgresql")`.
 
 | Revision | What it does |
 |----------|--------------|

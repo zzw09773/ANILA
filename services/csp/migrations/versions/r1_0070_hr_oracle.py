@@ -14,7 +14,7 @@ down_revision: Union[str, None] = "r1_0069"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-_TITLES_DEFAULT = '["組長","副組長","所長","副所長","院長","副院長"]'
+_EMPTY_JSON = "[]"
 
 
 def _json_type():
@@ -26,11 +26,11 @@ def _json_type():
     return sa.JSON()
 
 
-def _titles_default():
+def _empty_json_default():
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        return sa.text(f"'{_TITLES_DEFAULT}'::jsonb")
-    return sa.text(f"'{_TITLES_DEFAULT}'")
+        return sa.text(f"'{_EMPTY_JSON}'::jsonb")
+    return sa.text(f"'{_EMPTY_JSON}'")
 
 
 def _columns(inspector, table: str) -> set[str]:
@@ -81,13 +81,13 @@ def upgrade() -> None:
                 "unit_admin_titles",
                 _json_type(),
                 nullable=False,
-                server_default=_titles_default(),
+                server_default=_empty_json_default(),
             ),
             sa.Column(
                 "declass_titles",
                 _json_type(),
                 nullable=False,
-                server_default=_titles_default(),
+                server_default=_empty_json_default(),
             ),
             sa.Column(
                 "health_status",

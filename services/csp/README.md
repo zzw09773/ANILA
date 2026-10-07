@@ -45,7 +45,7 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 項目 | 內容（取自 `requirements.txt` / `infra/docker/csp.Dockerfile`） |
 |------|------|
 | 語言 / 框架 | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
-| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（`0001`–`0046`〔無 0025〕之後接 `r1_0001`；後續在 `migrations/versions/`，目前到 `r1_0071`） |
+| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（`0001`–`0046`〔無 0025〕之後接 `r1_0001`；後續在 `migrations/versions/`，目前到 `r1_0072`） |
 | 設定 | pydantic-settings 2.7.1（`app/config.py`） |
 | 認證 | **JWT 為 RS256**（非對稱，`app/utils/security.py` + JWKS；`python-jose[cryptography] 3.5.0`）· bcrypt 5.0.0（直接使用，cost 12） |
 | 資料庫驅動 | psycopg2-binary 2.9.10（PostgreSQL 16 + pgvector）+ asyncpg（`csp_app` RLS pool，ingestion 用） |
@@ -123,7 +123,7 @@ curl http://localhost/v1/chat/completions \
 
 ## 5. 資料表 / Migration
 
-`r1_` 接在數字檔名之後（`r1_0001` revises `0046`），一條鏈走下去。下表是 `r1_0001`–`r1_0008`。其後的 revision 在 `migrations/versions/`，目前到 `r1_0071`。enum 存成開放的 `String`（封閉 enum 在 `app/schemas/contracts/`），JSON 用 `with_variant(JSONB, "postgresql")`。
+`r1_` 接在數字檔名之後（`r1_0001` revises `0046`），一條鏈走下去。下表是 `r1_0001`–`r1_0008`。其後的 revision 在 `migrations/versions/`，目前到 `r1_0072`。enum 存成開放的 `String`（封閉 enum 在 `app/schemas/contracts/`），JSON 用 `with_variant(JSONB, "postgresql")`。
 
 | Revision | 內容 |
 |----------|------|

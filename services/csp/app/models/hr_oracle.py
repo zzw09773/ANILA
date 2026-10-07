@@ -12,7 +12,6 @@ from sqlalchemy.types import JSON
 
 from app.database import Base
 
-DEFAULT_HR_TITLES = ("組長", "副組長", "所長", "副所長", "院長", "副院長")
 DEFAULT_ROOT_UNIT_NAME = "國家中山科學研究院"
 
 
@@ -20,8 +19,8 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _default_titles() -> list[str]:
-    return list(DEFAULT_HR_TITLES)
+def _empty_titles() -> list[str]:
+    return []
 
 
 class HrOracleSettings(Base):
@@ -35,15 +34,19 @@ class HrOracleSettings(Base):
     db_user = Column(String(128), nullable=False, default="", server_default="")
     password_envelope = Column(Text, nullable=True)
     table_name = Column(String(256), nullable=False, default="", server_default="")
+    # 打開時，人資有職稱就授與。關掉時，這個人下次登入收回 source 為 hr 的列。
+    auto_unit_admin = Column(Boolean, nullable=False, default=True, server_default="true")
+    auto_declass = Column(Boolean, nullable=False, default=True, server_default="true")
+    # 留空表示任何職稱都算。有填才只限完全相符的職稱。
     unit_admin_titles = Column(
         JSON().with_variant(JSONB, "postgresql"),
         nullable=False,
-        default=_default_titles,
+        default=_empty_titles,
     )
     declass_titles = Column(
         JSON().with_variant(JSONB, "postgresql"),
         nullable=False,
-        default=_default_titles,
+        default=_empty_titles,
     )
     # 一級單位都掛在這個最上層單位之下。沒有根時用這個名稱建立。
     root_unit_name = Column(

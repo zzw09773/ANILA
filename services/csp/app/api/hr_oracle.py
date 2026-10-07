@@ -30,6 +30,8 @@ class HrOracleUpdate(BaseModel):
     service_name: str = ""
     user: str = ""
     table_name: str = ""
+    auto_unit_admin: bool = True
+    auto_declass: bool = True
     unit_admin_titles: list[str] = Field(default_factory=list)
     declass_titles: list[str] = Field(default_factory=list)
     root_unit_name: str = DEFAULT_ROOT_UNIT_NAME
@@ -77,6 +79,8 @@ def put_hr_database(
             service_name=body.service_name,
             db_user=body.user,
             table_name=body.table_name,
+            auto_unit_admin=body.auto_unit_admin,
+            auto_declass=body.auto_declass,
             unit_admin_titles=body.unit_admin_titles,
             declass_titles=body.declass_titles,
             root_unit_name=body.root_unit_name,

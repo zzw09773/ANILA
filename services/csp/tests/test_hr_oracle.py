@@ -25,7 +25,7 @@ from app.models.classification import (
     DeclassificationRequest,
 )
 from app.models.department import Department
-from app.models.hr_oracle import DEFAULT_HR_TITLES, HrOracleSettings
+from app.models.hr_oracle import HrOracleSettings
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user import User
 from app.modules.policy.service import has_declassification_authority
@@ -76,8 +76,10 @@ def _enable(db: Session, **kwargs) -> HrOracleSettings:
         row.password_envelope = None
     else:
         row.password_envelope = encrypt_external_credential(password)
-    row.unit_admin_titles = list(kwargs.get("unit_admin_titles", DEFAULT_HR_TITLES))
-    row.declass_titles = list(kwargs.get("declass_titles", DEFAULT_HR_TITLES))
+    row.auto_unit_admin = kwargs.get("auto_unit_admin", True)
+    row.auto_declass = kwargs.get("auto_declass", True)
+    row.unit_admin_titles = list(kwargs.get("unit_admin_titles", []))
+    row.declass_titles = list(kwargs.get("declass_titles", []))
     db.commit()
     db.refresh(row)
     return row
@@ -717,8 +719,8 @@ def test_titles_grant_skip_revoke_and_leave_hand_grants(
     side = _dept(db, "另一組", institute.id)
     hand_side = _grant_unit(db, promoted, side, source="manual")
     settings = db.get(HrOracleSettings, 1)
-    settings.unit_admin_titles = []
-    settings.declass_titles = []
+    settings.auto_unit_admin = False
+    settings.auto_declass = False
     db.commit()
     _install_lookup(
         monkeypatch,
@@ -740,10 +742,12 @@ def test_titles_grant_skip_revoke_and_leave_hand_grants(
         monkeypatch,
         lambda employee_no, connection: _rows(employee_no, "系統組", "所長"),
     )
-    # 空清單會把管理員的人資列也收回。這裡把對照表放回來，只測「不新發」。
+    # 兩個開關都關掉會把管理員的人資列也收回。這裡打開開關、清單留空，只測「不新發」。
     settings = db.get(HrOracleSettings, 1)
-    settings.unit_admin_titles = list(DEFAULT_HR_TITLES)
-    settings.declass_titles = list(DEFAULT_HR_TITLES)
+    settings.auto_unit_admin = True
+    settings.auto_declass = True
+    settings.unit_admin_titles = []
+    settings.declass_titles = []
     db.commit()
     assert _swipe(client, monkeypatch, boss).status_code == 202
     boss_rows = _active_unit(db, boss)
@@ -752,6 +756,96 @@ def test_titles_grant_skip_revoke_and_leave_hand_grants(
     assert _active_declass(db, boss)
     assert _reload(db, boss).role == "admin"
     assert _reload(db, boss).is_approved is False
+
+
+def _duty_record(employee_no, duty):
+    return staff_from_rows(
+        employee_no,
+        [{
+            "ovc_PNO": employee_no,
+            "ovc_NAME": "專員甲",
+            "ovc_DEPT1_NAME": "資訊通信研究所",
+            "ovc_DEPT2_NAME": "人工智慧組",
+            "ovc_EMAIL": f"{employee_no}@example.invalid",
+            "ovc_DUTY_DS": duty,
+        }],
+    )
+
+
+def _by_source(rows, source):
+    return [row for row in rows if row.source == source]
+
+
+def test_any_title_grants_and_each_switch_or_list_limits_one_kind(
+    client, db, monkeypatch, card_on
+):
+    """有職稱就授與。空職稱不授與。關掉一個開關只收回那一種。清單有填才縮小。"""
+    _enable(db)
+    person = make_user(db, username="9102201", is_approved=True)
+    _install_lookup(monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "專員"))
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    group = db.query(Department).filter(Department.name == "人工智慧組").one()
+    institute = db.query(Department).filter(Department.name == "資訊通信研究所").one()
+    assert [row.department_id for row in _by_source(_active_unit(db, person), "hr")] == [group.id]
+    assert len(_by_source(_active_declass(db, person), "hr")) == 1
+    side = _dept(db, "系統組", institute.id)
+    hand = _grant_unit(db, person, side, source="manual")
+
+    _install_lookup(monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "   "))
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert [row.id for row in _active_unit(db, person)] == [hand.id]
+    assert _active_declass(db, person) == []
+
+    _install_lookup(monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "專員"))
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert len(_by_source(_active_unit(db, person), "hr")) == 1
+    assert len(_by_source(_active_declass(db, person), "hr")) == 1
+
+    settings = db.get(HrOracleSettings, 1)
+    settings.auto_unit_admin = False
+    db.commit()
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert _by_source(_active_unit(db, person), "hr") == []
+    assert [row.id for row in _by_source(_active_unit(db, person), "manual")] == [hand.id]
+    assert len(_by_source(_active_declass(db, person), "hr")) == 1
+
+    settings.auto_unit_admin = True
+    settings.auto_declass = False
+    db.commit()
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert len(_by_source(_active_unit(db, person), "hr")) == 1
+    assert _active_declass(db, person) == []
+    assert hand.id in {row.id for row in _active_unit(db, person)}
+
+    settings.auto_declass = True
+    settings.unit_admin_titles = ["  組長  "]
+    settings.declass_titles = ["所長"]
+    db.commit()
+    _install_lookup(monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "專員"))
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert _by_source(_active_unit(db, person), "hr") == []
+    assert _active_declass(db, person) == []
+    assert hand.id in {row.id for row in _active_unit(db, person)}
+
+    _install_lookup(monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "組長"))
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    hr_units = _by_source(_active_unit(db, person), "hr")
+    assert len(hr_units) == 1 and hr_units[0].department_id == group.id
+    assert _active_declass(db, person) == []
+
+    _install_lookup(monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "所長"))
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert _by_source(_active_unit(db, person), "hr") == []
+    assert len(_by_source(_active_declass(db, person), "hr")) == 1
+
+    _install_lookup(
+        monkeypatch, lambda employee_no, connection: _duty_record(employee_no, "組長、所長"),
+    )
+    assert _swipe(client, monkeypatch, person).status_code == 200
+    assert len(_by_source(_active_unit(db, person), "hr")) == 1
+    assert len(_by_source(_active_declass(db, person), "hr")) == 1
+    db.expire_all()
+    assert db.get(UnitAdminAssignment, hand.id).revoked_at is None
 
 
 def test_missing_unavailable_disabled_and_driver_missing_do_not_block_login(
@@ -1026,10 +1120,6 @@ def test_manual_department_choice_marks_the_source(client, db, monkeypatch, card
 # ── 治理中心設定 ────────────────────────────────────────────────────────────
 
 
-def _titles():
-    return list(DEFAULT_HR_TITLES)
-
-
 def test_settings_api_password_host_csrf_and_test_button(
     client, db, monkeypatch, caplog
 ):
@@ -1046,7 +1136,10 @@ def test_settings_api_password_host_csrf_and_test_button(
     assert first.json()["enabled"] is False
     assert first.json()["port"] == 1521
     assert first.json()["has_password"] is False
-    assert first.json()["unit_admin_titles"] == _titles()
+    assert first.json()["auto_unit_admin"] is True
+    assert first.json()["auto_declass"] is True
+    assert first.json()["unit_admin_titles"] == []
+    assert first.json()["declass_titles"] == []
     assert first.json()["root_unit_name"] == "國家中山科學研究院"
     assert first.json()["placement_note"] is None
     assert db.get(HrOracleSettings, 1) is None
@@ -1078,8 +1171,8 @@ def test_settings_api_password_host_csrf_and_test_button(
             "service_name": "HRSVC",
             "user": "hr_reader",
             "table_name": "VIHBUY",
-            "unit_admin_titles": _titles(),
-            "declass_titles": _titles(),
+            "unit_admin_titles": [],
+            "declass_titles": [],
         },
     )
     monkeypatch.setattr(hr_settings, "enforce_oracle_host", original_enforce)
@@ -1147,13 +1240,19 @@ def test_settings_api_password_host_csrf_and_test_button(
             "table_name": "",
             "password": SECRET,
             "root_unit_name": "院本部",
-            "unit_admin_titles": [],
+            "auto_unit_admin": False,
+            "auto_declass": True,
+            "unit_admin_titles": ["  專員  "],
             "declass_titles": [],
         },
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["has_password"] is True
     assert saved.json()["root_unit_name"] == "院本部"
+    assert saved.json()["auto_unit_admin"] is False
+    assert saved.json()["auto_declass"] is True
+    assert saved.json()["unit_admin_titles"] == ["專員"]
+    assert saved.json()["declass_titles"] == []
     assert "password" not in saved.json()
     assert SECRET not in saved.text
     envelope = db.get(HrOracleSettings, 1).password_envelope
@@ -1412,8 +1511,77 @@ def test_migration_upgrade_from_r1_0069_adds_source_and_settings():
         titles = conn.execute(text(
             "SELECT unit_admin_titles, declass_titles FROM hr_oracle_settings WHERE id = 1"
         )).one()
-        assert json.loads(titles[0]) == list(DEFAULT_HR_TITLES)
-        assert json.loads(titles[1]) == list(DEFAULT_HR_TITLES)
+        assert json.loads(titles[0]) == []
+        assert json.loads(titles[1]) == []
+
+
+def test_r1_0072_turns_title_switches_on_and_clears_lists():
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    import migrations.versions.r1_0070_hr_oracle as rev70
+    import migrations.versions.r1_0071_hr_root_and_lookup_order as rev71
+    import migrations.versions.r1_0072_hr_title_switches as rev72
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE users ("
+            "id INTEGER PRIMARY KEY, username VARCHAR(100) NOT NULL, "
+            "hashed_password VARCHAR(255) NOT NULL)"
+        ))
+        conn.execute(text(
+            "INSERT INTO users (id, username, hashed_password) VALUES (1, '9101902', 'x')"
+        ))
+        conn.execute(text(
+            "CREATE TABLE unit_admin_assignments ("
+            "id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, "
+            "department_id INTEGER NOT NULL)"
+        ))
+        conn.execute(text(
+            "CREATE TABLE classification_authority_assignments ("
+            "id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, "
+            "authority_reference VARCHAR(255) NOT NULL, is_active BOOLEAN NOT NULL)"
+        ))
+
+    def _run(revision, direction="upgrade"):
+        with engine.begin() as conn:
+            context = MigrationContext.configure(conn)
+            with Operations.context(context):
+                getattr(revision, direction)()
+
+    _run(rev70)
+    _run(rev71)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO hr_oracle_settings "
+            "(id, updated_at, unit_admin_titles, declass_titles) "
+            "VALUES (1, '2026-10-07 00:00:00', '[\"專員\"]', '[\"科長\"]')"
+        ))
+    _run(rev72)
+    with engine.begin() as conn:
+        flags = conn.execute(text(
+            "SELECT auto_unit_admin, auto_declass, unit_admin_titles, declass_titles "
+            "FROM hr_oracle_settings WHERE id = 1"
+        )).one()
+        assert flags[0] in (1, True)
+        assert flags[1] in (1, True)
+        assert json.loads(flags[2]) == []
+        assert json.loads(flags[3]) == []
+        schema = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE name = 'hr_oracle_settings'"
+        )).scalar()
+        assert "組長" not in (schema or "")
+    _run(rev72, "downgrade")
+    with engine.begin() as conn:
+        columns = {item[1] for item in conn.execute(text("PRAGMA table_info(hr_oracle_settings)"))}
+        assert "auto_unit_admin" not in columns
+        assert "auto_declass" not in columns
+        titles = conn.execute(text(
+            "SELECT unit_admin_titles, declass_titles FROM hr_oracle_settings WHERE id = 1"
+        )).one()
+        assert json.loads(titles[0]) == []
+        assert json.loads(titles[1]) == []
 
 
 def _seed_hr_holder(db, username, department):
@@ -1714,8 +1882,10 @@ def test_an_earlier_lookup_does_not_overwrite_a_later_one(db):
         ),
         later,
         card_name="卡片不該覆蓋",
-        allowed_unit_admin=("組長",),
-        allowed_declass=("組長",),
+        auto_unit_admin=True,
+        unit_admin_titles=("組長",),
+        auto_declass=True,
+        declass_titles=("組長",),
         root_name="國家中山科學研究院",
         ip_address=None,
     )
@@ -1733,8 +1903,10 @@ def test_an_earlier_lookup_does_not_overwrite_a_later_one(db):
         ),
         earlier,
         card_name=None,
-        allowed_unit_admin=("組長",),
-        allowed_declass=("組長",),
+        auto_unit_admin=True,
+        unit_admin_titles=("組長",),
+        auto_declass=True,
+        declass_titles=("組長",),
         root_name="國家中山科學研究院",
         ip_address=None,
     )
@@ -1756,8 +1928,10 @@ def test_an_earlier_lookup_does_not_overwrite_a_later_one(db):
         ),
         newest,
         card_name=None,
-        allowed_unit_admin=("組長",),
-        allowed_declass=("組長",),
+        auto_unit_admin=True,
+        unit_admin_titles=("組長",),
+        auto_declass=True,
+        declass_titles=("組長",),
         root_name="國家中山科學研究院",
         ip_address=None,
     )
@@ -1795,6 +1969,65 @@ def _pending_declass(db, username="hr-declass-admin"):
         reason="專案結案，內容已完成降密審查",
     )
     return admin, conv, request
+
+
+def test_approval_recheck_follows_the_title_switches(db, monkeypatch):
+    from app.modules.policy import decide_declassification
+
+    def _decide(approver_id, request_id):
+        return decide_declassification(
+            db,
+            request_id=request_id,
+            approver_user_id=approver_id,
+            approve=True,
+            via="in_system",
+        )
+
+    def _lookup(titles):
+        _install_lookup(
+            monkeypatch,
+            lambda employee_no, connection: StaffRecord(
+                employee_no, "主管", None, None, None, tuple(titles),
+            ),
+        )
+
+    _enable(db)
+    _admin, _conv, request = _pending_declass(db, username="hr-any-title-admin")
+    approver = make_user(db, username="9102301", role="user")
+    granted = _grant_declass(db, approver, source="hr", reference="人資職稱")
+    _lookup(("專員",))
+    assert _decide(approver.id, request.id).status == "applied"
+    db.expire_all()
+    assert db.get(ClassificationAuthorityAssignment, granted.id).is_active is True
+
+    _enable(db, declass_titles=["  組長  "])
+    _admin, conv, request = _pending_declass(db, username="hr-narrow-miss-admin")
+    approver = make_user(db, username="9102302", role="user")
+    granted = _grant_declass(db, approver, source="hr", reference="人資職稱")
+    _lookup(("專員",))
+    assert _decide(approver.id, request.id).status == "pending_supervisor"
+    db.expire_all()
+    assert db.get(type(conv), conv.id).classification_level == "機密"
+    assert db.get(ClassificationAuthorityAssignment, granted.id).is_active is False
+
+    _enable(db, auto_declass=False)
+    _admin, conv, request = _pending_declass(db, username="hr-declass-off-admin")
+    approver = make_user(db, username="9102303", role="user")
+    granted = _grant_declass(db, approver, source="hr", reference="人資職稱")
+    _lookup(("專員",))
+    assert _decide(approver.id, request.id).status == "pending_supervisor"
+    db.expire_all()
+    assert db.get(type(conv), conv.id).classification_level == "機密"
+    assert db.get(ClassificationAuthorityAssignment, granted.id).is_active is False
+
+    _enable(db, declass_titles=["  組長  "], auto_unit_admin=False)
+    _admin, _conv, request = _pending_declass(db, username="hr-narrow-hit-admin")
+    approver = make_user(db, username="9102304", role="user")
+    granted = _grant_declass(db, approver, source="hr", reference="人資職稱")
+    _lookup(("組長",))
+    assert _decide(approver.id, request.id).status == "applied"
+    db.expire_all()
+    assert db.get(ClassificationAuthorityAssignment, granted.id).is_active is True
 
 
 def test_hr_authority_still_justified_can_approve(db, monkeypatch):

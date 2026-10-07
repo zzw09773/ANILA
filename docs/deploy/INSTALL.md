@@ -172,7 +172,7 @@ docker ps --filter name=anila- --format '{{.Names}}\t{{.Status}}'
    cd /opt/anila/current
    sudo docker compose -f compose.yaml -f .anila-images.yml -p anila up -d --no-build --pull never --force-recreate nginx
    ```
-6. **人資資料庫**：治理中心「人資資料庫」填主機、埠、服務名稱、帳號、密碼與資料表，並啟用。Oracle 主機要先加到「信任主機」。沒填時，同仁第一次刷卡仍自己選單位。
+6. **人資資料庫**：治理中心「人資資料庫」填主機、埠、服務名稱、帳號、密碼與資料表，並啟用。Oracle 主機要先加到「信任主機」。兩個開關預設打開：人資有職稱的人成為自己單位的單位管理員，也取得降密審批權。要限特定職稱時，在「只限這些職稱」填上；留空表示任何職稱都算。沒填連線時，同仁第一次刷卡仍自己選單位。
 
 code-server 與 n8n 的映像已載入，預設不啟動。要用時的指令在安裝結束時會印出，也寫在 [`UPDATE.md`](UPDATE.md)。
 

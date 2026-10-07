@@ -64,11 +64,21 @@
         <TermField label="根單位名稱" hint="一級單位都掛在這個最上層單位之下。還沒有最上層單位時，用這個名稱建立。">
           <input v-model="draft.rootUnitName" class="term-input" autocomplete="off" :disabled="!authStore.isOwner" />
         </TermField>
-        <TermField label="單位管理員職稱" hint="完全相符，一行一個。留空表示不依職稱授與。">
-          <textarea v-model="draft.unitAdminTitles" class="term-input" rows="4" :disabled="!authStore.isOwner" />
+        <label class="check">
+          <input v-model="draft.autoUnitAdmin" type="checkbox" :disabled="!authStore.isOwner" />
+          主管自動成為單位管理員
+        </label>
+        <p class="health">人資有職稱的人，成為自己那個單位的單位管理員。一個單位最多三名，名額滿了就略過。</p>
+        <TermField label="只限這些職稱（選填）" hint="完全相符，一行一個。留空表示任何職稱都算。">
+          <textarea v-model="draft.unitAdminTitles" class="term-input" rows="3" :disabled="!authStore.isOwner" />
         </TermField>
-        <TermField label="降密審批職稱" hint="完全相符，一行一個。留空表示不依職稱授與。">
-          <textarea v-model="draft.declassTitles" class="term-input" rows="4" :disabled="!authStore.isOwner" />
+        <label class="check">
+          <input v-model="draft.autoDeclass" type="checkbox" :disabled="!authStore.isOwner" />
+          主管自動取得降密審批權責
+        </label>
+        <p class="health">人資有職稱的人取得降密審批權。申請人不能核自己的申請。</p>
+        <TermField label="只限這些職稱（選填）" hint="完全相符，一行一個。留空表示任何職稱都算。">
+          <textarea v-model="draft.declassTitles" class="term-input" rows="3" :disabled="!authStore.isOwner" />
         </TermField>
         <p class="health">連線：{{ healthText }}</p>
         <p v-if="placementNote" class="health">{{ placementNote }}</p>
@@ -122,6 +132,8 @@ const draft = reactive({
   clearPassword: false,
   tableName: '',
   rootUnitName: '國家中山科學研究院',
+  autoUnitAdmin: true,
+  autoDeclass: true,
   unitAdminTitles: '',
   declassTitles: '',
 })
@@ -147,6 +159,8 @@ function applyView(data) {
   draft.clearPassword = false
   draft.tableName = data.table_name || ''
   draft.rootUnitName = data.root_unit_name || '國家中山科學研究院'
+  draft.autoUnitAdmin = Boolean(data.auto_unit_admin)
+  draft.autoDeclass = Boolean(data.auto_declass)
   draft.unitAdminTitles = titlesToText(data.unit_admin_titles)
   draft.declassTitles = titlesToText(data.declass_titles)
   placementNote.value = data.placement_note || ''
@@ -164,6 +178,8 @@ function bodyFor() {
     user: draft.user,
     table_name: draft.tableName,
     root_unit_name: draft.rootUnitName,
+    auto_unit_admin: draft.autoUnitAdmin,
+    auto_declass: draft.autoDeclass,
     unit_admin_titles: titlesFromText(draft.unitAdminTitles),
     declass_titles: titlesFromText(draft.declassTitles),
   }

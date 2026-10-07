@@ -1,6 +1,10 @@
 """卡片登入後，用這一個人的人資資料補單位與職稱權限。
 
 不改 role、不核准、不停用也不重新啟用。人資連不上時登入照舊。
+兩個開關各自決定要不要依職稱授與單位管理員與降密審批。
+開關打開、而且人資至少有一個職稱時才授與。職稱清單留空表示任何職稱都算，
+有填才只限完全相符的職稱。開關關掉時，這個人下次登入收回該種 source 為 hr 的列。
+手授與的不動。
 """
 from __future__ import annotations
 
@@ -100,6 +104,19 @@ def _titles(value) -> tuple[str, ...]:
         if title and title not in found:
             found.append(title)
     return tuple(found)
+
+
+def _title_justified(titles: tuple[str, ...], enabled: bool, narrowing: tuple[str, ...]) -> bool:
+    """開關打開且至少有一個職稱才授與。縮小清單留空表示任何職稱都算。"""
+    if not enabled:
+        return False
+    present = _titles(list(titles))
+    if not present:
+        return False
+    if not narrowing:
+        return True
+    allowed = set(narrowing)
+    return any(title in allowed for title in present)
 
 
 def _snapshot(row: HrOracleSettings) -> HrConnection:
@@ -251,10 +268,11 @@ def _sync_unit_admin(
     user: User,
     department: Department,
     titles: tuple[str, ...],
-    allowed: tuple[str, ...],
+    enabled: bool,
+    narrowing: tuple[str, ...],
     ip_address: str | None,
 ) -> None:
-    justified = bool(allowed) and any(title in allowed for title in titles)
+    justified = _title_justified(titles, enabled, narrowing)
     active = (
         db.query(UnitAdminAssignment)
         .filter(
@@ -347,10 +365,11 @@ def _sync_declass(
     user: User,
     department: Department | None,
     titles: tuple[str, ...],
-    allowed: tuple[str, ...],
+    enabled: bool,
+    narrowing: tuple[str, ...],
     ip_address: str | None,
 ) -> None:
-    justified = bool(allowed) and any(title in allowed for title in titles)
+    justified = _title_justified(titles, enabled, narrowing)
     active = (
         db.query(ClassificationAuthorityAssignment)
         .filter(
@@ -413,8 +432,10 @@ def _apply_record(
     record: StaffRecord,
     *,
     card_name: str | None,
-    allowed_unit_admin: tuple[str, ...],
-    allowed_declass: tuple[str, ...],
+    auto_unit_admin: bool,
+    unit_admin_titles: tuple[str, ...],
+    auto_declass: bool,
+    declass_titles: tuple[str, ...],
     root_name: str,
     ip_address: str | None,
 ) -> None:
@@ -486,14 +507,20 @@ def _apply_record(
         if user.department_source != SOURCE_HR:
             user.department_source = SOURCE_HR
             changed.append("單位來源")
-        _sync_unit_admin(db, user, department, record.titles, allowed_unit_admin, ip_address)
-        _sync_declass(db, user, department, record.titles, allowed_declass, ip_address)
+        _sync_unit_admin(
+            db, user, department, record.titles, auto_unit_admin, unit_admin_titles, ip_address,
+        )
+        _sync_declass(
+            db, user, department, record.titles, auto_declass, declass_titles, ip_address,
+        )
     else:
         if placed and department is None:
             _audit(db, user, "hr_unit_unresolved", "人資沒有可用的單位", ip_address)
         # 沒有節點可以掛單位管理員。降密仍依這次查到的職稱授與或收回。
         _revoke_hr_unit_admins(db, user, ip_address)
-        _sync_declass(db, user, None, record.titles, allowed_declass, ip_address)
+        _sync_declass(
+            db, user, None, record.titles, auto_declass, declass_titles, ip_address,
+        )
     if changed:
         _audit(
             db,
@@ -511,8 +538,10 @@ def _apply_fetched(
     started_at: datetime,
     *,
     card_name: str | None,
-    allowed_unit_admin: tuple[str, ...],
-    allowed_declass: tuple[str, ...],
+    auto_unit_admin: bool,
+    unit_admin_titles: tuple[str, ...],
+    auto_declass: bool,
+    declass_titles: tuple[str, ...],
     root_name: str,
     ip_address: str | None,
 ) -> User | None:
@@ -527,7 +556,7 @@ def _apply_fetched(
     if record is None:
         # 查詢成功而且沒有這個人：人資不再支持先前授與的列。手授與的不動。
         _revoke_hr_unit_admins(db, user, ip_address)
-        _sync_declass(db, user, None, (), (), ip_address)
+        _sync_declass(db, user, None, (), auto_declass, declass_titles, ip_address)
         _persist(db)
         return user
     try:
@@ -536,8 +565,10 @@ def _apply_fetched(
             user,
             record,
             card_name=card_name,
-            allowed_unit_admin=allowed_unit_admin,
-            allowed_declass=allowed_declass,
+            auto_unit_admin=auto_unit_admin,
+            unit_admin_titles=unit_admin_titles,
+            auto_declass=auto_declass,
+            declass_titles=declass_titles,
             root_name=root_name,
             ip_address=ip_address,
         )
@@ -565,8 +596,10 @@ def apply_hr_on_card_login(db: Session, user: User, claims, *, ip_address: str |
     card_name = getattr(claims, "display_name", None)
     try:
         connection = _snapshot(row)
-        allowed_unit_admin = _titles(row.unit_admin_titles)
-        allowed_declass = _titles(row.declass_titles)
+        auto_unit_admin = bool(row.auto_unit_admin)
+        unit_admin_titles = _titles(row.unit_admin_titles)
+        auto_declass = bool(row.auto_declass)
+        declass_titles = _titles(row.declass_titles)
         root_name = _root_name(row)
     except HrUnavailable as exc:
         _audit_unavailable(db, user, exc, ip_address)
@@ -608,8 +641,10 @@ def apply_hr_on_card_login(db: Session, user: User, claims, *, ip_address: str |
         record,
         started_at,
         card_name=card_name,
-        allowed_unit_admin=allowed_unit_admin,
-        allowed_declass=allowed_declass,
+        auto_unit_admin=auto_unit_admin,
+        unit_admin_titles=unit_admin_titles,
+        auto_declass=auto_declass,
+        declass_titles=declass_titles,
         root_name=root_name,
         ip_address=ip_address,
     )
@@ -626,8 +661,10 @@ def confirm_hr_authority_for_approval(db: Session, user_id: int, *, ip_address: 
         return
     employee_no = user.username
     connection = _snapshot(row)
-    allowed_unit_admin = _titles(row.unit_admin_titles)
-    allowed_declass = _titles(row.declass_titles)
+    auto_unit_admin = bool(row.auto_unit_admin)
+    unit_admin_titles = _titles(row.unit_admin_titles)
+    auto_declass = bool(row.auto_declass)
+    declass_titles = _titles(row.declass_titles)
     root_name = _root_name(row)
     started_at = datetime.now(timezone.utc)
     _release(db)
@@ -638,8 +675,10 @@ def confirm_hr_authority_for_approval(db: Session, user_id: int, *, ip_address: 
         record,
         started_at,
         card_name=None,
-        allowed_unit_admin=allowed_unit_admin,
-        allowed_declass=allowed_declass,
+        auto_unit_admin=auto_unit_admin,
+        unit_admin_titles=unit_admin_titles,
+        auto_declass=auto_declass,
+        declass_titles=declass_titles,
         root_name=root_name,
         ip_address=ip_address,
     )
