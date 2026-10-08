@@ -52,6 +52,7 @@
 - schema 改動一定要有 Alembic migration；多人並行時編號接在目前 head 後面。
 - 改完跑對應測試，合併前跑全部（指令見下方「啟動與測試」）。驗證走正式 HTTP API 與登入。
 - compose／`.env`／nginx 變更用 `docker compose up -d` 重建，不要只 `docker restart`；nginx 設定是單檔掛載，改了要 `--force-recreate nginx`。
+- 改基底映像、Dockerfile 或全域相依（Python 版本、整批套件升級）一定要完整重建並跑全部驗證，不能當成機械式改字：CSP 刻意用 `python:3.13-alpine`（`infra/docker/csp.Dockerfile`），人資查詢的 Oracle 驅動因版本不相容，另外跑在 `services/hr-lookup` 容器（`python:3.12-slim`）。
 
 ## 開發線
 
