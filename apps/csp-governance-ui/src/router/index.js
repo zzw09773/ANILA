@@ -60,6 +60,12 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
+        path: 'unit-admins',
+        name: 'UnitAdmins',
+        component: () => import('../views/UnitAdminsView.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'alerts',
         name: 'Alerts',
         component: () => import('../views/AlertsView.vue'),

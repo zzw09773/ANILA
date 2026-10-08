@@ -114,6 +114,7 @@ const menuGroups = computed(() => {
       items: [
         { path: '/users', label: '使用者' },
         { path: '/departments', label: '部門' },
+        { path: '/unit-admins', label: '單位管理員' },
         { path: '/model-access-groups', label: '群組' },
       ],
     })

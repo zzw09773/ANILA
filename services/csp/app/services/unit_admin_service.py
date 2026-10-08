@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
 
 from app.models.department import Department
@@ -25,6 +26,15 @@ from app.services.department_tree import (
 )
 
 MAX_UNIT_ADMINS_PER_NODE = 3
+
+# 人資登入自己寫 revoked_at，不呼叫 revoke()。
+# 畫面若撤了人資列，下次登入又會授回，所以這裡直接拒絕。
+HR_REVOKE_REFUSED = (
+    "這位是人資帶入的主管，不能在這裡撤銷。"
+    "人資不再列這個職稱，或是把人資資料庫的"
+    "「主管自動成為單位管理員」關掉之後，"
+    "這個人下次登入就會移除。"
+)
 
 
 def get_active_assignments(
@@ -114,7 +124,8 @@ def assign(
     )
     if active_count >= MAX_UNIT_ADMINS_PER_NODE:
         raise HTTPException(
-            status_code=400, detail="每單位最多 3 名單位管理員"
+            status_code=400,
+            detail=f"每單位最多 {MAX_UNIT_ADMINS_PER_NODE} 名單位管理員",
         )
 
     assignment = UnitAdminAssignment(
@@ -139,12 +150,57 @@ def assign(
     return assignment
 
 
+def counts_by_department(db: Session) -> dict:
+    """每個部門自己的人數，一次算完。
+
+    指派與人資分開。上層的管理員不算進下層——下層那一列是 0，
+    就算父節點已經有人。已撤銷的列不計。
+    """
+    assigned_case = case(
+        (UnitAdminAssignment.source == "manual", 1),
+        else_=0,
+    )
+    hr_case = case(
+        (UnitAdminAssignment.source == "hr", 1),
+        else_=0,
+    )
+    rows = (
+        db.query(
+            Department.id,
+            func.coalesce(func.sum(assigned_case), 0),
+            func.coalesce(func.sum(hr_case), 0),
+        )
+        .outerjoin(
+            UnitAdminAssignment,
+            and_(
+                UnitAdminAssignment.department_id == Department.id,
+                UnitAdminAssignment.revoked_at.is_(None),
+            ),
+        )
+        .group_by(Department.id)
+        .all()
+    )
+    return {
+        "limit": MAX_UNIT_ADMINS_PER_NODE,
+        "departments": [
+            {
+                "department_id": dept_id,
+                "assigned_count": int(assigned or 0),
+                "hr_count": int(hr or 0),
+            }
+            for dept_id, assigned, hr in rows
+        ],
+    }
+
+
 def revoke(
     db: Session,
     *,
     assignment: UnitAdminAssignment,
     actor: User,
 ) -> UnitAdminAssignment:
+    if (assignment.source or "manual") == "hr":
+        raise HTTPException(status_code=400, detail=HR_REVOKE_REFUSED)
     if assignment.revoked_at is not None:
         return assignment
     assignment.revoked_at = datetime.now(timezone.utc)
