@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import fakeredis
 import fakeredis.aioredis
 import httpx
 import pytest
@@ -40,8 +41,9 @@ _CSP = settings.CSP_BASE_URL
 
 
 @pytest.fixture
-def fake_redis_server() -> fakeredis.aioredis.FakeServer:
-    return fakeredis.aioredis.FakeServer()
+def fake_redis_server() -> fakeredis.FakeServer:
+    # fakeredis 2.39：FakeServer 在套件根，不在 fakeredis.aioredis。
+    return fakeredis.FakeServer()
 
 
 @pytest.fixture

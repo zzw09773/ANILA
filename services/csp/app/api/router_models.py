@@ -12,6 +12,7 @@ from app.models.model_access_group import ModelAccessGroup, ModelAccessGroupMemb
 from app.models.model_registry import ModelRegistry
 from app.models.router_model_grant import RouterModelGrant
 from app.models.user import User
+from app.services.router_grant_rules import _validate_grant
 from app.schemas.router_model import (
     CampusDefaultIn,
     ModelAccessGroupIn,
@@ -20,7 +21,6 @@ from app.schemas.router_model import (
     GroupLinkedModelOut,
     GroupMemberOut,
     UserRouterModelOut,
-    RouterGrantIn,
     RouterGrantOut,
     RouterGrantsReplaceIn,
     RouterModelListOut,
@@ -219,29 +219,6 @@ def get_router_grants(
         _grant_out(db, r)
         for r in rows
     ]
-
-
-def _validate_grant(db: Session, grant: RouterGrantIn) -> None:
-    if grant.scope_type == "all":
-        if grant.department_id or grant.group_id or grant.user_id:
-            raise HTTPException(status_code=400, detail="全院授權不可帶部門／群組／使用者")
-        return
-    if grant.scope_type == "department":
-        if grant.department_id is None or grant.group_id or grant.user_id:
-            raise HTTPException(status_code=400, detail="部門授權必須且只能指定部門")
-        if db.get(Department, grant.department_id) is None:
-            raise HTTPException(status_code=404, detail="部門不存在")
-        return
-    if grant.scope_type == "group":
-        if grant.group_id is None or grant.department_id or grant.user_id:
-            raise HTTPException(status_code=400, detail="群組授權必須且只能指定群組")
-        if db.get(ModelAccessGroup, grant.group_id) is None:
-            raise HTTPException(status_code=404, detail="群組不存在")
-        return
-    if grant.user_id is None or grant.department_id or grant.group_id:
-        raise HTTPException(status_code=400, detail="個別授權必須且只能指定使用者")
-    if db.get(User, grant.user_id) is None:
-        raise HTTPException(status_code=404, detail="使用者不存在")
 
 
 @router.put("/api/models/{model_id}/router-grants", response_model=list[RouterGrantOut])

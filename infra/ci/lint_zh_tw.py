@@ -59,6 +59,9 @@ EXEMPT_PATHS = (
     "node_modules/", "dist/", "build/", ".venv/", "__pycache__/",
     "/tests/", "test_", ".test.", ".spec.",
     "docs/", "scraps/", "examples/",
+    # swagger-ui 內嵌的是註冊 gTLD（.信息、.网络、.商标…），不是畫面用語。
+    # 改成台灣用詞會讓那些網域後綴對不上。
+    "swagger-ui-bundle.js",
 )
 
 EXEMPT_MARKER = "zh-exempt"

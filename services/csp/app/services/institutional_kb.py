@@ -30,13 +30,11 @@ from sqlalchemy.orm import Session
 
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
-# ⚠ service → api 方向的 import，是刻意的，不是層次搞反：``_embed_query`` 是
-# 這個平台**唯一**一條會把 embedding 計量進 ``token_usage``、並且走 model_registry
-# 解析端點的查詢嵌入路徑（``search.py:330``）。在這裡複製一份 = 複製一條會漂開的
-# 計量規則，而漂開的那一天沒有人會發現（計量少算不會報錯）。
-# ``_assert_index_matches_designation`` 同理：索引落在另一個嵌入空間時，
-# similarity_search 會**靜默**回空集合，那正是本模組存在要防的那種謊。
-from app.api.ingestion.search import (  # noqa: E402
+# 與搜尋端點共用同一條嵌入／命中／索引落差路徑（``chunk_retrieval``）。
+# 在這裡複製一份 = 複製一條會漂開的計量規則，而漂開的那一天沒有人會發現
+# （計量少算不會報錯）。``_assert_index_matches_designation`` 同理：索引落在
+# 另一個嵌入空間時，similarity_search 會**靜默**回空集合。
+from app.services.chunk_retrieval import (
     _assert_index_matches_designation,
     _embed_query,
     collect_chunk_hits,

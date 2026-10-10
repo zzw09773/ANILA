@@ -22,7 +22,7 @@
     <TermBox
       v-if="authStore.isOwner"
       title="端點位址設定授權"
-      hint="僅擁有者與下列獲授權者可登錄／變更／看見模型端點位址"
+      hint="僅擁有者與下列獲授權者可註冊／變更／看見模型端點位址"
     >
       <div class="author-grant">
         <div class="author-grant__form">
@@ -285,7 +285,7 @@
                     :title="'hard-delete this row · irreversible · owner-only'"
                     @click="handlePurge(model)"
                   >
-                    {{ purgingId === model.id ? '清除中…' : '刪除模型登錄' }}
+                    {{ purgingId === model.id ? '清除中…' : '刪除這筆模型' }}
                   </button>
                 </template>
               </RowActions>
@@ -606,7 +606,7 @@
     >
       <div class="form-grid">
         <p class="import-hint">
-          從已註冊端點拉取上游 <code>/models</code> 清單並寫入登錄表。
+          從已註冊端點拉取上游 <code>/models</code> 清單並寫入註冊表。
           已存在的名稱不會覆寫管理員設定；格式錯誤的項目會略過並附原因。
           新帶入列只繼承端點層級欄位（含分類上限），context window 與能力旗標維持保守預設，並維持停用待檢視後啟用。
           相同端點會合併為一個選項（位址本身仍僅擁有者可見）。
@@ -1185,7 +1185,7 @@ const endpointUrlHint = computed(() => {
     return '語音解碼位址在「外部服務」，不在這張模型表'
   }
   if (addressOnlyEditor.value) return '獲授權開發者僅可變更端點位址'
-  return '登錄／變更端點位址需擁有者或獲授權開發者身分'
+  return '註冊／變更端點位址需擁有者或獲授權開發者身分'
 })
 const endpointUrlPlaceholder = computed(() => {
   if (endpointFieldLocked.value) return '— 無權設定位址 —'

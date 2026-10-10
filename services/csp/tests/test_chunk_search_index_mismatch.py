@@ -51,6 +51,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.api.ingestion.search as search_mod
+import app.services.chunk_retrieval as retrieval_mod
 from anila_core.storage.adapters.pgvector_store import SourceModelCoverage
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
@@ -320,7 +321,7 @@ def test_mismatch_names_the_stale_model_in_the_operator_log(
     )
     _install_store(monkeypatch, store)
 
-    with caplog.at_level(logging.ERROR, logger=search_mod.__name__):
+    with caplog.at_level(logging.ERROR, logger=retrieval_mod.__name__):
         resp = client.post(
             f"/api/ingestion/collections/{collection.id}/search",
             json={"query": "任何問題"},
@@ -431,7 +432,7 @@ def test_partially_reindexed_corpus_answers_normally_and_warns_operator(
     )
     _install_store(monkeypatch, store)
 
-    with caplog.at_level(logging.WARNING, logger=search_mod.__name__):
+    with caplog.at_level(logging.WARNING, logger=retrieval_mod.__name__):
         resp = client.post(
             f"/api/ingestion/collections/{collection.id}/search",
             json={"query": "任何問題"},

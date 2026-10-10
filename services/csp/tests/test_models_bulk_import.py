@@ -1051,7 +1051,10 @@ def test_bulk_import_guard_fixed_message_hides_private_resolved_address(
             reason="private_ip",
         )
 
-    monkeypatch.setattr(models_api, "validate_outbound_url", _boom)
+    from app.services import model_endpoint_guard
+
+    # 檢查函式已搬到 model_endpoint_guard，全域名稱在那個模組。
+    monkeypatch.setattr(model_endpoint_guard, "validate_outbound_url", _boom)
     called = {"fetch": False}
 
     async def _should_not_run(endpoint_url, api_key):

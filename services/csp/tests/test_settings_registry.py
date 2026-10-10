@@ -113,7 +113,10 @@ REMOVED_ENV_NAMES = {
 # 不放進 REMOVED_ENV_NAMES，否則「沒人讀」那條守衛會把拒絕邏輯本身當成違規。
 REFUSED_ENV_NAMES = {"CSP_SERVICE_TOKEN"}
 
-_SETTINGS_REDUCTION_COMMIT = "18916a56"
+# 刪減那一筆 18916a56 的父提交不在這條演化線的物件庫。
+# config.py 從快照匯入 df3b7b33 才進樹。守衛改盯這份最早看得到的
+# Settings：之後少掉的欄位仍必須列入退役清單。
+_SETTINGS_BASELINE_COMMIT = "df3b7b33c216b8d5aac3ee16b7818d588d206e72"
 
 
 _SKIPPED_DIRS = {".git", "node_modules", "static", "__pycache__"}
@@ -239,18 +242,19 @@ def _uppercase_class_assignments(source: str, class_name: str) -> set[str]:
 
 
 def _removed_config_env_names() -> set[str]:
-    """Generate the removed config-field inventory from the reduction diff.
+    """Settings fields present at the snapshot baseline and absent now.
 
-    The two token-expiry names remain live registry fallbacks even after their
-    boot-snapshot fields are removed, so they are excluded from the retired
-    env inventory rather than being hand-maintained as a special case.
+    The reduction commit 18916a56 is not in this repository. The earliest
+    Settings source is the snapshot import. Fields removed after that import
+    must still land in the retired inventory. Token-expiry names that remain
+    live registry fallbacks are excluded rather than hand-maintained.
     """
     repo = Path(__file__).resolve().parents[3]
     old_source = subprocess.check_output(
         [
             "git",
             "show",
-            f"{_SETTINGS_REDUCTION_COMMIT}^:services/csp/app/config.py",
+            f"{_SETTINGS_BASELINE_COMMIT}:services/csp/app/config.py",
         ],
         cwd=repo,
         text=True,

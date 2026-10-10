@@ -1,6 +1,6 @@
 // 根部錯誤網子（finding-no-error-boundary-20260820，HIGH）。
 //
-// render 期例外以前會讓 React 卸載整棵樹：白畫面、零訊息，而且「白畫面不會
+// render 期例外以前會讓 React 把整棵樹從畫面上拆掉：白畫面、零訊息，而且「白畫面不會
 // 報錯」——事故看起來跟「本來就沒有這個面板」一模一樣。這裡照 anilalm 的
 // ErrorBoundary 形態，但畫面內容照內網鐵則收窄：**一句可讀訊息＋時間戳**，
 // 不印 error.message、stack、路徑或主機名（那些只進 console，給開發者看）。

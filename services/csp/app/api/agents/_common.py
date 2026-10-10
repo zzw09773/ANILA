@@ -13,6 +13,10 @@ from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.contracts.agents import AgentManifest
 from app.schemas.contracts.classification import ClassificationLevel
+from app.services.agent_policy_level import (
+    effective_agent_policy_level,
+    parse_stored_classification_level,
+)
 from app.services.auth_service import get_current_user, is_admin_tier
 from app.utils.client_ip import client_ip as _client_ip
 
@@ -114,20 +118,6 @@ def _require_agent_editor(agent: Agent, current_user: User) -> None:
     raise HTTPException(status_code=404, detail="Agent 不存在")
 
 
-def parse_stored_classification_level(raw: str | None) -> ClassificationLevel:
-    """Parse a stored level; illegal DB values refuse with 422 (not 500)."""
-    try:
-        return ClassificationLevel.from_storage(raw or "無機密")
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "預設分類等級無效，請改設為合法四級之一："
-                "無機密、營業秘密、密、機密"
-            ),
-        ) from exc
-
-
 def requires_controlled_access(level: ClassificationLevel) -> bool:
     """Derive the legacy ``requires_encryption`` boolean from a level.
 
@@ -136,23 +126,6 @@ def requires_controlled_access(level: ClassificationLevel) -> bool:
     aligned with a single source of truth — the default classification level.
     """
     return level >= ClassificationLevel.RESTRICTED
-
-
-def effective_agent_policy_level(agent: Agent) -> ClassificationLevel:
-    """Effective policy level — same rule as ``proxy._agent_policy_level``.
-
-    Stored ``default_classification_level``, floored at RESTRICTED(密) when
-    the legacy ``requires_encryption`` flag is set. Writers that compare
-    "current vs requested" must use this, not the raw stored column alone.
-    """
-    level = parse_stored_classification_level(
-        getattr(agent, "default_classification_level", None)
-    )
-    if bool(getattr(agent, "requires_encryption", False)):
-        level = ClassificationLevel.max_of(
-            [level, ClassificationLevel.RESTRICTED]
-        )
-    return level
 
 
 def refuse_classification_downgrade(

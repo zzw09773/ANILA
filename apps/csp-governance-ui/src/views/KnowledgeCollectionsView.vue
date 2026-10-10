@@ -144,7 +144,7 @@
         <TermField
           v-if="form.captionMode === 'on'"
           label="圖說模型"
-          hint="清單是全部已登錄模型，沒有視覺能力過濾。留空＝跟隨治理中心的視覺模型角色。"
+          hint="清單是全部已註冊模型，沒有視覺能力過濾。留空＝跟隨治理中心的視覺模型角色。"
         >
           <select v-model="form.caption_model" class="term-select">
             <option value="">跟隨治理中心的視覺模型</option>
@@ -292,7 +292,7 @@ function openCreateModal() {
 async function submitCreate() {
   formError.value = ''
   // DK-1：空白名稱只該得到「請輸入名稱」，不是後端原始 pydantic JSON。
-  // 部門對話框（DepartmentsView）早就用 disabled 按鈕處理同一件事，
+  // 部門對話方塊（DepartmentsView）早就用 disabled 按鈕處理同一件事，
   // 這裡在建庫這一格補上同款前置——欄位錯不該打到後端。
   if (!form.value.name) {
     formError.value = '請輸入名稱'

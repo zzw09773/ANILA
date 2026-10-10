@@ -236,7 +236,7 @@
         <TermField
           v-if="commitForm.captionMode === 'on'"
           label="圖說模型"
-          hint="清單是全部已登錄模型，沒有視覺能力過濾。留空＝跟隨治理中心的視覺模型角色。"
+          hint="清單是全部已註冊模型，沒有視覺能力過濾。留空＝跟隨治理中心的視覺模型角色。"
         >
           <select v-model="commitForm.caption_model" class="term-select">
             <option value="">跟隨治理中心的視覺模型</option>

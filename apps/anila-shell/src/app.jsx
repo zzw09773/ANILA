@@ -1336,7 +1336,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             keepalive: true,
           });
         } catch {
-          // 卸載途中不做任何補救 —— 見上面的註解。
+          // 頁面關掉途中不做任何補救 —— 見上面的註解。
         }
       }
     }

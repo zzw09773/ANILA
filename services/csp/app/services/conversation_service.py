@@ -369,7 +369,7 @@ def _latch_agent_policy_on_conversation(db: Session, conv_id: int, agent) -> Non
     Uses ``effective_agent_policy_level`` (same rule as proxy). No-op when
     the effective level is 無機密.
     """
-    from app.api.agents._common import effective_agent_policy_level
+    from app.services.agent_policy_level import effective_agent_policy_level
     from app.modules.policy import apply_classification
     from app.schemas.contracts.classification import ClassificationLevel
 

@@ -12,14 +12,30 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 TEMPLATE="$ROOT/infra/nginx/anila.conf"
 SAMPLE=${1:-anila.example.test}
 
-if ! command -v envsubst >/dev/null 2>&1; then
-  echo "envsubst is required (gettext)" >&2
-  exit 2
-fi
-
 export ANILA_HOST="$SAMPLE"
-defined=$(awk 'BEGIN { for (name in ENVIRON) printf "${%s} ", name }')
-rendered=$(envsubst "$defined" < "$TEMPLATE")
+
+# nginx 映像的 20-envsubst-on-templates.sh 只代「環境裡存在的」變數。
+# 有 gettext 時走同一個 envsubst。沒有時用同等規則：只換
+# $NAME／${NAME}，而且 NAME 必須在環境裡。$host 因此留著。
+if command -v envsubst >/dev/null 2>&1; then
+  defined=$(awk 'BEGIN { for (name in ENVIRON) printf "${%s} ", name }')
+  rendered=$(envsubst "$defined" < "$TEMPLATE")
+else
+  rendered=$(python3 - "$TEMPLATE" <<'PY'
+import os, re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+pattern = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+def repl(match):
+    name = match.group(1) or match.group(2)
+    if name in os.environ:
+        return os.environ[name]
+    return match.group(0)
+
+sys.stdout.write(pattern.sub(repl, text))
+PY
+)
+fi
 
 printf '%s\n' "$rendered" | awk '
   $0 ~ /map \$host \$anila_named_host \{/ { grab=1 }

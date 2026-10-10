@@ -49,6 +49,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import fakeredis
 import fakeredis.aioredis
 import httpx
 import pytest
@@ -68,9 +69,12 @@ from app.services.revocation_cache import (
 
 
 @pytest.fixture
-def fake_redis_server() -> fakeredis.aioredis.FakeServer:
-    """A shared FakeServer so publisher + subscriber see the same channel."""
-    return fakeredis.aioredis.FakeServer()
+def fake_redis_server() -> fakeredis.FakeServer:
+    """A shared FakeServer so publisher + subscriber see the same channel.
+
+    fakeredis 2.39 把 FakeServer 留在套件根，``fakeredis.aioredis`` 不再轉出。
+    """
+    return fakeredis.FakeServer()
 
 
 @pytest.fixture

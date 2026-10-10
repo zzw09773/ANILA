@@ -322,7 +322,7 @@ def test_advisory_lock_called_on_hierarchy_mutations(client: TestClient, db, mon
         calls.append("lock")
 
     monkeypatch.setattr(
-        "app.api.departments.acquire_dept_tree_lock",
+        "app.services.department_writes.acquire_dept_tree_lock",
         _spy,
     )
 
@@ -381,7 +381,7 @@ def test_update_lock_before_refresh_order(client: TestClient, db, monkeypatch):
         order.append("refresh")
         return real_refresh(self, instance, *args, **kwargs)
 
-    monkeypatch.setattr("app.api.departments.acquire_dept_tree_lock", _lock_spy)
+    monkeypatch.setattr("app.services.department_writes.acquire_dept_tree_lock", _lock_spy)
     monkeypatch.setattr(SaSession, "refresh", _refresh_spy)
 
     headers = _auth_headers(client, db, username="dept_admin_lock_order")

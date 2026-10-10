@@ -25,7 +25,7 @@ export const ErrorPanel = defineComponent({
     onErrorCaptured((error) => {
       console.error('[governance crash]', error)
       failedAt.value = new Date()
-      return false // 已處理：不再往上冒、不讓 Vue 卸載整棵樹
+      return false // 已處理：不再往上冒、不讓 Vue 把整棵樹從畫面上拆掉
     })
     const reload = () => {
       if (typeof window !== 'undefined') window.location.reload()

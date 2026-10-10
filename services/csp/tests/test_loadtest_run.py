@@ -217,10 +217,43 @@ def _isolated_loadtest_tree(tmp_path: Path) -> Path:
     return root
 
 
+def _standin_parent() -> Path:
+    """Writable directory that can execute the docker/openssl stand-ins.
+
+    /tmp is noexec on some hosts. A normal checkout's parent works; this
+    tree is mounted at /workspace, whose parent is not writable.
+    """
+    for parent in (REPO.parent, Path.home()):
+        if not parent.is_dir():
+            continue
+        try:
+            probe = Path(
+                tempfile.mkdtemp(prefix=".anila-exec-probe-", dir=str(parent))
+            )
+        except OSError:
+            continue
+        try:
+            script = probe / "probe.sh"
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o755)
+            ran = subprocess.run(
+                [str(script)],
+                check=False,
+                capture_output=True,
+            )
+            if ran.returncode == 0:
+                return parent
+        finally:
+            shutil.rmtree(probe, ignore_errors=True)
+    raise AssertionError("loadtest stand-in needs a writable executable directory")
+
+
 def test_script_exit_removes_only_keys_this_run_created():
     # /tmp is noexec, so the fake repo and stand-ins live on a normal
     # filesystem. Cleanup removes only this unique directory.
-    workspace = Path(tempfile.mkdtemp(prefix="anila-loadtest-", dir=str(REPO.parent)))
+    workspace = Path(
+        tempfile.mkdtemp(prefix="anila-loadtest-", dir=str(_standin_parent()))
+    )
     assert workspace.name.startswith("anila-loadtest-")
     assert workspace.resolve() != REPO.resolve()
     root = _isolated_loadtest_tree(workspace)

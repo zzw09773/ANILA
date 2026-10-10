@@ -2526,7 +2526,7 @@ export const Composer = ({
   // 還原列跟著對話走。切換時收起，回來還在；只有捨棄或還原掉那一筆才清。
   const recoverableByConvRef = useRef(new Map());
   // 送出後先清掉輸入框，失敗才決定放回或收進還原列。這些陣列還握著預覽，
-  // 完成、失敗、換對話、卸載都要找得到，不能等 React 把 state 刷上來。
+  // 完成、失敗、換對話、元件卸下都要找得到，不能等 React 把 state 刷上來。
   const heldDraftsRef = useRef(new Set());
   const writeDraftNow = (value) => {
     const id = conversationRef.current;

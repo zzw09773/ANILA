@@ -189,7 +189,9 @@ def test_search_embed_query_passes_query_role(db, monkeypatch):
         seen["role"] = kwargs.get("embedding_input_role")
         return {"data": [{"embedding": [0.1, 0.2, 0.3, 0.4]}]}
 
-    monkeypatch.setattr(search_mod, "proxy_request", fake_proxy_request)
+    from app.services import chunk_retrieval
+
+    monkeypatch.setattr(chunk_retrieval, "proxy_request", fake_proxy_request)
 
     vec = asyncio.run(
         search_mod._embed_query(db, user, "nv-embed-v2", 4, "去年的採購紀錄")

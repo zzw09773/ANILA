@@ -49,6 +49,10 @@ PUBLIC_2XX = {
     ("GET", "/docs"),
     ("GET", "/.well-known/jwks.json"),
     ("GET", "/api/banners/public"),
+    # 登入頁先讀這支，不看 Authorization。
+    ("GET", "/api/auth/providers"),
+    # 沒有 cookie 也回已登出，函式不讀 Bearer。
+    ("POST", "/api/auth/logout"),
 }
 
 
@@ -207,6 +211,16 @@ def test_dispatch_jwt_is_rejected_outside_chat_and_search(client, db: Session):
         user_id=owner.id, department=None, agent_id=agent.id
     )
     headers = {"Authorization": f"Bearer {token}"}
+    # 這兩支本來就對沒有工作階段的請求回 200。派工 JWT 不得改變結果。
+    before_version = owner.token_version
+    logged_out = client.post("/api/auth/logout", headers=headers)
+    assert logged_out.status_code == 200, logged_out.text
+    db.refresh(owner)
+    assert owner.token_version == before_version
+    bare_providers = client.get("/api/auth/providers")
+    dispatched_providers = client.get("/api/auth/providers", headers=headers)
+    assert bare_providers.status_code == 200, bare_providers.text
+    assert dispatched_providers.json() == bare_providers.json()
     # 有效的成品寫入。若派工 JWT 被當成服務憑證，這裡會是 201。
     created = client.post(
         "/v1/artifact-jobs",

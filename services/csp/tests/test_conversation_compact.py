@@ -325,7 +325,7 @@ def test_list_conversations_includes_compact_fields(client, db):
 # ── alembic / startup ────────────────────────────────────────────────────────
 
 
-def test_alembic_heads_single_r1_0069():
+def test_alembic_heads_single_r1_0072():
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"

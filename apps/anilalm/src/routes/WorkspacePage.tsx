@@ -160,7 +160,7 @@ export function WorkspacePage() {
   // user navigates to a different collection.
   //
   // 第一則訊息會把網址從 /c/:id 換成 /c/:id/conv/:cid。若把對話 id 放進
-  // 依賴，這段會 reset 並把 loading 設回 true，聊天面板卸載，串流更新
+  // 依賴，這段會 reset 並把 loading 設回 true，聊天面板被卸下，串流更新
   // 打在已經卸下來的那份 state，答案要重新整理才看得到。
   //
   // Conversation share and collection access are separate gates. A

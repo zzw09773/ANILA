@@ -29,18 +29,20 @@ from anila_core.security.url_guard import (
     push_request_trusted_hosts,
     reset_request_trusted_hosts,
 )
-from app.api.banners import BannerCreate, _validate_level
-from app.api.departments import (
+from app.services.banner_rules import BannerCreate, _validate_level
+from app.services.department_writes import (
     create_department,
     update_department,
 )
-from app.api.models import (
+from app.services.model_endpoint_guard import (
     _enforce_endpoint_url,
     _enforce_protocol_endpoint,
-    set_router_primary,
-    set_slides_primary,
 )
-from app.api.router_models import _validate_grant
+from app.services.model_primary_assignment import (
+    assign_router_primary,
+    assign_slides_primary,
+)
+from app.services.router_grant_rules import _validate_grant
 from app.models.banner import Banner
 from app.models.department import Department
 from app.models.external_service import SERVICE_KEYS, ExternalService
@@ -1188,9 +1190,9 @@ def _apply_roles(db: Session, actor: User, document: SettingsDocument, decisions
             raise SettingsTransferError([f"{spec.label}指到的模型不存在"])
         if spec.storage == "flag":
             if raw.role == "router_primary":
-                set_router_primary(row.id, actor, db, commit=False)
+                assign_router_primary(db, row.id, actor, commit=False)
             elif raw.role == "slides":
-                set_slides_primary(row.id, actor, db, commit=False)
+                assign_slides_primary(db, row.id, actor, commit=False)
             continue
         if not row.is_active:
             raise HTTPException(status_code=400, detail=inactive_assign_error(spec))

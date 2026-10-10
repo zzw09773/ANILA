@@ -413,7 +413,7 @@ def apply_classification(
         # 不包 try/except:刪不掉就讓整筆 rollback,寧可升密失敗並回報,也不要
         # 留下「已升密但記憶還在」這種看起來成功的狀態。
         if resource_type == "conversation":
-            from app.services.memory_service import purge_conversation_memory
+            from app.services.memory_purge import purge_conversation_memory
 
             purged = purge_conversation_memory(db, int(resource_id))
             if purged["chunks"] or purged["facts"]:

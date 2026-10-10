@@ -80,3 +80,6 @@ include = ["app*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra"
+# 執行期映像沒有 anila_core（見 tests/test_no_anila_core_import.py）。
+# 測試要比對 router 的過濾結果時才需要原始碼樹，跟 csp 的 pytest.ini 同一條路徑。
+pythonpath = [".", "../../packages/anila-core/src"]

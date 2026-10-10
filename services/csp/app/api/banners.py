@@ -26,21 +26,11 @@ from app.models.banner import Banner
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier, is_steward
+from app.services.banner_rules import BannerCreate, _validate_level
 from app.schemas.base import ApiResponseModel
 from app.utils.client_ip import client_ip as _client_ip
 
 router = APIRouter(prefix="/api/banners", tags=["公告橫幅"])
-
-_LEVELS = {"info", "warning", "error", "success"}
-
-
-class BannerCreate(BaseModel):
-    level: str = Field(default="info")
-    content: str = Field(min_length=1, max_length=2000)
-    is_active: bool = True
-    # 不傳就是不公開。管理員必須主動勾,才會出現在登入頁。
-    show_on_login: bool = False
-    sort_order: int = 0
 
 
 class BannerUpdate(BaseModel):
@@ -97,11 +87,6 @@ def _require_steward(user: User = Depends(get_current_user)) -> User:
     if not is_steward(user):
         raise HTTPException(status_code=403, detail="需要管理員權限")
     return user
-
-
-def _validate_level(level: str) -> None:
-    if level not in _LEVELS:
-        raise HTTPException(status_code=400, detail=f"level 必須是 {', '.join(sorted(_LEVELS))}")
 
 
 @router.get("/public", response_model=list[PublicBannerResponse])

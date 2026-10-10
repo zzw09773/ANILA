@@ -97,7 +97,11 @@ def test_embed_query_releases_pooled_connection_during_outbound_http(monkeypatch
             checked_out_during_http.append(engine.pool.checkedout())
             return {"data": [{"embedding": [0.1] * dim}]}
 
-        monkeypatch.setattr(search_mod, "proxy_request", slow_proxy)
+        # ``_embed_query`` 住在 chunk_retrieval。函式的全域名稱在那個模組，
+        # 補在 search 上不會進到這次呼叫。
+        from app.services import chunk_retrieval
+
+        monkeypatch.setattr(chunk_retrieval, "proxy_request", slow_proxy)
 
         before_checkouts = checkout_count["n"]
         vec = asyncio.run(
@@ -187,7 +191,9 @@ def test_embed_query_snapshot_survives_orm_expire(monkeypatch):
             captured["checkedout"] = engine.pool.checkedout()
             return {"data": [{"embedding": [0.2] * dim}]}
 
-        monkeypatch.setattr(search_mod, "proxy_request", capturing_proxy)
+        from app.services import chunk_retrieval
+
+        monkeypatch.setattr(chunk_retrieval, "proxy_request", capturing_proxy)
 
         # Wrap _embed_query's commit so we expire the ORM model immediately
         # after release — any path that still handed the ORM instance to

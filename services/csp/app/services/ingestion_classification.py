@@ -63,7 +63,7 @@ def agents_bound_below_level(
     同時看 junction（``agent_collection_bindings``）與舊單欄鏡像
     （``agents.bound_collection_id``），避免只清一邊時漏檢。
     """
-    from app.api.agents._common import effective_agent_policy_level
+    from app.services.agent_policy_level import effective_agent_policy_level
 
     junction_ids = {
         int(aid)
