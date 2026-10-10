@@ -105,6 +105,56 @@ def test_collection_response_created_at_has_offset() -> None:
     _assert_same_instant(payload["updated_at"])
 
 
+def test_router_grant_out_expires_at_has_offset() -> None:
+    """授權列是回應；expires_at 以前停在 BaseModel 上，JSON 沒有 offset。"""
+    from app.schemas.router_model import RouterGrantOut
+
+    row = RouterGrantOut(
+        id=1,
+        model_id=2,
+        scope_type="all",
+        expires_at=_INSTANT,
+    )
+    iso = row.model_dump(mode="json")["expires_at"]
+    _assert_same_instant(iso)
+
+
+def test_preference_response_updated_at_has_offset() -> None:
+    from app.api.memory import PreferenceResponse
+
+    iso = PreferenceResponse(text="簡潔", updated_at=_INSTANT).model_dump(mode="json")[
+        "updated_at"
+    ]
+    _assert_same_instant(iso)
+
+
+def test_service_client_create_response_nested_datetimes_have_offset() -> None:
+    """外層不是 ApiResponseModel，內層 ServiceClientResponse 仍要帶 offset。"""
+    from app.api.service_clients import CreateServiceClientResponse, ServiceClientResponse
+
+    client = ServiceClientResponse(
+        id=1,
+        client_name="router",
+        client_type="router",
+        description=None,
+        is_active=True,
+        is_legacy=False,
+        issued_at=_INSTANT,
+        rotated_at=_INSTANT,
+        revoked_at=None,
+        has_previous_token=False,
+        previous_expires_at=None,
+        client_cert_fingerprint=None,
+    )
+    payload = CreateServiceClientResponse(
+        service_token=None,
+        delivery="file",
+        client=client,
+    ).model_dump(mode="json")
+    _assert_same_instant(payload["client"]["issued_at"])
+    _assert_same_instant(payload["client"]["rotated_at"])
+
+
 def test_plain_basemodel_without_api_response_still_offsetless() -> None:
     """Revert guard: without ApiResponseModel the bug shape returns.
 

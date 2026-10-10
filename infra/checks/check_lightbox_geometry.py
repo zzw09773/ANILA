@@ -46,6 +46,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -132,8 +133,12 @@ def extract() -> tuple[str, str, str]:
     fn = m.group(0).replace("export ", "", 1)
     try:
         backdrop = _to_css(_style_after(src, 'role="dialog"'))
-        img = _to_css(_style_after(src, "<img\n        ref={imgRef}"),
-                      drop=("width", "height"))
+        # 燈箱圖元已改成 InHouseImage（內部仍是 <img ref>，style 經 ...rest
+        # 落到那顆 img）。錨點跟元件名走，不要退回手抄 style。
+        img = _to_css(
+            _style_after(src, "<InHouseImage\n        ref={imgRef}"),
+            drop=("width", "height"),
+        )
     except ValueError:
         die_broken("抽不到 backdrop／img 的 style 物件 —— 錨點漂了，抽取器要跟著改。")
     return fn, backdrop, img
@@ -208,17 +213,39 @@ function measure(label) {
 
 
 def run_browser(browser: str, page: Path, vw: int, vh: int) -> list[dict]:
-    proc = subprocess.run(
-        [browser, "--headless", "--disable-gpu", "--no-sandbox",
-         f"--window-size={vw},{vh}", "--virtual-time-budget=8000", "--dump-dom",
-         page.as_uri()],
-        capture_output=True, text=True, timeout=120,
-    )
-    m = re.search(r'<pre id="out">([\s\S]*?)</pre>', proc.stdout)
+    # Chrome（實測 154）把 --dump-dom 寫完就停在那裡不結束行程：系統 bus 不在時
+    # 尤其如此。等 communicate() 會把已經量完的結果當成逾時丟掉。
+    # 幾何斷言一字不改；只在 <pre id="out"> 已經不是 PENDING 時收下 stdout 再殺掉。
+    out_path = page.with_name(f"dump-{vw}x{vh}.html")
+    err_path = page.with_name(f"dump-{vw}x{vh}.err")
+    with out_path.open("w", encoding="utf-8") as out, err_path.open("w", encoding="utf-8") as err:
+        proc = subprocess.Popen(
+            [browser, "--headless", "--disable-gpu", "--no-sandbox",
+             f"--window-size={vw},{vh}", "--virtual-time-budget=8000", "--dump-dom",
+             page.as_uri()],
+            stdout=out, stderr=err,
+        )
+        deadline = time.monotonic() + 120
+        try:
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                text = out_path.read_text(encoding="utf-8", errors="replace")
+                found = re.search(r'<pre id="out">([\s\S]*?)</pre>', text)
+                if found and found.group(1).strip() not in ("", "PENDING"):
+                    break
+                time.sleep(0.1)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+    stdout = out_path.read_text(encoding="utf-8", errors="replace")
+    stderr = err_path.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r'<pre id="out">([\s\S]*?)</pre>', stdout)
     if not m or m.group(1).strip() == "PENDING":
         die_broken(
             f"瀏覽器沒有回傳量測結果（視窗 {vw}x{vh}）。stderr 尾段：\n"
-            + (proc.stderr[-400:] or "(空)")
+            + (stderr[-400:] or "(空)")
         )
     return json.loads(m.group(1))
 

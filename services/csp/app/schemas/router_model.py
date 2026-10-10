@@ -6,6 +6,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.base import ApiResponseModel
+
 
 class RouterModelOut(BaseModel):
     id: int
@@ -47,7 +49,7 @@ class RouterGrantIn(BaseModel):
     expires_at: Optional[datetime] = None
 
 
-class RouterGrantOut(RouterGrantIn):
+class RouterGrantOut(ApiResponseModel, RouterGrantIn):
     id: int
     model_id: int
     department_name: Optional[str] = None

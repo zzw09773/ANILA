@@ -176,13 +176,24 @@ const MUTATIONS = [
     file: "src/app.jsx",
     shape: "清單順序被反轉",
     intent: "訊息更新時把整段對話順序反轉（畫面與歷史順序被打亂）",
-    // 用 updateMsg 的函式簽章當錨點 —— 光是那一行賦值在 app.jsx 裡有兩處。
+    // 用 updateMsg 的函式簽章當錨點。訊息列現在同時寫 messagesRef 與
+    // setMessagesByConv；只反轉其中一邊，歷史與畫面會各說各話。
     find:
       "  function updateMsg(convId, msgId, patch) {\n" +
+      "    const current = messagesRef.current[convId] || [];\n" +
+      "    messagesRef.current = {\n" +
+      "      ...messagesRef.current,\n" +
+      "      [convId]: current.map((m) => (m.id === msgId ? { ...m, ...patch } : m)),\n" +
+      "    };\n" +
       "    setMessagesByConv((prev) => {\n" +
       "      const list = prev[convId] || [];",
     replace:
       "  function updateMsg(convId, msgId, patch) {\n" +
+      "    const current = [...(messagesRef.current[convId] || [])].reverse();\n" +
+      "    messagesRef.current = {\n" +
+      "      ...messagesRef.current,\n" +
+      "      [convId]: current.map((m) => (m.id === msgId ? { ...m, ...patch } : m)),\n" +
+      "    };\n" +
       "    setMessagesByConv((prev) => {\n" +
       "      const list = [...(prev[convId] || [])].reverse();",
   },
@@ -191,8 +202,16 @@ const MUTATIONS = [
     file: "src/app.jsx",
     shape: "控制項變成靜默 no-op",
     intent: "點側邊欄的對話沒有反應（按了、沒報錯、什麼也沒發生）",
-    find: "          setSelectedConvId(id);",
-    replace: "          setSelectedConvId(selectedConvId);",
+    // 設定裡「打開對話」也呼叫 setSelectedConvId(id)。用側邊欄的
+    // onSelectConv 把這一顆釘死，不要連設定那條路一起突變。
+    find:
+      "        onSelectConv={(id) => {\n" +
+      "          setSelectedConvId(id);\n" +
+      "          setCitationsOpen(false);",
+    replace:
+      "        onSelectConv={(id) => {\n" +
+      "          setSelectedConvId(selectedConvId);\n" +
+      "          setCitationsOpen(false);",
   },
   {
     id: "assistant-never-persisted",
@@ -208,8 +227,14 @@ const MUTATIONS = [
     // reserved 且內容是空的,畫面上答案好端端地顯示著(text 在上面幾行就已經
     // updateMsg 進去了),重新整理才發現不見了。新錨點是寫回段的前置守衛,
     // 與舊突變同型 —— 前置守衛反轉 = 整段存檔靜悄悄地跳過,零錯誤訊息。
-    find: "      if (!persistable || reservedId == null) return;",
-    replace: "      if (persistable || reservedId == null) return;",
+    // 2026-10-10 重新錨定。合併守衛拆成「不可落庫就返回」與稍後的
+    // reservedId == null。反轉前者：可落庫的成功路徑在寫回前就離開。
+    find:
+      "      if (!persistable) return;\n" +
+      "      const resolvedHead = await turnPromise;",
+    replace:
+      "      if (persistable) return;\n" +
+      "      const resolvedHead = await turnPromise;",
   },
   {
     id: "persist-error-not-pinned",
@@ -275,14 +300,14 @@ const MUTATIONS = [
     file: "src/runtime/sse.js",
     shape: "訊息被吃掉",
     intent: "後端說的失敗原因被換成通用字串（使用者不知道發生什麼事）",
+    // 錯誤組裝搬進 errorFromHttpBody。detail && fallback 在有原因時
+    // 取的是 fallback，後端那句話仍然被吃掉。
     find:
-      '    const fallback = statusFallback("串流失敗", response.status);\n' +
-      "    const detail = await readErrorMessage(response, fallback);\n" +
-      "    const error = new Error(detail || fallback);",
+      "  const error = new Error(detail || fallback);\n" +
+      "  error.status = status;",
     replace:
-      '    const fallback = statusFallback("串流失敗", response.status);\n' +
-      "    const detail = await readErrorMessage(response, fallback);\n" +
-      "    const error = new Error(detail && fallback);",
+      "  const error = new Error(detail && fallback);\n" +
+      "  error.status = status;",
   },
   {
     id: "edit-history-not-truncated",
@@ -328,12 +353,20 @@ const MUTATIONS = [
     //
     // 改成拿掉**呼叫運算子**:識別字一個沒少,abort 從此不發生,串流照樣跑到
     // 完 —— 這正是這個突變要編碼的那個使用者可見失敗。
+    // streamWithAbort 在排隊已取消時也會 abort。停止鍵是 stopStreaming
+    // 拿到 controller 的那一次。
     find:
+      "    const controller = streamAbortRef.current.get(convId);\n" +
+      "    if (controller) {\n" +
       "      userStoppedRef.current.add(convId);\n" +
-      "      controller.abort();",
+      "      controller.abort();\n" +
+      "    }",
     replace:
+      "    const controller = streamAbortRef.current.get(convId);\n" +
+      "    if (controller) {\n" +
       "      userStoppedRef.current.add(convId);\n" +
-      "      controller.abort;",
+      "      controller.abort;\n" +
+      "    }",
   },
   {
     id: "regenerate-not-branched",
@@ -387,13 +420,25 @@ const MUTATIONS = [
     file: "src/runtime/sse.js",
     shape: "標頭沒掛上去",
     intent: "續答（interrupt resume）不帶 CSRF，而且它自己抄了一份邏輯",
+    // 續答在 CSRF 與 URL 之間補上了對話 id。錨點帶著那段，才不會打到
+    // streamChatCompletion 的同一行 if (match)。
     find:
       '    if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);\n' +
+      "  }\n" +
+      "  // Same latch as streamChatCompletion. Resume is a new CSP turn; without\n" +
+      "  // this header classification (and the conversation's router model) no-op.\n" +
+      '  if (typeof conversationId === "number") {\n' +
+      '    headers["X-ANILA-Conversation-Id"] = String(conversationId);\n' +
       "  }\n" +
       "\n" +
       "  const url = `${(routerBaseUrl || \"\").replace(/\\/$/, \"\")}/v1/sessions/${encodeURIComponent(",
     replace:
       '    if (!match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);\n' +
+      "  }\n" +
+      "  // Same latch as streamChatCompletion. Resume is a new CSP turn; without\n" +
+      "  // this header classification (and the conversation's router model) no-op.\n" +
+      '  if (typeof conversationId === "number") {\n' +
+      '    headers["X-ANILA-Conversation-Id"] = String(conversationId);\n' +
       "  }\n" +
       "\n" +
       "  const url = `${(routerBaseUrl || \"\").replace(/\\/$/, \"\")}/v1/sessions/${encodeURIComponent(",
@@ -415,8 +460,37 @@ const MUTATIONS = [
     file: "src/runtime/sse.js",
     shape: "標頭沒掛上去（靜默 no-op）",
     intent: "這一輪不再告訴伺服器屬於哪個對話（機敏 latch、記憶寫入、附件注入全部靜悄悄地不作用）",
-    find: '  if (typeof conversationId === "number") {',
-    replace: '  if (typeof conversationId === "string") {',
+    // streamSessionAnswer 抄了同一行。用後面的 Task 標頭把送出串流釘死。
+    find:
+      '  if (typeof conversationId === "number") {\n' +
+      '    headers["X-ANILA-Conversation-Id"] = String(conversationId);\n' +
+      "  }\n" +
+      '  if (taskId !== undefined && taskId !== null && taskId !== "") {',
+    replace:
+      '  if (typeof conversationId === "string") {\n' +
+      '    headers["X-ANILA-Conversation-Id"] = String(conversationId);\n' +
+      "  }\n" +
+      '  if (taskId !== undefined && taskId !== null && taskId !== "") {',
+  },
+  {
+    id: "conversation-id-header-not-attached-on-session",
+    file: "src/runtime/sse.js",
+    shape: "標頭沒掛上去（靜默 no-op）",
+    intent: "續答不再告訴伺服器屬於哪個對話（機敏 latch 在 resume 上靜悄悄地不作用）",
+    // streamChatCompletion 與 streamSessionAnswer 各寫一份。只釘前者時，
+    // 續答這份被拿掉，--check-anchors 仍然全綠。
+    find:
+      '  if (typeof conversationId === "number") {\n' +
+      '    headers["X-ANILA-Conversation-Id"] = String(conversationId);\n' +
+      "  }\n" +
+      "\n" +
+      "  const url = `${(routerBaseUrl || \"\").replace(/\\/$/, \"\")}/v1/sessions/${encodeURIComponent(",
+    replace:
+      '  if (typeof conversationId === "string") {\n' +
+      '    headers["X-ANILA-Conversation-Id"] = String(conversationId);\n' +
+      "  }\n" +
+      "\n" +
+      "  const url = `${(routerBaseUrl || \"\").replace(/\\/$/, \"\")}/v1/sessions/${encodeURIComponent(",
   },
   {
     id: "task-id-header-not-attached",
@@ -460,8 +534,24 @@ const MUTATIONS = [
     // 2026-08-05 重新錨定:被擋下來時現在會把範本內容放回輸入框(讓提示列與
     // 模式按鈕出現,使用者才走得出去),原本那一行單行 return 不存在了。
     // 改釘在條件本身 —— 不管擋下來之後要做什麼,這個判斷都得在。
-    find: "                        if (!passesRedactionGate(bodyHits)) {",
-    replace: "                        if (!passesRedactionGate(bodyHits) && false) {",
+    // autosend 不再自帶閘門，改呼叫 submit()。submit 才過 passesRedactionGate。
+    // 改回直接 onSend，就是當初「範本送出繞過阻擋」的那一條。
+    find:
+      "                      if (p.config?.autosend && body.trim()) {\n" +
+      "                        if (attsRef.current.some((att) => att.uploading)) return;\n" +
+      "                        textRef.current = body;\n" +
+      "                        setText(body);\n" +
+      "                        submit();\n" +
+      "                        return;\n" +
+      "                      }",
+    replace:
+      "                      if (p.config?.autosend && body.trim()) {\n" +
+      "                        if (attsRef.current.some((att) => att.uploading)) return;\n" +
+      "                        textRef.current = body;\n" +
+      "                        setText(body);\n" +
+      "                        onSend(body.trim(), attsRef.current, sendMeta());\n" +
+      "                        return;\n" +
+      "                      }",
   },
   {
     id: "redaction-gate-skipped-before-title",
@@ -478,8 +568,8 @@ const MUTATIONS = [
     //
     // ⚠ 走 composer 的那條路**釘不住**這一行:chat.jsx 的閘門會先擋下來,
     // 於是拿掉這一行整套照樣全綠。這個突變存在的理由就是把那件事說出來。
-    find: "    if (!passesRedactionGate(text)) return;",
-    replace: "    if (!passesRedactionGate(text) && false) return;",
+    find: "    if (!passesRedactionGate(text)) return false;",
+    replace: "    if (!passesRedactionGate(text) && false) return false;",
   },
   {
     id: "redaction-choke-point-stream-removed",
@@ -514,16 +604,27 @@ const MUTATIONS = [
     file: "src/app.jsx",
     shape: "存取器回空值",
     intent: "使用者選的模式不再存回後端（重新整理就被放寬回預設，畫面卻說會保留）",
-    find: "      putUiSettings(authRequest, { folders, redactionMode }).catch(() => { /* best-effort */ });",
-    replace: "      putUiSettings(authRequest, { folders }).catch(() => { /* best-effort */ });",
+    find:
+      "    return putUiSettings(authRequest, {\n" +
+      "      folders: nextFolders,\n" +
+      "      redactionMode: nextRedaction,\n" +
+      "      skillAutoApply: nextSkillAutoApply !== false,\n" +
+      "    })",
+    replace:
+      "    return putUiSettings(authRequest, {\n" +
+      "      folders: nextFolders,\n" +
+      "      skillAutoApply: nextSkillAutoApply !== false,\n" +
+      "    })",
   },
   {
     id: "redaction-mode-whitelist-dropped",
     file: "src/app.jsx",
     shape: "驗證放寬",
     intent: "讀回來的模式不再白名單驗證（不明值讓提示列說「將阻擋送出」而實際照送）",
-    find: "        if (alive && REDACTION_MODES.includes(s.redactionMode)) {",
-    replace: "        if (alive && typeof s.redactionMode === \"string\") {",
+    find:
+      "      : (REDACTION_MODES.includes(s.redactionMode) ? s.redactionMode : REDACTION_MODE_DEFAULT);",
+    replace:
+      "      : (typeof s.redactionMode === \"string\" ? s.redactionMode : REDACTION_MODE_DEFAULT);",
   },
 
   // ── 偵測器本身:認得的形狀與認錯的機率 ──────────────────────────────
@@ -673,7 +774,7 @@ const MUTATIONS = [
     file: "src/trust.jsx",
     shape: "畫面上那句話變成謊話",
     intent: "草稿裡只有金鑰時提示列說「這則不會送出」，而它送得出去",
-    find: '  const willBlock = mode === "block" && blockingHits(hits).length > 0;',
+    find: '  const willBlock = mode === "block" && blocking.length > 0;',
     replace: '  const willBlock = mode === "block" && hits.length > 0;',
   },
 
@@ -699,36 +800,30 @@ const MUTATIONS = [
     file: "src/chat.jsx",
     shape: "刪掉賦值（識別字全留）",
     intent: "有引用的回答不再走 MarkdownView（RAG 主線變回字面 **粗體**）",
+    // 正文改經 renderBody(displayBody)。displayBody && '' 仍把識別字留在
+    // 原地，MarkdownView 拿到的卻是空字串。
     find:
-      "                <MarkdownView\n" +
-      "                  text={displayBody}\n" +
-      "                  citations={msg.citations}\n" +
-      "                  onOpenCitation={onOpenCitation}\n" +
-      "                  messageId={msg.id}\n" +
-      "                  conversationId={msg.conversationId ?? conversationId}\n" +
-      "                  streaming={Boolean(msg.streaming)}\n" +
-      "                  streamState={msg.streamState ?? null}\n" +
-      "                  finishReason={msg.finishReason ?? null}\n" +
-      "                />",
+      "            {renderBody(\n" +
+      "              displayBody,\n" +
+      "              Boolean(msg.streaming) && !interrupt,\n" +
+      "            )}",
     replace:
-      "                <MarkdownView\n" +
-      "                  text={displayBody && ''}\n" +
-      "                  citations={msg.citations}\n" +
-      "                  onOpenCitation={onOpenCitation}\n" +
-      "                  messageId={msg.id}\n" +
-      "                  conversationId={msg.conversationId ?? conversationId}\n" +
-      "                  streaming={Boolean(msg.streaming)}\n" +
-      "                  streamState={msg.streamState ?? null}\n" +
-      "                  finishReason={msg.finishReason ?? null}\n" +
-      "                />",
+      "            {renderBody(\n" +
+      "              displayBody && '',\n" +
+      "              Boolean(msg.streaming) && !interrupt,\n" +
+      "            )}",
   },
   {
     id: "cited-figure-drops-image-pks",
     file: "src/markdown.jsx",
     shape: "條件永遠假（識別字全留）",
     intent: "被引用段落有圖時不再把 blob URL 畫出來",
-    find: "    if (citationFigurePks(citation).length > 0) {",
-    replace: "    if (citationFigurePks(citation).length < 0) {",
+    find:
+      "    const pks = citationFigurePks(citation);\n" +
+      "    if (pks.length > 0) {",
+    replace:
+      "    const pks = citationFigurePks(citation);\n" +
+      "    if (pks.length < 0) {",
   },
 ];
 

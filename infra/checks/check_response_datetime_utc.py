@@ -259,11 +259,13 @@ def _placeholder_for(ann: Any) -> Any:
         return {}
     if ann is list or origin is list:
         return []
-    if origin is not None and args:
-        return _placeholder_for(args[0])
-    # Literal
+    # Literal["file", "response"] 的 args 是值，不是型別。先於下面的
+    # 「往 args[0] 遞迴」處理；否則探針會得到 _MISSING，呼叫端再把
+    # datetime 塞進第一個路徑段（例如 client），序列化結果就不是那個欄位。
     if origin is not None and str(origin).endswith("Literal"):
         return args[0] if args else _MISSING
+    if origin is not None and args:
+        return _placeholder_for(args[0])
     try:
         from typing import Literal as _Lit  # noqa: F401
 

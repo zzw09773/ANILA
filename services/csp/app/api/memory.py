@@ -152,7 +152,7 @@ class PreferenceBody(BaseModel):
     text: str = ""
 
 
-class PreferenceResponse(BaseModel):
+class PreferenceResponse(ApiResponseModel):
     text: str
     updated_at: Optional[datetime] = None
 

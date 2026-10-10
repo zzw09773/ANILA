@@ -82,6 +82,13 @@ dev = [
     "mypy>=1.9,<1.21",
     "types-PyYAML>=6.0,<6.1",
     "pyyaml>=6.0,<6.1",
+    # pgvector 在 TYPE_CHECKING 裡 import numpy。numpy 2.5 起的 stub 用
+    # Python 3.12 `type` 語句；本套件 mypy python_version 是 3.11，解析
+    # 那些 stub 會中止整次檢查（errors prevented further checking）。
+    # 2.4.x stub 沒有這個語法。不把 python_version 抬到 3.12——那會放掉
+    # 對「程式必須能在 3.11 跑」的語法檢查。follow_imports=skip 也擋不住，
+    # 語法錯誤發生在解析 stub 的時候。
+    "numpy>=1.26,<2.5",
 ]
 
 [tool.hatch.build.targets.wheel]

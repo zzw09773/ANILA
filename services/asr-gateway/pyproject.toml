@@ -40,7 +40,10 @@ dependencies = [
   # -wheels fork 拿掉了該 import,並提供預編譯 wheel(air-gap 不用在內網編 C)。
   "webrtcvad-wheels>=2.0.14,<2.1",
   # PCM bytes ↔ float32 samples
-  "numpy>=1.26,<2.6",
+  # 2.5 起 stub 用 Python 3.12 `type` 語句。共用 venv 裡 anila-core
+  # （mypy python_version 3.11）與 anila-agent（3.10）一解析到就中止。
+  # 執行期不需要 2.5 API，上限收到最後一版沒有該語法的 2.4.x。
+  "numpy>=1.26,<2.5",
   # ⚠ 刻意不列 opencc:實測 whisper medium 在真實繁中語料的簡體率是 0%,而
   # OpenCC 對正確繁體的誤傷率 6~10%(s2twp 甚至把「類型」轉成「型別」)。
   # ASR_OPENCC_MODE 預設 off;
