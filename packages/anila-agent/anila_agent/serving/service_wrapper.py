@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from anila_core.api.middleware.dispatch_jwt import DispatchTokenError
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from openai.types.responses import ResponseTextDeltaEvent
@@ -53,7 +54,6 @@ from anila_agent.serving.auth import (
     identity_from_claims,
     verify_dispatch_authorization,
 )
-from anila_core.api.middleware.dispatch_jwt import DispatchTokenError
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ _MODEL: Any = None  # 共用的 OpenAIChatCompletionsModel（避免每請求新�
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _CONFIG, _MODEL
     # Bind JWKS client to this process's platform URL + CA (fail-closed if blank).
     jwks = configure_jwks_client(csp_base_url=CSP_BASE_URL, ca_file=ANILA_CA_FILE)
@@ -136,7 +136,7 @@ async def list_models() -> dict[str, Any]:
 
 
 # 背景抽取任務的強參考集合，避免被 GC（asyncio 只保 weakref）。
-_ABSORB_TASKS: set[asyncio.Task] = set()
+_ABSORB_TASKS: set[asyncio.Task[None]] = set()
 
 
 def _schedule_absorb(memory: MemdirRuntime | None, user_text: str, answer_text: str) -> None:
@@ -221,7 +221,8 @@ async def _sse_stream(
                     await queue.put(chunk)
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 — bridge to consumer
+        except BaseException as exc:
+            # Bridge any failure to the consumer task; do not swallow CancelledError.
             error_box.append(exc)
         finally:
             await queue.put(None)

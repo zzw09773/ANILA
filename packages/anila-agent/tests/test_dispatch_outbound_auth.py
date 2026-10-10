@@ -284,9 +284,11 @@ async def test_non_csp_retriever_origin_does_not_receive_dispatch_jwt(record_htt
         api_key=None,
         trusted_csp_base_url="https://csp.internal",
     )
-    with dispatch_bearer_scope("eyJ.user.dispatch.jwt"):
-        with pytest.raises(MissingDispatchTokenError, match="non-CSP origin"):
-            await retriever.search("leak?")
+    with (
+        dispatch_bearer_scope("eyJ.user.dispatch.jwt"),
+        pytest.raises(MissingDispatchTokenError, match="non-CSP origin"),
+    ):
+        await retriever.search("leak?")
     assert record_http.calls == []
 
 

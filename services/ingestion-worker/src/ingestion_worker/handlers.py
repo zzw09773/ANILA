@@ -19,11 +19,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re as _re
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-import asyncpg
 
 from anila_core.ingestion.chunking_plugins import get_chunker
 from anila_core.ingestion.errors import ChunkError, IngestionError, StoreError
@@ -218,8 +218,6 @@ def _get_vision_provider(model: str | None = None) -> Any | None:
 # Reasoning-preamble patterns gemma4 likes to emit even when the prompt
 # forbids it. We strip them at ingest time rather than fighting the
 # model — same trick Studio does for its slide-spec JSON parser.
-import re as _re
-
 _THINK_BLOCK_RE = _re.compile(
     r"<think(?:ing)?>.*?</think(?:ing)?>", _re.DOTALL | _re.IGNORECASE,
 )

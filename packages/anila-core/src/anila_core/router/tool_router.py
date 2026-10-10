@@ -78,7 +78,7 @@ class ToolRegistry:
         """Return names of all registered tools."""
         return sorted(self._tools.keys())
 
-    def openai_schemas(self, tool_names: Optional[list[str]] = None) -> list[dict]:
+    def openai_schemas(self, tool_names: Optional[list[str]] = None) -> list[dict[str, Any]]:
         """Generate OpenAI-compatible tool schemas.
 
         If tool_names is provided, only include those tools.
@@ -91,7 +91,7 @@ class ToolRegistry:
                 schemas.append(tool.to_openai_schema())
         return schemas
 
-    def anthropic_schemas(self, tool_names: Optional[list[str]] = None) -> list[dict]:
+    def anthropic_schemas(self, tool_names: Optional[list[str]] = None) -> list[dict[str, Any]]:
         """Generate Anthropic-compatible tool schemas."""
         names = tool_names if tool_names is not None else self.list_tools()
         schemas = []

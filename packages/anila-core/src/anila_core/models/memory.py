@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -64,7 +64,7 @@ class MemoryHeader(BaseModel):
     @classmethod
     def from_dict(
         cls,
-        data: dict,
+        data: dict[str, Any],
         filename: str,
         file_path: str,
         mtime_ms: float = 0.0,

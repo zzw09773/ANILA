@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from anila_agent.memory.memdir import Memory
 from anila_agent.memory.taxonomy import VALID_TYPES
@@ -32,7 +33,7 @@ _SECRET_PATTERNS = [
 ]
 
 # extractor(redacted_transcript, existing_manifest) -> list[dict{name,description,type,body}]
-Extractor = Callable[[str, dict[str, str]], Awaitable[list[dict]]]
+Extractor = Callable[[str, dict[str, str]], Awaitable[list[dict[str, Any]]]]
 
 
 def redact(text: str) -> str:
@@ -92,7 +93,9 @@ def make_extractor(
 ) -> Extractor:
     """建構打 ``/chat/completions`` 的抽取器（reasoning 模型：給足 max_tokens）。"""
 
-    async def _extract(redacted_transcript: str, existing_manifest: dict[str, str]) -> list[dict]:
+    async def _extract(
+        redacted_transcript: str, existing_manifest: dict[str, str]
+    ) -> list[dict[str, Any]]:
         import httpx
 
         existing = "\n".join(f"- {n}: {d}" for n, d in existing_manifest.items()) or "（無）"
@@ -111,6 +114,7 @@ def make_extractor(
             )
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"].get("content")
-        return parse_json_object(content).get("memories", [])
+        memories = parse_json_object(content).get("memories", [])
+        return cast(list[dict[str, Any]], memories)
 
     return _extract

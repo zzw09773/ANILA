@@ -31,6 +31,7 @@ should import from the canonical sub-package.
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 _SUBMODULES = ("short_term", "long_term", "contract")
 _LAZY: dict[str, str] = {
@@ -67,7 +68,7 @@ _LAZY: dict[str, str] = {
 __all__ = list(_SUBMODULES) + sorted(_LAZY)
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name in _SUBMODULES:
         module = importlib.import_module(f".{name}", __name__)
         globals()[name] = module
@@ -81,5 +82,5 @@ def __getattr__(name: str):
     return value
 
 
-def __dir__():
+def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY) | set(_SUBMODULES))

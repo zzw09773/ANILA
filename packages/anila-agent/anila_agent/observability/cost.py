@@ -38,7 +38,9 @@ def estimate_cost(model: str, usage: Any) -> CostEstimate:
     out_tok = int(getattr(usage, "output_tokens", 0) or 0)
     total = int(getattr(usage, "total_tokens", 0) or (in_tok + out_tok))
     price = PRICE_TABLE.get(model)
-    if not price or price.get("input") is None or price.get("output") is None:
+    input_rate = price.get("input") if price else None
+    output_rate = price.get("output") if price else None
+    if input_rate is None or output_rate is None:
         return CostEstimate(model, in_tok, out_tok, total, None, "價格未知（自架模型），僅計 token")
-    usd = in_tok / 1_000_000 * price["input"] + out_tok / 1_000_000 * price["output"]
+    usd = in_tok / 1_000_000 * input_rate + out_tok / 1_000_000 * output_rate
     return CostEstimate(model, in_tok, out_tok, total, usd, "")

@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import Any, cast
 
 from anila_agent.retrieval.schemas import Document
 
@@ -157,7 +157,8 @@ class AnilaPgVectorRetriever:
                 },
             )
             response.raise_for_status()
-            return response.json()["data"][0]["embedding"]
+            payload = cast(dict[str, Any], response.json())
+            return cast(list[float], payload["data"][0]["embedding"])
 
     async def search(self, query: str, k: int = 5) -> list[Document]:
         # 檢索查詢 → query 側。文件是匯入時（ingestion）以 document 側入庫的。

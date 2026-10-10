@@ -271,9 +271,9 @@ def _stream_text(body: str) -> str:
     out: list[str] = []
     for block in body.split("\n\n"):
         lines = block.split("\n")
-        if any(l.startswith("event:") for l in lines):
+        if any(line.startswith("event:") for line in lines):
             continue
-        data = next((l[6:] for l in lines if l.startswith("data: ")), None)
+        data = next((line[6:] for line in lines if line.startswith("data: ")), None)
         if not data or data == "[DONE]":
             continue
         chunk = json.loads(data)
@@ -287,8 +287,8 @@ def _meta_events(body: str) -> list[dict]:
     events: list[dict] = []
     for block in body.split("\n\n"):
         lines = block.split("\n")
-        name = next((l[6:].strip() for l in lines if l.startswith("event:")), None)
-        data = next((l[5:].strip() for l in lines if l.startswith("data:")), None)
+        name = next((line[6:].strip() for line in lines if line.startswith("event:")), None)
+        data = next((line[5:].strip() for line in lines if line.startswith("data:")), None)
         if name == "anila.meta" and data:
             events.append(json.loads(data))
     return events

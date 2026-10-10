@@ -446,7 +446,6 @@ class HierarchicalChunker(ChunkerStrategy):
         # heading and the next.
         heading_positions = list(_HEADING_RE.finditer(masked))
         for i, m in enumerate(heading_positions):
-            start = m.start()
             level = len(m.group(1))
             title = m.group(2).strip()
 
@@ -873,12 +872,12 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
     """1 - cosine similarity. Both vectors assumed non-zero."""
     if len(a) != len(b):
         raise ValueError(f"cosine: dim mismatch {len(a)} vs {len(b)}")
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
+    dot = float(sum(x * y for x, y in zip(a, b)))
+    norm_a = float(sum(x * x for x in a)) ** 0.5
+    norm_b = float(sum(y * y for y in b)) ** 0.5
     if norm_a == 0 or norm_b == 0:
         return 1.0
-    return 1.0 - (dot / (norm_a * norm_b))
+    return float(1.0 - (dot / (norm_a * norm_b)))
 
 
 def _percentile(xs: list[float], pct: int) -> float:

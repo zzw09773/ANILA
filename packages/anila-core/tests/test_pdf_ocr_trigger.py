@@ -35,7 +35,6 @@ caught rather than silently making every scan fixture a lie.
 
 from __future__ import annotations
 
-import logging
 import re
 
 import pytest

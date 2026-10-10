@@ -28,9 +28,9 @@ from __future__ import annotations
 from typing import Optional
 
 try:
-    from pydantic_settings import BaseSettings  # type: ignore[import]
+    from pydantic_settings import BaseSettings
     from pydantic import Field, model_validator
-    from pydantic_settings import SettingsConfigDict  # type: ignore[import]
+    from pydantic_settings import SettingsConfigDict
 
     class Settings(BaseSettings):
         """Application-wide configuration loaded from environment variables."""
@@ -104,7 +104,7 @@ try:
 
 except ImportError:
     # Fallback when pydantic-settings is not installed
-    from pydantic import BaseModel, Field  # type: ignore[assignment]
+    from pydantic import BaseModel, Field
 
     class Settings(BaseModel):  # type: ignore[no-redef]
         llm_url: str = ""

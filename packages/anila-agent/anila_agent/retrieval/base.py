@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from anila_agent.retrieval.schemas import Document
 
@@ -22,7 +22,7 @@ class Retriever(Protocol):
         ...
 
     @property
-    def metadata(self) -> dict:
+    def metadata(self) -> dict[str, Any]:
         """後端設定摘要（不得含密鑰）。"""
         ...
 

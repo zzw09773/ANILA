@@ -8,7 +8,7 @@ Triton 類 embedder 把查詢與文件放在**不同輸入張量**,一個請求�
 """
 from __future__ import annotations
 
-import json
+from typing import Any, ClassVar
 
 import pytest
 
@@ -29,7 +29,7 @@ class _Resp:
 class _Client:
     """記錄每一次 POST 的 body;依 input_type 回不同向量。"""
 
-    calls: list = []
+    calls: ClassVar[list[dict[str, Any]]] = []
 
     def __init__(self, *a, **k):
         pass

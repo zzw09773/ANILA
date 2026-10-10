@@ -13,16 +13,18 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agents import SQLiteSession
+from agents.items import TResponseInputItem
+from agents.memory.session_settings import SessionSettings
 
 if TYPE_CHECKING:
     from agents import Session
 
     from anila_agent.config import AppConfig
 
-Summarizer = Callable[[list[dict]], Awaitable[str]]
+Summarizer = Callable[[list[TResponseInputItem]], Awaitable[str]]
 
 
 def build_session(cfg: AppConfig, session_id: str) -> Session:
@@ -44,7 +46,12 @@ class PostgresSession:
     asyncpg 延遲匯入，首次使用時建表。
     """
 
+    # None 與「沒有設定」等價：SDK 會落到 limit=None（取全部），與原本未暴露
+    # session_settings 時的 getattr(..., None) or SessionSettings() 相同。
+    session_settings: SessionSettings | None = None
+
     def __init__(self, session_id: str, dsn: str, *, table: str = "anila_agent_messages") -> None:
+        self.session_id = session_id
         self._session_id = session_id
         self._dsn = dsn
         self._table = table
@@ -62,7 +69,7 @@ class PostgresSession:
                 )
         return self._pool
 
-    async def get_items(self, limit: int | None = None) -> list[dict]:
+    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
         import json
 
         pool = await self._ensure()
@@ -80,9 +87,12 @@ class PostgresSession:
                     self._session_id,
                     limit,
                 )
-        return [json.loads(r["item"]) if isinstance(r["item"], str) else r["item"] for r in rows]
+        raw_items = [
+            json.loads(r["item"]) if isinstance(r["item"], str) else r["item"] for r in rows
+        ]
+        return cast(list[TResponseInputItem], raw_items)
 
-    async def add_items(self, items: list[dict]) -> None:
+    async def add_items(self, items: list[TResponseInputItem]) -> None:
         import json
 
         if not items:
@@ -94,7 +104,7 @@ class PostgresSession:
                 [(self._session_id, json.dumps(it)) for it in items],
             )
 
-    async def pop_item(self) -> dict | None:
+    async def pop_item(self) -> TResponseInputItem | None:
         import json
 
         pool = await self._ensure()
@@ -108,7 +118,8 @@ class PostgresSession:
         if row is None:
             return None
         item = row["item"]
-        return json.loads(item) if isinstance(item, str) else item
+        parsed = json.loads(item) if isinstance(item, str) else item
+        return cast(TResponseInputItem, parsed)
 
     async def clear_session(self) -> None:
         pool = await self._ensure()
@@ -140,14 +151,14 @@ class SummarizingSession:
         self._max_items = max_items
         self._keep_last = keep_last
 
-    async def get_items(self, limit: int | None = None) -> list[dict]:
+    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
         return await self._inner.get_items(limit)
 
-    async def add_items(self, items: list[dict]) -> None:
+    async def add_items(self, items: list[TResponseInputItem]) -> None:
         await self._inner.add_items(items)
         await self._maybe_compact()
 
-    async def pop_item(self) -> dict | None:
+    async def pop_item(self) -> TResponseInputItem | None:
         return await self._inner.pop_item()
 
     async def clear_session(self) -> None:
@@ -164,6 +175,8 @@ class SummarizingSession:
         except Exception:
             return
         await self._inner.clear_session()
-        await self._inner.add_items(
-            [{"role": "system", "content": f"[先前對話摘要]\n{summary}"}, *tail]
-        )
+        summary_item: TResponseInputItem = {
+            "role": "system",
+            "content": f"[先前對話摘要]\n{summary}",
+        }
+        await self._inner.add_items([summary_item, *tail])

@@ -15,7 +15,7 @@ P2.1 契約（與 CSP ``dispatch_token`` 對齊）：
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 from anila_core.api.middleware.dispatch_jwt import (
     DISPATCH_TOKEN_ALG,
@@ -24,6 +24,8 @@ from anila_core.api.middleware.dispatch_jwt import (
     DispatchTokenError,
     extract_bearer,
     parse_unverified_header,
+)
+from anila_core.api.middleware.dispatch_jwt import (
     verify_dispatch_jwt as _core_verify_dispatch_jwt,
 )
 from anila_core.api.middleware.jwks_client import (
@@ -103,7 +105,7 @@ def verify_dispatch_jwt(
 ) -> dict[str, Any]:
     """Verify RS256 dispatch JWT via anila-core; map errors to DispatchAuthError."""
     try:
-        return _core_verify_dispatch_jwt(token, public_key, now=now)
+        return cast(dict[str, Any], _core_verify_dispatch_jwt(token, public_key, now=now))
     except DispatchTokenError as exc:
         raise DispatchAuthError(str(exc)) from exc
 

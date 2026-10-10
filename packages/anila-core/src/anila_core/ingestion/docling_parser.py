@@ -91,10 +91,15 @@ def _place_image_placeholders(markdown: str, image_ids: list[str]) -> str:
     if marker_count == len(ids):
         by_marker = {k + 1: img_id for k, img_id in enumerate(ids)}
     else:
-        ordinals = [_image_ordinal(img_id) for img_id in ids]
+        ordinals_opt = [_image_ordinal(img_id) for img_id in ids]
+        # None is excluded here so the comparisons below stay int < int.
+        # A dropped None makes the lengths differ, so `usable` is false
+        # without evaluating `<` on None (that comparison would TypeError).
+        ordinals = [o for o in ordinals_opt if o is not None]
         usable = (
             marker_count > 0
-            and all(o is not None and 1 <= o <= marker_count for o in ordinals)
+            and len(ordinals) == len(ordinals_opt)
+            and all(1 <= o <= marker_count for o in ordinals)
             and all(a < b for a, b in zip(ordinals, ordinals[1:]))
         )
         if usable:
@@ -189,12 +194,12 @@ class DoclingParser:
         if self._converter is not None:
             return self._converter
         try:
-            from docling.datamodel.base_models import InputFormat  # type: ignore[import]
-            from docling.datamodel.pipeline_options import (  # type: ignore[import]
+            from docling.datamodel.base_models import InputFormat  # type: ignore[import-not-found]  # docling is not installed
+            from docling.datamodel.pipeline_options import (  # type: ignore[import-not-found]  # docling is not installed
                 EasyOcrOptions,
                 PdfPipelineOptions,
             )
-            from docling.document_converter import (  # type: ignore[import]
+            from docling.document_converter import (  # type: ignore[import-not-found]  # docling is not installed
                 DocumentConverter,
                 PdfFormatOption,
             )
@@ -218,7 +223,7 @@ class DoclingParser:
         if self._enable_pic_desc:
             # IBM Granite-Vision-3.2-2B for non-China image captions.
             try:
-                from docling.datamodel.pipeline_options import (  # type: ignore[import]
+                from docling.datamodel.pipeline_options import (
                     granite_picture_description,
                 )
                 pdf_pipeline.picture_description_options = granite_picture_description
@@ -340,7 +345,7 @@ def _picture_to_png(picture: Any, document: Any) -> bytes | None:
         try:
             pil_image = picture.get_image(document)
         except TypeError:
-            pil_image = picture.get_image()  # type: ignore[call-arg]
+            pil_image = picture.get_image()
     if pil_image is None:
         return None
 
@@ -363,7 +368,7 @@ def _picture_caption(picture: Any, document: Any) -> str:
         try:
             text = caption(document)
         except TypeError:
-            text = caption()  # type: ignore[call-arg]
+            text = caption()
         except Exception:
             text = ""
         return (text or "").strip()
@@ -379,7 +384,7 @@ _TITLE_CONTROL_TRANS = str.maketrans(
 )
 
 
-def _normalize_title(raw: str) -> str:
+def _normalize_title(raw: object) -> str:
     """wire 的 title 單一常化:非 str→"",剝 C0+DEL 控制字元,剝兩端空白,
     再 cap 到 255 字元。
 
@@ -744,7 +749,7 @@ class RemoteDoclingParser:
         )
 
     def _reconstruct(
-        self, payload: dict, file_path: str, ext: str
+        self, payload: dict[str, Any], file_path: str, ext: str
     ) -> ParsedDocument:
         # LOW#2:200 + 合法 JSON 但沒有 markdown 鍵 = 端點指到別的服務(不是
         # docling 的回應),「別人回 200 不代表別人收下了」。這是組態錯,不是

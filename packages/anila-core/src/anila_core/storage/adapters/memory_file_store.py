@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import frontmatter  # type: ignore[import]
+import frontmatter
 
 from ...models.memory import MemoryFile, MemoryHeader
 

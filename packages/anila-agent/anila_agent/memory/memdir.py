@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -169,7 +170,7 @@ class MemoryStore:
             return index.read_text(encoding="utf-8")
         return self._render_index(self.list())
 
-    def _render_index(self, memories: list[Memory]) -> str:
+    def _render_index(self, memories: Sequence[Memory]) -> str:
         lines = ["# MEMORY.md", ""]
         for m in memories:
             lines.append(f"- [{m.name}]({m.name}.md) — {m.description}")

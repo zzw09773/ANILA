@@ -15,9 +15,9 @@ refuses — never silently attaches the user JWT to a foreign host.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar, Token
-from typing import Iterator
 from urllib.parse import urlsplit
 
 _DISPATCH_BEARER: ContextVar[str | None] = ContextVar(
@@ -87,26 +87,30 @@ def resolve_outbound_bearer(
         # Incomplete origin pair, or mismatched origins → do not attach JWT.
     if fallback and fallback.strip():
         return fallback.strip()
-    if scoped and target_base_url is not None and csp_base_url is not None:
-        if not same_csp_origin(target_base_url, csp_base_url):
-            raise MissingDispatchTokenError(
-                "dispatch JWT must not be sent to a non-CSP origin "
-                f"({target_base_url!r} ≠ {csp_base_url!r}); no fallback credential"
-            )
+    if (
+        scoped
+        and target_base_url is not None
+        and csp_base_url is not None
+        and not same_csp_origin(target_base_url, csp_base_url)
+    ):
+        raise MissingDispatchTokenError(
+            "dispatch JWT must not be sent to a non-CSP origin "
+            f"({target_base_url!r} ≠ {csp_base_url!r}); no fallback credential"
+        )
     raise MissingDispatchTokenError(
         "no dispatch JWT in request scope and no fallback credential; "
         "refusing to call CSP without auth"
     )
 
 
-def _set_dispatch_bearer(token: str) -> Token:
+def _set_dispatch_bearer(token: str) -> Token[str | None]:
     cleaned = (token or "").strip()
     if not cleaned:
         raise MissingDispatchTokenError("empty dispatch bearer")
     return _DISPATCH_BEARER.set(cleaned)
 
 
-def _reset_dispatch_bearer(ctx_token: Token) -> None:
+def _reset_dispatch_bearer(ctx_token: Token[str | None]) -> None:
     """Reset the ContextVar; tolerate ASGI cross-context generator finalization.
 
     When an async generator that entered a scope is aclose()'d from a
@@ -117,11 +121,9 @@ def _reset_dispatch_bearer(ctx_token: Token) -> None:
     cross users. Prefer not to set/reset across a yield boundary at all
     (see service_wrapper streaming task).
     """
-    try:
+    # Cross-context finalize raises ValueError; the request Context dies with it.
+    with suppress(ValueError):
         _DISPATCH_BEARER.reset(ctx_token)
-    except ValueError:
-        # Cross-context finalize — scope dies with the request Context.
-        pass
 
 
 @contextmanager

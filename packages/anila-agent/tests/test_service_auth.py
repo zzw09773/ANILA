@@ -13,9 +13,9 @@ import json
 import time
 
 import pytest
+from anila_core.api.middleware.jwks_client import parse_jwks
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from anila_core.api.middleware.jwks_client import parse_jwks
 
 from anila_agent.serving.auth import (
     DispatchAuthError,

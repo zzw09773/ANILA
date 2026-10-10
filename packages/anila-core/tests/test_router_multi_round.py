@@ -798,7 +798,7 @@ def test_resume_keeps_ask_and_recall_before_another_round(db_path: Path, monkeyp
     ).json()
     interrupt_id = state["pending_interrupts"][0]["id"]
     resumed = client.post(
-        f"/v1/sessions/s-resume-ask/answer",
+        "/v1/sessions/s-resume-ask/answer",
         json={"interrupt_id": interrupt_id, "answer": {"selected": ["2025"], "other_text": ""}},
         headers={"Authorization": "Bearer sk-test"},
     )

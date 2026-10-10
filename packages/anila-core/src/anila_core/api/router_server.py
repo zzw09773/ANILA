@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Optional, cast, overload
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -60,7 +60,7 @@ from ..memory.short_term import (
 from ..models.interrupt import InterruptItem
 from ..models.message import AssistantMessage, ToolCall, UserMessage
 from ..engine.approvals import build_resume_message, to_record
-from ..prompts import COMMON_PREAMBLE, IDENTITY
+from ..prompts import IDENTITY
 from ..compact.auto_compact import FALLBACK_CONTEXT_WINDOW
 from ..compact.openai_history import (
     HISTORY_SUMMARY_PREFIX,
@@ -152,7 +152,7 @@ def current_router_prompts() -> dict[str, str]:
 def router_prompts_source() -> str:
     """``"csp"`` when the governance-center values are in use, else ``"default"``."""
     with _router_prompt_lock:
-        return _router_prompt_state["source"]
+        return cast(str, _router_prompt_state["source"])
 
 
 def _forced_answer_prompt() -> str:
@@ -210,10 +210,10 @@ def _with_csp_host(headers: Mapping[str, str] | None = None) -> dict[str, str]:
 class _CaptureClientHostMiddleware:
     """最外層：只記住 nginx 傳來的 Host，離開請求就清掉。"""
 
-    def __init__(self, app):
+    def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -756,7 +756,7 @@ def _external_turn() -> TurnSidechannel:
     return current
 
 
-def _begin_external_turn(body: dict | None) -> None:
+def _begin_external_turn(body: dict[str, Any] | None) -> None:
     """這一輪從請求帶進來的外來協定行。不放進模型看得到的訊息。"""
     turn = TurnSidechannel()
     raw = None
@@ -1843,10 +1843,10 @@ def _make_chunk(
 _REVEAL_REASONING: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
     "anila_reveal_reasoning", default=None
 )
-_THINKING_SUMMARIES: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+_THINKING_SUMMARIES: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
     "anila_thinking_summaries", default=None
 )
-_SEEN_RAW: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+_SEEN_RAW: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
     "anila_seen_raw_reasoning", default=None
 )
 # 用量與畫面上的摘要／階段不是原文。其餘 reasoning*／thinking* 在隱藏時整鍵拿掉。
@@ -1876,7 +1876,7 @@ def _raw_reasoning_visible() -> bool:
     return _REVEAL_REASONING.get() is True
 
 
-def _note_reveal_header(response) -> None:
+def _note_reveal_header(response: Any) -> None:
     """只在頭真的在時才寫。沒帶頭不要改決定；明確的 0 也不要被後來的 1 蓋掉。
 
     HTTP 頭大小寫不分。httpx 自己會折，測試用的普通 dict 不會，所以這裡再掃一次。
@@ -1920,7 +1920,7 @@ def _note_seen_raw(text: str) -> None:
         del rows[:-32]
 
 
-def _collect_raw_strings(value, bucket: list[str]) -> None:
+def _collect_raw_strings(value: Any, bucket: list[str]) -> None:
     if isinstance(value, str):
         if value.strip():
             bucket.append(value)
@@ -1974,7 +1974,7 @@ def _scrub_free_text(key: str, text: str, seen: list[str]) -> str:
     return _strip_think_spans(text)
 
 
-def _scrub_node(value, seen: list[str]):
+def _scrub_node(value: Any, seen: list[str]) -> Any:
     if isinstance(value, dict):
         collected: list[str] = []
         for key, item in value.items():
@@ -2000,7 +2000,15 @@ def _scrub_node(value, seen: list[str]):
     return value
 
 
-def _scrub_raw_tree(value):
+@overload
+def _scrub_raw_tree(value: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def _scrub_raw_tree(value: dict[Any, Any]) -> dict[Any, Any]: ...
+
+
+def _scrub_raw_tree(value: Any) -> Any:
     if _raw_reasoning_visible() or value is None:
         return value
     seen = [item for item in (_SEEN_RAW.get() or []) if isinstance(item, str) and len(item) >= 8]
@@ -2022,7 +2030,7 @@ def _note_summary_line(text: str) -> None:
         del rows[:-24]
 
 
-def _summary_rows() -> list[dict]:
+def _summary_rows() -> list[dict[str, Any]]:
     rows = _THINKING_SUMMARIES.get() or []
     return [dict(item) for item in rows[-24:] if isinstance(item, dict)]
 
@@ -2168,7 +2176,7 @@ def _make_full_response(
     anila_meta: dict[str, Any] | None = None,
     *,
     finish: str = "stop",
-) -> dict:
+) -> dict[str, Any]:
     meta = dict(anila_meta or _default_anila_meta())
     if not _raw_reasoning_visible():
         scrubbed = _scrub_raw_tree(meta)
@@ -2214,13 +2222,13 @@ def _make_trace_step(
     status: str = "ok",
     latency_ms: int | None = None,
 ) -> dict[str, Any]:
-    step = {"kind": kind, "label": label, "detail": detail, "status": status}
+    step: dict[str, Any] = {"kind": kind, "label": label, "detail": detail, "status": status}
     if latency_ms is not None:
         step["latency_ms"] = latency_ms
     return step
 
 
-def _citation_identity(item: object) -> tuple:
+def _citation_identity(item: object) -> tuple[str, ...]:
     if isinstance(item, dict) and item.get("id"):
         return ("id", str(item["id"]))
     if isinstance(item, dict):
@@ -2233,7 +2241,7 @@ def _citation_identity(item: object) -> tuple:
     return ("raw", json.dumps(item, sort_keys=True, ensure_ascii=False, default=str))
 
 
-def _hit_identity(item: object) -> tuple:
+def _hit_identity(item: object) -> tuple[str, ...]:
     if isinstance(item, dict):
         if item.get("id"):
             return ("id", str(item["id"]))
@@ -2246,9 +2254,11 @@ def _hit_identity(item: object) -> tuple:
     return ("raw", json.dumps(item, sort_keys=True, ensure_ascii=False, default=str))
 
 
-def _dedupe_keep_first(items: list, identity) -> list:
-    seen: set = set()
-    kept: list = []
+def _dedupe_keep_first(
+    items: list[Any], identity: Callable[[object], tuple[str, ...]]
+) -> list[Any]:
+    seen: set[tuple[str, ...]] = set()
+    kept: list[Any] = []
     for item in items:
         key = identity(item)
         if key in seen:
@@ -2276,7 +2286,7 @@ def merge_round_anila_meta(
         list(prior.get("kb_hits") or []) + list(newer.get("kb_hits") or []),
         _hit_identity,
     )
-    failed: list = []
+    failed: list[Any] = []
     for item in list(prior.get("kb_failed_collections") or []) + list(
         newer.get("kb_failed_collections") or []
     ):
@@ -2594,7 +2604,7 @@ def reset_summary_role_cache() -> None:
 async def _csp_resolve_router_model(
     request: Request,
     caller_api_key: str,
-    body: dict | None,
+    body: dict[str, Any] | None,
 ) -> str:
     """Ask CSP to resolve/authorize the Router base LLM. Never trust the caller flag."""
     requested = None
@@ -2635,7 +2645,7 @@ async def _csp_resolve_router_model(
     name = (response.json() or {}).get("name")
     if not name:
         raise HTTPException(status_code=409, detail="請重新選擇對話模型")
-    return name
+    return cast(str, name)
 
 def current_router_model() -> str:
     """Model id for the routing / recompose LLM calls.
@@ -2682,7 +2692,7 @@ async def count_routing_prompt_tokens(
 def router_model_source() -> str:
     """``"csp_registry"`` or ``"env"`` — where ``current_router_model`` came from."""
     with _router_model_lock:
-        return _router_model_state["source"]
+        return cast(str, _router_model_state["source"])
 
 
 def reported_router_model() -> tuple[str | None, str]:
@@ -2705,7 +2715,7 @@ async def resolve_summary_model_name() -> str:
     with _summary_role_lock:
         fresh = _summary_role_state["at"] and now - _summary_role_state["at"] < _SUMMARY_ROLE_TTL_S
         if fresh and _summary_role_state["name"]:
-            return _summary_role_state["name"]
+            return cast(str, _summary_role_state["name"])
         if fresh and not _summary_role_state["name"]:
             raise HTTPException(
                 status_code=int(_summary_role_state["status"] or 409),
@@ -2749,7 +2759,7 @@ async def resolve_summary_model_name() -> str:
             )
             return name
         if _summary_role_state["name"] and status == 503:
-            return _summary_role_state["name"]
+            return cast(str, _summary_role_state["name"])
         public_status = status if status in (404, 409) else 409
         _summary_role_state.update(
             {"name": None, "message": message, "status": public_status, "at": now}
@@ -2902,7 +2912,7 @@ def create_router_app(
     app.add_middleware(_CaptureClientHostMiddleware)
 
     @app.get("/health")
-    async def health() -> dict:
+    async def health() -> dict[str, Any]:
         model_name, model_source = reported_router_model()
         return {
             "status": "ok",
@@ -2938,7 +2948,7 @@ def create_router_app(
         # 這一則的分輪、續寫、救援與過長重試共用一個呼叫預算。
         begin_model_call_budget()
         caller_api_key = _extract_bearer_api_key(request)
-        body: dict = await request.json()
+        body: dict[str, Any] = await request.json()
         # 外來內容的協定行先收進來，後面才不會把文件裡的 DISPATCH／ASK／RECALL 當指令。
         _begin_external_turn(body if isinstance(body, dict) else None)
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
@@ -2966,7 +2976,7 @@ def create_router_app(
             body.pop("anila_thinking_tier", None)
             continue_answer = body.pop("anila_continue", None) is True
         REQUEST_CONTINUE.set(continue_answer)
-        messages: list[dict] = body.get("messages", [])
+        messages: list[dict[str, Any]] = body.get("messages", [])
         stream: bool = body.get("stream", False)
 
         # Capture the X-ANILA-* / X-Anila-* audit + routing headers so the
@@ -3653,8 +3663,8 @@ def create_router_app(
         last_agent_id = agent_id
         last_manifest = manifest
         if max_iterations > 1 and not agent_response["error"]:
-            async def _pin_owner_cb(agent_id_inner: str) -> None:
-                await _pin_owner(session_id, agent_id_inner)
+            async def _pin_owner_cb(agent_id: str) -> None:
+                await _pin_owner(session_id, agent_id)
 
             (
                 agent_response,
@@ -3717,7 +3727,6 @@ def create_router_app(
                         sess, ask=ask, user_message=last_user_text
                     )
                     await sess.push_interrupt(record)
-                    payload = _ask_event_payload(record)
                     anila_meta["route"] = {"decision": "ask"}
                     return _respond_ask(
                         ask,
@@ -3942,12 +3951,17 @@ def create_router_app(
     async def compact_conversation(request: Request) -> JSONResponse:
         begin_model_call_budget()
         caller_api_key = _extract_bearer_api_key(request)
-        body: dict = await request.json()
+        body: dict[str, Any] = await request.json()
         if not isinstance(body, dict):
             body = {}
         selected_model = await _csp_resolve_router_model(request, caller_api_key, body)
         REQUEST_ROUTER_MODEL.set(selected_model)
-        inbound = body.get("messages") if isinstance(body.get("messages"), list) else []
+        raw_messages = body.get("messages")
+        inbound = (
+            cast(list[dict[str, Any]], raw_messages)
+            if isinstance(raw_messages, list)
+            else []
+        )
         anila_headers = {
             k: v for k, v in request.headers.items()
             if k.lower().startswith("x-anila-")
@@ -4072,7 +4086,7 @@ def create_router_app(
         first, then deltas + named events from the agent.
         """
         caller_api_key = _extract_bearer_api_key(request)
-        body: dict = await request.json()
+        body: dict[str, Any] = await request.json()
         _reset_reasoning_gate()
         REQUEST_SAMPLING.set(sampling_overrides_from_body(body) if isinstance(body, dict) else {})
 
@@ -5438,7 +5452,7 @@ _TURN_CALLER_KEY: contextvars.ContextVar[str] = contextvars.ContextVar(
 _TURN_HEADERS: contextvars.ContextVar[Mapping[str, str] | None] = contextvars.ContextVar(
     "anila_turn_headers", default=None
 )
-_TURN_MESSAGES: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+_TURN_MESSAGES: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
     "anila_turn_messages", default=None
 )
 _CONTINUE_PROMPT = "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。"
@@ -5463,7 +5477,8 @@ def _clamp_limit(value: object, low: int, high: int, fallback: int) -> int:
     if isinstance(value, bool):
         return fallback
     try:
-        number = int(value)  # type: ignore[arg-type]
+        # int() accepts str and numbers; the stubs reject bare object.
+        number: int = int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return fallback
     if number < low:
@@ -5706,8 +5721,8 @@ def _reasoning_tail(text: str, limit: int = _RESCUE_REASONING_TAIL_CHARS) -> str
 
 
 def _rescue_followup_messages(
-    messages: list[dict], reasoning: str
-) -> list[dict]:
+    messages: list[dict[str, Any]], reasoning: str
+) -> list[dict[str, Any]]:
     """原對話再補一則使用者指示。
 
     不另插 system：vLLM 拒絕開頭以外的 system。指示用繁體中文，
@@ -5788,7 +5803,7 @@ def _empty_length_stream_error() -> dict[str, Any]:
 
 async def _rescue_non_stream_answer(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     reasoning: str,
     *,
     forwarded_headers: dict[str, str] | None,
@@ -5832,7 +5847,7 @@ async def _rescue_non_stream_answer(
 
 async def _rescue_stream_answer(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     reasoning: str,
     *,
     forwarded_headers: dict[str, str] | None,
@@ -5912,7 +5927,7 @@ async def _rescue_stream_answer(
 
 async def _call_llm_non_stream(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     *,
     forwarded_headers: dict[str, str] | None = None,
     apply_thinking_tier: bool = False,
@@ -6218,7 +6233,7 @@ async def _dispatch_safe(
 
 async def _auto_continue_stream(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     *,
     forwarded_headers: dict[str, str] | None,
     apply_thinking_tier: bool,
@@ -6265,7 +6280,7 @@ async def _auto_continue_stream(
 
 async def _stream_llm_sse(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     *,
     forwarded_headers: dict[str, str] | None = None,
     apply_thinking_tier: bool = False,
@@ -6532,7 +6547,7 @@ def _rounds_cancelled() -> bool:
 
 async def _continue_rounds_nonstream(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     first: dict[str, Any],
     *,
     forwarded_headers: dict[str, str] | None,
@@ -6614,7 +6629,7 @@ async def _continue_rounds_nonstream(
 
 async def _emit_multi_round(
     caller_api_key: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     *,
     forwarded_headers: dict[str, str] | None = None,
     apply_thinking_tier: bool = False,
@@ -7488,10 +7503,10 @@ def _extract_openai_stream_content(chunk: dict[str, Any]) -> str:
     for choice in _openai_choices(chunk):
         if not isinstance(choice, dict):
             continue
-        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
-        message = (
-            choice.get("message") if isinstance(choice.get("message"), dict) else {}
-        )
+        raw_delta = choice.get("delta")
+        delta: dict[Any, Any] = raw_delta if isinstance(raw_delta, dict) else {}
+        raw_message = choice.get("message")
+        message: dict[Any, Any] = raw_message if isinstance(raw_message, dict) else {}
         content = (
             _flatten_openai_content(delta.get("content"))
             or _flatten_openai_content(message.get("content"))
@@ -7773,7 +7788,7 @@ async def _stream_agent_sse(
         }
 
 
-def _continued_prior_text(messages: list[dict] | None) -> str:
+def _continued_prior_text(messages: list[dict[str, Any]] | None) -> str:
     """使用者按了「繼續」時，把上一則助理正文接進這次要存的文件。"""
     if not REQUEST_CONTINUE.get():
         return ""
@@ -8039,10 +8054,10 @@ async def _with_long_document(
 
 async def _router_streaming(
     caller_api_key: str,
-    routing_messages: list[dict],
-    user_messages: list[dict],
+    routing_messages: list[dict[str, Any]],
+    user_messages: list[dict[str, Any]],
     registry: Any,
-    base_trace: list[dict],
+    base_trace: list[dict[str, Any]],
     started_at: float,
     *,
     session_id: str | None = None,
@@ -8080,10 +8095,10 @@ async def _router_streaming(
 
 async def _router_streaming_body(
     caller_api_key: str,
-    routing_messages: list[dict],
-    user_messages: list[dict],
+    routing_messages: list[dict[str, Any]],
+    user_messages: list[dict[str, Any]],
     registry: Any,
-    base_trace: list[dict],
+    base_trace: list[dict[str, Any]],
     started_at: float,
     *,
     session_id: str | None = None,
@@ -8539,7 +8554,7 @@ async def _router_streaming_body(
         if second.get("stages_consumed"):
             second_reason = str(second.get("reasoning") or "")
             second_content = second.get("content") or ""
-            second_events = []
+            second_events: list[dict[str, Any]] = []
         else:
             second_reason, second_content, second_events = live_stages.absorb_turn(
                 str(second.get("reasoning") or ""),
@@ -8884,7 +8899,7 @@ async def _router_streaming_body(
             attributes={"target": agent_id, "streaming": True},
         )
 
-    downstream_meta: dict[str, Any] | None = None
+    agent_downstream_meta: dict[str, Any] | None = None
     # Buffer content for memory re-composition unless the agent is classified
     # (known upfront from the manifest) — classified replies stream verbatim in
     # real time and are never sent to the recompose model.
@@ -8937,10 +8952,10 @@ async def _router_streaming_body(
         elif kind == "usage":
             _remember_usage(event.get("usage"))
         elif kind == "meta":
-            downstream_meta = event["anila_meta"]
-            if isinstance(downstream_meta, dict):
-                _remember_usage(downstream_meta.get("usage"))
-                if downstream_meta.get("classified") is True:
+            agent_downstream_meta = event["anila_meta"]
+            if isinstance(agent_downstream_meta, dict):
+                _remember_usage(agent_downstream_meta.get("usage"))
+                if agent_downstream_meta.get("classified") is True:
                     seen_classified = True
                     buffer_for_recompose = False
         elif kind == "anila_event":
@@ -8951,7 +8966,7 @@ async def _router_streaming_body(
             ev_name = event["event"]
             ev_payload = event["payload"]
             if ev_name == "anila.meta" and isinstance(ev_payload, dict):
-                downstream_meta = ev_payload
+                agent_downstream_meta = ev_payload
                 _remember_usage(ev_payload.get("usage"))
                 if ev_payload.get("classified") is True:
                     seen_classified = True
@@ -9039,8 +9054,8 @@ async def _router_streaming_body(
             yield _make_event(
                 "anila.spans", {"spans": [decision_dict, downstream_dict]}
             )
-        if known_usage is None and isinstance(downstream_meta, dict):
-            known_usage = _trustworthy_usage(downstream_meta.get("usage"))
+        if known_usage is None and isinstance(agent_downstream_meta, dict):
+            known_usage = _trustworthy_usage(agent_downstream_meta.get("usage"))
         failure_meta = _failure_anila_meta(
             classified=seen_classified,
             usage=known_usage,
@@ -9060,7 +9075,7 @@ async def _router_streaming_body(
     if buffer_for_recompose and agent_stream_completed:
         aggregated = "".join(aggregated_parts)
         if aggregated.strip():
-            if not (downstream_meta or {}).get("classified"):
+            if not (agent_downstream_meta or {}).get("classified"):
                 recompose_agent = _RECOMPOSE_AGENT_ID.set(agent_id)
                 try:
                     new_content, recompose_status = await _recompose_reply(
@@ -9108,7 +9123,7 @@ async def _router_streaming_body(
                 "POST /v1/chat/completions (經 CSP proxy, streaming)",
             ),
         ],
-        downstream_meta,
+        agent_downstream_meta,
         agent_id=agent_id,
         latency_ms=int((time.time() - started_at) * 1000),
         classified_override=bool(manifest.requires_encryption),

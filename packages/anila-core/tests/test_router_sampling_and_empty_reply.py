@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
 
 from anila_core.api import router_server as rs
 from anila_core.prompts.sampling import get_sampling

@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
-from opencc import OpenCC
+from opencc import OpenCC  # type: ignore[import-untyped]  # 套件沒有型別標記
 
 from anila_core.text.domain_terms import apply_domain_terms
 

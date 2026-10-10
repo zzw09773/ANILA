@@ -28,7 +28,7 @@ from ..engine.guardrails import (
     RegexBlockInput,
     RegexBlockOutput,
 )
-from ..models.tool import ToolDefinition, ToolPermission
+from ..models.tool import ToolPermission
 from ..router.tool_router import ToolRegistry
 from ..workspace.caps import WorkspaceCaps
 from .snapshot import GuardrailSpec, RuntimeConfigSnapshot, WorkspaceSpec
@@ -161,17 +161,17 @@ def _apply_guardrails(
     for spec in snapshot.guardrails:
         targets = all_tools if spec.tool == "*" else [spec.tool]
         if spec.side == "input":
-            built = _build_input_guardrail(spec)
-            if built is None:
+            built_input = _build_input_guardrail(spec)
+            if built_input is None:
                 continue
             for t in targets:
-                input_by_tool.setdefault(t, []).append(built)
+                input_by_tool.setdefault(t, []).append(built_input)
         elif spec.side == "output":
-            built = _build_output_guardrail(spec)
-            if built is None:
+            built_output = _build_output_guardrail(spec)
+            if built_output is None:
                 continue
             for t in targets:
-                output_by_tool.setdefault(t, []).append(built)
+                output_by_tool.setdefault(t, []).append(built_output)
 
     for tool_name in all_tools:
         tool = registry.get_or_none(tool_name)
@@ -189,12 +189,12 @@ def _apply_guardrails(
             g for g in tool.output_guardrails
             if not getattr(g, "_runtime_marker", False)
         ]
-        for g in input_by_tool.get(tool_name, []):
-            _tag_runtime(g)
-            tool.input_guardrails.append(g)
-        for g in output_by_tool.get(tool_name, []):
-            _tag_runtime(g)
-            tool.output_guardrails.append(g)
+        for input_guard in input_by_tool.get(tool_name, []):
+            _tag_runtime(input_guard)
+            tool.input_guardrails.append(input_guard)
+        for output_guard in output_by_tool.get(tool_name, []):
+            _tag_runtime(output_guard)
+            tool.output_guardrails.append(output_guard)
 
 
 def _tag_runtime(obj: object) -> None:

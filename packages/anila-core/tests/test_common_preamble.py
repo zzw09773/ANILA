@@ -11,12 +11,15 @@
 
 from anila_core.prompts import (
     COMMON_PREAMBLE,
+    CURRENT_FACTS,
     DATA_DISCIPLINE,
     ERA_RULES,
+    FACTS_AS_OF,
     IDENTITY,
     LANGUAGE_PREAMBLE,
     LANGUAGE_RULES,
     NATIONAL_TERMINOLOGY,
+    OFFICEHOLDERS,
     compose,
 )
 
@@ -27,8 +30,6 @@ _SIMPLIFIED_ONLY = set(
     "声处复头夹夺妇学宁宝实审宫层岁岛币师带帮广庆库应张弯强归当录忆态总"
     "恶惊愿战户报担拟拥挂损换据败货贴费资赛简体条来对时说话让证权满线"
 )
-
-from anila_core.prompts import CURRENT_FACTS, FACTS_AS_OF, OFFICEHOLDERS
 
 _ALL_SECTIONS = (
     IDENTITY,

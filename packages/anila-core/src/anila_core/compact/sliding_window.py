@@ -10,7 +10,7 @@ This is the last-resort safety net to prevent OOM or context overflow.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from ..models.message import Message, UserMessage
 
@@ -22,7 +22,7 @@ SLIDING_WINDOW_SUMMARY = "[Earlier conversation history was truncated to fit con
 def sliding_window_compact(
     messages: list[Message],
     max_tokens: int,
-    token_estimator: Optional[callable] = None,
+    token_estimator: Optional[Callable[[list[Message]], int]] = None,
     keep_recent_turns: int = 4,
 ) -> tuple[list[Message], int]:
     """Hard-truncate old messages, keeping only recent turns.

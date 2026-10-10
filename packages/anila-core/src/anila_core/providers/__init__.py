@@ -8,6 +8,7 @@ processes that never build a provider do not load them.
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 from .base import Provider, ProviderRequest
 
@@ -20,7 +21,7 @@ _LAZY: dict[str, str] = {
 __all__ = ["Provider", "ProviderRequest", *sorted(_LAZY)]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     try:
         modname = _LAZY[name]
     except KeyError:
@@ -30,5 +31,5 @@ def __getattr__(name: str):
     return value
 
 
-def __dir__():
+def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY))

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from anila_agent.retrieval.schemas import Document
 
@@ -34,7 +35,7 @@ class DummyRetriever:
         self._docs: dict[str, str] = dict(corpus if corpus is not None else _DEFAULT_CORPUS)
 
     @property
-    def metadata(self) -> dict:
+    def metadata(self) -> dict[str, Any]:
         return {"backend": "dummy", "size": len(self._docs)}
 
     async def search(self, query: str, k: int = 5) -> list[Document]:

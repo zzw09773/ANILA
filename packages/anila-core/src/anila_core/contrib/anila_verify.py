@@ -112,7 +112,12 @@ def jwk_to_public_key(jwk: Mapping[str, Any]) -> RSAPublicKey:
 class _IssuancePolicy:
     """不用 dataclass：這個檔會被 importlib 直接載入，註解解析會找不到模組。"""
 
-    def __init__(self, state, iat_not_after, accept_missing_iat) -> None:
+    def __init__(
+        self,
+        state: str | None,
+        iat_not_after: int | None,
+        accept_missing_iat: bool,
+    ) -> None:
         self.state = state
         self.iat_not_after = iat_not_after
         self.accept_missing_iat = accept_missing_iat
@@ -138,7 +143,7 @@ class _IssuancePolicy:
         return issued < self.iat_not_after
 
 
-class _JwksMap(dict):
+class _JwksMap(dict[str, RSAPublicKey]):
     def __init__(self) -> None:
         super().__init__()
         self.policies: dict[str, _IssuancePolicy] = {}
@@ -236,7 +241,15 @@ def _require_https_jwks_url(url: str) -> None:
 class _RefuseRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Block auto-follow so JWKS bytes cannot arrive on a different hop."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
         raise AnilaVerifyError(
             f"JWKS 拒絕跟隨 HTTP {code} 重新導向（redirect）；"
             "fetch_jwks 不自動跟隨 Location，以免實際載體連線降級為 http "
@@ -244,7 +257,9 @@ class _RefuseRedirectHandler(urllib.request.HTTPRedirectHandler):
         )
 
 
-def _jwks_urlopen(req: urllib.request.Request, *, ca_file: Optional[str], timeout: float):
+def _jwks_urlopen(
+    req: urllib.request.Request, *, ca_file: Optional[str], timeout: float
+) -> Any:
     """Open ``req`` with ``ca_file`` applied and redirects disabled."""
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=_ssl_context(ca_file)),

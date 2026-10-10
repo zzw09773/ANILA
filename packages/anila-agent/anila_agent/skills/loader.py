@@ -11,6 +11,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 _FM = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 
@@ -30,13 +31,13 @@ class Skill:
         return (m.group(2).strip() if m else text.strip())
 
 
-def _parse_frontmatter(text: str) -> dict:
+def _parse_frontmatter(text: str) -> dict[str, Any]:
     m = _FM.match(text)
     if not m:
         return {}
     import yaml
 
-    return yaml.safe_load(m.group(1)) or {}
+    return cast(dict[str, Any], yaml.safe_load(m.group(1)) or {})
 
 
 def load_skills(skills_dir: str | os.PathLike[str], *, trusted: bool = False) -> list[Skill]:

@@ -108,7 +108,7 @@ def calculate_token_warning_state(
     token_usage: int,
     context_window: int,
     max_output_tokens: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-) -> dict:
+) -> dict[str, int | bool]:
     """Return a dict with warning/error/compact flags and percent remaining."""
     threshold = get_auto_compact_threshold(context_window, max_output_tokens)
 

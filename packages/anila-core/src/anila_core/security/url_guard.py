@@ -55,7 +55,7 @@ import os
 import socket
 import threading
 from contextvars import ContextVar, Token
-from typing import Callable
+from typing import Any, Callable, cast
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -423,17 +423,17 @@ def _is_private_ip(addr: str) -> bool:
     return ip.is_private
 
 
-def _resolve_host(host: str, timeout: float | None):
+def _resolve_host(host: str, timeout: float | None) -> list[Any]:
     """解析主機。沒給 timeout 就同步查，行為與以前相同。
 
     ``getaddrinfo`` 沒有 timeout 參數。有上限時放在背景執行緒等，時間到就
     放棄那次結果，不把逾時當成「解不出來所以放行」。
     """
     if timeout is None:
-        return socket.getaddrinfo(host, None)
+        return cast(list[Any], socket.getaddrinfo(host, None))
     if timeout <= 0:
         raise TimeoutError("dns timeout")
-    box: dict = {}
+    box: dict[str, Any] = {}
     done = threading.Event()
 
     def _run() -> None:
@@ -448,8 +448,8 @@ def _resolve_host(host: str, timeout: float | None):
     if not done.wait(timeout):
         raise TimeoutError("dns timeout")
     if "error" in box:
-        raise box["error"]
-    return box.get("infos") or []
+        raise cast(BaseException, box["error"])
+    return cast(list[Any], box.get("infos") or [])
 
 
 def validate_outbound_url(

@@ -29,6 +29,7 @@ What still lives in this package:
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 _LAZY: dict[str, str] = {
     "make_agent_tool": ".agent_as_tool",
@@ -59,7 +60,7 @@ _ALIASES: dict[str, str] = {"apply_patch_fn": "apply_patch"}
 __all__ = sorted(_LAZY)
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     try:
         modname = _LAZY[name]
     except KeyError:
@@ -70,5 +71,5 @@ def __getattr__(name: str):
     return value
 
 
-def __dir__():
+def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY))

@@ -22,7 +22,7 @@ import logging
 import ssl
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Awaitable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -118,13 +118,13 @@ class IssuancePolicy:
         return issued < self.iat_not_after
 
 
-class _KeySet(dict):
+class _KeySet(dict[str, RSAPublicKey]):
     def __init__(self) -> None:
         super().__init__()
         self.policies: dict[str, IssuancePolicy] = {}
 
 
-def _policy_for_entry(entry: dict) -> IssuancePolicy | None:
+def _policy_for_entry(entry: dict[str, Any]) -> IssuancePolicy | None:
     if "anila_key_state" not in entry:
         return None
     state = entry.get("anila_key_state")
@@ -237,7 +237,7 @@ class JwksClient:
 
     def allows_issuance(self, kid: str, payload: Mapping[str, Any]) -> bool:
         policies = getattr(self._cache, "policies", None) or {}
-        policy = policies.get(kid)
+        policy = cast(IssuancePolicy | None, policies.get(kid))
         if policy is None:
             return True
         return policy.allows(payload)

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]  # 沒有 py.typed 或 stubs
 from pgvector.asyncpg import register_vector
 
 

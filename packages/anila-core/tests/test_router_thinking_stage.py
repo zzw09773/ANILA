@@ -13,7 +13,6 @@ import random
 from pathlib import Path
 
 import httpx
-import pytest
 import pytest_asyncio
 import respx
 from fastapi.testclient import TestClient

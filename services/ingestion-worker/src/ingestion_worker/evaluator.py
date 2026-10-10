@@ -48,17 +48,16 @@ import math
 import time
 from typing import Any
 
-
-logger = logging.getLogger(__name__)
-
 from anila_core.ingestion.chunking_plugins import ChunkResult, get_chunker
 from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
 from anila_core.storage.adapters.pg_pool import PgPool
 
+from ingestion_worker.docling_source import refresh_document_parser
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.judge import JudgeCredential, load_judge_credential, score_one
-from ingestion_worker.docling_source import refresh_document_parser
 from ingestion_worker.parsers import extract_text
+
+logger = logging.getLogger(__name__)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -183,8 +182,10 @@ async def _score_strategy(
         )
         rr = 1.0 / rank if rank else 0.0
 
-        if h1: hits_at_1 += 1
-        if h5: hits_at_5 += 1
+        if h1:
+            hits_at_1 += 1
+        if h5:
+            hits_at_5 += 1
         rr_total += rr
 
         # ── Judge phase (optional) ──────────────────────────────────

@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, AsyncIterator
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]  # 沒有 py.typed 或 stubs
 from pgvector import HalfVector
 
 from anila_core.storage.embeddable import leaf_predicate
@@ -491,7 +491,7 @@ class CollectionScopedPgVectorStore:
     async def add_parent_chunks(
         self,
         document_id: int,
-        chunks: list,
+        chunks: list[ChunkResult],
     ) -> dict[str, int]:
         """Sprint 9 X / parent-child — insert non-leaf rows (no embedding).
 
@@ -601,8 +601,8 @@ class CollectionScopedPgVectorStore:
 
     async def _attach_parent_content(
         self,
-        conn,
-        hits: list,
+        conn: asyncpg.Connection,
+        hits: list[SearchHit],
     ) -> None:
         """Sprint 9 X — fill ``hit.parent_content`` from the parent row's content.
 
@@ -720,7 +720,7 @@ class CollectionScopedPgVectorStore:
         # Sprint 9 X new columns are optional — list endpoints that
         # don't SELECT them won't have the keys in the asyncpg.Record.
         # ``Record.get`` doesn't exist; use a try/except dance.
-        def _opt(name: str, default=None):
+        def _opt(name: str, default: Any = None) -> Any:
             try:
                 return row[name]
             except (KeyError, IndexError):
@@ -746,7 +746,7 @@ class CollectionScopedPgVectorStore:
     @classmethod
     def _row_to_search_hit(cls, row: asyncpg.Record) -> SearchHit:
         # similarity_search SELECT does not return the embedding column.
-        def _opt(name: str, default=None):
+        def _opt(name: str, default: Any = None) -> Any:
             try:
                 return row[name]
             except (KeyError, IndexError):

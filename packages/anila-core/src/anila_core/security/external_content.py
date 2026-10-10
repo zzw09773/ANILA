@@ -14,7 +14,8 @@ import socket
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Sequence
+from collections.abc import Iterator
+from typing import Any, Iterable, Mapping, Sequence, cast
 from urllib.parse import urlparse
 
 from anila_core.api import router_prompts
@@ -552,7 +553,7 @@ def compose_external_message(parts: Sequence[WrappedExternal]) -> str:
     return EXTERNAL_PREFACE + "\n" + "\n".join(part.tag for part in parts)
 
 
-def insert_external_message(messages: list, content: str) -> None:
+def insert_external_message(messages: list[Any], content: str) -> None:
     """插在系統訊息之後、對話之前。外來內容不進 system。"""
     if not content:
         return
@@ -704,7 +705,7 @@ def request_platform_hosts(
     headers: Mapping[str, str] | object,
     *,
     include_forwarded_host: bool = False,
-):
+) -> Iterator[None]:
     """把這次請求的主機放進 is_platform_url 已經有的 extra_hosts 那條路。"""
     token = _REQUEST_PLATFORM_HOSTS.set(
         platform_hosts_from_headers(
@@ -724,11 +725,11 @@ class RequestPlatformHostsMiddleware:
     沒給就忽略，避免呼叫端自己填的主機變成平台網址。
     """
 
-    def __init__(self, app, *, trust_forwarded_host=None):
+    def __init__(self, app: Any, *, trust_forwarded_host: Any = None) -> None:
         self.app = app
         self.trust_forwarded_host = trust_forwarded_host
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
@@ -848,7 +849,7 @@ def _find_loose(text: str, needle: list[str]) -> tuple[int, int] | None:
                 start = index
             matched += 1
             if matched == len(needle):
-                return start, index + 1
+                return cast(int, start), index + 1
             index += 1
             continue
         if start is not None:
@@ -1203,7 +1204,7 @@ class TurnSidechannel:
             if isinstance(line, str) and line and line not in self.protocol_lines:
                 self.protocol_lines.append(line)
 
-    def add_findings(self, findings: Iterable[dict]) -> None:
+    def add_findings(self, findings: Iterable[dict[str, Any]]) -> None:
         for item in findings:
             if not isinstance(item, dict):
                 continue

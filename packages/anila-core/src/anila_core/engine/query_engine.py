@@ -339,7 +339,7 @@ class QueryEngine:
     async def _api_call(
         self,
         history: list[Message],
-        on_stream_delta: Optional[Callable] = None,
+        on_stream_delta: Optional[Callable[[Any], Coroutine[Any, Any, None]]] = None,
     ) -> tuple[AssistantMessage, Usage, str]:
         """Stage 2: call the provider and collect the response."""
         tool_schemas = self._tools.openai_schemas(self._config.tool_names)
@@ -353,12 +353,12 @@ class QueryEngine:
             temperature=self._config.temperature,
         )
 
-        content_parts: list[dict] = []
+        content_parts: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         usage = Usage()
         finish_reason = "end_turn"
 
-        partial_tool_calls: dict[str, dict] = {}
+        partial_tool_calls: dict[str, dict[str, Any]] = {}
 
         async for delta in self._provider.stream_completion(request):
             if on_stream_delta:
@@ -406,9 +406,9 @@ class QueryEngine:
 
     def _build_tool_result_message(self, results: list[ToolResult]) -> UserMessage:
         """Stage 5: wrap tool results into a user message."""
-        content_blocks: list[dict] = []
+        content_blocks: list[dict[str, Any]] = []
         for result in results:
-            block: dict = {
+            block: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": result.tool_call_id,
                 "content": result.content if isinstance(result.content, str)

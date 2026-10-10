@@ -16,13 +16,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
-from agents import RunState
+from agents import Agent, RunState
+from agents.items import ToolApprovalItem
 from agents.run_state import CURRENT_SCHEMA_VERSION
-
-if TYPE_CHECKING:
-    from agents import Agent
 
 SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
@@ -32,9 +30,9 @@ def has_interruptions(result: Any) -> bool:
     return bool(getattr(result, "interruptions", None))
 
 
-def state_from_result(result: Any) -> RunState:
+def state_from_result(result: Any) -> RunState[Any, Agent[Any]]:
     """從 run 結果取出可序列化的 RunState。"""
-    return result.to_state()
+    return cast(RunState[Any, Agent[Any]], result.to_state())
 
 
 def dump_state(state: RunState) -> str:
@@ -47,7 +45,12 @@ async def load_state(initial_agent: Agent, state_string: str) -> RunState:
     return await RunState.from_string(initial_agent, state_string)
 
 
-def approve_all(state: RunState, interruptions: list, *, always: bool = False) -> RunState:
+def approve_all(
+    state: RunState[Any, Agent[Any]],
+    interruptions: list[ToolApprovalItem],
+    *,
+    always: bool = False,
+) -> RunState[Any, Agent[Any]]:
     """核准所有 pending interruption（回傳同一 state，便於串接）。"""
     for item in interruptions:
         state.approve(item, always_approve=always)

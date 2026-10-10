@@ -24,10 +24,10 @@ import re
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class ParsedDocument:
     """
 
     content: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     source_path: str = ""
     format: str = ""
     images: dict[str, ImageRef] = field(default_factory=dict)
@@ -766,7 +766,9 @@ class HtmlParser:
                 self._skip: list[str] = []  # 被跳過子樹的標籤堆疊
                 self._in_title = False
 
-            def handle_starttag(self, tag, attrs):
+            def handle_starttag(
+                self, tag: str, attrs: list[tuple[str, str | None]]
+            ) -> None:
                 if tag == "title":
                     self._in_title = True
                     return
@@ -785,13 +787,13 @@ class HtmlParser:
                 if tag in BLOCK:
                     self.parts.append("\n")
 
-            def handle_endtag(self, tag):
+            def handle_endtag(self, tag: str) -> None:
                 if tag == "title":
                     self._in_title = False
                 elif self._skip and self._skip[-1] == tag:
                     self._skip.pop()
 
-            def handle_data(self, data):
+            def handle_data(self, data: str) -> None:
                 if self._in_title:
                     self.title += data  # title 即使在被跳過的 <head> 內也要抓
                     return
@@ -818,7 +820,7 @@ class RtfParser:
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:
-            from striprtf.striprtf import rtf_to_text  # type: ignore[import]
+            from striprtf.striprtf import rtf_to_text
         except ImportError as exc:
             raise ImportError(
                 "striprtf is required for RTF parsing. "
@@ -827,7 +829,8 @@ class RtfParser:
 
         path = Path(file_path)
         raw = _decode_text_bytes(path.read_bytes())
-        content = rtf_to_text(raw, errors="ignore")
+        # striprtf is py.typed but rtf_to_text itself has no annotations.
+        content = cast(Callable[..., str], rtf_to_text)(raw, errors="ignore")
 
         return ParsedDocument(
             content=content,
@@ -861,8 +864,8 @@ class PdfParser:
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:
-            import pymupdf4llm  # type: ignore[import]
-            import fitz  # type: ignore[import]  # pymupdf
+            import pymupdf4llm  # type: ignore[import-untyped]  # no type stubs
+            import fitz  # type: ignore[import-untyped]  # pymupdf fitz shim has no stubs
         except ImportError as exc:
             raise ImportError(
                 "pymupdf4llm and pymupdf are required for PDF parsing. "
@@ -1002,9 +1005,9 @@ class PdfParser:
         )
 
 
-def _extract_pdf_image(doc, xref: int) -> tuple[bytes, str]:
+def _extract_pdf_image(doc: Any, xref: int) -> tuple[bytes, str]:
     """Return (bytes, mime) for a PDF image xref, preferring the native format."""
-    import fitz  # type: ignore[import]
+    import fitz
 
     info = doc.extract_image(xref)
     if info and info.get("image"):
@@ -1043,7 +1046,7 @@ class DocxParser:
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:
-            from docx import Document  # type: ignore[import]
+            from docx import Document
         except ImportError as exc:
             raise ImportError(
                 "python-docx is required for DOCX parsing. "
@@ -1165,8 +1168,8 @@ class DocxParser:
 
     def _collect_para_images(
         self,
-        paragraph,
-        doc,
+        paragraph: Any,
+        doc: Any,
         images: dict[str, ImageRef],
     ) -> list[str]:
         """Find inline images inside a paragraph and register them."""
@@ -1240,8 +1243,8 @@ class OdtParser:
 
     def parse(self, file_path: str) -> ParsedDocument:
         try:
-            from odf.opendocument import load as odf_load  # type: ignore[import]
-            from odf.teletype import extractText  # type: ignore[import]
+            from odf.opendocument import load as odf_load  # type: ignore[import-untyped]  # odfpy has no stubs
+            from odf.teletype import extractText  # type: ignore[import-untyped]  # odfpy has no stubs
         except ImportError as exc:
             raise ImportError(
                 "odfpy is required for ODT parsing. "
@@ -1400,11 +1403,11 @@ class ParserRegistry:
         ".bmp": ImageParser(),
     }
 
-    _docling_parser = None  # type: ignore[var-annotated]
+    _docling_parser: DocumentParser | None = None
     _docling_initialised = False
 
     @classmethod
-    def _get_docling_parser(cls):
+    def _get_docling_parser(cls) -> DocumentParser | None:
         """已註冊治理中心來源時，只聽那個來源。
 
         沒註冊就回 ``None``（原生解析器），不讀 ``DOC_PARSER``。

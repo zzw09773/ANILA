@@ -21,7 +21,7 @@ from .base import ProviderRequest
 logger = logging.getLogger(__name__)
 
 
-def _messages_to_openai(messages: list) -> list[dict[str, Any]]:
+def _messages_to_openai(messages: list[Any]) -> list[dict[str, Any]]:
     """Convert internal Message objects to OpenAI API format."""
     result: list[dict[str, Any]] = []
     for msg in messages:

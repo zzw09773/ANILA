@@ -14,7 +14,7 @@ Supported file formats:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -25,7 +25,7 @@ class RegistryError(Exception):
     """Raised for invalid agent definitions or registry state."""
 
 
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
+def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from a Markdown document.
 
     Returns (frontmatter_dict, body_text).
@@ -52,7 +52,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return data, body
 
 
-def _load_from_dict(data: dict, source_path: Optional[str] = None) -> AgentDefinition:
+def _load_from_dict(data: dict[str, Any], source_path: Optional[str] = None) -> AgentDefinition:
     """Build an AgentDefinition from a raw dict, validating required fields."""
     allowed_fields = {
         "agent_type",

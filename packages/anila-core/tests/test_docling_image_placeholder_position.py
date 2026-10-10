@@ -25,7 +25,6 @@ import logging
 from pathlib import Path
 
 import httpx
-import pytest
 import respx
 
 from anila_core.ingestion.chunking_plugins import get_chunker

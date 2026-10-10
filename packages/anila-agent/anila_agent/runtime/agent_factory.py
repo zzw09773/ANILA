@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from agents import Agent
+from agents import Agent, OpenAIChatCompletionsModel
 
 from anila_agent.cli.output_styles import load_output_style
 from anila_agent.config import AppConfig
@@ -53,7 +53,7 @@ def build_agent(
     *,
     retriever: Retriever | None = None,
     name: str | None = None,
-    model=None,
+    model: OpenAIChatCompletionsModel | None = None,
     memory_tenant: str | None = None,
     memory_requires_tenant: bool = False,
 ) -> AssembledAgent:

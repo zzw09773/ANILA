@@ -6,6 +6,8 @@ retriever / RAG 工具 / prompt 對輸出形狀的假設。
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -21,4 +23,4 @@ class Document(BaseModel):
     id: str
     text: str
     score: float | None = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)

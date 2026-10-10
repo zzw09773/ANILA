@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 
-import pytest
 
 from anila_core.api import router_server as rs
 from anila_core.memory import MemorySession

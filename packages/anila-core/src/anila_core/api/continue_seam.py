@@ -8,12 +8,19 @@
 from __future__ import annotations
 
 import re
+from typing import TypedDict
 
 _MIN_OVERLAP = 40
+
+
+class _FenceMarker(TypedDict):
+    char: str
+    length: int
+    info: str
 _FENCE_LINE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 
 
-def _fence_marker(line: str) -> dict[str, object] | None:
+def _fence_marker(line: str) -> _FenceMarker | None:
     matched = _FENCE_LINE.match(line)
     if matched is None:
         return None
@@ -24,8 +31,8 @@ def _fence_marker(line: str) -> dict[str, object] | None:
     return {"char": tick[0], "length": len(tick), "info": info}
 
 
-def _unclosed_fence(text: str) -> dict[str, object] | None:
-    open_fence: dict[str, object] | None = None
+def _unclosed_fence(text: str) -> _FenceMarker | None:
+    open_fence: _FenceMarker | None = None
     for line in str(text or "").split("\n"):
         marker = _fence_marker(line)
         if marker is None:
@@ -43,7 +50,7 @@ def _unclosed_fence(text: str) -> dict[str, object] | None:
     return open_fence
 
 
-def _strip_repeated_opener(extra: str, open_fence: dict[str, object]) -> str:
+def _strip_repeated_opener(extra: str, open_fence: _FenceMarker) -> str:
     lines = extra.split("\n")
     index = 0
     while index < len(lines) and lines[index].strip() == "":

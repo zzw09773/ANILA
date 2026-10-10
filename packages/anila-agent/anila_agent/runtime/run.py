@@ -12,7 +12,7 @@ from agents import Runner
 from anila_agent.runtime.agent_factory import AssembledAgent
 
 if TYPE_CHECKING:  # 僅型別用，避免在無 session 後端時硬相依
-    from agents import RunHooks, RunResult, RunResultStreaming
+    from agents import RunHooks, RunResult, RunResultStreaming, TResponseInputItem
     from agents.memory import Session
 
 DEFAULT_MAX_TURNS = 10
@@ -20,7 +20,7 @@ DEFAULT_MAX_TURNS = 10
 
 async def run_once(
     assembled: AssembledAgent,
-    user_input: str | list,
+    user_input: str | list[TResponseInputItem],
     *,
     session: Session | None = None,
     max_turns: int | None = None,
@@ -39,7 +39,7 @@ async def run_once(
 
 def run_streamed(
     assembled: AssembledAgent,
-    user_input: str | list,
+    user_input: str | list[TResponseInputItem],
     *,
     session: Session | None = None,
     max_turns: int | None = None,

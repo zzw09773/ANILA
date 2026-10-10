@@ -12,7 +12,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
-import pytest
 import pytest_asyncio
 import respx
 from fastapi.testclient import TestClient

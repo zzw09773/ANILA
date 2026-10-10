@@ -6,7 +6,6 @@ import json
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from anila_core.tools.dispatch_tool import dispatch_to_agent
 

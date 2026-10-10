@@ -10,7 +10,6 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import httpx
 
 from anila_core.http_pool import get_http_client  # OPT-1
 

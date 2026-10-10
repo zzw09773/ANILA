@@ -19,7 +19,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -34,7 +34,7 @@ MAX_MEMORY_FILES = 200
 FRONTMATTER_MAX_LINES = 30
 
 
-def _parse_frontmatter_from_text(text: str) -> tuple[dict, str]:
+def _parse_frontmatter_from_text(text: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from the beginning of a markdown file."""
     stripped = text.strip()
     if not stripped.startswith("---"):

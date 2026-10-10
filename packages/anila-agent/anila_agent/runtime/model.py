@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from agents import (
     ModelSettings,
     OpenAIChatCompletionsModel,
@@ -79,5 +81,6 @@ def json_object_settings(cfg: ModelConfig) -> ModelSettings:
     import dataclasses
 
     base = build_model_settings(cfg)
-    extra = {**(base.extra_body or {}), "response_format": {"type": "json_object"}}
+    extra_body = cast(dict[str, Any], base.extra_body or {})
+    extra = {**extra_body, "response_format": {"type": "json_object"}}
     return dataclasses.replace(base, extra_body=extra)

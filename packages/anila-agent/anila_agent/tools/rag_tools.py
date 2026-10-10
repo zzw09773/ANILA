@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from agents import RunContextWrapper, function_tool
 
 from anila_agent.tools.context import AnilaRunContext
@@ -21,7 +23,7 @@ def _clamp_k(k: int) -> int:
 @function_tool
 async def search_documents(
     ctx: RunContextWrapper[AnilaRunContext], query: str, k: int = 5
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """以語意檢索知識庫，回傳最相關的 k 筆片段（依相關度遞減）。
 
     Args:
@@ -36,7 +38,9 @@ async def search_documents(
 
 
 @function_tool
-async def read_document(ctx: RunContextWrapper[AnilaRunContext], doc_id: str) -> dict | None:
+async def read_document(
+    ctx: RunContextWrapper[AnilaRunContext], doc_id: str
+) -> dict[str, Any] | None:
     """以 id 取單一文件片段全文；找不到回 null。"""
     doc = await ctx.context.retriever.fetch(doc_id)
     if doc is None:

@@ -51,6 +51,8 @@ not an assumption inherited from this docstring.
 
 from __future__ import annotations
 
+from typing import cast
+
 from starlette.requests import Request
 
 __all__ = ["routed_path"]
@@ -58,4 +60,4 @@ __all__ = ["routed_path"]
 
 def routed_path(request: Request) -> str:
     """Return the request path the router will dispatch on."""
-    return request.scope["path"]
+    return cast(str, request.scope["path"])

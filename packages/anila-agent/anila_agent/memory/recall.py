@@ -16,6 +16,10 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    import httpx
 
 from anila_agent.util.structured import parse_json_object
 
@@ -113,7 +117,7 @@ def make_embed_fn(
     """
 
     async def _post(
-        client, inputs: list[str], input_type: str
+        client: httpx.AsyncClient, inputs: list[str], input_type: str
     ) -> list[list[float]]:
         resp = await client.post(
             f"{base_url.rstrip('/')}/embeddings",
@@ -121,7 +125,9 @@ def make_embed_fn(
             json={"model": model, "input": inputs, "input_type": input_type},
         )
         resp.raise_for_status()
-        return [d["embedding"] for d in resp.json()["data"]]
+        payload = cast(dict[str, Any], resp.json())
+        rows = cast(list[dict[str, list[float]]], payload["data"])
+        return [row["embedding"] for row in rows]
 
     async def _embed(query: str, manifest: dict[str, str], n: int) -> list[str]:
         import httpx

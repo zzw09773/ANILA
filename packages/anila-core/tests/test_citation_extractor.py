@@ -19,7 +19,6 @@ import time
 import pytest
 
 from anila_core.ingestion.citation_extractor import (
-    Citation,
     cjk_to_int,
     extract_citations,
     normalize_title,

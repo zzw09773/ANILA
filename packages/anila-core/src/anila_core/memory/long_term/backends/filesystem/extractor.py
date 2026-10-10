@@ -171,7 +171,7 @@ class MemoryExtractor:
     _in_progress: bool = field(default=False, repr=False, init=False)
     _pending: Optional[_PendingExtraction] = field(default=None, repr=False, init=False)
     _turns_since_last: int = field(default=0, repr=False, init=False)
-    _in_flight_tasks: set[asyncio.Task] = field(
+    _in_flight_tasks: set[asyncio.Task[Any]] = field(
         default_factory=set, repr=False, init=False
     )
 
