@@ -382,9 +382,10 @@ describe("the red line — typing ahead costs nothing", () => {
     const typed = [];
     // 每一次按鍵各自 flush 一次（含 effect）。塞進同一個 act 會把多次
     // setState 疊成「Maximum update depth」，那是測試驅動方式的假象。
-    // 串流正文固定：要驗證的是重繪不會吃掉輸入，不是每鍵重跑 Markdown。
+    // 串流正文必須每次不同。正文若固定，只在「串流文字一變就把輸入框蓋掉」
+    // 的回歸只會在第一鍵發生；下一鍵又把整段寫回，最後只看結尾就會綠。
     // 300 次整頁重繪在平行負載下會超過 5000ms。64 次仍每次獨立提交，
-    // 也高過 React 巢狀更新上限，任一鍵被吃掉這一則就會失敗。
+    // 也高過 React 巢狀更新上限。每一鍵結束都要對上，不能等最後才看。
     const keystrokes = 64;
     for (let i = 0; i < keystrokes; i += 1) {
       typed.push(String.fromCharCode(97 + (i % 26)));
@@ -392,8 +393,9 @@ describe("the red line — typing ahead costs nothing", () => {
       await act(async () => {
         setter.call(textarea, typed.join(""));
         textarea.dispatchEvent(new Event("input", { bubbles: true }));
-        streamControl.latest().emit("串流中");
+        streamControl.latest().emit(`串流內容 ${i}`);
       });
+      expect(textarea.value).toBe(typed.join(""));
     }
 
     expect(textarea.value).toBe(typed.join(""));
