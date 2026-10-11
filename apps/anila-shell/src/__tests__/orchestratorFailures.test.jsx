@@ -169,6 +169,7 @@ describe("orchestrator — 儲存失敗必須可見", () => {
     await waitFor(() => {
       expect(backend.requestsFor("/turn", "POST").length).toBeGreaterThan(0);
     });
+    await act(async () => {});
     expect(backend.chatPayloads).toHaveLength(0);
     await act(async () => {
       fireEvent.click(screen.getByLabelText("停止產生"));

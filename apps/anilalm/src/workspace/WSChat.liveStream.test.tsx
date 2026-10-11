@@ -128,6 +128,7 @@ describe('知識庫對話串流（reasoning_content 之後才有 content）', ()
   let pushChunk: (text: string) => void
   let closeStream: () => void
   let fetchMock: ReturnType<typeof vi.fn>
+  let releaseSlowReload: () => void
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -140,11 +141,16 @@ describe('知識庫對話串流（reasoning_content 之後才有 content）', ()
 
     const stored: Array<Record<string, unknown>> = []
     let nextId = 1
-    // 第二次載入（網址補上對話 id）刻意變慢，讓 loading 有機會把聊天卸載。
+    // 網址補上對話 id 若重跑載入，這次不放行。固定 40ms 在平行負載下
+    // 往往已經結束，串流更新打在卸載畫面上的回歸就測不到。
     let collectionLoads = 0
+    releaseSlowReload = () => {}
+    const slowReload = new Promise<void>((resolve) => {
+      releaseSlowReload = resolve
+    })
     vi.mocked(getCollection).mockImplementation(async () => {
       collectionLoads += 1
-      if (collectionLoads > 1) await new Promise((resolve) => setTimeout(resolve, 40))
+      if (collectionLoads > 1) await slowReload
       return { data: { id: 2, name: '散熱知識庫' } } as never
     })
 
@@ -205,6 +211,7 @@ describe('知識庫對話串流（reasoning_content 之後才有 content）', ()
   })
 
   afterEach(() => {
+    releaseSlowReload()
     try {
       closeStream()
     } catch {
@@ -230,10 +237,14 @@ describe('知識庫對話串流（reasoning_content 之後才有 content）', ()
     await screen.findByPlaceholderText(/問點什麼/)
     useWorkspaceStore.getState().setPendingAsk(QUESTION)
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
-    expect(screen.getByTestId('path').textContent).toBe('/c/2/conv/85')
-    expect(screen.getByRole('status', { name: '檢索 + 思考中...' })).toBeTruthy()
-    expect(screen.queryByRole('status', { name: '思考中' })).toBeNull()
+    // fetch 被呼叫時，replace 導頁與「檢索 + 思考中」可能還沒提交。
+    // 只等 fetch 就讀路徑，平行負載下會讀到仍是 /c/2。
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled()
+      expect(screen.getByTestId('path').textContent).toBe('/c/2/conv/85')
+      expect(screen.getByRole('status', { name: '檢索 + 思考中...' })).toBeTruthy()
+      expect(screen.queryByRole('status', { name: '思考中' })).toBeNull()
+    })
 
     pushChunk(
       sse({

@@ -614,7 +614,7 @@ export function MemoryTab({ authRequest, onOpenConversation, userId }) {
         borderRadius: "var(--radius)",
         padding: 12,
       }}>
-        <div style={{ fontWeight: 500, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <div data-testid="memory-summary-toolbar" style={{ fontWeight: 500, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <span>
             對話摘要 <span style={{ color: "var(--fg-muted)", fontWeight: 400 }}>· {summariesState.total}</span>
           </span>

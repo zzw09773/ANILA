@@ -114,11 +114,12 @@ describe('recipient opens a shared conversation without collection access', () =
   it('does not die on collection 403; shows the shared conversation', async () => {
     renderAsRecipient()
 
-    await waitFor(() => expect(vi.mocked(getConversation)).toHaveBeenCalledWith(87))
-
-    expect(screen.queryByText('載入失敗')).toBeNull()
-    expect(screen.getByTestId('ws-chat')).toBeTruthy()
-    expect(screen.getByText(/沒有這個知識庫的存取權/)).toBeTruthy()
+    await waitFor(() => {
+      expect(vi.mocked(getConversation)).toHaveBeenCalledWith(87)
+      expect(screen.queryByText('載入失敗')).toBeNull()
+      expect(screen.getByTestId('ws-chat')).toBeTruthy()
+      expect(screen.getByText(/沒有這個知識庫的存取權/)).toBeTruthy()
+    })
   })
 
   it('owner path still loads collection + docs together (regression)', async () => {
@@ -136,9 +137,11 @@ describe('recipient opens a shared conversation without collection access', () =
       </MemoryRouter>,
     )
 
-    await waitFor(() => expect(vi.mocked(getCollection)).toHaveBeenCalled())
-    expect(screen.queryByText('載入失敗')).toBeNull()
-    expect(screen.getByTestId('ws-chat')).toBeTruthy()
-    expect(screen.queryByText(/沒有這個知識庫的存取權/)).toBeNull()
+    await waitFor(() => {
+      expect(vi.mocked(getCollection)).toHaveBeenCalled()
+      expect(screen.queryByText('載入失敗')).toBeNull()
+      expect(screen.getByTestId('ws-chat')).toBeTruthy()
+      expect(screen.queryByText(/沒有這個知識庫的存取權/)).toBeNull()
+    })
   })
 })

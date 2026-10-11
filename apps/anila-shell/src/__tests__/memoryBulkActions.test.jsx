@@ -64,12 +64,35 @@ function createAuth(initial) {
   return { state, authRequest };
 }
 
+// 摘要列本身也是按鈕。對整頁 getByRole 會逐顆計算無障礙名稱，
+// 幾百列時單次查詢就要一秒以上，平行負載下會撞上 5000ms 測試逾時。
+// 工具列與勾選列都很小，查詢範圍鎖在那裡，斷言的按鈕與名稱不變。
+function summaryButton(name) {
+  const scopes = ["memory-summary-toolbar", "memory-summary-bulk-bar"];
+  for (const id of scopes) {
+    const node = screen.queryByTestId(id);
+    if (!node) continue;
+    const found = within(node).queryByRole("button", { name });
+    if (found) return found;
+  }
+  throw new Error(`找不到按鈕「${name}」`);
+}
+
 async function ready() {
-  expect(await screen.findByRole("button", { name: "多選" })).toBeInTheDocument();
+  await waitFor(() => {
+    expect(summaryButton("多選")).toBeInTheDocument();
+  });
 }
 
 function box(id) {
-  return screen.getByRole("checkbox", { name: `選取摘要 摘要${id}` });
+  const row = screen.getByText(`摘要${id}`, { selector: "button" }).parentElement;
+  const input = within(row).getByRole("checkbox");
+  expect(input).toHaveAccessibleName(`選取摘要 摘要${id}`);
+  return input;
+}
+
+async function flushSettled() {
+  await act(async () => {});
 }
 
 function expectScreenUser(call, id = "1") {
@@ -88,7 +111,7 @@ describe("對話摘要多選與全部刪除", () => {
     await ready();
     expect(screen.getByText("摘要1")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(summaryButton("多選"));
     const bar = screen.getByTestId("memory-summary-bulk-bar");
     expect(bar.style.flexWrap).toBe("wrap");
     const first = box(1);
@@ -136,10 +159,10 @@ describe("對話摘要多選與全部刪除", () => {
     const { state, authRequest } = createAuth([summary(9), summary(10), summary(11)]);
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(summaryButton("多選"));
     fireEvent.click(box(9));
     fireEvent.click(box(10));
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("刪除所選"));
     const dialog = await screen.findByRole("dialog", { name: "刪除對話摘要" });
     fireEvent.click(within(dialog).getByRole("button", { name: "刪除" }));
     await waitFor(() => {
@@ -162,7 +185,7 @@ describe("對話摘要多選與全部刪除", () => {
     };
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "全部刪除" }));
+    fireEvent.click(summaryButton("全部刪除"));
     const dialog = await screen.findByRole("dialog", { name: "刪除全部對話摘要" });
     expect(dialog.textContent).toMatch(/全部 2 則對話摘要/);
     expect(dialog.textContent).toMatch(/不會刪除原始對話/);
@@ -185,7 +208,7 @@ describe("對話摘要多選與全部刪除", () => {
       state.summaries = [];
       return { deleted };
     };
-    fireEvent.click(screen.getByRole("button", { name: "全部刪除" }));
+    fireEvent.click(summaryButton("全部刪除"));
     const again = await screen.findByRole("dialog", { name: "刪除全部對話摘要" });
     fireEvent.click(within(again).getByRole("button", { name: "全部刪除" }));
     await waitFor(() => {
@@ -216,10 +239,10 @@ describe("對話摘要多選與全部刪除", () => {
     };
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
-    fireEvent.click(screen.getByRole("button", { name: "全選" }));
+    fireEvent.click(summaryButton("多選"));
+    fireEvent.click(summaryButton("全選"));
     expect(screen.getByTestId("memory-summary-count").textContent).toMatch(/已選 201/);
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("刪除所選"));
     const dialog = await screen.findByRole("dialog", { name: "刪除對話摘要" });
     expect(dialog.textContent).toMatch(/201 則對話摘要/);
     fireEvent.click(within(dialog).getByRole("button", { name: "刪除" }));
@@ -227,7 +250,7 @@ describe("對話摘要多選與全部刪除", () => {
     await waitFor(() => {
       expect(seen.length).toBe(1);
     });
-    await new Promise((r) => setTimeout(r, 30));
+    await flushSettled();
     expect(seen.length).toBe(1);
     expect(seen[0]).toHaveLength(200);
     releaseFirst();
@@ -252,9 +275,9 @@ describe("對話摘要多選與全部刪除", () => {
     state.onBulk = (ids) => ({ deleted: ids.length - 1 });
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
-    fireEvent.click(screen.getByRole("button", { name: "全選" }));
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("多選"));
+    fireEvent.click(summaryButton("全選"));
+    fireEvent.click(summaryButton("刪除所選"));
     const dialog = await screen.findByRole("dialog", { name: "刪除對話摘要" });
     fireEvent.click(within(dialog).getByRole("button", { name: "刪除" }));
     expect(await screen.findByTestId("memory-summary-bulk-status")).toHaveTextContent(/仍保留/);
@@ -276,9 +299,9 @@ describe("對話摘要多選與全部刪除", () => {
     };
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(summaryButton("多選"));
     fireEvent.click(box(1));
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("刪除所選"));
     const dialog = await screen.findByRole("dialog", { name: "刪除對話摘要" });
     expect(screen.getByTestId("memory-summary-delete-2")).toBeDisabled();
     fireEvent.click(screen.getByTestId("memory-summary-delete-2"));
@@ -290,7 +313,7 @@ describe("對話摘要多選與全部刪除", () => {
     });
     expect(state.calls.filter((c) => c.path === "/api/memory/summaries/bulk-delete")).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("刪除所選"));
     const again = await screen.findByRole("dialog", { name: "刪除對話摘要" });
     fireEvent.click(within(again).getByRole("button", { name: "刪除" }));
     await waitFor(() => {
@@ -320,9 +343,9 @@ describe("對話摘要多選與全部刪除", () => {
     state.onClear = () => ({ deleted: 1.5 });
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(summaryButton("多選"));
     fireEvent.click(box(1));
-    fireEvent.click(screen.getByRole("button", { name: "全部刪除" }));
+    fireEvent.click(summaryButton("全部刪除"));
     const dialog = await screen.findByRole("dialog", { name: "刪除全部對話摘要" });
     fireEvent.click(within(dialog).getByRole("button", { name: "全部刪除" }));
     expect(await screen.findByTestId("memory-summary-bulk-status")).toHaveTextContent(/仍保留/);
@@ -367,9 +390,8 @@ describe("對話摘要多選與全部刪除", () => {
       </ConfirmProvider>,
     );
     expect(await screen.findByText("摘要9")).toBeInTheDocument();
-    release();
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      release();
     });
     expect(screen.getByText("摘要9")).toBeInTheDocument();
     expect(screen.queryByText("摘要1")).toBeNull();
@@ -383,15 +405,13 @@ describe("對話摘要多選與全部刪除", () => {
       </ConfirmProvider>,
     );
     await ready();
-    expect(screen.getByRole("button", { name: "多選" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "全部刪除" })).toBeDisabled();
+    expect(summaryButton("多選")).toBeDisabled();
+    expect(summaryButton("全部刪除")).toBeDisabled();
     expect(screen.getByTestId("memory-summary-relogin").textContent).toMatch(/重新登入/);
     expect(screen.getByTestId("memory-summary-relogin").textContent).toMatch(/重新整理/);
-    fireEvent.click(screen.getByRole("button", { name: "全部刪除" }));
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    fireEvent.click(summaryButton("全部刪除"));
+    fireEvent.click(summaryButton("多選"));
+    await flushSettled();
     expect(state.calls.filter((c) => c.path === "/api/memory/summaries" && c.method === "DELETE")).toHaveLength(0);
     expect(state.calls.filter((c) => c.path === "/api/memory/summaries/bulk-delete")).toHaveLength(0);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -420,10 +440,10 @@ describe("對話摘要多選與全部刪除", () => {
     };
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(summaryButton("多選"));
     fireEvent.click(box(1));
     fireEvent.click(box(2));
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("刪除所選"));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "刪除對話摘要" })).getByRole("button", { name: "刪除" }));
     expect(await screen.findByTestId("memory-summary-bulk-status")).toHaveTextContent(/登入帳號已變更/);
     expect(screen.getByTestId("memory-summary-bulk-status").textContent).toMatch(/仍保留/);
@@ -437,7 +457,7 @@ describe("對話摘要多選與全部刪除", () => {
     expect(JSON.parse(bulk[0].body).ids).toEqual([1, 2]);
     expectScreenUser(bulk[0]);
 
-    fireEvent.click(screen.getByRole("button", { name: "全部刪除" }));
+    fireEvent.click(summaryButton("全部刪除"));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "刪除全部對話摘要" })).getByRole("button", { name: "全部刪除" }));
     expect(await screen.findByTestId("memory-summary-bulk-status")).toHaveTextContent(/登入帳號已變更/);
     expect(screen.getByTestId("memory-summary-bulk-status").textContent).toMatch(/仍保留/);
@@ -466,9 +486,9 @@ describe("對話摘要多選與全部刪除", () => {
     };
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
-    fireEvent.click(screen.getByRole("button", { name: "全選" }));
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("多選"));
+    fireEvent.click(summaryButton("全選"));
+    fireEvent.click(summaryButton("刪除所選"));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "刪除對話摘要" })).getByRole("button", { name: "刪除" }));
     expect(await screen.findByTestId("memory-summary-bulk-status")).toHaveTextContent(/已刪除 200 則對話摘要/);
     expect(screen.getByTestId("memory-summary-bulk-status").textContent).toMatch(/201 則失敗/);
@@ -507,7 +527,7 @@ describe("對話摘要多選與全部刪除", () => {
       </ConfirmProvider>,
     );
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "全部刪除" }));
+    fireEvent.click(summaryButton("全部刪除"));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "刪除全部對話摘要" })).getByRole("button", { name: "全部刪除" }));
     await waitFor(() => {
       expect(firstClear.state.calls.filter((c) => c.path === "/api/memory/summaries" && c.method === "DELETE")).toHaveLength(1);
@@ -519,9 +539,8 @@ describe("對話摘要多選與全部刪除", () => {
       </ConfirmProvider>,
     );
     expect(await screen.findByText("摘要9")).toBeInTheDocument();
-    releaseClear();
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      releaseClear();
     });
     expect(screen.getByText("摘要1")).toBeInTheDocument();
     expect(screen.getByText("摘要9")).toBeInTheDocument();
@@ -549,9 +568,9 @@ describe("對話摘要多選與全部刪除", () => {
       </ConfirmProvider>,
     );
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
-    fireEvent.click(screen.getByRole("button", { name: "全選" }));
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("多選"));
+    fireEvent.click(summaryButton("全選"));
+    fireEvent.click(summaryButton("刪除所選"));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "刪除對話摘要" })).getByRole("button", { name: "刪除" }));
     await waitFor(() => {
       expect(seen).toHaveLength(1);
@@ -564,9 +583,8 @@ describe("對話摘要多選與全部刪除", () => {
     );
     expect(await screen.findByText("摘要9000")).toBeInTheDocument();
     expect(screen.getByText("摘要1")).toBeInTheDocument();
-    releaseBulk();
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      releaseBulk();
     });
     expect(seen).toHaveLength(1);
     expect(firstBulk.state.calls.filter((c) => c.path === "/api/memory/summaries/bulk-delete")).toHaveLength(1);
@@ -579,7 +597,7 @@ describe("對話摘要多選與全部刪除", () => {
     const { authRequest } = createAuth([summary(1), summary(2)]);
     renderTab(authRequest);
     await ready();
-    fireEvent.click(screen.getByRole("button", { name: "多選" }));
+    fireEvent.click(summaryButton("多選"));
     const first = box(1);
     expect(first.tagName).toBe("INPUT");
     expect(first.getAttribute("type")).toBe("checkbox");
@@ -590,7 +608,7 @@ describe("對話摘要多選與全部刪除", () => {
     fireEvent.click(first);
     expect(first.checked).toBe(true);
     expect(screen.getByTestId("memory-summary-count").textContent).toMatch(/已選 1/);
-    fireEvent.click(screen.getByRole("button", { name: "刪除所選" }));
+    fireEvent.click(summaryButton("刪除所選"));
     expect(box(2)).toBeDisabled();
     expect(box(2).classList.contains("anila-bulk-check")).toBe(true);
     expect(box(2).closest("label")?.classList.contains("anila-bulk-check-hit")).toBe(true);

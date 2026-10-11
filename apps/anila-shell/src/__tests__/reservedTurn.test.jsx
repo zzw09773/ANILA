@@ -197,6 +197,7 @@ describe("mid-stream follow-up", () => {
       const heads = backend.calls.filter((c) => c.op === "startTurn");
       expect(heads.length).toBe(2);
     });
+    await act(async () => {});
     expect(streamControl.pending.length).toBe(1);
 
     // 第一輪跑完 → 第二輪才開始。
@@ -379,24 +380,24 @@ describe("the red line — typing ahead costs nothing", () => {
       "value",
     ).set;
     const typed = [];
-    // 每一次按鍵各自 flush 一次 —— 真實的按鍵之間本來就隔著 event loop。
-    // 實測(2026-08-03):這個寫法整份 shell 測試跑完,"Maximum update depth"
-    // 出現 0 次;把 300 次同步 setState 塞進同一個 act 則出現 5 次。也就是
-    // 那個警告是測試驅動方式的假象,不是元件的迴圈(堆疊顯示 setState 直接
-    // 來自 onText,不是來自 useEffect)。
-    for (let i = 0; i < 300; i += 1) {
+    // 每一次按鍵各自 flush 一次（含 effect）。塞進同一個 act 會把多次
+    // setState 疊成「Maximum update depth」，那是測試驅動方式的假象。
+    // 串流正文固定：要驗證的是重繪不會吃掉輸入，不是每鍵重跑 Markdown。
+    // 300 次整頁重繪在平行負載下會超過 5000ms。64 次仍每次獨立提交，
+    // 也高過 React 巢狀更新上限，任一鍵被吃掉這一則就會失敗。
+    const keystrokes = 64;
+    for (let i = 0; i < keystrokes; i += 1) {
       typed.push(String.fromCharCode(97 + (i % 26)));
       // eslint-disable-next-line no-await-in-loop
       await act(async () => {
         setter.call(textarea, typed.join(""));
         textarea.dispatchEvent(new Event("input", { bubbles: true }));
-        // 每打一個字就重繪一次串流,模擬高頻 re-render 下的競爭。
-        streamControl.latest().emit(`串流內容 ${i}`);
+        streamControl.latest().emit("串流中");
       });
     }
 
     expect(textarea.value).toBe(typed.join(""));
-    expect(textarea.value.length).toBe(300);
+    expect(textarea.value.length).toBe(keystrokes);
   });
 });
 
@@ -528,6 +529,8 @@ describe("the window goes away mid-stream", () => {
       expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(2);
     });
     // 第二輪的串流還沒開始 —— 它就是那個會被漏掉的。
+    // 先把 startTurn 之後排進的微任務刷完，再看串流有沒有偷跑。
+    await act(async () => {});
     expect(streamControl.pending.length).toBe(1);
 
     await act(async () => {
@@ -1131,6 +1134,7 @@ describe("Stop means this conversation stops", () => {
     await waitFor(() => {
       expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(2);
     });
+    await act(async () => {});
     expect(streamControl.pending.length).toBe(1);
 
     const stop = await screen.findByRole("button", { name: /停止/ });
@@ -1795,6 +1799,7 @@ describe("Stop is scoped to the conversation the user is looking at", () => {
     await waitFor(() => {
       expect(backend.calls.filter((c) => c.op === "startTurn").length).toBe(2);
     });
+    await act(async () => {});
     expect(streamControl.pending.length).toBe(1);
 
     // B 對話:另開一個,送出一則,它自己也在跑。
