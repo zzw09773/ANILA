@@ -6,7 +6,8 @@ Nothing here reads ``EMBEDDING_MODEL`` or picks another row.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from types import TracebackType
+from typing import Any, Optional, Protocol
 
 from anila_core.memory.long_term import EMBED_DIM
 
@@ -15,8 +16,27 @@ class EmbeddingRoleUnset(RuntimeError):
     """治理中心還沒指定平台嵌入模型。"""
 
 
+class _Row(Protocol):
+    def __getitem__(self, key: str) -> Any: ...
+
+
+class _Conn(Protocol):
+    async def fetchrow(self, query: str, *args: object) -> _Row | None: ...
+
+
+class _Acquire(Protocol):
+    async def __aenter__(self) -> _Conn: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
 class _PoolLike(Protocol):
-    def acquire(self): ...
+    def acquire(self) -> _Acquire: ...
 
 
 @dataclass(frozen=True)

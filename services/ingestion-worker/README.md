@@ -185,6 +185,7 @@ docker compose up -d --build ingestion-worker            # → infra/compose/pla
 cd services/ingestion-worker
 .venv/bin/python -m pytest         # 144 tests；asyncio_mode=auto；testpaths=tests
 .venv/bin/ruff check src tests
+.venv/bin/mypy src                 # 與 anila-core 相同：pyproject [tool.mypy] strict
 ```
 
 > 新建虛擬環境時，安裝順序與 Dockerfile 一致：先 `pip install -e 'packages/anila-core[rag]'`，再 `pip install -e 'services/ingestion-worker[dev]'`。

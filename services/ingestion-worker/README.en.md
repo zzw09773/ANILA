@@ -185,6 +185,7 @@ docker compose up -d --build ingestion-worker            # → infra/compose/pla
 cd services/ingestion-worker
 .venv/bin/python -m pytest         # 144 tests; asyncio_mode=auto; testpaths=tests
 .venv/bin/ruff check src tests
+.venv/bin/mypy src                 # same as anila-core: pyproject [tool.mypy] strict
 ```
 
 > For a fresh venv, follow the Dockerfile's install order: `pip install -e 'packages/anila-core[rag]'` first, then `pip install -e 'services/ingestion-worker[dev]'`.

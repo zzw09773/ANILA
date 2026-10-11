@@ -11,11 +11,13 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]  # 沒有 py.typed 或 stubs
 
-from anila_core.embeddings.dims import ann_index_sql, fit_stored_vector
+from anila_core.embeddings.dims import StoredVector, ann_index_sql, fit_stored_vector
 from anila_core.embeddings.swap import plan_write_targets
+from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 from anila_core.storage.embeddable import fact_predicate, summary_predicate
 from pgvector import HalfVector
@@ -63,7 +65,9 @@ class IngestTarget:
     for_column: bool
 
 
-async def load_ingest_targets(pool, embedder: Embedder) -> list[IngestTarget] | None:
+async def load_ingest_targets(
+    pool: PgPool, embedder: Embedder
+) -> list[IngestTarget] | None:
     """Models a new chunk must be embedded with, or None when the schema is older.
 
     None tells the caller to keep the single embedder it already has.
@@ -134,7 +138,7 @@ async def load_ingest_targets(pool, embedder: Embedder) -> list[IngestTarget] | 
 
 
 async def embed_ingest_targets(
-    pool,
+    pool: PgPool,
     embedder: Embedder,
     texts: list[str],
 ) -> tuple[list[list[float]], str, int, list[tuple[int, list[list[float]], int]]]:
@@ -183,7 +187,7 @@ async def embed_ingest_targets(
     return produced[column.model_id], column.name, column.native, slots
 
 
-async def rebuild_embeddings(ctx: dict) -> dict:
+async def rebuild_embeddings(ctx: dict[str, Any]) -> dict[str, Any]:
     """One resumable pass. Re-enqueues itself while rows remain.
 
     The advisory lock is session-scoped, so it is taken on a direct
@@ -214,7 +218,9 @@ async def rebuild_embeddings(ctx: dict) -> dict:
         await lock_conn.close()
 
 
-async def _pass(ctx: dict, conn: asyncpg.Connection, started: float) -> dict:
+async def _pass(
+    ctx: dict[str, Any], conn: asyncpg.Connection, started: float
+) -> dict[str, Any]:
     row = await conn.fetchrow(
         """
         SELECT active_model_id, rebuild_target_model_id, rebuild_status, rebuild_started_at
@@ -287,7 +293,7 @@ async def _pass(ctx: dict, conn: asyncpg.Connection, started: float) -> dict:
     return {"status": "running", "done": done, "total": total, "errors": errors}
 
 
-async def _still_open(conn, target_id: int) -> bool:
+async def _still_open(conn: asyncpg.Connection, target_id: int) -> bool:
     status = await conn.fetchval(
         """
         SELECT rebuild_status FROM embedding_activation
@@ -298,8 +304,10 @@ async def _still_open(conn, target_id: int) -> bool:
     return status in {"pending", "running"}
 
 
-async def _next_batch(pool, conn, model_id: int, limit: int) -> list[dict]:
-    items: list[dict] = []
+async def _next_batch(
+    pool: PgPool, conn: asyncpg.Connection, model_id: int, limit: int
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     collections = await conn.fetch("SELECT id FROM ingestion_collections ORDER BY id")
     for coll in collections:
         if len(items) >= limit:
@@ -372,7 +380,13 @@ async def _next_batch(pool, conn, model_id: int, limit: int) -> list[dict]:
     return items
 
 
-async def _write_batch(conn, model_id: int, batch: list[dict], vectors, native) -> None:
+async def _write_batch(
+    conn: asyncpg.Connection,
+    model_id: int,
+    batch: list[dict[str, Any]],
+    vectors: list[list[float]],
+    native: object,
+) -> None:
     declared = native if isinstance(native, int) and native > 0 else None
     for item, raw in zip(batch, vectors):
         stored = fit_stored_vector(raw, declared_native=declared)
@@ -386,7 +400,12 @@ async def _write_batch(conn, model_id: int, batch: list[dict], vectors, native) 
             await _upsert(conn, item, model_id, stored)
 
 
-async def _upsert(conn, item: dict, model_id: int, stored) -> None:
+async def _upsert(
+    conn: asyncpg.Connection,
+    item: dict[str, Any],
+    model_id: int,
+    stored: StoredVector,
+) -> None:
     await conn.execute(
         """
         INSERT INTO embedding_vectors
@@ -427,7 +446,12 @@ async def _upsert(conn, item: dict, model_id: int, stored) -> None:
             await nested.rollback()
 
 
-async def _fail_batch(conn, model_id: int, batch: list[dict], message: str) -> None:
+async def _fail_batch(
+    conn: asyncpg.Connection,
+    model_id: int,
+    batch: list[dict[str, Any]],
+    message: str,
+) -> None:
     for item in batch:
         await conn.execute(
             """
@@ -453,7 +477,9 @@ async def _fail_batch(conn, model_id: int, batch: list[dict], message: str) -> N
     )
 
 
-async def _counts(pool, conn, model_id: int) -> tuple[int, int, int]:
+async def _counts(
+    pool: PgPool, conn: asyncpg.Connection, model_id: int
+) -> tuple[int, int, int]:
     total = 0
     done = 0
     collections = await conn.fetch("SELECT id FROM ingestion_collections")
@@ -524,7 +550,9 @@ async def _counts(pool, conn, model_id: int) -> tuple[int, int, int]:
     return total + fact_total + sum_total, done + fact_done + sum_done, errors
 
 
-async def _publish_counts(pool, conn, model_id: int) -> None:
+async def _publish_counts(
+    pool: PgPool, conn: asyncpg.Connection, model_id: int
+) -> None:
     total, done, errors = await _counts(pool, conn, model_id)
     await conn.execute(
         """
@@ -549,7 +577,9 @@ def rebuild_ready_to_switch(*, done: int, total: int) -> bool:
     return done >= total
 
 
-async def _finish(pool, conn, target_id: int) -> dict:
+async def _finish(
+    pool: PgPool, conn: asyncpg.Connection, target_id: int
+) -> dict[str, Any]:
     total, done, errors = await _counts(pool, conn, target_id)
     if not rebuild_ready_to_switch(done=done, total=total):
         await _mark_failed(conn, target_id, "還有資料沒有目標模型的向量，搜尋仍用舊模型")
@@ -598,7 +628,9 @@ async def _finish(pool, conn, target_id: int) -> dict:
     }
 
 
-async def _mark_failed(conn, target_id: int, message: str) -> None:
+async def _mark_failed(
+    conn: asyncpg.Connection, target_id: int, message: str
+) -> None:
     await conn.execute(
         """
         UPDATE embedding_activation
@@ -614,7 +646,7 @@ async def _mark_failed(conn, target_id: int, message: str) -> None:
     )
 
 
-async def _requeue(ctx: dict) -> None:
+async def _requeue(ctx: dict[str, Any]) -> None:
     redis = ctx.get("redis")
     if redis is None:
         return

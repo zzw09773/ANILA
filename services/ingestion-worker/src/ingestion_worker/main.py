@@ -27,7 +27,11 @@ Job retry policy:
 
 from __future__ import annotations
 
+from typing import Any
+
 from arq.connections import RedisSettings
+from arq.typing import WorkerCoroutine
+from arq.worker import Function
 
 from anila_core.storage.adapters.pg_pool import PgPool
 
@@ -37,7 +41,7 @@ from ingestion_worker.handlers import ingest_document, reresolve_collection_rela
 from ingestion_worker.settings import settings
 
 
-async def on_startup(ctx: dict) -> None:
+async def on_startup(ctx: dict[str, Any]) -> None:
     """Open pool + embedder once per worker process."""
     import logging
 
@@ -62,7 +66,7 @@ async def on_startup(ctx: dict) -> None:
     ctx["embedder"] = Embedder(settings)
 
 
-async def on_shutdown(ctx: dict) -> None:
+async def on_shutdown(ctx: dict[str, Any]) -> None:
     """Drain pool + embedder. Idempotent."""
     pool: PgPool | None = ctx.get("pool")
     if pool is not None:
@@ -72,10 +76,14 @@ async def on_shutdown(ctx: dict) -> None:
         await embedder.close()
 
 
-def _worker_functions():
+def _worker_functions() -> list[WorkerCoroutine | Function]:
     from ingestion_worker.embedding_rebuild import rebuild_embeddings
 
-    functions = [ingest_document, evaluate_strategies, reresolve_collection_relations]
+    functions: list[WorkerCoroutine | Function] = [
+        ingest_document,
+        evaluate_strategies,
+        reresolve_collection_relations,
+    ]
     try:
         from arq.worker import func
 

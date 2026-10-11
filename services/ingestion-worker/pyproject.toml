@@ -35,6 +35,12 @@ dev = [
     "pytest-asyncio>=0.23,<0.25",
     "respx>=0.21,<0.23",
     "ruff>=0.4,<0.16",
+    "mypy>=1.9,<1.21",
+    # 同 anila-core：pgvector 在 TYPE_CHECKING 裡 import numpy。numpy 2.5
+    # 起的 stub 用 Python 3.12 `type` 語句；本服務 mypy python_version 是
+    # 3.11，解析那些 stub 會中止整次檢查。鎖在 2.4.x，不把 python_version
+    # 抬到 3.12。
+    "numpy>=1.26,<2.5",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -47,3 +53,11 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+# anila-core 沒有 py.typed。裝進 site-packages 時 mypy 會把它當成沒有型別，
+# 整包 import 都變成 import-untyped。指向 monorepo 原始碼，檢查才看得到
+# 真正的註解（anila-core 自己的 mypy 已是 0 錯誤）。
+mypy_path = "$MYPY_CONFIG_FILE_DIR/../../packages/anila-core/src"

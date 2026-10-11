@@ -102,9 +102,9 @@ async def _load_sample_docs(
 
 async def _chunk_doc(
     text: str,
-    parse_meta: dict,
+    parse_meta: dict[str, Any],
     strategy_name: str,
-    params: dict,
+    params: dict[str, Any],
     embedder: Embedder,
     *,
     billing_user_id: int | None = None,
@@ -235,7 +235,7 @@ async def _score_strategy(
     }
 
 
-async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
+async def evaluate_strategies(ctx: dict[str, Any], eval_run_id: int) -> dict[str, Any]:
     """Arq handler. Runs every strategy in the run row, writes results."""
     pool: PgPool = ctx["pool"]
     embedder: Embedder = ctx["embedder"]
@@ -310,7 +310,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # missing-parser-stack failures behind a generic "0 chunks" error.
         docs = await _load_sample_docs(pool, sample_doc_ids, run_collection_id)
         await refresh_document_parser(pool)
-        parsed_docs: dict[int, tuple[str, dict]] = {}
+        parsed_docs: dict[int, tuple[str, dict[str, Any]]] = {}
         parse_errors: dict[int, str] = {}
         for d in docs:
             doc_id = int(d["id"])

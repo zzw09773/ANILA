@@ -419,19 +419,29 @@ def _is_uniform_color(
         import io
         import random
 
-        with Image.open(io.BytesIO(img_bytes)) as img:
-            img = img.convert("RGB")
-            w, h = img.size
+        with Image.open(io.BytesIO(img_bytes)) as opened:
+            rgb = opened.convert("RGB")
+            w, h = rgb.size
             if w * h < 100:
                 return False
             rng = random.Random(0)
-            pixels = [
-                img.getpixel((rng.randint(0, w - 1), rng.randint(0, h - 1)))
-                for _ in range(sample_n)
-            ]
-        rs = [p[0] for p in pixels]
-        gs = [p[1] for p in pixels]
-        bs = [p[2] for p in pixels]
+            samples: list[tuple[int, int, int]] = []
+            for _ in range(sample_n):
+                raw = rgb.getpixel((rng.randint(0, w - 1), rng.randint(0, h - 1)))
+                # convert("RGB") 的像素是 (r, g, b)。stub 把 getpixel 收成
+                # 所有 mode 的聯集，這裡只收下三通道整數。
+                if not (
+                    isinstance(raw, tuple)
+                    and len(raw) >= 3
+                    and isinstance(raw[0], int)
+                    and isinstance(raw[1], int)
+                    and isinstance(raw[2], int)
+                ):
+                    return False
+                samples.append((raw[0], raw[1], raw[2]))
+        rs = [p[0] for p in samples]
+        gs = [p[1] for p in samples]
+        bs = [p[2] for p in samples]
         max_range = max(max(rs) - min(rs), max(gs) - min(gs), max(bs) - min(bs))
         return max_range <= tolerance
     except Exception:
@@ -1140,8 +1150,8 @@ async def _update_job(
     """
     if arq_job_id is None:
         return
-    sets = []
-    args: list = [arq_job_id]
+    sets: list[str] = []
+    args: list[str | int] = [arq_job_id]
     if status is not None:
         sets.append(f"status = ${len(args) + 1}::text")
         args.append(status)

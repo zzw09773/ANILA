@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
 
@@ -22,7 +22,14 @@ from ingestion_worker.credential_file import api_key as credential_api_key
 
 logger = logging.getLogger(__name__)
 
-_state: dict[str, Any] = {
+class _ParserState(TypedDict):
+    ready: bool
+    error: bool
+    endpoint: DoclingEndpoint | None
+    misconfigured: bool
+
+
+_state: _ParserState = {
     "ready": False,
     "error": False,
     "endpoint": None,
@@ -51,7 +58,7 @@ def _csp_base() -> str:
     return "http://csp:8000"
 
 
-def _apply_payload(body: dict) -> None:
+def _apply_payload(body: dict[str, Any]) -> None:
     _state["ready"] = True
     _state["error"] = False
     _state["misconfigured"] = False

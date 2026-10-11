@@ -97,8 +97,9 @@ def _extract_json_array(content: str) -> list[Any]:
             return v
         if isinstance(v, dict):
             for key in ("relations", "edges", "data", "result"):
-                if isinstance(v.get(key), list):
-                    return v[key]
+                inner = v.get(key)
+                if isinstance(inner, list):
+                    return inner
     except (ValueError, TypeError):
         pass
     # fallback: first '[' … last ']'
@@ -134,9 +135,11 @@ def parse_llm_relations(
     for item in items:
         if not isinstance(item, dict):
             continue
-        dst = item.get("dst_document_id")
+        raw_dst = item.get("dst_document_id")
+        if raw_dst is None:
+            continue
         try:
-            dst = int(dst)
+            dst = int(raw_dst)
         except (TypeError, ValueError):
             continue
         if dst not in candidate_ids:
