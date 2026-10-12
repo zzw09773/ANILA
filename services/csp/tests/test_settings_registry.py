@@ -285,7 +285,7 @@ def test_registry_is_exactly_the_fifteen_immediate_settings():
     assert set(REGISTRY) == KEEP_KEYS
     assert all(spec.setting_class is SettingClass.C for spec in SETTINGS)
     assert EDITABLE_CLASSES == frozenset({SettingClass.C})
-    assert sum(spec.value_type is T_BOOL_NE_0 for spec in SETTINGS) == 5
+    assert sum(spec.value_type is T_BOOL_NE_0 for spec in SETTINGS) == 7
 
 
 def test_removed_settings_have_no_python_environment_reader():

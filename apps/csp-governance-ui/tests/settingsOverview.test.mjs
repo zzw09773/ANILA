@@ -84,8 +84,8 @@ function row(key, index = 0, overrides = {}) {
   }
 }
 
-test('registry and UI contract contain exactly the twenty-four C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 24)
+test('registry and UI contract contain exactly the twenty-eight C settings', () => {
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 28)
   assert.equal(SECTION_DEFS.length, 3)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))
