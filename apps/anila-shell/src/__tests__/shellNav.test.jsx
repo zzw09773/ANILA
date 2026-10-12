@@ -86,6 +86,7 @@ describe("buildShellEntries", () => {
       "專案入口",
       "用量",
       "記憶",
+      "文件比對",
     ]);
   });
 
@@ -129,6 +130,7 @@ describe("ShellNav", () => {
     expect(screen.queryByText("專案入口")).toBeNull();
     expect(screen.queryByText("用量")).toBeNull();
     expect(screen.queryByText("記憶")).toBeNull();
+    expect(screen.queryByText("文件比對")).toBeNull();
   });
 
   it("renders the user entries inside the modal", () => {
@@ -138,6 +140,7 @@ describe("ShellNav", () => {
     expect(screen.getByText("專案入口")).toBeTruthy();
     expect(screen.getByText("用量")).toBeTruthy();
     expect(screen.getByText("記憶")).toBeTruthy();
+    expect(screen.getByText("文件比對")).toBeTruthy();
   });
 
   it("no longer renders the duplicate 產出中心 entry", () => {

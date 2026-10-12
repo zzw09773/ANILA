@@ -47,6 +47,7 @@ from app.api.jwks import router as jwks_router
 from app.api.jwt_keyring import router as jwt_keyring_router
 from app.api.institutional_kb import router as institutional_kb_router
 from app.api.classification_inventory import router as classification_inventory_router
+from app.api.document_diff import router as document_diff_router
 from app.api.admin import (
     backup_status_router,
     capacity_router,
@@ -120,3 +121,5 @@ api_router.include_router(backup_status_router)
 api_router.include_router(capacity_router)
 api_router.include_router(platform_release_router)
 api_router.include_router(settings_transfer_router)
+# 兩版有條號的 Word：程式產生差異清單，模型只能說明已存在的編號。
+api_router.include_router(document_diff_router)
