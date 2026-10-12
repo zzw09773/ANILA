@@ -94,6 +94,7 @@ import {
   watermarkLevel,
   ConfidenceChip,
   FollowUpSuggestions,
+  FollowUpsLiveRegion,
   RedactionHint,
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
@@ -1054,7 +1055,10 @@ export const MessageBubble = ({
   onCiteDocument,
   showRawReasoning = false,
   includeManualSkill = false,
+  // 使用者設定「回答後顯示建議問題」。
+  followUpsEnabled = true,
 }) => {
+  const showNextQuestions = !msg.streaming && isLatestAssistant && !conversationStreaming && followUpsEnabled !== false;
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(msg.text || "");
@@ -1718,12 +1722,18 @@ export const MessageBubble = ({
         </button>
       )}
 
-      {!msg.streaming && (
+      {/* 建議問題只掛在最後一則回答底下；整個對話還在串流時先不出現；
+          使用者在設定關掉就連已存的也不顯示。 */}
+      {showNextQuestions && (
         <FollowUpSuggestions
           suggestions={msg.followUps}
           confidence={msg.confidence}
           onPick={onPickFollowUp}
         />
+      )}
+      {/* live region 先掛著（空的），建議晚到時改內容才念得出來。 */}
+      {msg.role === "assistant" && isLatestAssistant && followUpsEnabled !== false && (
+        <FollowUpsLiveRegion count={showNextQuestions && Array.isArray(msg.followUps) ? msg.followUps.length : 0} />
       )}
 
       {!msg.streaming && msg.citations && msg.citations.length > 0 && (
@@ -2427,6 +2437,12 @@ export const Composer = ({
   restoredDraft = null,
   // 這位同仁現在用得到的 skill。只把選中的 id 交給 onSend。
   skills = [],
+  // 建議問題：點 chip 時父層送 { text, token } 進來，帶入輸入框（不送出）。
+  insertRequest = null,
+  // 輸入框是空的時候顯示的灰色預覽（第一個建議問題）。Tab 採用、Esc 收起。
+  ghostSuggestion = null,
+  // 使用者開始打字。父層拿來取消還在跑的建議問題請求。
+  onTyping,
 }) => {
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
@@ -2685,6 +2701,59 @@ export const Composer = ({
   const modeControlled = typeof onChangeRedactionMode === "function";
   const mode = modeControlled ? redactionMode : localMode;
   const setMode = modeControlled ? onChangeRedactionMode : setLocalMode;
+
+  // ---- 建議問題：帶入與灰字預覽 ----
+  const appliedInsertToken = useRef(null);
+  useEffect(() => {
+    if (!insertRequest || typeof insertRequest.text !== "string" || !insertRequest.text) return;
+    const token = insertRequest.token ?? insertRequest.text;
+    if (appliedInsertToken.current === token) return;
+    appliedInsertToken.current = token;
+    const incoming = insertRequest.text;
+    const current = textRef.current || "";
+    const currentAtts = attsRef.current || [];
+    const currentSkill = skillRef.current;
+    // 已經有草稿（文字、附件或 skill）就整份收進「還原未送出的訊息」，
+    // 不默默蓋掉，也不讓附件跟著建議問題一起送出去。
+    const hasDraft = (current.trim() && current !== incoming) || currentAtts.length > 0 || currentSkill != null;
+    if (hasDraft) {
+      retainRecoverable({
+        text: current,
+        atts: currentAtts.map((att) => ({ ...att })),
+        skill: currentSkill && Number.isInteger(currentSkill.id)
+          ? { id: currentSkill.id, name: currentSkill.name }
+          : null,
+      });
+      attsRef.current = [];
+      setAtts([]);
+      applySkill(null);
+    }
+    textRef.current = incoming;
+    setText(incoming);
+    writeDraftNow(incoming);
+    setCaret(incoming.length);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(incoming.length, incoming.length);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insertRequest]);
+  const ghost = typeof ghostSuggestion === "string" && ghostSuggestion.trim() ? ghostSuggestion.trim() : null;
+  const [ghostDismissed, setGhostDismissed] = useState(null);
+  const ghostVisible = Boolean(ghost) && ghostDismissed !== ghost && text === "" && !asr.partial;
+  const acceptGhost = () => {
+    if (!ghost) return;
+    textRef.current = ghost;
+    setText(ghost);
+    writeDraftNow(ghost);
+    setCaret(ghost.length);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (el) el.setSelectionRange(ghost.length, ghost.length);
+    });
+  };
 
   const piiHits = useMemo(() => detectPII(text), [text]);
   const mentionParse = useMemo(() => parseMentions(text, agents || []), [text, agents]);
@@ -3066,6 +3135,19 @@ export const Composer = ({
         e.preventDefault();
         setSkillMenuOpen(false);
         if (slash !== null) setCaret(text.length + 1);
+        return;
+      }
+    }
+    // 灰字預覽：只有輸入框是空的才攔 Tab，有字時 Tab 照舊移到下一個控制項。
+    if (ghostVisible && !composing && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      if (e.key === "Tab") {
+        e.preventDefault();
+        acceptGhost();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setGhostDismissed(ghost);
         return;
       }
     }
@@ -3782,6 +3864,7 @@ export const Composer = ({
               textRef.current = e.target.value;
               setText(e.target.value);
               setCaret(e.target.selectionStart || 0);
+              onTyping?.();
             }}
             onKeyUp={updateCaret}
             onClick={updateCaret}
@@ -3796,7 +3879,9 @@ export const Composer = ({
               e.preventDefault();
               onFiles(files);
             }}
-            placeholder={placeholder || "傳訊息給 ANILA，Shift+Enter 換行"}
+            placeholder={ghostVisible ? ghost : (placeholder || "傳訊息給 ANILA，Shift+Enter 換行")}
+            aria-describedby={ghostVisible ? "composer-ghost-hint" : undefined}
+            data-ghost={ghostVisible ? "true" : undefined}
             rows={COMPOSER_MIN_ROWS}
             style={{
               width: "100%",
@@ -3826,10 +3911,18 @@ export const Composer = ({
               才會念;條件式掛載的 live region 常常第一次不報。 */}
           <div className="composer-status" data-testid="composer-status" style={{
             display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
-            marginTop: (text.length > 0 || piiHits.length > 0 || streaming || asr.state === "recording" || asr.state === "listening") ? 4 : 0,
+            marginTop: (ghostVisible || text.length > 0 || piiHits.length > 0 || streaming || asr.state === "recording" || asr.state === "listening") ? 4 : 0,
             fontSize: 11, color: "var(--fg-subtle)",
             fontFamily: "var(--font-mono)",
           }}>
+            {ghostVisible && (
+              <span id="composer-ghost-hint" data-testid="composer-ghost-hint">
+                <kbd style={{
+                  fontFamily: "var(--font-mono)", fontSize: 10, padding: "0 4px",
+                  border: "1px solid var(--border)", borderRadius: 3, background: "var(--bg-subtle)",
+                }}>Tab</kbd> 採用建議問題 · Esc 不用
+              </span>
+            )}
             {text.length > 0 && <span>{text.length} 字</span>}
             {piiHits.length > 0 && <span style={{ color: "var(--warn)" }}>· 可能含個資 × {piiHits.length}</span>}
             <span className="composer-live-status" data-testid="composer-live-status" aria-live="polite" aria-atomic="true" style={{ display: "inline-flex", gap: 6 }}>

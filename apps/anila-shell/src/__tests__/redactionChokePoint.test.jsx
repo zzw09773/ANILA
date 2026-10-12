@@ -117,9 +117,8 @@ describe("敏感資訊扼流點:每一條路都擋得住", () => {
     expect(screen.getByRole("alert")).toBeTruthy();
   });
 
-  it("後續建議（onPickFollowUp）:擋住 —— 模型可能把個資回敬給你當建議", async () => {
+  it("後續建議（onPickFollowUp）:只帶進輸入框，按 Enter 也擋住 —— 模型可能把個資回敬給你當建議", async () => {
     const backend = await mountBlocked();
-    // 建議追問只在信心偏低／中等時才渲染(trust.jsx 的 FollowUpSuggestions)。
     backend.enqueueAnswer("好的", {
       meta: {
         follow_ups: [`要我核對 ${ID_NUMBER} 嗎？`],
@@ -132,7 +131,14 @@ describe("敏感資訊扼流點:每一條路都擋得住", () => {
     await act(async () => {
       fireEvent.click(suggestion.closest("button"));
     });
+    // 點建議不送出，只帶進輸入框。
+    const box = screen.getByLabelText("傳訊息給 ANILA");
+    await waitFor(() => expect(box.value).toBe(`要我核對 ${ID_NUMBER} 嗎？`));
+    expect(backend.chatPayloads).toHaveLength(before);
 
+    await act(async () => {
+      fireEvent.keyDown(box, { key: "Enter" });
+    });
     expect(backend.chatPayloads).toHaveLength(before);
     expect(JSON.stringify(backend.chatPayloads)).not.toContain(ID_NUMBER);
     expect(JSON.stringify(backend.appendedMessages)).not.toContain(ID_NUMBER);
@@ -158,22 +164,18 @@ describe("敏感資訊扼流點:每一條路都擋得住", () => {
     expect(JSON.stringify(backend.requests)).not.toContain(ID_NUMBER);
   });
 
-  // ── 送出路徑最前面那道閘門(app.jsx `sendMessage` 開頭)的獨立釘子 ──────
+  // ── 送出路徑最前面那道閘門(app.jsx `sendMessage` 開頭)──────────────────
   //
   // 那一行守的東西,兩個扼流點**都來不及**守:`ensureConversation` 與
   // `createTaskForConversation` 都在它們之前跑,而且都拿這段草稿當標題送上去。
   //
-  // 要單獨釘住它,得找一條**不經過 composer 閘門**的送出路徑 —— 建議追問就是:
-  // `app.jsx` 把它接成 `onPickFollowUp={(q) => sendMessage(q, [], {})}`,直接進
-  // sendMessage。再讓第一輪的 Task 建立失敗(它的失敗契約是靜默回 null),
-  // 於是 taskId 還是空的,下一輪會再試一次建立 —— 那次建立就會把整句話
-  // 當標題送出去。
-  //
-  // 所以:拿掉 app.jsx 那一行 → POST /api/tasks 帶著身分證號 → 這條紅。
-  // 兩個扼流點原封不動,chatPayloads 與 appendedMessages 依然乾淨。
-  it("Task 標題:只有最前面那道閘門擋得住 —— 兩個扼流點都來不及", async () => {
+  // ⚠ 這條原本靠「建議追問直接呼叫 sendMessage」單獨釘住那一行。建議追問改成
+  // 「帶進輸入框、不送出」之後(2026-10-12),那條繞過 composer 的路沒了;
+  // 現在還會直接呼叫 sendMessage 的只剩產物「修改這一段」(onReviseArtifact)
+  // 與空白對話的固定起手問題。這裡保留結果面的檢查:Task 建立一律失敗、
+  // 第二輪從建議帶入再按 Enter,Task 標題仍然不能帶著身分證號出去。
+  it("Task 標題:建議帶入後送出,Task 標題也不帶個資", async () => {
     const backend = createFakeBackend({ uiSettings: { redactionMode: "block" } });
-    // Task 建立一律失敗 → taskId 永遠是 null → 每一輪都會再試一次建立。
     backend.route("POST", "/api/tasks", (req, { errorResponse }) =>
       errorResponse(503, "task 服務暫停"),
     );
@@ -186,15 +188,18 @@ describe("敏感資訊扼流點:每一條路都擋得住", () => {
     });
     await seedCleanTurn(backend);
 
-    const suggestion = await screen.findByText(`要我核對 ${ID_NUMBER} 嗎？`);
+    const suggestion = await screen.findByRole("button", { name: `帶入輸入框：要我核對 ${ID_NUMBER} 嗎？` });
     await act(async () => {
-      fireEvent.click(suggestion.closest("button"));
+      fireEvent.click(suggestion);
+    });
+    const box = screen.getByLabelText("傳訊息給 ANILA");
+    await waitFor(() => expect(box.value).toContain(ID_NUMBER));
+    await act(async () => {
+      fireEvent.keyDown(box, { key: "Enter" });
     });
 
-    // Task 標題 = 那句建議的全文。它在兩個扼流點之前就送出去了。
     const taskPosts = backend.requestsFor("/api/tasks", "POST");
     expect(JSON.stringify(taskPosts)).not.toContain(ID_NUMBER);
-    // 對照:扼流點自己仍然是乾淨的 —— 這條紅的時候,紅的原因只會是那一行。
     expect(JSON.stringify(backend.chatPayloads)).not.toContain(ID_NUMBER);
     expect(JSON.stringify(backend.appendedMessages)).not.toContain(ID_NUMBER);
   });

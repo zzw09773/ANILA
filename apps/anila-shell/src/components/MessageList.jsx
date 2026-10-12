@@ -17,6 +17,7 @@ export function MessageList({
   onRegenerate, onRate, onEditUser, onSwitchBranch, onDeleteBranch,
   onOpenCitation, onPickFollowUp, onAction, onContinue, onInterruptSubmit,
   onCiteDocument,
+  followUpsEnabled = true,
 }) {
   return (
     <div ref={scrollRef} style={{
@@ -70,6 +71,7 @@ export function MessageList({
                 questionAttachmentBasis={m.role === "assistant" ? questionAttachmentBasis(messages, idx) : "none"}
                 onCiteDocument={onCiteDocument}
                 showRawReasoning={showRawReasoning}
+                followUpsEnabled={followUpsEnabled}
               />
             </React.Fragment>
           ))

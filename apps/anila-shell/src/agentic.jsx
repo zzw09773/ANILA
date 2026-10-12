@@ -17,6 +17,7 @@
 import React, { useState } from "react";
 import { Button } from "./components.jsx";
 import { IconCheck, IconAlert } from "./icons.jsx";
+import { NextQuestionChips } from "./trust.jsx";
 
 
 /**
@@ -609,52 +610,15 @@ function TodoRow({ todo }) {
 
 
 /**
- * Render `anila.follow_ups` suggestions as clickable chips. Clicking a
- * chip calls `onPick(suggestion)` so the parent can submit it as the
- * next user turn.
+ * Render `anila.follow_ups` suggestions as clickable chips. Same component as
+ * the ordinary next-question chips (trust.jsx `NextQuestionChips`) so agentic
+ * turns look and behave the same: clicking calls `onPick(suggestion)`, and the
+ * parent puts it into the composer rather than sending it.
  *
  * @param {{ suggestions: string[], onPick: (s: string) => void }} props
  */
 export function FollowUpChips({ suggestions = [], onPick }) {
-  if (!Array.isArray(suggestions) || suggestions.length === 0) return null;
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 6,
-        marginTop: 12,
-        paddingTop: 10,
-        borderTop: "1px dashed var(--border)",
-      }}
-    >
-      {suggestions.map((s) => (
-        <button
-          key={s}
-          type="button"
-          onClick={() => onPick?.(s)}
-          style={{
-            padding: "5px 10px",
-            fontSize: 12,
-            color: "var(--fg)",
-            background: "var(--bg-subtle)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            cursor: "pointer",
-            transition: "all .12s ease",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--accent-soft, var(--bg-elev))";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "var(--bg-subtle)";
-          }}
-        >
-          {s}
-        </button>
-      ))}
-    </div>
-  );
+  return <NextQuestionChips suggestions={suggestions} onPick={onPick} testId="agentic-follow-up-chips" />;
 }
 
 
