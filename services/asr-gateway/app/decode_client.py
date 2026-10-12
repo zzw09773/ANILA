@@ -40,6 +40,16 @@ logger = logging.getLogger(__name__)
 PARTIAL_TIMEOUT_SECONDS = 4.0
 FINAL_TIMEOUT_SECONDS = 30.0
 
+
+def partial_timeout_seconds() -> float:
+    """partial 解碼 timeout。遠端解碼慢(例如 >4s/句)時用 ASR_PARTIAL_TIMEOUT_SECONDS
+    拉長,否則每個 partial 都逾時、預覽永遠不出現。session 本來就是單 in-flight
+    + 塌縮,拉長不會讓 partial 堆積。"""
+    from app.config import settings
+
+    value = getattr(settings, "ASR_PARTIAL_TIMEOUT_SECONDS", None)
+    return float(value) if value and value > 0 else PARTIAL_TIMEOUT_SECONDS
+
 KIND_PARTIAL = "partial"
 KIND_FINAL = "final"
 
@@ -160,7 +170,7 @@ class _BaseDecodeClient:
         final 失敗 → raise DecodeError(呼叫端負責回報使用者)。
         """
         pcm = _pcm_bytes(samples)
-        timeout = PARTIAL_TIMEOUT_SECONDS if kind == KIND_PARTIAL else FINAL_TIMEOUT_SECONDS
+        timeout = partial_timeout_seconds() if kind == KIND_PARTIAL else FINAL_TIMEOUT_SECONDS
         try:
             return await self._post(
                 pcm,

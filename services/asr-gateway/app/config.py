@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     ASR_PARTIAL_BEAM_SIZE: int | None = None
     # 負載過高時的第一個旋鈕:關掉 partial,只留 final。
     ASR_PARTIALS_ENABLED: bool = True
+    # partial 解碼 timeout(秒)。遠端端點慢時調高,否則預覽全被逾時丟掉。
+    ASR_PARTIAL_TIMEOUT_SECONDS: float = 4.0
     ASR_VAD_AGGRESSIVENESS: int = 2
     # ── 切句 / 噪音門檻(預設值 = 原本寫死在 transcriber.py 的值)────────────
     # 停頓多久算一句講完(毫秒,以 30ms 幀向上取整)。太短會把一句話切成好幾段。
