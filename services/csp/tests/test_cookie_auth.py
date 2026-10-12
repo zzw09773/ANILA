@@ -303,3 +303,8 @@ def test_non_admin_docs_forbidden_with_scoped_session_cookie(client: TestClient,
 
     docs = client.get("/docs")
     assert docs.status_code == 403, docs.text
+
+
+def test_access_cookie_reaches_asr_websocket():
+    # Browser WS to /asr/stream can only carry the cookie; see cookies.py.
+    assert "/asr" in ACCESS_COOKIE_PATHS

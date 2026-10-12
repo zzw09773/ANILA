@@ -71,6 +71,10 @@ ACCESS_COOKIE_PATHS: tuple[str, ...] = (
     "/router",
     "/docs",
     "/openapi.json",
+    # asr-gateway WS `/asr/stream` authenticates by this cookie (browsers
+    # cannot set an Authorization header on WebSocket). Without it voice
+    # input always closes 4401「登入狀態已失效」.
+    "/asr",
 )
 # Pre-P2.6 access cookies were Path=/. Logout must still expire that
 # copy or an old session JWT keeps going to /n8n until Max-Age.
