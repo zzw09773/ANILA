@@ -41,6 +41,7 @@ import {
   MenuItem,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
+import { TranslationPanel } from "./translationPanel.jsx";
 import { AnilaLogoImg } from "./AnilaBrand.jsx"
 import { ThinkingStatus, orbStateFromLabel } from "./ThinkingStatus.jsx";
 import {
@@ -59,6 +60,7 @@ import {
   IconInbox,
   IconLock,
   IconLogout,
+  IconMessage,
   IconMore,
   IconPanelR,
   IconPaperclip,
@@ -2429,6 +2431,7 @@ export const Composer = ({
   skills = [],
 }) => {
   const toast = useToast();
+  const [translationOpen, setTranslationOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
@@ -3258,7 +3261,7 @@ export const Composer = ({
         if (files.length) onFiles(files);
       }}
       onMouseDown={(e) => {
-        if (e.target.closest("button, input, textarea, a, [role='menu']")) return;
+        if (e.target.closest("button, input, textarea, a, [role='menu'], [role='dialog']")) return;
         taRef.current?.focus();
       }}
       className="anila-inset-surface"
@@ -3271,6 +3274,7 @@ export const Composer = ({
         borderRadius: 24,
         boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
       }}>
+      <TranslationPanel open={translationOpen} onClose={() => setTranslationOpen(false)} />
       {dragOver && (
         <div style={{
           position: "absolute", inset: 0, zIndex: 90,
@@ -3635,6 +3639,13 @@ export const Composer = ({
           }}
         >
           <IconAt />
+        </IconButton>
+        <IconButton
+          title="翻譯"
+          data-testid="open-translation"
+          onClick={() => setTranslationOpen(true)}
+        >
+          <IconMessage />
         </IconButton>
 
         {/* Per-agent preset prompts(開發者在 CSP 設計):點開清單,選一個填入輸入框。
