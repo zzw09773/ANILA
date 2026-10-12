@@ -8,14 +8,15 @@
 import React, {
   startTransition,
   useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { config, readCsrfCookie } from "./runtime/api.js";
+import {
+  config,
+} from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion, streamSessionAnswer } from "./runtime/sse.js";
 import { mergeLiveTrace } from "./runtime/trace.js";
@@ -37,10 +38,6 @@ import {
   resolveAnsweringAgentId,
 } from "./runtime/messageMeta.js";
 import { answerTextForPersist, applyDocumentToMessage } from "./runtime/longDocument.js";
-import {
-  AGENT_REPLY_OBSERVATION_KEY,
-  agentReplyNotice,
-} from "./runtime/agentReplySignal.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { resolveRoleModel } from "./runtime/modelRole.js";
 import { resolveEditResend } from "./runtime/editResend.js";
@@ -82,7 +79,6 @@ import {
   bindAttachments as apiBindAttachments,
   admissionForTurn,
   getAttachmentMeta as apiGetAttachmentMeta,
-  createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
   getUiSettings,
   putUiSettings,
@@ -94,7 +90,6 @@ import {
   requestConversationCompact as apiRequestConversationCompact,
 } from "./runtime/conversations.js";
 import {
-  COMPACT_SUMMARY_PREFIX,
   compactBoundaryOnPath,
   compactFieldsFromServer,
   compactPutFailureState,
@@ -182,9 +177,7 @@ import {
   settleThinkingStages,
 } from "./runtime/thinkingStages.js";
 import {
-  Button,
   IconButton,
-  Input,
   Modal,
   Dropdown,
 } from "./components.jsx";
@@ -230,336 +223,41 @@ import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
 import { LongDocumentPanelHost } from "./longDocumentCard.jsx";
 import { ArtifactPreviewProvider } from "./artifactContext.jsx";
+import {
+  ROUTER_AGENT,
+  buildStarterPrompts,
+  makeId,
+  streamBusyError,
+  bulkAccountNote,
+  bulkDeleteStatus,
+  staleAccountError,
+  BULK_RELOGIN_MESSAGE,
+  makeConversationTitle,
+  attachmentBindIds,
+  nowIso,
+  liveThinkingPumpMaps,
+  normalizeAgents,
+  kbMetaFields,
+  injectionMetaFields,
+  liveThinkingPumpCount,
+  agentReplyMetaFields,
+} from "./runtime/chatHelpers.js";
+import { buildMessageHistory, buildUserContent, outgoingUserText } from "./runtime/chatPayload.js";
+import {
+  applyTweaks,
+  resolveInitialTweaks,
+} from "./runtime/tweaksApply.js";
+
+// Re-exported for tests and other modules that import them from app.jsx.
+export {
+  normalizeAgents,
+  kbMetaFields,
+  injectionMetaFields,
+  liveThinkingPumpCount,
+  agentReplyMetaFields,
+} from "./runtime/chatHelpers.js";
 
 // ---- Router pseudo-agent ----------------------------------------------------
-const ROUTER_AGENT = Object.freeze({
-  id: "anila-router",
-  name: "ANILA",
-  short: "auto",
-  description: "ANILA 會幫你找合適的助手，也可能直接回答你。",
-  requiresEncryption: false,
-});
-
-// Default starter — a single card that asks the Router itself to
-// introduce ANILA AND list every agent available to this user. The
-// Router already has the agent manifest in its system prompt so it can
-// produce an accurate, up-to-date answer on first ask, and the user
-// sees their real option set instead of hand-curated marketing cards.
-function buildStarterPrompts(agents) {
-  const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
-  const countLine = real.length > 0
-    ? `你目前可以使用 ${real.length} 個 agent`
-    : "平台目前尚未註冊 agent";
-  return [
-    {
-      title: "ANILA 可以做什麼？",
-      sub: `${countLine}，點一下讓 ANILA 介紹平台與各助手的能力`,
-      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
-      primary: true,
-    },
-  ];
-}
-
-// ---- Helpers ---------------------------------------------------------------
-// Build an OpenAI chat message `content` for a user turn. When the message
-// has no image attachments we keep the string form (compatible with every
-// model). When images are present we switch to the array form with
-// `image_url` parts so vision-capable models (Gemma4, gpt-4o, ...) can see
-// the image inline. Non-image attachments are referenced by filename in a
-// trailing text note.
-// Fold prior conversation turns (excluding the live streaming assistant)
-// into the OpenAI message history so the model remembers what was said —
-// and, critically, so images from earlier turns stay visible.
-/**
- * 從一個「要送出去的 payload」裡取出**這一輪使用者新講的那段話**。
- *
- * 敏感資訊閘門看的就是這一段:不是整串歷史(那會讓任何一個曾經出現過個資的
- * 對話再也不能重試),而是使用者這次提交的內容。
- *
- * 刻意只認 payload 本身,不讓呼叫端多傳任何東西 —— 呼叫端一旦能選擇「傳不傳」,
- * 這個閘門就退化回一份要大家記得去呼叫的清單,而那份清單已經漏掉兩次了。
- */
-function outgoingUserText(payload) {
-  const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
-  for (let i = msgs.length - 1; i >= 0; i -= 1) {
-    const m = msgs[i];
-    if (!m || m.role !== "user") continue;
-    const c = m.content;
-    if (typeof c === "string") return c;
-    if (Array.isArray(c)) {
-      return c
-        .filter((p) => p && p.type === "text")
-        .map((p) => p.text || "")
-        .join("\n");
-    }
-    return "";
-  }
-  return "";
-}
-
-/**
- * 組出送給 Router 的 OpenAI messages。
- *
- * 刻意不走這函式（不帶對話歷史）的呼叫端：
- * 1. generateConversationTitle — 標題產生器，自帶 system＋單則 Q&A
- * 2. buildDeclarativeActionMessages / runActionInvokeFillback — 宣告式 custom action，只有渲染後的 prompt
- * 3. sendCompare — 比較／direct 並排，每欄只送當則 user
- *
- * CSP `POST /api/conversations/{id}/messages`（append_message）的 role pattern
- * 含 tool，且會原樣持久化。這裡把 persisted `role:"tool"` 轉成帶
- * `tool_result` block 的 user 訊息；Router `_split_turns` 會把它併進前一回合，
- * 不新開回合、不影響 `kept_from_index`。
- */
-function buildMessageHistory(priorMsgs, currentText, currentAttachments, options = null) {
-  const out = [];
-  const sources = [];
-  for (const m of priorMsgs || []) {
-    if (!m || m.streaming) continue;
-    if (m.role === "user") {
-      out.push({ role: "user", content: buildUserContent(m.text || "", m.attachments || []) });
-      sources.push(m);
-    } else if (m.role === "assistant" && m.text) {
-      out.push({ role: "assistant", content: m.text });
-      sources.push(m);
-    } else if (m.role === "tool") {
-      const toolUseId = m.toolCallId || m.tool_call_id || (
-        typeof m.dbId === "number" ? String(m.dbId) : String(m.id ?? "")
-      );
-      out.push({
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: toolUseId,
-          content: m.text || "",
-        }],
-      });
-      sources.push(m);
-    }
-  }
-  if (currentText !== null && currentText !== undefined) {
-    out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
-    sources.push(options?.currentUserMsg || null);
-  }
-  const compact = options?.compact;
-  const boundaryId = compact?.boundaryMessageId;
-  if (
-    compact?.summary
-    && boundaryId != null
-    && sources.some((m) => m && m.dbId === boundaryId)
-  ) {
-    const idx = sources.findIndex((m) => m && m.dbId === boundaryId);
-    const kept = out.slice(idx);
-    const keptSources = sources.slice(idx);
-    const messages = [
-      { role: "system", content: `${COMPACT_SUMMARY_PREFIX}${compact.summary}` },
-      ...kept,
-    ];
-    options?.onBuilt?.({ messages, sources: keptSources });
-    return messages;
-  }
-  options?.onBuilt?.({ messages: out, sources });
-  return out;
-}
-
-function buildUserContent(text, attachments) {
-  const list = Array.isArray(attachments) ? attachments : [];
-  const images = list.filter((a) => a.dataUrl && (a.kind === "image" || (a.contentType || "").startsWith("image/")));
-  const otherFiles = list.filter((a) => !images.includes(a) && a.name);
-  if (images.length === 0) {
-    if (otherFiles.length === 0) return text;
-    const tail = otherFiles.map((a) => `- ${a.name}`).join("\n");
-    return `${text}\n\n[附件]\n${tail}`;
-  }
-  const parts = [{ type: "text", text: text || "" }];
-  for (const img of images) {
-    parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-  }
-  if (otherFiles.length > 0) {
-    parts[0].text = `${parts[0].text}\n\n[附件]\n${otherFiles.map((a) => `- ${a.name}`).join("\n")}`;
-  }
-  return parts;
-}
-
-function makeId(prefix) {
-  return `${prefix}-${Math.random().toString(16).slice(2, 10)}-${Date.now().toString(36)}`;
-}
-
-function streamBusyError() {
-  const err = new Error("對話正在產生回覆，請等待完成");
-  err.code = "stream-busy";
-  return err;
-}
-
-function bulkAccountNote(errors) {
-  for (const error of errors || []) {
-    if (!error) continue;
-    const message = typeof error.message === "string" ? error.message : "";
-    if (error.status === 409 && message.includes("登入帳號已變更")) return message;
-    if (error.code === "expected-user-missing" && message) return message;
-  }
-  return "";
-}
-
-function bulkDeleteStatus({ succeeded, apiFailed, waiting, accountNote = "" }) {
-  const ok = succeeded.length;
-  const bad = apiFailed.length;
-  const wait = waiting.length;
-  let text;
-  if (bad === 0 && wait === 0) text = `已刪除 ${ok} 則對話。`;
-  else if (bad === 0) {
-    text = ok === 0
-      ? "選取的對話正在產生回覆，請等待完成後再刪除。"
-      : `已刪除 ${ok} 則，${wait} 則正在產生回覆，請等待完成。尚未完成的對話仍保留。`;
-  } else if (wait === 0) {
-    text = `已刪除 ${ok} 則，${bad} 則失敗。失敗的對話仍保留，可以再試一次。`;
-  } else {
-    text = `已刪除 ${ok} 則，${bad} 則失敗，${wait} 則正在產生回覆，請等待完成。失敗的對話仍保留，可以再試一次。`;
-  }
-  return accountNote ? `${text}${accountNote}` : text;
-}
-
-function staleAccountError() {
-  const err = new Error("登入帳號已變更，請重新整理後再操作");
-  err.status = 409;
-  return err;
-}
-
-const BULK_RELOGIN_MESSAGE = "請重新登入或重新整理後再操作。";
-
-function makeConversationTitle(text) {
-  const t = (text || "").trim();
-  if (!t) return "新對話";
-  return t.length > 28 ? `${t.slice(0, 28)}…` : t;
-}
-
-/** reference_id values from composer chips (or AttachmentOut-shaped rows). */
-function attachmentBindIds(attachments) {
-  const ids = [];
-  const seen = new Set();
-  for (const a of attachments || []) {
-    if (!a || typeof a !== "object") continue;
-    const rid = a.referenceId || a.reference_id;
-    const fallback = typeof a.id === "string" ? a.id : null;
-    const value = typeof rid === "string" && rid.trim() ? rid.trim() : fallback;
-    if (typeof value !== "string" || !value.trim()) continue;
-    const key = value.trim();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    ids.push(key);
-  }
-  return ids;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-// Sprint 7 X follow-up：API key UI 已下線（cookie 流程後 SPA 不持有 key），
-// 因此原本的 maskApiKey helper 也一併移除，避免 UI 仍假裝可以管理 key。
-
-// normalize backend /v1/agents payload → UI agent model
-// includes the ROUTER pseudo-agent in front
-export function normalizeAgents(data) {
-  return [
-    ROUTER_AGENT,
-    ...(data || []).map((item) => ({
-      id: item.id,
-      name: item.name || item.id,
-      short: (item.short || item.id || "").slice(0, 12),
-      description: item.description_for_router || item.description || "",
-      endpointUrl: item.endpoint_url,
-      capabilities: item.capabilities || {},
-      requiresEncryption: Boolean(item.requires_encryption),
-    })),
-  ];
-}
-
-/**
- * 院內規章檢索的三個欄位,從 `anila_meta` 抄到 UI 的訊息列上。
- *
- * meta 有**兩個**入口,而且兩個都必須抄:重新載入走 `mapServerMessage`、
- * SSE 現場走 `applyMeta`。只接一邊不會有任何錯誤訊息,只會讓同一則答案在
- * 串完的當下說「依據是人事管理規則」、重新整理之後說不出話來(或反過來)。
- * 抽成一個函式而不是在兩處各寫一次,是為了讓「兩邊講的是同一件事」變成
- * 結構上的事實,而不是靠人記得同步兩份欄位清單。
- *
- * ⚠ **狀態只從 `kb_state` 抄,不從資料反推。** 生產端的事實
- * (`services/csp/app/services/institutional_kb.py:226-233`):`partial_error`
- * **一定帶著命中**,`search_error` 有失敗的庫而沒有命中。所以「有 kb_hits
- * 就當命中」會把 `partial_error` 講成乾淨的命中,使用者就永遠看不到
- * 「這不是全部的依據」——那正是他最需要知道的一句話。
- *
- * `citations` 不在這裡:兩個縫本來就各自映射了那個欄位,CSP 命中時是把
- * 規章**前綴**進既有的 citations(不覆蓋下游來源),沿用原本的管線即可。
- *
- * @param {object | null | undefined} meta - 一份 `anila_meta`
- */
-export function kbMetaFields(meta) {
-  const m = meta && typeof meta === "object" ? meta : {};
-  return {
-    // 缺席就是缺席:這個功能上線前存下來的訊息沒有這個欄位,而
-    // `undefined` 仍在畫面上保持安靜;明帶的 `"not_searched"` 則由 chat.jsx
-    // 揭露「本次未檢索院內規章」,兩者不可混為一談。
-    kbState: typeof m.kb_state === "string" ? m.kb_state : undefined,
-    kbHits: Array.isArray(m.kb_hits) ? m.kb_hits : [],
-    kbFailedCollections: Array.isArray(m.kb_failed_collections)
-      ? m.kb_failed_collections
-      : [],
-    keywordFallback: m.keyword_fallback === true,
-  };
-}
-
-/**
- * The registered-agent observation has the same two ingress seams as KB meta:
- * server-message reload and live SSE.  Unknown or absent observations remain
- * silent so old messages do not acquire a new claim.
- */
-export function injectionMetaFields(meta) {
-  const m = meta && typeof meta === "object" ? meta : {};
-  return {
-    promptInjectionSuspected: m.prompt_injection_suspected === true,
-  };
-}
-
-const liveThinkingPumpMaps = new Set();
-
-export function liveThinkingPumpCount() {
-  let count = 0;
-  for (const map of liveThinkingPumpMaps) count += map.size;
-  return count;
-}
-
-export function agentReplyMetaFields(meta) {
-  const m = meta && typeof meta === "object" ? meta : {};
-  return {
-    agentReplyObservation: m[AGENT_REPLY_OBSERVATION_KEY],
-    agentReplyNotice: agentReplyNotice(m),
-  };
-}
-
-function applyTweaks(t) {
-  const r = document.documentElement;
-  r.setAttribute("data-theme", t.dark ? "dark" : "light");
-  if (t.accent && t.accent !== DEFAULT_TWEAKS.accent) {
-    r.style.setProperty("--accent", t.accent);
-  } else {
-    r.style.removeProperty("--accent");
-  }
-  if (t.density) r.style.setProperty("--density", `${t.density}px`);
-  if (t.sansFamily) {
-    r.style.setProperty(
-      "--font-sans",
-      `"${t.sansFamily}", "Inter", system-ui, sans-serif`,
-    );
-  }
-  if (t.monoFamily) {
-    r.style.setProperty(
-      "--font-mono",
-      `"${t.monoFamily}", ui-monospace, Menlo, monospace`,
-    );
-  }
-}
-
 // ---- Chat Runtime ----------------------------------------------------------
 // Exported so tests can mount the real send path. The behavioural suite for
 // reserve-then-stream drives THIS component — a previous round's tests only
@@ -5686,22 +5384,6 @@ function SettingsModal({
 // Sprint 7 X follow-up：ApiKeyTab 元件已移除（cookie 流程後 dead code）。
 
 // ---- Root App (protected) --------------------------------------------------
-const DEFAULT_TWEAKS = {
-  accent: "#3b5bdb",
-  dark: false,
-  density: 18,
-  sansFamily: "Noto Sans TC",
-  monoFamily: "JetBrains Mono",
-  agentSwitcherPosition: "bottom",
-  traceStyle: "collapsible",
-};
-
-function resolveInitialTweaks() {
-  const globalTweaks =
-    typeof window !== "undefined" ? window.ANILA_TWEAKS : null;
-  return { ...DEFAULT_TWEAKS, ...(globalTweaks || {}) };
-}
-
 export default function App() {
   const { user } = useAuth();
   const [tweaks, setTweaks] = useState(resolveInitialTweaks);
