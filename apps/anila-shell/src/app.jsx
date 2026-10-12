@@ -237,6 +237,7 @@ import { downloadConversationExport } from "./runtime/conversationExport.js";
 import { useBanners } from "./runtime/useBanners.js";
 import { AgentModelControls } from "./components/AgentModelControls.jsx";
 import { MessageList } from "./components/MessageList.jsx";
+import { ComposerDock } from "./components/ComposerDock.jsx";
 
 export { EmptyState } from "./components/EmptyState.jsx";
 
@@ -2968,6 +2969,33 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
   }
 
+  // Composer 附件:還沒有對話就先建一個,附件一定綁在數字 id 的對話上。
+  async function uploadComposerAttachment(file) {
+    let convId = selectedConvId;
+    if (typeof convId !== "number") {
+      convId = await ensureConversation(
+        (file && file.name) || "新對話",
+        selectedAgentId,
+      );
+    }
+    if (typeof convId !== "number") {
+      throw new Error("無法建立對話，附件未上傳");
+    }
+    return apiUploadAttachment(multipartRequest, file, {
+      conversationId: convId,
+    });
+  }
+
+  function fetchComposerAttachmentMeta(referenceId) {
+    return apiGetAttachmentMeta(
+      authRequest,
+      referenceId,
+      selectedAgentId === ROUTER_AGENT.id
+        ? (selectedRouterModelName || selectedConv?.routerModelName || null)
+        : null,
+    );
+  }
+
   async function persistThinkingTier(nextTier) {
     const previous = thinkingTier;
     const normalized = normalizeThinkingTier(nextTier);
@@ -4438,6 +4466,28 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const showForensicWatermark = Boolean(pageWatermarkLevel && pageWatermarkReader);
 
   // ---- render: classified watermark + top bar + messages + composer ----
+  // Same element in the top bar or above the composer (agentSwitcherPosition).
+  const agentModelControls = (
+    <AgentModelControls
+      agents={agents}
+      selectedAgentId={selectedAgentId}
+      onSelectAgent={setSelectedAgentId}
+      isRouter={selectedAgentId === ROUTER_AGENT.id}
+      routerModels={routerModels}
+      selectedRouterModelId={selectedRouterModelId}
+      routerDefaultId={routerDefaultId}
+      routerFallbackName={selectedConv?.routerModelName || ""}
+      routerModelError={routerModelError}
+      modelNoticeActive={Boolean(modelNotice)}
+      locked={routerPickerLocked}
+      onChangeRouterModel={changeRouterModel}
+      thinkingTier={thinkingTier}
+      selectedThinkingModel={selectedThinkingModel}
+      thinkingError={thinkingError}
+      onChangeThinkingTier={persistThinkingTier}
+    />
+  );
+
   return (
     <ArtifactPreviewProvider
       artifact={artifact}
@@ -4538,24 +4588,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           background: "var(--bg)",
         }}>
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
-            <AgentModelControls
-              agents={agents}
-              selectedAgentId={selectedAgentId}
-              onSelectAgent={setSelectedAgentId}
-              isRouter={selectedAgentId === ROUTER_AGENT.id}
-              routerModels={routerModels}
-              selectedRouterModelId={selectedRouterModelId}
-              routerDefaultId={routerDefaultId}
-              routerFallbackName={selectedConv?.routerModelName || ""}
-              routerModelError={routerModelError}
-              modelNoticeActive={Boolean(modelNotice)}
-              locked={routerPickerLocked}
-              onChangeRouterModel={changeRouterModel}
-              thinkingTier={thinkingTier}
-              selectedThinkingModel={selectedThinkingModel}
-              thinkingError={thinkingError}
-              onChangeThinkingTier={persistThinkingTier}
-            />
+            agentModelControls
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
               {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
@@ -4770,131 +4803,35 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   onCiteDocument={(attachment) => setComposerCite(attachment)}
                 />
 
-                <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
-                  <div style={{ maxWidth: 760, margin: "0 auto" }}>
-                    {tweaks.agentSwitcherPosition === "bottom" && (
-                      <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                                    <AgentModelControls
-                          agents={agents}
-                          selectedAgentId={selectedAgentId}
-                          onSelectAgent={setSelectedAgentId}
-                          isRouter={selectedAgentId === ROUTER_AGENT.id}
-                          routerModels={routerModels}
-                          selectedRouterModelId={selectedRouterModelId}
-                          routerDefaultId={routerDefaultId}
-                          routerFallbackName={selectedConv?.routerModelName || ""}
-                          routerModelError={routerModelError}
-                          modelNoticeActive={Boolean(modelNotice)}
-                          locked={routerPickerLocked}
-                          onChangeRouterModel={changeRouterModel}
-                          thinkingTier={thinkingTier}
-                          selectedThinkingModel={selectedThinkingModel}
-                          thinkingError={thinkingError}
-                          onChangeThinkingTier={persistThinkingTier}
-                        />
-                        {activeEncryptionRequired && (
-                          <span title="此 agent 為列管模型（受控存取）" style={{
-                            display: "inline-flex", alignItems: "center", gap: 3,
-                            padding: "1px 7px",
-                            background: "oklch(0.95 0.02 25 / 0.4)",
-                            border: "1px solid var(--danger)",
-                            borderRadius: 999,
-                            fontSize: 11, color: "var(--danger)",
-                            fontFamily: "var(--font-mono)",
-                          }}>
-                            <IconLock size={10} /> 列管模型
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {modelNotice ? (
-                      <div
-                        role="alert"
-                        data-testid="model-unavailable-notice"
-                        style={{
-                          marginBottom: 8,
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius)",
-                          border: "1px solid var(--danger)",
-                          background: "color-mix(in oklch, var(--danger) 12%, var(--bg))",
-                          color: "var(--danger)",
-                          fontSize: 14,
-                          lineHeight: 1.55,
-                        }}
-                      >
-                        {modelNotice}
-                      </div>
-                    ) : null}
-                    <Composer
-                      onSend={sendMessage}
-                      restoredDraft={draftRestore}
-                      skills={usableSkills}
-                      agents={agents}
-                      redactionMode={redactionMode}
-                      onChangeRedactionMode={changeRedactionMode}
-                      conversationId={selectedConvId}
-                      presetPrompts={presetPrompts}
-                      deepThinkNext={deepThinkNext}
-                      onDeepThinkNextChange={setDeepThinkNextFlag}
-                      streaming={currentMsgs.some((m) => m.streaming)}
-                      // 「停止產生」= 這個對話現在不要再產生了,包含還在排隊、
-                      // 串流尚未開始的那幾輪。只 abort 當下註冊的那一個
-                      // controller 的話,第一輪停掉、第二輪立刻接著跑,而按鈕
-                      // 仍然顯示「停止產生」—— 使用者按了、畫面照樣在動。
-                      onStop={() =>
-                        stopStreaming(selectedConvId, { cancelQueued: true })
-                      }
-                      placeholder="傳訊息給 ANILA，Shift+Enter 換行"
-                      footer={
-                        selectedAgentId === ROUTER_AGENT.id
-                          ? "ANILA 會幫你找合適的助手"
-                          : `已指定助手 · ${activeAgent.name}`
-                      }
-                      queuedAttachment={composerCite}
-                      onQueuedAttachmentConsumed={() => setComposerCite(null)}
-                      onUpload={async (file) => {
-                        let convId = selectedConvId;
-                        if (typeof convId !== "number") {
-                          convId = await ensureConversation(
-                            (file && file.name) || "新對話",
-                            selectedAgentId,
-                          );
-                        }
-                        if (typeof convId !== "number") {
-                          throw new Error("無法建立對話，附件未上傳");
-                        }
-                        return apiUploadAttachment(multipartRequest, file, {
-                          conversationId: convId,
-                        });
-                      }}
-                      onFetchAttachmentMeta={(referenceId) =>
-                        apiGetAttachmentMeta(
-                          authRequest,
-                          referenceId,
-                          selectedAgentId === ROUTER_AGENT.id
-                            ? (selectedRouterModelName || selectedConv?.routerModelName || null)
-                            : null,
-                        )
-                      }
-                    />
-                    <div style={{
-                      marginTop: 6, fontSize: 11,
-                      color: "var(--fg-subtle)", textAlign: "center",
-                      fontFamily: "var(--font-mono)",
-                    }}>
-                      ANILA {activeAgent?.id === ROUTER_AGENT.id
-                        ? "會幫你找合適的助手"
-                        : `→ ${activeAgent?.name}`}
-                      {" · 所有呼叫經 CSP · "}
-                      <span
-                        style={{ color: "var(--fg-muted)" }}
-                        title="本系統由大型語言模型(LLM)驅動,輸出內容可能包含錯誤或偏誤,僅供參考、不可作為唯一決策依據。"
-                      >
-                        AI 系統 · 內容僅供參考
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                <ComposerDock
+                  agentControls={tweaks.agentSwitcherPosition === "bottom" ? agentModelControls : null}
+                  encryptionRequired={activeEncryptionRequired}
+                  modelNotice={modelNotice}
+                  isRouter={selectedAgentId === ROUTER_AGENT.id}
+                  activeAgentName={activeAgent?.name}
+                  onSend={sendMessage}
+                  // 「停止產生」= 這個對話現在不要再產生了,包含還在排隊、
+                  // 串流尚未開始的那幾輪。只 abort 當下註冊的那一個
+                  // controller 的話,第一輪停掉、第二輪立刻接著跑,而按鈕
+                  // 仍然顯示「停止產生」—— 使用者按了、畫面照樣在動。
+                  onStop={() =>
+                    stopStreaming(selectedConvId, { cancelQueued: true })
+                  }
+                  streaming={currentMsgs.some((m) => m.streaming)}
+                  restoredDraft={draftRestore}
+                  skills={usableSkills}
+                  agents={agents}
+                  redactionMode={redactionMode}
+                  onChangeRedactionMode={changeRedactionMode}
+                  conversationId={selectedConvId}
+                  presetPrompts={presetPrompts}
+                  deepThinkNext={deepThinkNext}
+                  onDeepThinkNextChange={setDeepThinkNextFlag}
+                  queuedAttachment={composerCite}
+                  onQueuedAttachmentConsumed={() => setComposerCite(null)}
+                  onUpload={uploadComposerAttachment}
+                  onFetchAttachmentMeta={fetchComposerAttachmentMeta}
+                />
               </>
             )}
           </div>
