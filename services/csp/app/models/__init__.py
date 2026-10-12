@@ -84,7 +84,7 @@ from app.models.user_memory import (
     UserFact,
 )
 from app.models.usage_quota import QuotaEvent, UsageQuota
-from app.models.user_skill import UserSkill
+from app.models.user_skill import UserSkill, UserSkillFavorite, UserSkillUsage
 
 __all__ = [
     "Agent",
@@ -161,5 +161,7 @@ __all__ = [
     "UserLlmCredential",
     "UserModelPermission",
     "UserSkill",
+    "UserSkillFavorite",
+    "UserSkillUsage",
     "UsageQuota",
 ]

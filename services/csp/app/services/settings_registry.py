@@ -111,6 +111,10 @@ def _is_bool(value: Any) -> bool:
     return isinstance(value, bool)
 
 
+SKILLS_MAX_STACK_MIN = 1
+SKILLS_MAX_STACK_MAX = 20
+
+
 @dataclass(frozen=True)
 class SettingSpec:
     """一顆 C 類設定的完整宣告。"""
@@ -345,6 +349,38 @@ SETTINGS: tuple[SettingSpec, ...] = (
         _closed_int_range(1, 10),
         3,
         "每則回答最多保留幾個建議問題。允許 1–10 個，預設 3。",
+    ),
+    _spec(
+        "skills.enabled",
+        None,
+        T_BOOL_NE_0,
+        _is_bool,
+        True,
+        "技能總開關。關閉後 /api/skills 回 403，對話也不再讀取技能標頭。",
+    ),
+    _spec(
+        "skills.max_stack",
+        None,
+        T_INT,
+        _closed_int_range(SKILLS_MAX_STACK_MIN, SKILLS_MAX_STACK_MAX),
+        3,
+        "一次最多疊加幾個技能。允許 1–20，預設 3。超過回 422。",
+    ),
+    _spec(
+        "skills.max_total_chars",
+        None,
+        T_INT,
+        _closed_int_range(1, 100000),
+        4000,
+        "疊加後注入的總字數上限。允許 1–100000，預設 4000。超過回 422。",
+    ),
+    _spec(
+        "skills.campus_publish_enabled",
+        None,
+        T_BOOL_NE_0,
+        _is_bool,
+        True,
+        "是否允許新的全院技能送審或發布。已發布的全院技能仍可使用。",
     ),
 )
 

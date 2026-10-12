@@ -106,9 +106,17 @@ def _purge_once() -> int:
 
     db = SessionLocal()
     try:
-        return purge_expired_uploads(db)
+        purged = purge_expired_uploads(db)
     finally:
         db.close()
+    db = SessionLocal()
+    try:
+        from app.services.user_skill_service import purge_expired_skill_usage
+
+        purge_expired_skill_usage(db)
+    finally:
+        db.close()
+    return purged
 
 
 def start_attachment_retention():

@@ -57,6 +57,10 @@ KEEP_KEYS = {
     "follow_ups.enabled",
     "follow_ups.allow_classified",
     "follow_ups.max",
+    "skills.enabled",
+    "skills.max_stack",
+    "skills.max_total_chars",
+    "skills.campus_publish_enabled",
 }
 
 REMOVED_ENV_NAMES = {
@@ -266,6 +270,14 @@ def _removed_config_env_names() -> set[str]:
         spec.env_name for spec in SETTINGS if spec.env_name is not None
     }
     return old_fields - current_fields - active_fallbacks
+
+
+def test_skills_max_stack_domain_is_one_through_twenty():
+    spec = REGISTRY["skills.max_stack"]
+    assert spec.default == 3
+    assert spec.domain_fn(1) and spec.domain_fn(20)
+    assert not spec.domain_fn(0) and not spec.domain_fn(21)
+    assert not spec.domain_fn(True)
 
 
 def test_registry_is_exactly_the_fifteen_immediate_settings():

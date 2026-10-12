@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -114,3 +115,44 @@ class UserSkillNameClaim(Base):
     owner_user_id = Column(Integer, nullable=True)
     department_id = Column(Integer, nullable=True)
     name_key = Column(String(40), nullable=False)
+
+
+class UserSkillUsage(Base):
+    """一次套用留下一列。保留 180 天，由每日清理工作刪除更早的列。"""
+
+    __tablename__ = "user_skill_usage"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('manual', 'auto')",
+            name="ck_user_skill_usage_mode",
+        ),
+        Index("ix_user_skill_usage_user_used", "user_id", "used_at"),
+        Index("ix_user_skill_usage_lineage", "lineage_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    lineage_id = Column(Integer, nullable=False)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_user_skill_usage_user_id"),
+        nullable=False,
+    )
+    used_at = Column(DateTime(timezone=True), nullable=False)
+    mode = Column(String(16), nullable=False)
+
+
+class UserSkillFavorite(Base):
+    """一位同仁釘住的一條 skill。只影響這個人自己的清單。"""
+
+    __tablename__ = "user_skill_favorites"
+
+    user_id = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_user_skill_favorites_user_id",
+        ),
+        primary_key=True,
+    )
+    lineage_id = Column(Integer, primary_key=True)
