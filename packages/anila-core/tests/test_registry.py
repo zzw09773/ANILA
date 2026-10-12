@@ -140,28 +140,26 @@ class TestDedup:
 # ---------------------------------------------------------------------------
 
 class TestValidation:
-    def test_unknown_fields_raise(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "item, item2, item3, match",
+        [
+            pytest.param("bad", "nonexistent_field", "value", "Unknown fields", id='unknown_fields_raise'),
+            pytest.param("x", "permission_mode", "super_admin", "Invalid permission_mode", id='invalid_permission_mode_raises'),
+        ],
+    )
+    def test_unknown_fields_raise_cases(self, item, item2, item3, match,  tmp_path: Path) -> None:
         write_yaml_file(tmp_path, "bad.yaml", {
-            "agent_type": "bad",
-            "nonexistent_field": "value",
+            "agent_type": item,
+            item2: item3,
         })
         registry = AgentRegistry()
-        with pytest.raises(RegistryError, match="Unknown fields"):
+        with pytest.raises(RegistryError, match=match):
             registry.load_directory(tmp_path)
 
     def test_missing_agent_type_raises(self, tmp_path: Path) -> None:
         write_yaml_file(tmp_path, "bad.yaml", {"description": "no type"})
         registry = AgentRegistry()
         with pytest.raises(RegistryError, match="missing required field: agent_type"):
-            registry.load_directory(tmp_path)
-
-    def test_invalid_permission_mode_raises(self, tmp_path: Path) -> None:
-        write_yaml_file(tmp_path, "bad.yaml", {
-            "agent_type": "x",
-            "permission_mode": "super_admin",
-        })
-        registry = AgentRegistry()
-        with pytest.raises(RegistryError, match="Invalid permission_mode"):
             registry.load_directory(tmp_path)
 
     def test_validate_tools_warns_unknown(self) -> None:

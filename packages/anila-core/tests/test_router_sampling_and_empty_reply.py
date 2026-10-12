@@ -24,6 +24,7 @@ Invariants:
 
 from __future__ import annotations
 
+import pytest
 import asyncio
 import json
 
@@ -199,12 +200,19 @@ def test_length_retry_bump_is_not_a_router_default():
     assert params[rs.SAMPLING_DEFAULTS_MARKER] == ["temperature"]
 
 
-def test_non_stream_empty_length_reply_stops_without_retry(monkeypatch):
-    client = _Client(answers=[_reply("", "length"), _reply("這次有內容")])
+@pytest.mark.parametrize(
+    "reply_arg, reply_arg2, expected",
+    [
+        pytest.param("length", "這次有內容", "length", id='length_reply_stops_without_retry'),
+        pytest.param("stop", "不該再打", "回覆為空", id='stop_reply_is_an_error_not_retried'),
+    ],
+)
+def test_non_stream_empty(reply_arg, reply_arg2, expected, monkeypatch):
+    client = _Client(answers=[_reply("", reply_arg), _reply(reply_arg2)])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
     result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
     assert result["content"] == ""
-    assert result["error"] and "length" in result["error"]
+    assert result["error"] and expected in result["error"]
     assert "已重試" not in result["error"]
     assert len(client.posts) == 1
 
@@ -218,18 +226,15 @@ def test_non_stream_empty_length_is_an_error_not_a_blank_answer(monkeypatch):
     assert len(client.posts) == 1
 
 
-def test_non_stream_empty_stop_reply_is_an_error_not_retried(monkeypatch):
-    client = _Client(answers=[_reply("", "stop"), _reply("不該再打")])
-    monkeypatch.setattr(rs, "get_http_client", lambda: client)
-    result = asyncio.run(rs._call_llm_non_stream("sk", [{"role": "user", "content": "q"}]))
-    assert result["content"] == ""
-    assert result["error"] and "回覆為空" in result["error"]
-    assert "已重試" not in result["error"]
-    assert len(client.posts) == 1
-
-
-def test_stream_empty_length_reply_stops_without_retry(monkeypatch):
-    client = _Client(streams=[_stream_lines("", "length"), _stream_lines("補上的內容")])
+@pytest.mark.parametrize(
+    "stream_lines_arg, stream_lines_arg2, expected",
+    [
+        pytest.param("length", "補上的內容", "length", id='length_reply_stops_without_retry'),
+        pytest.param("stop", "不該再打", "回覆為空", id='stop_reply_stops_without_retry'),
+    ],
+)
+def test_stream_empty(stream_lines_arg, stream_lines_arg2, expected, monkeypatch):
+    client = _Client(streams=[_stream_lines("", stream_lines_arg), _stream_lines(stream_lines_arg2)])
     monkeypatch.setattr(rs, "get_http_client", lambda: client)
 
     async def run():
@@ -237,7 +242,7 @@ def test_stream_empty_length_reply_stops_without_retry(monkeypatch):
 
     events = asyncio.run(run())
     assert [ev["content"] for ev in events if ev.get("type") == "delta"] == []
-    assert events[-1]["type"] == "error" and "length" in events[-1]["error"]
+    assert events[-1]["type"] == "error" and expected in events[-1]["error"]
     assert "已重試" not in events[-1]["error"]
     assert len(client.streams) == 1
 
@@ -326,20 +331,6 @@ def test_router_streaming_preserves_length_finish_reason(monkeypatch):
     assert "太陽系" in body
     assert "暫時無法回應" not in body
     assert '"finish_reason": "length"' in body
-
-
-def test_stream_empty_stop_reply_stops_without_retry(monkeypatch):
-    client = _Client(streams=[_stream_lines("", "stop"), _stream_lines("不該再打")])
-    monkeypatch.setattr(rs, "get_http_client", lambda: client)
-
-    async def run():
-        return [ev async for ev in rs._stream_llm_sse("sk", [{"role": "user", "content": "q"}])]
-
-    events = asyncio.run(run())
-    assert [ev["content"] for ev in events if ev.get("type") == "delta"] == []
-    assert events[-1]["type"] == "error" and "回覆為空" in events[-1]["error"]
-    assert "已重試" not in events[-1]["error"]
-    assert len(client.streams) == 1
 
 
 def test_router_streaming_empty_length_is_truncation_not_outage(monkeypatch):

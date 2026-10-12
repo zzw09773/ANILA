@@ -237,19 +237,17 @@ def test_null_provenance_counts_as_another_model(coverage):
     assert coverage[4] == (False, True, None)
 
 
-def test_empty_collection_is_empty_not_stranded(coverage):
-    """Nothing indexed → the endpoint must keep returning a plain empty
-    200. Also proves RLS scoping: collection 1's stale rows sit in the
-    same table and do not leak in."""
-    assert coverage[5] == (False, False, None)
-
-
-def test_parent_rows_and_unembedded_rows_are_not_a_stranded_corpus(coverage):
-    """``chunk_type='heading'`` rows and rows with a NULL embedding are
-    never retrievable by vector search, so they must not be read as a
-    stale index — that would 409 a collection whose only fault is having
-    parent rows."""
-    assert coverage[6] == (False, False, None)
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Nothing indexed → the endpoint must keep returning a plain empty
+        pytest.param(5, id='empty_collection_is_empty_not_stranded'),
+        # ``chunk_type='heading'`` rows and rows with a NULL embedding are
+        pytest.param(6, id='parent_rows_and_unembedded_rows_are_not_a_stranded_corpus'),
+    ],
+)
+def test_empty_collection_is_empty_not_stranded_cases(value, coverage):
+    assert coverage[value] == (False, False, None)
 
 
 def test_sampling_window_stops_at_the_window(coverage):

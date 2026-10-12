@@ -88,22 +88,20 @@ def test_render_html_includes_chart_base64_image():
     assert expected_b64[:60] in html
 
 
-def test_render_html_includes_comparison_matrix():
+@pytest.mark.parametrize(
+    "expected, expected2, expected3, expected4",
+    [
+        pytest.param("可靠性", "A：高", "B：中", "<table", id='comparison_matrix'),
+        pytest.param("2025-Q1", "啟動", "專案 kick-off", "timeline-event", id='timeline'),
+    ],
+)
+def test_render_html_includes(expected, expected2, expected3, expected4):
     spec = _rich_spec()
     html = render_html(spec, {0: render_chart_png(spec.charts[0])})
-    assert "可靠性" in html
-    assert "A：高" in html
-    assert "B：中" in html
-    assert "<table" in html
-
-
-def test_render_html_includes_timeline():
-    spec = _rich_spec()
-    html = render_html(spec, {0: render_chart_png(spec.charts[0])})
-    assert "2025-Q1" in html
-    assert "啟動" in html
-    assert "專案 kick-off" in html
-    assert "timeline-event" in html
+    assert expected in html
+    assert expected2 in html
+    assert expected3 in html
+    assert expected4 in html
 
 
 def test_render_html_includes_takeaway():
@@ -166,28 +164,24 @@ def test_render_html_traditional_chinese_not_mojibake():
     assert "&#" not in re.sub(r"&#\d+;\D", "", "")  # sanity for the matcher
 
 
-def test_render_html_positive_delta_class():
-    """+xxx delta should get .up class for green colour."""
+@pytest.mark.parametrize(
+    "delta, expected",
+    [
+        # +xxx delta should get .up class for green colour.
+        pytest.param("+5%", 'class="delta up"', id='positive_delta_class'),
+        # Delta without +/- prefix should fall back to .flat class.
+        pytest.param("持平", 'class="delta flat"', id='neutral_delta_class'),
+    ],
+)
+def test_render_html(delta, expected):
     spec = InfographicSpec(
         title="x",
         preset=InfographicPreset.STATS_BRIEF,
-        stats=[StatBlock(value="50%", label="x", delta="+5%")],
+        stats=[StatBlock(value="50%", label="x", delta=delta)],
         takeaway="t",
     )
     html = render_html(spec, {})
-    assert 'class="delta up"' in html
-
-
-def test_render_html_neutral_delta_class():
-    """Delta without +/- prefix should fall back to .flat class."""
-    spec = InfographicSpec(
-        title="x",
-        preset=InfographicPreset.STATS_BRIEF,
-        stats=[StatBlock(value="50%", label="x", delta="持平")],
-        takeaway="t",
-    )
-    html = render_html(spec, {})
-    assert 'class="delta flat"' in html
+    assert expected in html
 
 
 def test_render_html_xss_in_user_strings_escaped():

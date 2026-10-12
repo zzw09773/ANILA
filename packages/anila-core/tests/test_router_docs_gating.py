@@ -7,6 +7,7 @@ stay public for compose healthchecks and model listing.
 """
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from anila_core.api.router_server import create_router_app
@@ -17,18 +18,16 @@ def _client() -> TestClient:
     return TestClient(create_router_app())
 
 
-def test_router_openapi_schema_is_404_unauthenticated() -> None:
-    r = _client().get("/openapi.json")
-    assert r.status_code == 404
-
-
-def test_router_swagger_ui_is_404_unauthenticated() -> None:
-    r = _client().get("/docs")
-    assert r.status_code == 404
-
-
-def test_router_redoc_is_404_unauthenticated() -> None:
-    r = _client().get("/redoc")
+@pytest.mark.parametrize(
+    "get_arg",
+    [
+        pytest.param("/openapi.json", id='router_openapi_schema_is_404_unauthenticated'),
+        pytest.param("/docs", id='router_swagger_ui_is_404_unauthenticated'),
+        pytest.param("/redoc", id='router_redoc_is_404_unauthenticated'),
+    ],
+)
+def test_router_openapi_schema_is_404_unauthenticated_cases(get_arg) -> None:
+    r = _client().get(get_arg)
     assert r.status_code == 404
 
 

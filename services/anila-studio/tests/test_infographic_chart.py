@@ -70,38 +70,23 @@ def test_render_line_multi_series():
     assert _is_png(png)
 
 
-def test_render_pie_with_string_values_coerces():
-    """LLM may emit string numbers; renderer must coerce."""
+@pytest.mark.parametrize(
+    "chart_arg, item, item2, item3",
+    [
+        # LLM may emit string numbers; renderer must coerce.
+        pytest.param("pie", "10", "20", "30", id='render_pie_with_string_values_coerces'),
+        # Defensive: 0 values should fall back to a single placeholder wedge.
+        pytest.param("pie", 0, 0, 0, id='render_pie_all_zero_values_still_renders'),
+        # Smoke test — donut path should not raise, output remains a PNG.
+        pytest.param("donut", 40, 30, 30, id='render_donut_has_hole'),
+        pytest.param("hbar", 10, 20, 30, id='render_hbar_uses_horizontal_orientation'),
+    ],
+)
+def test_render_pie_with_string_values_coerces_cases(chart_arg, item, item2, item3):
     spec = _chart(
-        "pie",
-        series=[{"name": "default", "values": ["10", "20", "30"]}],
+        chart_arg,
+        series=[{"name": "default", "values": [item, item2, item3]}],
     )
-    png = render_chart_png(spec)
-    assert _is_png(png)
-
-
-def test_render_pie_all_zero_values_still_renders():
-    """Defensive: 0 values should fall back to a single placeholder wedge."""
-    spec = _chart(
-        "pie",
-        series=[{"name": "default", "values": [0, 0, 0]}],
-    )
-    png = render_chart_png(spec)
-    assert _is_png(png)
-
-
-def test_render_donut_has_hole():
-    """Smoke test — donut path should not raise, output remains a PNG."""
-    spec = _chart(
-        "donut",
-        series=[{"name": "default", "values": [40, 30, 30]}],
-    )
-    png = render_chart_png(spec)
-    assert _is_png(png)
-
-
-def test_render_hbar_uses_horizontal_orientation():
-    spec = _chart("hbar", series=[{"name": "default", "values": [10, 20, 30]}])
     png = render_chart_png(spec)
     assert _is_png(png)
 

@@ -52,21 +52,21 @@ def _manifest(agent_id: str = "drone-specialist") -> RemoteAgentManifest:
 # ---------------------------------------------------------------------------
 
 
-def test_safe_tool_name_sanitises_non_alphanumeric() -> None:
-    assert _safe_tool_name("agent-a/b.c", "consult_") == "consult_agent_a_b_c"
+@pytest.mark.parametrize(
+    "safe_tool_name_arg, safe_tool_name_arg2, expected",
+    [
+        pytest.param("agent-a/b.c", "consult_", "consult_agent_a_b_c", id='sanitises_non_alphanumeric'),
+        pytest.param("agent_x", "", "agent_x", id='handles_empty_prefix'),
+        pytest.param("///", "p_", "p_agent", id='falls_back_for_pure_garbage'),
+    ],
+)
+def test_safe_tool_name(safe_tool_name_arg, safe_tool_name_arg2, expected) -> None:
+    assert _safe_tool_name(safe_tool_name_arg, safe_tool_name_arg2) == expected
 
 
 def test_safe_tool_name_truncates_to_64_chars() -> None:
     name = _safe_tool_name("a" * 100, "consult_")
     assert len(name) == 64
-
-
-def test_safe_tool_name_handles_empty_prefix() -> None:
-    assert _safe_tool_name("agent_x", "") == "agent_x"
-
-
-def test_safe_tool_name_falls_back_for_pure_garbage() -> None:
-    assert _safe_tool_name("///", "p_") == "p_agent"
 
 
 # ---------------------------------------------------------------------------

@@ -150,29 +150,23 @@ def test_dot_escapes_double_quote_in_labels():
     assert '引號"' not in dot.replace('\\"', "ESC")
 
 
-def test_dot_strips_latex_residue_from_labels():
-    """LLM residue like $\\rightarrow$ should be normalised before
-    landing in the DOT source — same contract as diagram_renderer."""
-    root = MindmapNode(id="r", label="輸入 $\\rightarrow$ 輸出")
+@pytest.mark.parametrize(
+    "label, expected, expected2",
+    [
+        # LLM residue like $\rightarrow$ should be normalised before
+        pytest.param("輸入 $\\rightarrow$ 輸出", "rightarrow", "→", id='latex_residue_from_labels'),
+        # Trailing ``(參 [3])`` markers should be stripped, mirroring
+        pytest.param("重要結論 (參 [3])", "(參 [3])", "重要結論", id='inline_citations_from_labels'),
+    ],
+)
+def test_dot_strips(label, expected, expected2):
+    root = MindmapNode(id="r", label=label)
     spec = MindmapSpec(
         title="t", preset=MindmapPreset.CONCEPT_TREE, root=root,
     )
     dot = spec_to_dot(spec)
-    assert "rightarrow" not in dot
-    assert "→" in dot
-
-
-def test_dot_strips_inline_citations_from_labels():
-    """Trailing ``(參 [3])`` markers should be stripped, mirroring
-    diagram_renderer's normalisation."""
-    root = MindmapNode(id="r", label="重要結論 (參 [3])")
-    spec = MindmapSpec(
-        title="t", preset=MindmapPreset.CONCEPT_TREE, root=root,
-    )
-    dot = spec_to_dot(spec)
-    assert "(參 [3])" not in dot
-    # The non-citation portion of the label survives.
-    assert "重要結論" in dot
+    assert expected not in dot
+    assert expected2 in dot
 
 
 def test_count_nodes_walks_entire_tree():
@@ -245,12 +239,19 @@ async def test_render_svg_raises_when_dot_missing():
     assert "dot" in str(exc.value).lower()
 
 
+@pytest.mark.parametrize(
+    "value, item, item2, expected",
+    [
+        pytest.param(1, b'', b'syntax error at line 1', "syntax error", id='on_nonzero_exit'),
+        pytest.param(0, b'<<NOT-SVG>>', b'', "not SVG", id='when_output_not_svg'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_render_svg_raises_on_nonzero_exit():
+async def test_render_svg_raises(value, item, item2, expected):
     fake_proc = AsyncMock()
-    fake_proc.returncode = 1
+    fake_proc.returncode = value
     fake_proc.communicate = AsyncMock(
-        return_value=(b'', b'syntax error at line 1'),
+        return_value=(item, item2),
     )
     with patch(
         "app.services.mindmap_renderer.asyncio.create_subprocess_exec",
@@ -258,7 +259,7 @@ async def test_render_svg_raises_on_nonzero_exit():
     ):
         with pytest.raises(MindmapRenderError) as exc:
             await render_svg(_FAKE_DOT_SRC)
-    assert "syntax error" in str(exc.value)
+    assert expected in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -279,22 +280,6 @@ async def test_render_svg_raises_on_timeout():
         with pytest.raises(MindmapRenderError) as exc:
             await render_svg(_FAKE_DOT_SRC, timeout=0.01)
     assert "timed out" in str(exc.value).lower()
-
-
-@pytest.mark.asyncio
-async def test_render_svg_raises_when_output_not_svg():
-    fake_proc = AsyncMock()
-    fake_proc.returncode = 0
-    fake_proc.communicate = AsyncMock(
-        return_value=(b'<<NOT-SVG>>', b''),
-    )
-    with patch(
-        "app.services.mindmap_renderer.asyncio.create_subprocess_exec",
-        return_value=fake_proc,
-    ):
-        with pytest.raises(MindmapRenderError) as exc:
-            await render_svg(_FAKE_DOT_SRC)
-    assert "not SVG" in str(exc.value)
 
 
 @pytest.mark.asyncio

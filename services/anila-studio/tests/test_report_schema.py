@@ -113,17 +113,17 @@ def test_subsections_recursive_construct():
     assert outer.subsections[0].subsections[0].heading == "3.1"
 
 
-def test_request_top_k_lower_bound():
+@pytest.mark.parametrize(
+    "top_k",
+    [
+        pytest.param(0, id='lower_bound'),
+        pytest.param(99, id='upper_bound'),
+    ],
+)
+def test_request_top_k(top_k):
     with pytest.raises(ValidationError):
         GenerateReportRequest(
-            collection_id=1, preset=ReportPreset.KEY_SUMMARY, top_k=0
-        )
-
-
-def test_request_top_k_upper_bound():
-    with pytest.raises(ValidationError):
-        GenerateReportRequest(
-            collection_id=1, preset=ReportPreset.KEY_SUMMARY, top_k=99
+            collection_id=1, preset=ReportPreset.KEY_SUMMARY, top_k=top_k
         )
 
 

@@ -257,10 +257,18 @@ def _make_department(db, name: str = "資通所人工智慧組") -> int:
 # ── disabled-by-default guard ──────────────────────────────────────────────────
 
 
-def test_challenge_returns_404_when_card_login_disabled(
+@pytest.mark.parametrize(
+    "get_arg",
+    [
+        pytest.param("/api/auth/card/challenge", id='challenge_returns_404_when_card_login_disabled'),
+        # 同 challenge / verify,feature off 時 endpoint 假裝不存在。
+        pytest.param("/api/auth/card/registration/departments", id='departments_endpoint_404_when_card_login_disabled'),
+    ],
+)
+def test_challenge_returns_404_when_card_login_disabled_cases(get_arg, 
     client: TestClient, card_login_disabled
 ):
-    resp = client.get("/api/auth/card/challenge")
+    resp = client.get(get_arg)
     assert resp.status_code == 404
 
 
@@ -699,9 +707,3 @@ def test_departments_endpoint_lists_only_active(
     assert all(set(r.keys()) == {"id", "name"} for r in rows)
 
 
-def test_departments_endpoint_404_when_card_login_disabled(
-    client: TestClient, card_login_disabled
-):
-    """同 challenge / verify,feature off 時 endpoint 假裝不存在。"""
-    resp = client.get("/api/auth/card/registration/departments")
-    assert resp.status_code == 404

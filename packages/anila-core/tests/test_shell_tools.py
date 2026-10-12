@@ -75,15 +75,23 @@ async def test_exec_bash_returns_stdout(ws_with_exec) -> None:
     assert "exit=0" in out
 
 
+@pytest.mark.parametrize(
+    "cmd2, cmd3, expected",
+    [
+        pytest.param("exit 7", "exit 7", "exit=7", id='returns_nonzero_exit'),
+        # A command that produces neither stdout nor stderr surfaces a marker.
+        pytest.param("ver > nul 2>&1", "true", "(no output)", id='no_output_marker'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_exec_bash_returns_nonzero_exit(ws_with_exec) -> None:
+async def test_exec_bash(cmd2, cmd3, expected, ws_with_exec) -> None:
     tool = exec_bash_tool(ws_with_exec)
     if os.name == "nt":
-        cmd = "exit 7"
+        cmd = cmd2
     else:
-        cmd = "exit 7"  # both shells understand exit
+        cmd = cmd3  # both shells understand exit
     out = await tool.implementation({"command": cmd})
-    assert "exit=7" in out
+    assert expected in out
 
 
 @pytest.mark.asyncio
@@ -102,18 +110,6 @@ async def test_exec_bash_empty_command_errors(ws_with_exec) -> None:
     tool = exec_bash_tool(ws_with_exec)
     out = await tool.implementation({"command": ""})
     assert "is required" in out
-
-
-@pytest.mark.asyncio
-async def test_exec_bash_no_output_marker(ws_with_exec) -> None:
-    """A command that produces neither stdout nor stderr surfaces a marker."""
-    tool = exec_bash_tool(ws_with_exec)
-    if os.name == "nt":
-        cmd = "ver > nul 2>&1"  # no output to either stream
-    else:
-        cmd = "true"
-    out = await tool.implementation({"command": cmd})
-    assert "(no output)" in out
 
 
 # ---------------------------------------------------------------------------
@@ -270,21 +266,34 @@ async def test_exec_python_returns_stdout(ws_with_exec) -> None:
     assert "exit=0" in out
 
 
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        pytest.param("x = 21\ny = x * 2\nprint(y)", "42", id='exec_python_multi_line_script'),
+        pytest.param("print('x' * 16384)", "truncated", id='output_capped_with_truncation_marker'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_exec_python_multi_line_script(ws_with_exec) -> None:
+async def test_exec_python_multi_line_script_cases(code, expected, ws_with_exec) -> None:
     tool = exec_python_tool(ws_with_exec)
-    code = "x = 21\ny = x * 2\nprint(y)"
     out = await tool.implementation({"code": code})
-    assert "42" in out
+    assert expected in out
 
 
+@pytest.mark.parametrize(
+    "item, expected",
+    [
+        pytest.param("import sys\nsys.exit(3)", "exit=3", id='exit_code_propagates'),
+        pytest.param("   ", "is required", id='blank_code_errors'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_exec_python_exit_code_propagates(ws_with_exec) -> None:
+async def test_exec_python(item, expected, ws_with_exec) -> None:
     tool = exec_python_tool(ws_with_exec)
     out = await tool.implementation(
-        {"code": "import sys\nsys.exit(3)"}
+        {"code": item}
     )
-    assert "exit=3" in out
+    assert expected in out
 
 
 @pytest.mark.asyncio
@@ -297,13 +306,6 @@ async def test_exec_python_writes_into_workspace(ws_with_exec) -> None:
     )
     await tool.implementation({"code": code})
     assert (ws_with_exec.path / "result.txt").read_text() == "cool"
-
-
-@pytest.mark.asyncio
-async def test_exec_python_blank_code_errors(ws_with_exec) -> None:
-    tool = exec_python_tool(ws_with_exec)
-    out = await tool.implementation({"code": "   "})
-    assert "is required" in out
 
 
 @pytest.mark.asyncio
@@ -325,15 +327,6 @@ async def test_exec_python_timeout_kills_script(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Output truncation
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_output_capped_with_truncation_marker(ws_with_exec) -> None:
-    tool = exec_python_tool(ws_with_exec)
-    # 16 KB of output — well over the 8 KB cap.
-    code = "print('x' * 16384)"
-    out = await tool.implementation({"code": code})
-    assert "truncated" in out
 
 
 # ---------------------------------------------------------------------------

@@ -46,19 +46,21 @@ def test_mindmapnode_accepts_nested_children():
     assert root.children[0].children[0].label == "leaf"
 
 
-def test_mindmapnode_rejects_empty_label():
+@pytest.mark.parametrize(
+    "id, label",
+    [
+        pytest.param("x", "", id='label'),
+        pytest.param("", "ok", id='id'),
+    ],
+)
+def test_mindmapnode_rejects_empty(id, label):
     with pytest.raises(ValidationError):
-        MindmapNode(id="x", label="")
+        MindmapNode(id=id, label=label)
 
 
 def test_mindmapnode_rejects_too_long_label():
     with pytest.raises(ValidationError):
         MindmapNode(id="x", label="a" * 201)
-
-
-def test_mindmapnode_rejects_empty_id():
-    with pytest.raises(ValidationError):
-        MindmapNode(id="", label="ok")
 
 
 def test_mindmapnode_note_caps_at_500_chars():

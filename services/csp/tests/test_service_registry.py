@@ -331,34 +331,26 @@ class TestLaunch:
         assert resp.status_code == 403, resp.text
         assert db.query(ServiceLaunch).count() == 0
 
-    def test_launch_rejects_non_http_entry_url_before_issuing_token(self, client, db):
-        headers = _auth_headers(client, db, username="launch-user")
+    @pytest.mark.parametrize(
+        "username, slug, name, entry_url",
+        [
+            pytest.param("launch-user", "unsafe-url-svc", "Unsafe URL", "javascript:alert(1)", id='non_http_entry_url_before_issuing_token'),
+            pytest.param("launch-bad-port", "bad-port-svc", "Bad Port", "https://example.com:99999/app", id='invalid_port_before_issuing_token'),
+        ],
+    )
+    def test_launch_rejects(self, username, slug, name, entry_url,  client, db):
+        headers = _auth_headers(client, db, username=username)
         svc = _make_service(
             db,
-            slug="unsafe-url-svc",
-            name="Unsafe URL",
+            slug=slug,
+            name=name,
             is_public=True,
-            entry_url="javascript:alert(1)",
+            entry_url=entry_url,
         )
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
         assert resp.status_code == 400, resp.text
         assert "entry_url" in resp.text
         assert db.query(ServiceLaunch).count() == 0
-
-    def test_launch_rejects_invalid_port_before_issuing_token(self, client, db):
-        headers = _auth_headers(client, db, username="launch-bad-port")
-        svc = _make_service(
-            db,
-            slug="bad-port-svc",
-            name="Bad Port",
-            is_public=True,
-            entry_url="https://example.com:99999/app",
-        )
-        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
-        assert resp.status_code == 400, resp.text
-        assert "entry_url" in resp.text
-        assert db.query(ServiceLaunch).count() == 0
-
 
 # ── audit callback ──────────────────────────────────────────────────────────
 

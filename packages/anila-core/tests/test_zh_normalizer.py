@@ -1,28 +1,30 @@
 """anila_core.text.zh_normalizer — s2twp + 域內用語固定點驗收。"""
 from __future__ import annotations
 
+import pytest
 from anila_core.text import normalize_report, normalize_zh_tw
 
 
-def test_simplified_to_tw_lexicon():
+@pytest.mark.parametrize(
+    "normalize_zh_tw_arg, expected",
+    [
+        pytest.param("机关单位的视频质量", "機關單位的影片質量", id='simplified_to_tw_lexicon'),
+        pytest.param("本系統採用先進的導彈與激光技術", "本系統採用先進的飛彈與雷射技術", id='defense_domain_terms_after_s2twp'),
+    ],
+)
+def test_simplified_to_tw_lexicon_cases(normalize_zh_tw_arg, expected):
     # 质量→質量 via s2twp only（字形）；不得再被域內詞替換成「品質」
-    assert normalize_zh_tw("机关单位的视频质量") == "機關單位的影片質量"
+    assert normalize_zh_tw(normalize_zh_tw_arg) == expected
 
 
-def test_defense_domain_terms_after_s2twp():
-    assert (
-        normalize_zh_tw("本系統採用先進的導彈與激光技術")
-        == "本系統採用先進的飛彈與雷射技術"
-    )
-
-
-def test_already_correct_is_fixed_point():
-    text = "演算法與人工智慧與飛彈"
-    assert normalize_zh_tw(text) == text
-
-
-def test_numbers_units_latin_passthrough():
-    text = "MAPE 降低 88.73%、F1=0.92"
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("演算法與人工智慧與飛彈", id='already_correct_is_fixed_point'),
+        pytest.param("MAPE 降低 88.73%、F1=0.92", id='numbers_units_latin_passthrough'),
+    ],
+)
+def test_already_correct_is_fixed_point_cases(text):
     assert normalize_zh_tw(text) == text
 
 

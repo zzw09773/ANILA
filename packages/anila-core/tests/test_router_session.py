@@ -11,6 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
+import pytest
 import json
 from pathlib import Path
 
@@ -94,8 +95,15 @@ def test_router_generates_session_id_when_caller_omits(
     assert sid and len(sid) >= 8
 
 
+@pytest.mark.parametrize(
+    "item, item2, expected",
+    [
+        pytest.param("session_id", "s-pinned", "s-pinned", id='router_echoes_caller_supplied_session_id'),
+        pytest.param("anila_session_id", "s-alias", "s-alias", id='router_accepts_anila_session_id_alias'),
+    ],
+)
 @respx.mock
-def test_router_echoes_caller_supplied_session_id(db_path: Path) -> None:
+def test_router_echoes_caller_supplied_session_id_cases(item, item2, expected, db_path: Path) -> None:
     respx.post(CSP_URL).mock(
         return_value=httpx.Response(
             200, json=_llm_router_response("Hi!")
@@ -109,33 +117,11 @@ def test_router_echoes_caller_supplied_session_id(db_path: Path) -> None:
         json={
             "messages": [{"role": "user", "content": "x"}],
             "stream": False,
-            "session_id": "s-pinned",
+            item: item2,
         },
         headers={"Authorization": "Bearer sk-test"},
     )
-    assert response.headers["X-Anila-Session-Id"] == "s-pinned"
-
-
-@respx.mock
-def test_router_accepts_anila_session_id_alias(db_path: Path) -> None:
-    respx.post(CSP_URL).mock(
-        return_value=httpx.Response(
-            200, json=_llm_router_response("Hi!")
-        )
-    )
-    app = create_router_app(session_db_path=str(db_path))
-    client = TestClient(app)
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={
-            "messages": [{"role": "user", "content": "x"}],
-            "stream": False,
-            "anila_session_id": "s-alias",
-        },
-        headers={"Authorization": "Bearer sk-test"},
-    )
-    assert response.headers["X-Anila-Session-Id"] == "s-alias"
+    assert response.headers["X-Anila-Session-Id"] == expected
 
 
 # ---------------------------------------------------------------------------

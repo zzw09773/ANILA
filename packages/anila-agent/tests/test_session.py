@@ -61,12 +61,15 @@ async def test_summarizer_failure_preserves_history():
     assert len(items) == 6  # 壓縮失敗 → 不弄丟歷史
 
 
-def test_keep_last_must_be_less_than_max():
+@pytest.mark.parametrize(
+    "keep_last",
+    [
+        pytest.param(5, id='must_be_less_than_max'),
+        pytest.param(0, id='zero_rejected'),
+    ],
+)
+def test_keep_last(keep_last):
     with pytest.raises(ValueError):
-        SummarizingSession(_FakeSession(), _summ, max_items=5, keep_last=5)
+        SummarizingSession(_FakeSession(), _summ, max_items=5, keep_last=keep_last)
 
 
-def test_keep_last_zero_rejected():
-    # keep_last=0 會踩 -0 切片陷阱 → 建構期擋掉。
-    with pytest.raises(ValueError):
-        SummarizingSession(_FakeSession(), _summ, max_items=5, keep_last=0)

@@ -170,10 +170,17 @@ class TestStateMachine:
             task = tasks_module.transition_task(db, task=task, new_status=status)
         assert task.status == "completed"
 
-    def test_illegal_transition_raises(self, db):
+    @pytest.mark.parametrize(
+        "new_status",
+        [
+            pytest.param("running", id='illegal_transition_raises'),
+            pytest.param("bogus", id='unknown_status_fail_closed'),
+        ],
+    )
+    def test_illegal_transition_raises_cases(self, new_status,  db):
         task = self._task(db)
         with pytest.raises(ValueError):
-            tasks_module.transition_task(db, task=task, new_status="running")
+            tasks_module.transition_task(db, task=task, new_status=new_status)
 
     def test_policy_block_path(self, db):
         task = self._task(db)
@@ -191,12 +198,6 @@ class TestStateMachine:
         task = tasks_module.transition_task(db, task=task, new_status="cancelled")
         with pytest.raises(ValueError):
             tasks_module.transition_task(db, task=task, new_status="submitted")
-
-    def test_unknown_status_fail_closed(self, db):
-        task = self._task(db)
-        with pytest.raises(ValueError):
-            tasks_module.transition_task(db, task=task, new_status="bogus")
-
 
 # ── TaskRun 生命週期 ──────────────────────────────────────────────────────────
 

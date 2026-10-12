@@ -7,17 +7,16 @@ from app.api.studio import _infer_image_use_case
 from app.schemas.studio import ImageUseCase
 
 
-def test_use_case_idx0_is_hero():
-    assert _infer_image_use_case(0, {"layout_kind": "standard"}) is ImageUseCase.COVER_HERO
-
-
-def test_use_case_idx0_section_break_still_hero():
-    # cover is commonly tagged layout_kind=section_break; idx 0 wins → HERO.
-    assert _infer_image_use_case(0, {"layout_kind": "section_break"}) is ImageUseCase.COVER_HERO
-
-
-def test_use_case_layout_cover_is_hero():
-    assert _infer_image_use_case(3, {"layout_kind": "cover"}) is ImageUseCase.COVER_HERO
+@pytest.mark.parametrize(
+    "infer_image_use_case_arg, item",
+    [
+        pytest.param(0, "standard", id='idx0_is_hero'),
+        pytest.param(0, "section_break", id='idx0_section_break_still_hero'),
+        pytest.param(3, "cover", id='layout_cover_is_hero'),
+    ],
+)
+def test_use_case(infer_image_use_case_arg, item):
+    assert _infer_image_use_case(infer_image_use_case_arg, {"layout_kind": item}) is ImageUseCase.COVER_HERO
 
 
 def test_use_case_section_break_is_band():

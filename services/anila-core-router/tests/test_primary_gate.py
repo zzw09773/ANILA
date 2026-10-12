@@ -106,12 +106,19 @@ async def test_health_is_never_gated(client: httpx.AsyncClient, no_primary):
     assert resp.status_code != 503, resp.text
 
 
-async def test_explicit_router_model_skips_missing_primary_gate(
+@pytest.mark.parametrize(
+    "item, item2",
+    [
+        pytest.param("X-ANILA-Router-Model", "glm-example", id='explicit_router_model_skips_missing_primary_gate'),
+        pytest.param("X-ANILA-Conversation-Id", "12", id='conversation_header_skips_missing_primary_gate'),
+    ],
+)
+async def test_explicit_router_model_skips_missing_primary_gate_cases(item, item2, 
     client: httpx.AsyncClient, no_primary,
 ):
     resp = await client.post(
         GATED_PATH,
-        headers={"X-ANILA-Router-Model": "glm-example"},
+        headers={item: item2},
         json=BODY,
     )
     assert resp.status_code != 503, resp.text
@@ -123,17 +130,6 @@ async def test_body_router_model_skips_missing_primary_gate(
     resp = await client.post(
         GATED_PATH,
         json={**BODY, "router_model": "glm-example"},
-    )
-    assert resp.status_code != 503, resp.text
-
-
-async def test_conversation_header_skips_missing_primary_gate(
-    client: httpx.AsyncClient, no_primary,
-):
-    resp = await client.post(
-        GATED_PATH,
-        headers={"X-ANILA-Conversation-Id": "12"},
-        json=BODY,
     )
     assert resp.status_code != 503, resp.text
 

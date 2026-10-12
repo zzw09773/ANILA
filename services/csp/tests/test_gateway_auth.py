@@ -4,6 +4,7 @@
 路由要 Authorization: Bearer。MODEL_GATEWAY_API_KEY 空 = 不注入 (同主機
 裸 vLLM 情境,行為不變)。
 """
+import pytest
 from app.config import settings
 from app.services.proxy_service import _apply_gateway_auth
 
@@ -20,16 +21,17 @@ def test_whitespace_key_no_injection(monkeypatch):
     assert "Authorization" not in _apply_gateway_auth({})
 
 
-def test_key_injected_as_bearer(monkeypatch):
+@pytest.mark.parametrize(
+    "item, item2, expected",
+    [
+        pytest.param("Content-Type", "application/json", "Bearer sk-test-123", id='key_injected_as_bearer'),
+        pytest.param("Authorization", "Bearer upstream-key", "Bearer upstream-key", id='existing_authorization_not_overwritten'),
+    ],
+)
+def test_key_injected_as_bearer_cases(item, item2, expected, monkeypatch):
     monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "sk-test-123")
-    result = _apply_gateway_auth({"Content-Type": "application/json"})
-    assert result["Authorization"] == "Bearer sk-test-123"
-
-
-def test_existing_authorization_not_overwritten(monkeypatch):
-    monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "sk-test-123")
-    result = _apply_gateway_auth({"Authorization": "Bearer upstream-key"})
-    assert result["Authorization"] == "Bearer upstream-key"
+    result = _apply_gateway_auth({item: item2})
+    assert result["Authorization"] == expected
 
 
 def test_mutates_in_place_and_returns_same_dict(monkeypatch):

@@ -379,9 +379,17 @@ def test_e_bare_agent_csk_rejected_on_artifacts(client: TestClient, db, monkeypa
     _ = cred  # keep local for readability
 
 
-def test_e_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monkeypatch):
-    owner = make_user(db, username="w2_art_jwt_owner")
-    agent = make_agent(db, owner, name="w2-art-jwt-agent")
+@pytest.mark.parametrize(
+    "username, name, item, get_arg",
+    [
+        pytest.param("w2_art_jwt_owner", "w2-art-jwt-agent", "w2-jwt-accept", "w2-jwt-accept", id='e_dispatch_jwt_rejected_on_artifacts'),
+        # 即使 requester 與派工 JWT 的 user 相同，成品寫入也不接受這枚 token。
+        pytest.param("w2_f3_ok_owner", "w2-f3-ok-agent", "w2-f3-ok", "w2-f3-ok", id='f3_agent_matching_requester_still_rejected'),
+    ],
+)
+def test_e_dispatch_jwt_rejected_on_artifacts_cases(username, name, item, get_arg, client: TestClient, db, monkeypatch):
+    owner = make_user(db, username=username)
+    agent = make_agent(db, owner, name=name)
     token = issue_dispatch_token(
         user_id=owner.id, department=None, agent_id=agent.id
     )
@@ -390,13 +398,13 @@ def test_e_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monkeypatc
         "/v1/artifact-jobs",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "job_id": "w2-jwt-accept",
+            "job_id": item,
             "artifact_type": "report",
             "requester_user_id": owner.id,
         },
     )
     _assert_dispatch_jwt_not_a_service_credential(resp)
-    assert db.get(ArtifactJob, "w2-jwt-accept") is None
+    assert db.get(ArtifactJob, get_arg) is None
 
 
 def test_expired_dispatch_jwt_rejected_on_artifacts(client: TestClient, db, monkeypatch):
@@ -538,29 +546,6 @@ def test_f3_agent_cannot_set_owner_via_employee_id(
     )
     _assert_dispatch_jwt_not_a_service_credential(resp)
     assert db.get(ArtifactJob, "w2-f3-emp") is None
-
-
-def test_f3_agent_matching_requester_still_rejected(
-    client: TestClient, db, monkeypatch,
-):
-    """即使 requester 與派工 JWT 的 user 相同，成品寫入也不接受這枚 token。"""
-    owner = make_user(db, username="w2_f3_ok_owner")
-    agent = make_agent(db, owner, name="w2-f3-ok-agent")
-    token = issue_dispatch_token(
-        user_id=owner.id, department=None, agent_id=agent.id
-    )
-
-    resp = client.post(
-        "/v1/artifact-jobs",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "job_id": "w2-f3-ok",
-            "artifact_type": "report",
-            "requester_user_id": owner.id,
-        },
-    )
-    _assert_dispatch_jwt_not_a_service_credential(resp)
-    assert db.get(ArtifactJob, "w2-f3-ok") is None
 
 
 # ── F3 laundering PoC: foreign task/job/artifact must be rejected ────────────

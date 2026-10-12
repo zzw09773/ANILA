@@ -108,39 +108,29 @@ def reset_vision_cache():
 # ── _clean_caption ───────────────────────────────────────────────────────────
 
 
-def test_clean_caption_empty_input_returns_empty():
-    assert _clean_caption("") == ""
+@pytest.mark.parametrize(
+    "clean_caption_arg, expected",
+    [
+        pytest.param("", "", id='clean_caption_empty_input_returns_empty'),
+        pytest.param("A red bar chart.", "A red bar chart.", id='clean_caption_passthrough_simple_sentence'),
+        pytest.param("   *   multiple   spaces   here   ", "multiple spaces here", id='clean_caption_collapses_whitespace_and_strips_leading_markers'),
+    ],
+)
+def test_clean_caption_empty_input_returns_empty_cases(clean_caption_arg, expected):
+    assert _clean_caption(clean_caption_arg) == expected
 
 
-def test_clean_caption_passthrough_simple_sentence():
-    assert _clean_caption("A red bar chart.") == "A red bar chart."
-
-
-def test_clean_caption_strips_think_block():
-    raw = "<think>internal reasoning here</think>A bar chart showing sales."
-    assert _clean_caption(raw) == "A bar chart showing sales."
-
-
-def test_clean_caption_strips_thinking_block_case_insensitive():
-    raw = "<THINKING>noise</THINKING>The actual caption text."
-    assert _clean_caption(raw) == "The actual caption text."
-
-
-def test_clean_caption_strips_thought_preamble_bullets():
-    raw = "thought\n* first guess\n* second guess\n\nThe final answer is a pie chart."
-    assert _clean_caption(raw) == "The final answer is a pie chart."
-
-
-def test_clean_caption_picks_last_meaningful_paragraph():
-    raw = (
-        "Summary header.\n\n"
-        "This is the detailed last paragraph describing the chart."
-    )
-    assert _clean_caption(raw) == "This is the detailed last paragraph describing the chart."
-
-
-def test_clean_caption_collapses_whitespace_and_strips_leading_markers():
-    assert _clean_caption("   *   multiple   spaces   here   ") == "multiple spaces here"
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        pytest.param("<think>internal reasoning here</think>A bar chart showing sales.", "A bar chart showing sales.", id='strips_think_block'),
+        pytest.param("<THINKING>noise</THINKING>The actual caption text.", "The actual caption text.", id='strips_thinking_block_case_insensitive'),
+        pytest.param("thought\n* first guess\n* second guess\n\nThe final answer is a pie chart.", "The final answer is a pie chart.", id='strips_thought_preamble_bullets'),
+        pytest.param('Summary header.\n\nThis is the detailed last paragraph describing the chart.', "This is the detailed last paragraph describing the chart.", id='picks_last_meaningful_paragraph'),
+    ],
+)
+def test_clean_caption(raw, expected):
+    assert _clean_caption(raw) == expected
 
 
 def test_clean_caption_truncates_overlong_to_max_plus_ellipsis():

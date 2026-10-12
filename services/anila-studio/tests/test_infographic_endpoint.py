@@ -363,19 +363,18 @@ async def test_delete_done_job_cleans_artifacts(
     assert get_resp.status_code == 404
 
 
-async def test_create_with_invalid_collection_id_returns_422(client):
-    """Pydantic-level validation: collection_id must be >= 1."""
+@pytest.mark.parametrize(
+    "item, item2",
+    [
+        # Pydantic-level validation: collection_id must be >= 1.
+        pytest.param(0, "stats_brief", id='collection_id_returns_422'),
+        pytest.param(1, "not_a_preset", id='preset_returns_422'),
+    ],
+)
+async def test_create_with_invalid(item, item2, client):
     resp = await client.post(
         "/api/infographics/jobs",
-        json={"collection_id": 0, "preset": "stats_brief"},
-    )
-    assert resp.status_code == 422
-
-
-async def test_create_with_invalid_preset_returns_422(client):
-    resp = await client.post(
-        "/api/infographics/jobs",
-        json={"collection_id": 1, "preset": "not_a_preset"},
+        json={"collection_id": item, "preset": item2},
     )
     assert resp.status_code == 422
 

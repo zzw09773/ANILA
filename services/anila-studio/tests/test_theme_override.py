@@ -49,25 +49,23 @@ def test_title_override_forces_theme(title: str, expected: str) -> None:
     assert result.theme == expected
 
 
-def test_no_match_preserves_llm_choice() -> None:
-    """Title without keyword leaves LLM's theme choice intact."""
-    spec = _make_spec("CNC 鐵屑辨識技術規劃", theme="academic_paper")
+@pytest.mark.parametrize(
+    "make_spec_arg, theme, expected",
+    [
+        # Title without keyword leaves LLM's theme choice intact.
+        pytest.param("CNC 鐵屑辨識技術規劃", "academic_paper", "academic_paper", id='no_match_preserves_llm_choice'),
+        # If LLM already chose the right theme, no change but no error.
+        pytest.param("學習心得", "warm_journal", "warm_journal", id='override_idempotent_when_theme_matches'),
+        # Exact title from v5 that regressed. Must override to warm_journal.
+        pytest.param("11月學習心得報告", "corporate_navy", "warm_journal", id='v5_regression'),
+        # When title contains keywords from multiple patterns, first wins.
+        pytest.param("心得論文發表", "corporate_navy", "warm_journal", id='first_match_wins'),
+    ],
+)
+def test_no_match_preserves_llm_choice_cases(make_spec_arg, theme, expected) -> None:
+    spec = _make_spec(make_spec_arg, theme=theme)
     result = _apply_theme_title_override(spec)
-    assert result.theme == "academic_paper"
-
-
-def test_override_idempotent_when_theme_matches() -> None:
-    """If LLM already chose the right theme, no change but no error."""
-    spec = _make_spec("學習心得", theme="warm_journal")
-    result = _apply_theme_title_override(spec)
-    assert result.theme == "warm_journal"
-
-
-def test_v5_regression() -> None:
-    """Exact title from v5 that regressed. Must override to warm_journal."""
-    spec = _make_spec("11月學習心得報告", theme="corporate_navy")
-    result = _apply_theme_title_override(spec)
-    assert result.theme == "warm_journal"
+    assert result.theme == expected
 
 
 def test_empty_title_safe() -> None:
@@ -81,8 +79,3 @@ def test_empty_title_safe() -> None:
     assert result.theme == "corporate_navy"
 
 
-def test_first_match_wins() -> None:
-    """When title contains keywords from multiple patterns, first wins."""
-    spec = _make_spec("心得論文發表", theme="corporate_navy")
-    result = _apply_theme_title_override(spec)
-    assert result.theme == "warm_journal"

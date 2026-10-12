@@ -27,16 +27,17 @@ def test_sanitize_keeps_a_short_progress_sentence():
     assert sanitize_summary("正在整理暗物質與暗能量的差異") == "正在整理暗物質與暗能量的差異。"
 
 
-def test_sanitize_rejects_language_arbitration_and_empty():
-    assert sanitize_summary("我應該用繁體中文還是依照系統指令？") is None
-    assert sanitize_summary("   ") is None
-    assert sanitize_summary("ok") is None
-
-
-def test_sanitize_rejects_english_echo_of_raw_reasoning():
-    assert sanitize_summary("ANILA_RAW_MARKER_7f3c9e") is None
-    assert sanitize_summary("Sorting the question now.") is None
-    assert sanitize_summary("整理ANILA_RAW_MARKER_7f3c9e題") is None
+@pytest.mark.parametrize(
+    "sanitize_summary_arg, sanitize_summary_arg2, sanitize_summary_arg3",
+    [
+        pytest.param("我應該用繁體中文還是依照系統指令？", "   ", "ok", id='language_arbitration_and_empty'),
+        pytest.param("ANILA_RAW_MARKER_7f3c9e", "Sorting the question now.", "整理ANILA_RAW_MARKER_7f3c9e題", id='english_echo_of_raw_reasoning'),
+    ],
+)
+def test_sanitize_rejects(sanitize_summary_arg, sanitize_summary_arg2, sanitize_summary_arg3):
+    assert sanitize_summary(sanitize_summary_arg) is None
+    assert sanitize_summary(sanitize_summary_arg2) is None
+    assert sanitize_summary(sanitize_summary_arg3) is None
 
 
 def test_sanitize_does_not_keep_a_raw_reasoning_dump():

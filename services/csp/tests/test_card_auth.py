@@ -243,14 +243,16 @@ class TestVerifyValidSignature:
 class TestRejectsForgeryAndReplay:
     """新驗證契約的核心:偽造 / 重放 / 竄改一律拒絕。"""
 
-    def test_self_signed_forgery_with_owner_id_rejected(self) -> None:
-        """原 CVE 回歸守護:自簽憑證填 owner 工號 → 必須因鏈驗失敗被拒。"""
-        forged = _forged_signed_cms("1147259")
-        with pytest.raises(InvalidSignatureError):
-            verify_pkcs7_signature(forged, MOCK_NONCE)
-
-    def test_self_signed_forgery_any_id_rejected(self) -> None:
-        forged = _forged_signed_cms("9999999")
+    @pytest.mark.parametrize(
+        "forged_signed_cms_arg",
+        [
+            # 原 CVE 回歸守護:自簽憑證填 owner 工號 → 必須因鏈驗失敗被拒。
+            pytest.param("1147259", id='with_owner_id_rejected'),
+            pytest.param("9999999", id='any_id_rejected'),
+        ],
+    )
+    def test_self_signed_forgery(self, forged_signed_cms_arg) -> None:
+        forged = _forged_signed_cms(forged_signed_cms_arg)
         with pytest.raises(InvalidSignatureError):
             verify_pkcs7_signature(forged, MOCK_NONCE)
 
@@ -267,19 +269,17 @@ class TestRejectsForgeryAndReplay:
 
 @pytest.mark.unit
 class TestInvalidInput:
-    def test_invalid_base64_raises(self) -> None:
+    @pytest.mark.parametrize(
+        "verify_pkcs7_signature_arg",
+        [
+            pytest.param("not-base64!!!", id='invalid_base64_raises'),
+            pytest.param("", id='empty_string_raises'),
+            pytest.param("aGVsbG8gd29ybGQ=", id='random_bytes_raise'),
+        ],
+    )
+    def test_invalid_base64_raises_cases(self, verify_pkcs7_signature_arg) -> None:
         with pytest.raises(InvalidSignatureError):
-            verify_pkcs7_signature("not-base64!!!", MOCK_NONCE)
-
-    def test_empty_string_raises(self) -> None:
-        with pytest.raises(InvalidSignatureError):
-            verify_pkcs7_signature("", MOCK_NONCE)
-
-    def test_random_bytes_raise(self) -> None:
-        # Valid base64 但不是 PKCS#7 DER
-        with pytest.raises(InvalidSignatureError):
-            verify_pkcs7_signature("aGVsbG8gd29ybGQ=", MOCK_NONCE)
-
+            verify_pkcs7_signature(verify_pkcs7_signature_arg, MOCK_NONCE)
 
 @pytest.mark.unit
 def test_error_hierarchy() -> None:

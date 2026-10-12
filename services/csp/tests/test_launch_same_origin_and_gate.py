@@ -253,37 +253,27 @@ class TestCrossHostAllowlistUnchanged:
             "https://aiops.example.org:4443/?launch_token="
         )
 
-    def test_cross_host_outside_allowlist_refused(self, client, db):
+    @pytest.mark.parametrize(
+        "name, slug, entry_url",
+        [
+            pytest.param("被改過的服務", "tampered", "https://attacker.example/steal", id='cross_host_outside_allowlist_refused'),
+            # 同源 entry_url + 非空白名單 = 自相矛盾的設定,大聲擋掉,不靜默忽略。
+            pytest.param("設定打架", "conflicting", "/anila", id='relative_entry_url_does_not_satisfy_a_cross_host_allowlist'),
+        ],
+    )
+    def test_cross_host_outside_allowlist_refused_cases(self, name, slug, entry_url,  client, db):
         headers = _headers(client, db)
         svc = _make_service(
             db,
-            name="被改過的服務",
-            slug="tampered",
-            entry_url="https://attacker.example/steal",
+            name=name,
+            slug=slug,
+            entry_url=entry_url,
             allowed_origins=["https://aiops.example.org:4443"],
             is_public=True,
         )
         resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
         assert resp.status_code == 400, resp.text
         assert resp.json()["detail"] == "服務 entry_url origin 不在 allowed_origins"
-
-    def test_relative_entry_url_does_not_satisfy_a_cross_host_allowlist(
-        self, client, db
-    ):
-        """同源 entry_url + 非空白名單 = 自相矛盾的設定,大聲擋掉,不靜默忽略。"""
-        headers = _headers(client, db)
-        svc = _make_service(
-            db,
-            name="設定打架",
-            slug="conflicting",
-            entry_url="/anila",
-            allowed_origins=["https://aiops.example.org:4443"],
-            is_public=True,
-        )
-        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
-        assert resp.status_code == 400, resp.text
-        assert resp.json()["detail"] == "服務 entry_url origin 不在 allowed_origins"
-
 
 # ── 2b. 跨主機空名單 fail-closed（A01） ─────────────────
 

@@ -199,23 +199,18 @@ def test_extract_text_legacy_latin1_unsupported_when_long() -> None:
     )
 
 
-def test_extract_text_utf16le_cjk_bomless_refused() -> None:
-    """BOM-less UTF-16LE CJK must be refused with re-save-as-UTF-8 guidance."""
+@pytest.mark.parametrize(
+    "encode_arg",
+    [
+        # BOM-less UTF-16LE CJK must be refused with re-save-as-UTF-8 guidance.
+        pytest.param("utf-16-le", id='utf16le_cjk_bomless_refused'),
+        # BOM-less UTF-16BE CJK must be refused with re-save-as-UTF-8 guidance.
+        pytest.param("utf-16-be", id='utf16be_cjk_bomless_refused'),
+    ],
+)
+def test_extract_text(encode_arg) -> None:
     sample = "姓名,單位,代號\n王小明,資訊室,A01\n"
-    blob = sample.encode("utf-16-le")
-    with pytest.raises(ParseError) as exc_info:
-        extract_text("roster.txt", blob, "text/plain")
-    err = exc_info.value
-    assert err.code == "E_PARSE_FORMAT_UNSUPPORTED"
-    assert "UTF-8" in (err.user_message or "")
-    assert "另存" in (err.user_message or "")
-    assert "王小明" not in (err.user_message or "")
-
-
-def test_extract_text_utf16be_cjk_bomless_refused() -> None:
-    """BOM-less UTF-16BE CJK must be refused with re-save-as-UTF-8 guidance."""
-    sample = "姓名,單位,代號\n王小明,資訊室,A01\n"
-    blob = sample.encode("utf-16-be")
+    blob = sample.encode(encode_arg)
     with pytest.raises(ParseError) as exc_info:
         extract_text("roster.txt", blob, "text/plain")
     err = exc_info.value

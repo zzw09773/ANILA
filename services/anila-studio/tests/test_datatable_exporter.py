@@ -285,27 +285,23 @@ def test_xlsx_number_dtype_has_thousands_format(tmp_path: Path, cjk_spec):
     assert cell.number_format == "#,##0"
 
 
-def test_xlsx_percent_dtype_has_percent_format(tmp_path: Path, cjk_spec):
-    """rate column (dtype=percent) — row 1 had 0.27 (already a ratio)."""
+@pytest.mark.parametrize(
+    "row, approx_arg",
+    [
+        # rate column (dtype=percent) — row 1 had 0.27 (already a ratio).
+        pytest.param(4, 0.27, id='dtype_has_percent_format'),
+        # Row 2 had "47%" string — parser divides by 100 → 0.47 float.
+        pytest.param(5, 0.47, id='parses_string_with_percent_sign'),
+    ],
+)
+def test_xlsx_percent(row, approx_arg, tmp_path: Path, cjk_spec):
     dest = tmp_path / "out.xlsx"
     to_xlsx(cjk_spec, dest)
     wb = load_workbook(str(dest))
     ws = wb.active
     # rate is column 3; row 4 is first data row.
-    cell = ws.cell(row=4, column=3)
-    assert cell.value == pytest.approx(0.27)
-    assert cell.number_format == "0.00%"
-
-
-def test_xlsx_percent_parses_string_with_percent_sign(tmp_path: Path, cjk_spec):
-    """Row 2 had "47%" string — parser divides by 100 → 0.47 float."""
-    dest = tmp_path / "out.xlsx"
-    to_xlsx(cjk_spec, dest)
-    wb = load_workbook(str(dest))
-    ws = wb.active
-    # rate is column 3; row 5 is second data row.
-    cell = ws.cell(row=5, column=3)
-    assert cell.value == pytest.approx(0.47)
+    cell = ws.cell(row=row, column=3)
+    assert cell.value == pytest.approx(approx_arg)
     assert cell.number_format == "0.00%"
 
 

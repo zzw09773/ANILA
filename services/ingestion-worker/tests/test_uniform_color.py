@@ -2,6 +2,7 @@
 have no informational content (avoid wasting VLM calls + polluting RAG)."""
 from __future__ import annotations
 
+import pytest
 import io
 import random
 
@@ -29,12 +30,15 @@ def _gradient_png(size: tuple = (256, 256)) -> bytes:
     return buf.getvalue()
 
 
-def test_solid_blue_is_uniform():
-    assert _is_uniform_color(_png_bytes((26, 54, 93))) is True
-
-
-def test_solid_white_is_uniform():
-    assert _is_uniform_color(_png_bytes((255, 255, 255))) is True
+@pytest.mark.parametrize(
+    "item, item2, item3",
+    [
+        pytest.param(26, 54, 93, id='solid_blue_is_uniform'),
+        pytest.param(255, 255, 255, id='solid_white_is_uniform'),
+    ],
+)
+def test_solid_blue_is_uniform_cases(item, item2, item3):
+    assert _is_uniform_color(_png_bytes((item, item2, item3))) is True
 
 
 def test_gradient_is_not_uniform():
@@ -65,10 +69,15 @@ def test_tiny_icon_skipped_from_filter():
     assert _is_uniform_color(icon) is False
 
 
-def test_decode_failure_returns_false():
-    """Garbage bytes — let downstream handle. Don't claim uniform."""
-    assert _is_uniform_color(b"not an image") is False
+@pytest.mark.parametrize(
+    "is_uniform_color_arg",
+    [
+        # Garbage bytes — let downstream handle. Don't claim uniform.
+        pytest.param(b"not an image", id='decode_failure_returns_false'),
+        pytest.param(b"", id='empty_bytes_returns_false'),
+    ],
+)
+def test_decode_failure_returns_false_cases(is_uniform_color_arg):
+    assert _is_uniform_color(is_uniform_color_arg) is False
 
 
-def test_empty_bytes_returns_false():
-    assert _is_uniform_color(b"") is False
