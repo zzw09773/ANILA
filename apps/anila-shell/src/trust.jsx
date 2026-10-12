@@ -5,6 +5,7 @@ import { IconButton } from "./components.jsx";
 import { blockingHits, summarizePIIHits } from "./data.jsx";
 import { classificationLevelBadge } from "./runtime/classified.js";
 import { usageTokenTooltip } from "./runtime/usageDisplay.js";
+import { coverageFromMessage } from "./runtime/coverageFooter.js";
 
 // ---- Inline citation [N] ----
 export const CitationInline = ({ n, citation, onOpen }) => (
@@ -158,6 +159,25 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
         ))}
       </div>
     </div>
+  );
+};
+
+// 回答底部的涵蓋列。數字來自 coverageFromMessage，不採用模型自己報的份數。
+export const CoverageFooter = ({ msg, attachmentsOmitted = false }) => {
+  const coverage = coverageFromMessage(msg, { attachmentsOmitted });
+  if (!coverage) return null;
+  return (
+    <p
+      data-testid="coverage-footer"
+      style={{
+        margin: "10px 0 0",
+        fontSize: 12,
+        lineHeight: 1.55,
+        color: "var(--fg-muted)",
+      }}
+    >
+      {coverage.line}
+    </p>
   );
 };
 
