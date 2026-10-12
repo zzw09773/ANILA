@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # 在真實繁中語料的簡體率本來就是 0%。
     ASR_INITIAL_PROMPT: str = "以下是繁體中文。"
     ASR_BEAM_SIZE: int = 5
+    # final / partial 各自的 beam。沒設就沿用 ASR_BEAM_SIZE(舊行為)。
+    ASR_FINAL_BEAM_SIZE: int | None = None
+    ASR_PARTIAL_BEAM_SIZE: int | None = None
     # 負載過高時的第一個旋鈕:關掉 partial,只留 final。
     ASR_PARTIALS_ENABLED: bool = True
     ASR_VAD_AGGRESSIVENESS: int = 2
