@@ -96,3 +96,21 @@ def test_ws_handler_wires_settings_into_segmenter():
                "min_rms=s.ASR_MIN_RMS",
                "start_rms=s.ASR_START_RMS"):
         assert kw in src
+
+
+def test_beam_settings_from_env(monkeypatch):
+    monkeypatch.delenv("ASR_FINAL_BEAM_SIZE", raising=False)
+    monkeypatch.delenv("ASR_PARTIAL_BEAM_SIZE", raising=False)
+    s = Settings()
+    assert s.ASR_FINAL_BEAM_SIZE is None and s.ASR_PARTIAL_BEAM_SIZE is None
+    monkeypatch.setenv("ASR_FINAL_BEAM_SIZE", "5")
+    monkeypatch.setenv("ASR_PARTIAL_BEAM_SIZE", "1")
+    monkeypatch.setenv("ASR_INITIAL_PROMPT", "")
+    s = Settings()
+    assert (s.ASR_FINAL_BEAM_SIZE, s.ASR_PARTIAL_BEAM_SIZE, s.ASR_INITIAL_PROMPT) == (5, 1, "")
+
+
+def test_ws_handler_wires_beams():
+    src = inspect.getsource(main_mod)
+    assert "partial_beam_size=s.ASR_PARTIAL_BEAM_SIZE" in src
+    assert "s.ASR_FINAL_BEAM_SIZE" in src

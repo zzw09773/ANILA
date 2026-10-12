@@ -381,7 +381,9 @@ def _register_routes(app: FastAPI) -> None:
                 start_rms=s.ASR_START_RMS,
             ),
             initial_prompt=s.ASR_INITIAL_PROMPT or None,
-            beam_size=s.ASR_BEAM_SIZE,
+            beam_size=(s.ASR_FINAL_BEAM_SIZE if s.ASR_FINAL_BEAM_SIZE is not None
+                       else s.ASR_BEAM_SIZE),
+            partial_beam_size=s.ASR_PARTIAL_BEAM_SIZE,
             partials_enabled=s.ASR_PARTIALS_ENABLED,
             text_filter=app.state.text_filter,
         )

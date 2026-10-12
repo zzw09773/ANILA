@@ -342,3 +342,26 @@ def test_s2twp_is_refused():
     """實測對正確繁體誤傷 10.58%(「類型」→「型別」)→ 明令禁止。"""
     with pytest.raises(ValueError, match="s2twp"):
         make_text_filter("s2twp")
+
+
+async def test_partial_and_final_use_separate_beams():
+    s, _, dec, _ = build(partials_enabled=True, beam_size=5, partial_beam_size=1)
+    await s.start()
+    await s.feed(frames(SPEECH_START_FRAMES))
+    for _ in range(4):
+        await s.feed(frames(20))
+        await asyncio.sleep(0.02)
+    await s.flush()
+    await s.drain(1.0)
+    await settle()
+    kinds = {(c["kind"], c["beam"]) for c in dec.calls}
+    assert ("final", 5) in kinds
+    assert ("partial", 1) in kinds
+    assert ("partial", 5) not in kinds
+    await s.aclose()
+
+
+async def test_partial_beam_defaults_to_final_beam():
+    s, _, _, _ = build(beam_size=3)
+    assert s._partial_beam_size == 3
+    await s.aclose()

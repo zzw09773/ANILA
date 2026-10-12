@@ -80,6 +80,7 @@ class AsrSession:
         segmenter: VadSegmenter | None = None,
         initial_prompt: str | None = "以下是繁體中文。",
         beam_size: int = 5,
+        partial_beam_size: int | None = None,
         partials_enabled: bool = True,
         text_filter: Callable[[str], str] | None = None,
     ) -> None:
@@ -88,6 +89,8 @@ class AsrSession:
         self._send = send
         self._initial_prompt = initial_prompt
         self._beam_size = beam_size
+        # partial 只是預覽,可以用較小的 beam 換延遲;沒指定就跟 final 一樣。
+        self._partial_beam_size = beam_size if partial_beam_size is None else partial_beam_size
         self._partials_enabled = partials_enabled
         self._text_filter = text_filter or (lambda t: t)
 
@@ -239,7 +242,7 @@ class AsrSession:
 
         samples = _to_samples(audio)
         result = await self._decode(
-            samples, kind=KIND_PARTIAL, prompt=self._initial_prompt, beam=self._beam_size
+            samples, kind=KIND_PARTIAL, prompt=self._initial_prompt, beam=self._partial_beam_size
         )
 
         # 解碼期間該 utt 可能已被 discard(Discard 來自 feed(),與這裡的 await
