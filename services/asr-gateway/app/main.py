@@ -379,6 +379,7 @@ def _register_routes(app: FastAPI) -> None:
                 speech_end_ms=s.ASR_SPEECH_END_MS,
                 min_rms=s.ASR_MIN_RMS,
                 start_rms=s.ASR_START_RMS,
+                min_speech_ms=s.ASR_MIN_SPEECH_MS,
             ),
             initial_prompt=s.ASR_INITIAL_PROMPT or None,
             beam_size=(s.ASR_FINAL_BEAM_SIZE if s.ASR_FINAL_BEAM_SIZE is not None

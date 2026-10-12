@@ -142,3 +142,34 @@ async def test_partial_decode_uses_configured_timeout(monkeypatch):
     await c.decode(np.zeros(160, dtype=np.float32), kind="final", prompt=None, beam=5)
     assert seen == {"partial": 10.0, "final": decode_client.FINAL_TIMEOUT_SECONDS}
     await c.aclose()
+
+
+def test_min_speech_ms_default_off(monkeypatch):
+    monkeypatch.delenv("ASR_MIN_SPEECH_MS", raising=False)
+    assert Settings().ASR_MIN_SPEECH_MS == 0
+    assert VadSegmenter(vad=AlwaysVad(False)).min_speech_ms == 0
+
+
+def _utt(seg, voiced_frames):
+    script = [False] * 10 + [True] * voiced_frames + [False] * 40
+    seg._vad = ScriptedVad(script)
+    return seg.feed(silence(10) + frames(voiced_frames) + silence(40))
+
+
+def test_min_speech_ms_drops_short_blips():
+    # 150 ms 的爆音:預設會送解碼(preroll+收尾靜音讓總長遠超 0.3s)
+    assert of_type(_utt(VadSegmenter(vad=AlwaysVad(False)), 5), FinalReady)
+    assert not of_type(_utt(VadSegmenter(vad=AlwaysVad(False), min_speech_ms=300), 5), FinalReady)
+
+
+def test_min_speech_ms_keeps_real_speech():
+    assert of_type(_utt(VadSegmenter(vad=AlwaysVad(False), min_speech_ms=300), 20), FinalReady)
+
+
+def test_filler_only_outputs_are_hallucinations():
+    from app.transcriber import is_hallucination
+
+    for t in ("嗯 嗯 嗯", "ㄨ ㄨ ㄧ ㄨ", "啊…", "謝謝觀看", "請不吝點贊訂閱"):
+        assert is_hallucination(t), t
+    for t in ("嗯,我明天要開會", "好", "請幫我查一下"):
+        assert not is_hallucination(t), t
