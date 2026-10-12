@@ -194,6 +194,16 @@ def client(db_engine, monkeypatch):
     # test_attachment_retention 直接呼叫 purge_expired_uploads 驗證。
     from app.services import attachment_retention
     monkeypatch.setattr(attachment_retention, "_purge_once", lambda: 0)
+    # 告警迴圈每輪最後 retry_due_alert_mail() 不帶 db 時自己開 SessionLocal,
+    # 並會 ensure_settings 寫入,同樣會撞上測試的 StaticPool 連線。背景呼叫
+    # (不帶 db)改成 no-op;帶 db 的直接呼叫照舊(test_alert_mail 用這條)。
+    from app.services import alert_mail
+    _real_retry = alert_mail.retry_due_alert_mail
+    monkeypatch.setattr(
+        alert_mail,
+        "retry_due_alert_mail",
+        lambda db=None: None if db is None else _real_retry(db),
+    )
     Session = sessionmaker(bind=db_engine, expire_on_commit=False)
 
     async def _skip_network_ingestion_pool():
