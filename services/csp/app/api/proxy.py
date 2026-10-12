@@ -1987,6 +1987,15 @@ async def _complete_dispatched_model(
     return payload
 
 
+def _applied_skill_event(applied) -> dict:
+    """事件同時帶整份清單與第一個 skill。舊客戶仍讀得到頂層欄位與 applied_skill。"""
+    event = applied.as_event()
+    if "applied_skills" not in event:
+        first = dict(event)
+        event = {**first, "applied_skill": first, "applied_skills": [first]}
+    return event
+
+
 def _attach_applied_skill(payload, applied):
     """非串流出口：把實際套用的 skill（資料庫內容）放進 anila_meta。"""
     if applied is None or not isinstance(payload, dict):
@@ -1995,7 +2004,9 @@ def _attach_applied_skill(payload, applied):
     if not isinstance(meta, dict):
         meta = {}
         payload["anila_meta"] = meta
-    meta["applied_skill"] = applied.as_event()
+    event = _applied_skill_event(applied)
+    meta["applied_skill"] = event["applied_skill"]
+    meta["applied_skills"] = event["applied_skills"]
     return payload
 
 
@@ -2005,7 +2016,7 @@ async def _sse_with_applied_skill(
 ) -> AsyncIterator[str]:
     """串流出口：先送 anila.skill，再接上游。沒套用就不加事件。"""
     if applied is not None:
-        data = json.dumps(applied.as_event(), ensure_ascii=False)
+        data = json.dumps(_applied_skill_event(applied), ensure_ascii=False)
         yield f"event: anila.skill\ndata: {data}\n\n"
     async for chunk in upstream:
         yield chunk
@@ -2113,6 +2124,7 @@ async def chat_completions(
                 user,
                 body,
                 explicit_raw=request.headers.get("X-ANILA-Skill-Id"),
+                explicit_ids_raw=request.headers.get("X-ANILA-Skill-Ids"),
                 conversation_id=conv_id_int,
                 user_text=captured_user_text,
                 auto_allowed=bool(side.chat_turn) and auto_apply_enabled(user),

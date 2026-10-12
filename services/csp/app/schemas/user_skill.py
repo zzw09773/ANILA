@@ -58,6 +58,9 @@ class SkillOut(ApiResponseModel):
     usable: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    last_used_at: datetime | None = None
+    use_count_30d: int = 0
+    favorite: bool = False
 
 
 class SkillListOut(ApiResponseModel):
@@ -125,6 +128,19 @@ class SkillAssistIn(BaseModel):
             "body": BODY_MAX,
         }[info.field_name]
         return value.strip()[:limit]
+
+
+class SkillStatItem(ApiResponseModel):
+    lineage_id: int
+    name: str
+    use_count_30d: int
+    last_used_at: datetime | None = None
+
+
+class SkillStatsOut(ApiResponseModel):
+    department_id: int
+    days: int
+    skills: list[SkillStatItem]
 
 
 class SkillAssistOut(BaseModel):

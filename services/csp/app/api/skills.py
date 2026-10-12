@@ -15,28 +15,43 @@ from app.schemas.user_skill import (
     SkillReject,
     SkillReviewItem,
     SkillReviewListOut,
+    SkillStatsOut,
     SkillSubmit,
     SkillUpdate,
     SkillWrite,
 )
 from app.services.auth_service import get_current_user
 from app.services.user_skill_service import (
+    SKILLS_DISABLED_DETAIL,
     _review_item,
     _to_out,
     approve_skill,
+    copy_skill,
     create_skill,
     delete_skill,
+    favorite_skill,
     get_skill,
     list_reviews,
     list_skills,
     publish_targets,
     reject_skill,
+    skill_usage_stats,
+    skills_feature_enabled,
     submit_skill,
+    unfavorite_skill,
     unpublish_skill,
     update_skill,
 )
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
+
+
+def _require_skills_enabled(db: Session = Depends(get_db)) -> None:
+    if not skills_feature_enabled(db):
+        raise HTTPException(status_code=403, detail=SKILLS_DISABLED_DETAIL)
+
+
+router.dependencies.append(Depends(_require_skills_enabled))
 
 
 @router.get("/reviews", response_model=SkillReviewListOut)
@@ -109,6 +124,15 @@ async def assist(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.get("/stats", response_model=SkillStatsOut)
+def read_stats(
+    department_id: int = Query(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return skill_usage_stats(db, user, department_id)
+
+
 @router.get("", response_model=SkillListOut)
 def list_my_skills(
     view: str = Query(default="usable"),
@@ -174,6 +198,36 @@ def delete(
 ):
     delete_skill(db, user, lineage_id)
     return Response(status_code=204)
+
+
+@router.post("/{lineage_id}/favorite", status_code=204)
+def favorite(
+    lineage_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    favorite_skill(db, user, lineage_id)
+    return Response(status_code=204)
+
+
+@router.delete("/{lineage_id}/favorite", status_code=204)
+def unfavorite(
+    lineage_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    unfavorite_skill(db, user, lineage_id)
+    return Response(status_code=204)
+
+
+@router.post("/{lineage_id}/copy", response_model=SkillOut, status_code=201)
+def copy(
+    lineage_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = copy_skill(db, user, lineage_id)
+    return _to_out(db, user, row)
 
 
 @router.post("/{lineage_id}/submit", response_model=SkillOut)

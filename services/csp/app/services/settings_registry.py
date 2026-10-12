@@ -322,6 +322,38 @@ SETTINGS: tuple[SettingSpec, ...] = (
         _router_prompts.CALL_BUDGET_DEFAULT,
         "一則回答最多打幾次模型。誰改＝平台管理員；情境＝分輪、自動續寫、救援與過長重試共用這一個預算；為何不能等改版＝線上要能擋住單次成本。允許 1–30 次，預設 12。按「繼續」重新計算。儲存後 router 在 30 秒內生效。",
     ),
+    _spec(
+        "skills.enabled",
+        None,
+        T_BOOL_NE_0,
+        _is_bool,
+        True,
+        "技能總開關。關閉後 /api/skills 回 403，對話也不再讀取技能標頭。",
+    ),
+    _spec(
+        "skills.max_stack",
+        None,
+        T_INT,
+        _closed_int_range(1, 10),
+        3,
+        "一次最多疊加幾個技能。允許 1–10，預設 3。超過回 422。",
+    ),
+    _spec(
+        "skills.max_total_chars",
+        None,
+        T_INT,
+        _closed_int_range(1, 100000),
+        4000,
+        "疊加後注入的總字數上限。允許 1–100000，預設 4000。超過回 422。",
+    ),
+    _spec(
+        "skills.campus_publish_enabled",
+        None,
+        T_BOOL_NE_0,
+        _is_bool,
+        True,
+        "是否允許新的全院技能送審或發布。已發布的全院技能仍可使用。",
+    ),
 )
 
 
