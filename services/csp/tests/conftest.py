@@ -74,6 +74,13 @@ from app.models.model_registry import ModelRegistry
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.agent import Agent
 from app.utils.security import hash_password
+from app.utils import security as _security_module
+
+# 測試專用：bcrypt cost 從正式的 12 降到 4(單次 hash+check 0.51s → 0.002s)。
+# 只在測試行程改模組常數,正式碼與映像不受影響;要驗證正式 cost 的測試
+# 請 monkeypatch 回 12。見 test_bcrypt_production_rounds。
+_PRODUCTION_BCRYPT_ROUNDS = _security_module._BCRYPT_ROUNDS
+_security_module._BCRYPT_ROUNDS = 4
 
 # ``SessionLocal`` 綁的是上面的臨時檔 DB;fixture 的 in-memory engine 是另一條。
 # 直接 ``SessionLocal()`` 的 production 路徑(如 proxy/headers.py)需要 schema
@@ -173,6 +180,14 @@ def db(db_engine):
 @pytest.fixture(scope="function")
 def client(db_engine, monkeypatch):
     """TestClient with overridden DB dependency."""
+    # lifespan 啟動時會在背景 thread 跑一輪閒置掃描(_sweep_once → 執行當下的
+    # app.database.SessionLocal)。測試若把 SessionLocal 換成 StaticPool 的
+    # in-memory engine,這輪會跟請求共用同一條連線(「cannot start a transaction
+    # within a transaction」),或握著 _sweep_guard 讓測試自己的掃描拿到 pending。
+    # 以前 bcrypt cost 12 讓測試夠慢才碰巧沒撞上。掃描邏輯由測試直接呼叫
+    # run_inactivity_sweep 驗證,排程本身由 test_account_inactivity 以原始碼檢查。
+    from app.services import inactivity_service
+    monkeypatch.setattr(inactivity_service, "_sweep_once", lambda: {"phase": None})
     Session = sessionmaker(bind=db_engine, expire_on_commit=False)
 
     async def _skip_network_ingestion_pool():

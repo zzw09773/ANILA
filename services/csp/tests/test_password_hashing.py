@@ -53,7 +53,11 @@ def test_verifies_hash_written_by_legacy_passlib() -> None:
     assert not verify_password("", LEGACY_PASSLIB_BCRYPT_HASH)
 
 
-def test_hashing_keeps_bcrypt_format_and_cost() -> None:
+def test_hashing_keeps_bcrypt_format_and_cost(monkeypatch) -> None:
+    # conftest 把測試行程的 cost 降到 4;這支要驗正式 cost,改回原始值。
+    from app.utils import security
+    from tests.conftest import _PRODUCTION_BCRYPT_ROUNDS
+    monkeypatch.setattr(security, "_BCRYPT_ROUNDS", _PRODUCTION_BCRYPT_ROUNDS)
     hashed = hash_password("fixture-new-password")
     scheme, version, cost, salt_and_checksum = hashed.split("$")
 
