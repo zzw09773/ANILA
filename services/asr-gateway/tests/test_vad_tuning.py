@@ -114,3 +114,31 @@ def test_ws_handler_wires_beams():
     src = inspect.getsource(main_mod)
     assert "partial_beam_size=s.ASR_PARTIAL_BEAM_SIZE" in src
     assert "s.ASR_FINAL_BEAM_SIZE" in src
+
+
+def test_partial_timeout_from_settings(monkeypatch):
+    from app import config, decode_client
+
+    assert Settings().ASR_PARTIAL_TIMEOUT_SECONDS == 4.0 == decode_client.PARTIAL_TIMEOUT_SECONDS
+    monkeypatch.setattr(config.settings, "ASR_PARTIAL_TIMEOUT_SECONDS", 10.0)
+    assert decode_client.partial_timeout_seconds() == 10.0
+    monkeypatch.setattr(config.settings, "ASR_PARTIAL_TIMEOUT_SECONDS", 0)
+    assert decode_client.partial_timeout_seconds() == 4.0
+
+
+async def test_partial_decode_uses_configured_timeout(monkeypatch):
+    from app import config, decode_client
+
+    monkeypatch.setattr(config.settings, "ASR_PARTIAL_TIMEOUT_SECONDS", 10.0)
+    seen = {}
+
+    class C(decode_client.DecodeClient):
+        async def _post(self, pcm, *, kind, prompt, beam, language, timeout):
+            seen[kind] = timeout
+            return {"text": "x"}
+
+    c = C("http://decoder:9000", "")
+    await c.decode(np.zeros(160, dtype=np.float32), kind="partial", prompt=None, beam=1)
+    await c.decode(np.zeros(160, dtype=np.float32), kind="final", prompt=None, beam=5)
+    assert seen == {"partial": 10.0, "final": decode_client.FINAL_TIMEOUT_SECONDS}
+    await c.aclose()
