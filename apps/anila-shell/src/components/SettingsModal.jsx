@@ -19,6 +19,7 @@ export function SettingsModal({
   user, agents, authRequest,
   redactionMode, onChangeRedactionMode,
   skillAutoApply, onSkillAutoApplyChange, onSkillsChanged,
+  followUpsEnabled = true, onFollowUpsEnabledChange,
   onOpenConversation,
   settingsLoadError, settingsUnsaved, onRetrySettingsLoad,
 }) {
@@ -84,6 +85,35 @@ export function SettingsModal({
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4 }}>
                   目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用助手。
                   切換預設助手 請從主介面的 agent selector 進行。
+                </div>
+              </div>
+              <div data-testid="follow-ups-setting">
+                <div style={{ fontSize: 13, fontWeight: 500 }} id="follow-ups-setting-title">回答後顯示建議問題</div>
+                <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+                  每則回答結束後，在下方列出兩三個你可能想接著問的問題；點一下會帶進輸入框，不會直接送出。
+                  輸入框空著時也會用灰字預覽第一個，按 Tab 採用。關掉後就不再產生。
+                </div>
+                <div role="group" aria-labelledby="follow-ups-setting-title" style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  {[
+                    { on: true, label: "顯示建議問題" },
+                    { on: false, label: "不要顯示" },
+                  ].map((opt) => {
+                    const active = (followUpsEnabled !== false) === opt.on;
+                    return (
+                      <button
+                        key={String(opt.on)}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => onFollowUpsEnabledChange?.(opt.on)}
+                        style={{
+                          padding: "4px 10px", fontSize: 11,
+                          background: active ? "var(--bg-subtle)" : "transparent",
+                          border: "1px solid " + (active ? "var(--border-strong)" : "var(--border)"),
+                          borderRadius: 4, cursor: "pointer", color: "var(--fg)",
+                        }}
+                      >{opt.label}</button>
+                    );
+                  })}
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>

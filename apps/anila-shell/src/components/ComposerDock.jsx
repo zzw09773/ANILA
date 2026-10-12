@@ -15,6 +15,7 @@ export function ComposerDock({
   deepThinkNext, onDeepThinkNextChange,
   queuedAttachment, onQueuedAttachmentConsumed,
   onUpload, onFetchAttachmentMeta,
+  insertRequest, ghostSuggestion, onTyping,
 }) {
   return (
     <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
@@ -78,6 +79,9 @@ export function ComposerDock({
           onQueuedAttachmentConsumed={onQueuedAttachmentConsumed}
           onUpload={onUpload}
           onFetchAttachmentMeta={onFetchAttachmentMeta}
+          insertRequest={insertRequest}
+          ghostSuggestion={ghostSuggestion}
+          onTyping={onTyping}
         />
         <div style={{
           marginTop: 6, fontSize: 11,

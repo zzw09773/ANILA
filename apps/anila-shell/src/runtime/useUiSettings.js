@@ -1,5 +1,5 @@
 // Per-user UI settings synced to `users.ui_settings`: sidebar folders, the
-// sensitive-info mode (warn / block) and skill auto-apply. The backend is the
+// sensitive-info mode (warn / block), skill auto-apply and follow-up suggestions. The backend is the
 // source of truth; localStorage is only this user's offline cache.
 //
 // Hook order and effects are exactly what ChatRuntime used to run inline.
@@ -38,7 +38,11 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
   // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
   const uiSettingsHydratedRef = useRef(false);
   const [skillAutoApply, setSkillAutoApply] = useState(true);
-  const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false, skillAutoApply: false });
+  // 回答後顯示建議問題（opt-out）。後端也讀同一個欄位，關掉就不產生。
+  const [followUpsEnabled, setFollowUpsEnabled] = useState(true);
+  const followUpsEnabledRef = useRef(followUpsEnabled);
+  followUpsEnabledRef.current = followUpsEnabled;
+  const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false, skillAutoApply: false, followUpsEnabled: false });
   const uiSettingsSaveErrorRef = useRef(false);
   const foldersRef = useRef(folders);
   const redactionModeRef = useRef(redactionMode);
@@ -64,9 +68,10 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
       folders: nextFolders,
       redactionMode: nextRedaction,
       skillAutoApply: nextSkillAutoApply !== false,
+      followUpsEnabled: followUpsEnabledRef.current !== false,
     })
       .then(() => {
-        uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false };
+        uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false, followUpsEnabled: false };
         uiSettingsSaveErrorRef.current = false;
         setUiSettingsUnsaved(false);
         setUiSettingsLoadError(false);
@@ -91,9 +96,14 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
     setFolders(nextFolders);
     setRedactionMode(nextRedaction);
     setSkillAutoApply(nextSkillAutoApply);
+    const nextFollowUps = dirty.followUpsEnabled
+      ? followUpsEnabledRef.current
+      : s.followUpsEnabled !== false;
+    followUpsEnabledRef.current = nextFollowUps;
+    setFollowUpsEnabled(nextFollowUps);
     uiSettingsHydratedRef.current = true;
     setUiSettingsLoadError(false);
-    if (dirty.folders || dirty.redactionMode || dirty.skillAutoApply) {
+    if (dirty.folders || dirty.redactionMode || dirty.skillAutoApply || dirty.followUpsEnabled) {
       persistUiSettings(nextFolders, nextRedaction, nextSkillAutoApply);
     } else {
       uiSettingsSaveErrorRef.current = false;
@@ -104,11 +114,12 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
   useEffect(() => {
     if (!isAuthenticated) {
       uiSettingsHydratedRef.current = false;
-      uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false };
+      uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false, followUpsEnabled: false };
       uiSettingsSaveErrorRef.current = false;
       setFolders(DEFAULT_FOLDERS);
       setRedactionMode(REDACTION_MODE_DEFAULT);
       setSkillAutoApply(true);
+      setFollowUpsEnabled(true);
       setUiSettingsLoadError(false);
       setUiSettingsUnsaved(false);
       return undefined;
@@ -153,7 +164,7 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
       persistUiSettings(folders, redactionMode, skillAutoApply);
     }, 600);
     return () => clearTimeout(t);
-  }, [folders, redactionMode, skillAutoApply, isAuthenticated, authRequest, user?.id, persistUiSettings]);
+  }, [folders, redactionMode, skillAutoApply, followUpsEnabled, isAuthenticated, authRequest, user?.id, persistUiSettings]);
 
   return {
     redactionMode,
@@ -161,6 +172,8 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
     setFolders,
     skillAutoApply,
     setSkillAutoApply,
+    followUpsEnabled,
+    setFollowUpsEnabled,
     foldersRef,
     uiSettingsLoadError,
     uiSettingsUnsaved,

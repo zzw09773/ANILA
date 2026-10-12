@@ -263,42 +263,97 @@ export const ConfidenceChip = ({ confidence }) => {
   );
 };
 
-// ---- Follow-up suggestions (shown when confidence is low/medium) ----
-export const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
-  if (!suggestions || suggestions.length === 0) return null;
-  const isLow = confidence?.level === "low" || confidence?.level === "medium";
-  if (!isLow) return null;
+// ---- 建議下一個問題 ----
+//
+// 一般回答與低信心回答共用同一組 chip：點了**帶進輸入框，不直接送出**
+// （使用者可以改，也避免把模型吐回來的內容一鍵送出去）。只掛在最後一則
+// assistant 訊息底下，由 MessageBubble 判斷。
+//
+// 低信心／中等時多一行說明，提醒使用者追問一下比較保險；其他情況用淡色的
+// 「你可能還想問」。agentic.jsx 的 FollowUpChips 也是這一個元件。
+const chipStyle = {
+  padding: "4px 10px",
+  fontSize: 12,
+  lineHeight: 1.5,
+  background: "var(--bg-elev)",
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  cursor: "pointer",
+  color: "var(--fg-muted)",
+  textAlign: "left",
+  maxWidth: "100%",
+  overflowWrap: "anywhere",
+  transition: "border-color .12s ease, color .12s ease",
+};
 
+export const NextQuestionChips = ({ suggestions, onPick, lowConfidence = null, testId = "next-question-chips" }) => {
+  const list = Array.isArray(suggestions)
+    ? suggestions.filter((s) => typeof s === "string" && s.trim())
+    : [];
+  if (list.length === 0) return null;
+  const heading = lowConfidence
+    ? `這個回答信心${lowConfidence === "low" ? "偏低" : "中等"}，建議追問：`
+    : "你可能還想問";
   return (
-    <div style={{
-      marginTop: 10,
-      padding: "10px 12px",
-      background: "var(--bg-subtle)",
-      border: "1px dashed var(--border-strong)",
-      borderRadius: "var(--radius)",
-    }}>
-      <div style={{ fontSize: 11.5, color: "var(--fg-muted)", marginBottom: 7, display: "flex", alignItems: "center", gap: 6 }}>
-        <IconGauge size={12} />
-        這個回答信心{confidence.level === "low" ? "偏低" : "中等"}，建議追問：
+    <div
+      data-testid={testId}
+      role="group"
+      aria-label="建議的下一個問題"
+      style={lowConfidence ? {
+        marginTop: 10,
+        padding: "10px 12px",
+        background: "var(--bg-subtle)",
+        border: "1px dashed var(--border-strong)",
+        borderRadius: "var(--radius)",
+      } : { marginTop: 10 }}
+    >
+      <div style={{ fontSize: 11.5, color: "var(--fg-subtle)", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+        {lowConfidence ? <IconGauge size={12} /> : null}
+        {heading}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {suggestions.map((s, i) => (
-          <button key={i} onClick={() => onPick?.(s)} style={{
-            padding: "5px 10px",
-            fontSize: 12,
-            background: "var(--bg-elev)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            cursor: "pointer",
-            color: "var(--fg)",
-          }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; }}>
+        {list.map((s) => (
+          <button
+            key={s}
+            type="button"
+            className="anila-next-question"
+            aria-label={`帶入輸入框：${s}`}
+            title="帶入輸入框（不會直接送出）"
+            onClick={() => onPick?.(s)}
+            style={chipStyle}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.color = "var(--fg)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--fg-muted)"; }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.color = "var(--fg)"; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--fg-muted)"; }}
+          >
             {s}
           </button>
         ))}
       </div>
+      {/* 螢幕報讀：建議是回答結束後才非同步出現的，要念一聲。 */}
+      <span aria-live="polite" style={SR_ONLY}>
+        {`有 ${list.length} 個建議問題`}
+      </span>
     </div>
+  );
+};
+
+const SR_ONLY = {
+  position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
+  overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+};
+
+// 舊名稱保留：MessageBubble 與測試都還用它。所有信心等級都顯示；低／中信心
+// 只是多一行說明。
+export const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
+  const level = confidence?.level;
+  const lowConfidence = level === "low" || level === "medium" ? level : null;
+  return (
+    <NextQuestionChips
+      suggestions={suggestions}
+      onPick={onPick}
+      lowConfidence={lowConfidence}
+    />
   );
 };
 

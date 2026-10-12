@@ -225,6 +225,7 @@ import {
 } from "./runtime/tweaksApply.js";
 import { SettingsModal } from "./components/SettingsModal.jsx";
 import { useUsableSkills } from "./runtime/useUsableSkills.js";
+import { fetchFollowUps } from "./runtime/followUps.js";
 import { downloadConversationExport } from "./runtime/conversationExport.js";
 import { useBanners } from "./runtime/useBanners.js";
 import { AgentModelControls } from "./components/AgentModelControls.jsx";
@@ -443,6 +444,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setFolders,
     skillAutoApply,
     setSkillAutoApply,
+    followUpsEnabled,
+    setFollowUpsEnabled,
     foldersRef,
     uiSettingsLoadError,
     uiSettingsUnsaved,
@@ -482,6 +485,27 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   };
 
   const { usableSkills, reloadUsableSkills } = useUsableSkills(authRequest, isAuthenticated);
+
+  // ---- 建議下一個問題 ----
+  // 主串流結束、訊息落庫之後另外打一次端點。同一時間只有一個請求：使用者開始
+  // 打字、送出新訊息或換對話就取消。失敗一律靜默（fetchFollowUps 不丟錯）。
+  const followUpsAbortRef = useRef(null);
+  const followUpsEnabledRef = useRef(followUpsEnabled);
+  followUpsEnabledRef.current = followUpsEnabled;
+  const cancelFollowUps = useCallback(() => {
+    const controller = followUpsAbortRef.current;
+    followUpsAbortRef.current = null;
+    if (controller) controller.abort();
+  }, []);
+  useEffect(() => { cancelFollowUps(); }, [selectedConvId, cancelFollowUps]);
+  useEffect(() => () => cancelFollowUps(), [cancelFollowUps]);
+  const [composerInsert, setComposerInsert] = useState(null);
+  const composerInsertSeq = useRef(0);
+  const insertIntoComposer = useCallback((q) => {
+    if (typeof q !== "string" || !q.trim()) return;
+    composerInsertSeq.current += 1;
+    setComposerInsert({ text: q, token: composerInsertSeq.current });
+  }, []);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -874,6 +898,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }, [selectedConv?.title]);
   const currentMsgs = selectedConvId ? messagesByConv[selectedConvId] || [] : [];
   const latestAssistantId = latestAssistantMessageId(currentMsgs);
+  // 輸入框灰字預覽：最後一則就是回答、已經結束、而且有建議時，取第一個。
+  const lastMsg = currentMsgs[currentMsgs.length - 1];
+  const composerGhost = followUpsEnabled
+    && lastMsg?.role === "assistant"
+    && lastMsg.id === latestAssistantId
+    && !lastMsg.streaming
+    && Array.isArray(lastMsg.followUps)
+    && typeof lastMsg.followUps[0] === "string"
+    ? lastMsg.followUps[0]
+    : null;
   const isClassified = Boolean(selectedConv?.classified);
   const isClassificationInherited = Boolean(selectedConv?.classificationInherited);
   const activeAgent = useMemo(
@@ -2105,6 +2139,22 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     return pump;
   }
 
+  function requestFollowUps(convId, assistantId, messageDbId) {
+    if (!followUpsEnabledRef.current) return;
+    if (typeof convId !== "number" || messageDbId == null) return;
+    const existing = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
+    // agentic 輪自己帶了 anila.follow_ups，不再另外要。
+    if (Array.isArray(existing?.followUps) && existing.followUps.length > 0) return;
+    cancelFollowUps();
+    const controller = new AbortController();
+    followUpsAbortRef.current = controller;
+    void fetchFollowUps(authRequest, convId, messageDbId, controller.signal).then((list) => {
+      if (followUpsAbortRef.current === controller) followUpsAbortRef.current = null;
+      if (controller.signal.aborted || list.length === 0) return;
+      updateMsg(convId, assistantId, { followUps: list });
+    });
+  }
+
   function updateMsg(convId, msgId, patch) {
     const current = messagesRef.current[convId] || [];
     messagesRef.current = {
@@ -2690,6 +2740,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
     const { explicitAgents = [] } = meta;
     const skillId = Number.isInteger(meta.skillId) && meta.skillId > 0 ? meta.skillId : null;
+    cancelFollowUps();
     if (explicitAgents.length > 1) {
       return sendCompare(text, attachments, { explicitAgents, skillId });
     }
@@ -3153,6 +3204,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           metadata: persisted.saved?.metadata || persistMeta,
         });
         await reconcileAnsweredInterrupt(convId, assistantId, reservedId, persistMeta);
+        if (
+          streamState === STREAM_STATE.COMPLETE
+          && !lengthBudget
+          && !revisionKind
+          && !askSlot
+          && finalText.trim()
+        ) {
+          requestFollowUps(convId, assistantId, reservedId);
+        }
       }
       await flushPendingCompact(convId);
 
@@ -4441,7 +4501,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   onSwitchBranch={switchBranch}
                   onDeleteBranch={deleteBranch}
                   onOpenCitation={onOpenCitation}
-                  onPickFollowUp={(q) => sendMessage(q, [], {})}
+                  onPickFollowUp={insertIntoComposer}
                   onAction={runMessageAction}
                   onContinue={continueMessage}
                   onInterruptSubmit={handleInterruptAnswer}
@@ -4476,6 +4536,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   onQueuedAttachmentConsumed={() => setComposerCite(null)}
                   onUpload={uploadComposerAttachment}
                   onFetchAttachmentMeta={fetchComposerAttachmentMeta}
+                  insertRequest={composerInsert}
+                  ghostSuggestion={composerGhost}
+                  onTyping={cancelFollowUps}
                 />
               </>
             )}
@@ -4521,6 +4584,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           setSkillAutoApply(on);
         }}
         onSkillsChanged={reloadUsableSkills}
+        followUpsEnabled={followUpsEnabled}
+        onFollowUpsEnabledChange={(on) => {
+          markUiSettingsUserEdited("followUpsEnabled");
+          setFollowUpsEnabled(on);
+          if (!on) cancelFollowUps();
+        }}
         onOpenConversation={(id) => {
           if (id == null) return;
           setSettingsOpen(false);
