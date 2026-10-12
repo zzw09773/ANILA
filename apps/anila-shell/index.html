@@ -435,16 +435,9 @@
     padding: 6px 8px 6px 6px;
     flex-wrap: wrap;
   }
-  .composer-enter-hint {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--fg-subtle);
-    flex-shrink: 0;
-  }
+  /* 字數/狀態列在輸入欄內(textarea 底下),不再是 toolbar 的平行欄位,
+     所以窄視窗也不用藏它——它不搶按鈕和輸入框的寬度。 */
   @media (max-width: 520px) {
-    .composer-enter-hint { display: none; }
     .composer-toolbar { gap: 2px; }
   }
   .anila-md-table { max-width: 100%; }

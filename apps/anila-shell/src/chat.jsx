@@ -3599,12 +3599,8 @@ export const Composer = ({
       {/* 即時預覽。**刻意不進 textarea** —— 原生 textarea 無法混排兩色文字,
           overlay mirror 又會撞到這個元件既有的 mention/貼上/autosize 邏輯。
           定稿才進 value。 */}
-      {asr.partial && (
-        <div aria-live="polite" style={{
-          padding: "0 14px 4px", fontSize: 13, fontStyle: "italic",
-          color: "var(--fg-subtle)", lineHeight: 1.4,
-        }}>{asr.partial}</div>
-      )}
+      {/* 即時預覽改放在 textarea 欄位裡(見下方 composer-partial)——放在這裡
+          會貼著外框圓角頂端,看起來像畫在框外。 */}
       {asr.error && (
         <div role="alert" style={{
           padding: "0 14px 4px", fontSize: 12, color: "var(--danger)",
@@ -3776,7 +3772,7 @@ export const Composer = ({
           </span>
         )}
 
-        <div style={{ flex: 1, minWidth: 0, padding: "5px 8px 5px 4px" }}>
+        <div className="composer-input-col" style={{ flex: 1, minWidth: 0, padding: "5px 8px 5px 4px" }}>
           <textarea
             ref={taRef}
             className="anila-inset-field"
@@ -3813,23 +3809,36 @@ export const Composer = ({
               boxSizing: "content-box",
             }}
           />
+          {/* 即時預覽。**刻意不進 textarea** —— 原生 textarea 無法混排兩色文字,
+              overlay mirror 又會撞到既有的 mention/貼上/autosize 邏輯。定稿才進
+              value。放在輸入欄內、textarea 下方:不搶寬度,也不會貼到外框。 */}
+          {asr.partial && (
+            <div className="composer-partial" data-testid="asr-partial" style={{
+              marginTop: 2, fontSize: 13, fontStyle: "italic",
+              color: "var(--fg-subtle)", lineHeight: 1.4,
+              overflowWrap: "anywhere",
+            }}>{asr.partial}</div>
+          )}
+          {/* 字數 / 個資 / 狀態列。放在輸入欄底下而不是 toolbar 的平行欄位:
+              否則它和 textarea 搶同一列寬度,錄音時輸入框會被擠成窄窄一欄。
+              footer(「ANILA 會幫你找合適的助手」)外面那行已經顯示,這裡不重複。 */}
+          {/* live region 永遠掛著(空的時候不佔高度),狀態文字出現時螢幕報讀
+              才會念;條件式掛載的 live region 常常第一次不報。 */}
+          <div className="composer-status" data-testid="composer-status" style={{
+            display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+            marginTop: (text.length > 0 || piiHits.length > 0 || streaming || asr.state === "recording" || asr.state === "listening") ? 4 : 0,
+            fontSize: 11, color: "var(--fg-subtle)",
+            fontFamily: "var(--font-mono)",
+          }}>
+            {text.length > 0 && <span>{text.length} 字</span>}
+            {piiHits.length > 0 && <span style={{ color: "var(--warn)" }}>· 可能含個資 × {piiHits.length}</span>}
+            <span className="composer-live-status" data-testid="composer-live-status" aria-live="polite" aria-atomic="true" style={{ display: "inline-flex", gap: 6 }}>
+              {streaming && <span>產生中</span>}
+              {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>辨識中…</span>}
+              {asr.state === "listening" && <span>聆聽中…</span>}
+            </span>
+          </div>
         </div>
-
-        {(text.length > 0 || piiHits.length > 0) && (
-        <div style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", paddingLeft: 4, alignSelf: "center" }}>
-          {text.length > 0 && `${text.length} 字`}
-          {piiHits.length > 0 && <span style={{ color: "var(--warn)", marginLeft: 6 }}>· 可能含個資 × {piiHits.length}</span>}
-          {footer && text.length > 0 && <span style={{ marginLeft: 6, color: "var(--fg-subtle)" }}>· {footer}</span>}
-        </div>
-        )}
-
-        {(streaming || asr.state === "recording" || asr.state === "listening") && (
-        <div className="composer-enter-hint">
-          {streaming && <span>產生中</span>}
-          {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>辨識中…</span>}
-          {asr.state === "listening" && <span>聆聽中…</span>}
-        </div>
-        )}
 
         {/* 語音輸入。ASR 沒部署就不渲染(probe /asr/health;gateway 是
             profile-gated,沒開時 nginx 打不到 → probe 失敗)。不用 build-time
