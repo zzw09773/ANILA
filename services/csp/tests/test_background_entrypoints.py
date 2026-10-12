@@ -82,8 +82,11 @@ def test_retry_due_alert_mail_without_db_opens_own_session(monkeypatch, db_engin
     _use_test_sessionlocal(monkeypatch, db_engine)
     alert_mail.retry_due_alert_mail()
     # 自建 session 路徑會 ensure_settings 並 commit；之後同一個 engine 讀得到設定列。
+    from app.models.alert_mail import AlertMailSettings
+
     db = sessionmaker(bind=db_engine)()
     try:
-        assert alert_mail.ensure_settings(db) is not None
+        # 直接查列,不用 ensure_settings(它會自己補建,斷言就驗不到 commit)。
+        assert db.query(AlertMailSettings).count() >= 1
     finally:
         db.close()
