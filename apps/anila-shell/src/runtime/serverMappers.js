@@ -1,6 +1,7 @@
 // Map CSP conversation / message rows into the shape ChatRuntime keeps in state.
 // Pure functions: everything they need comes in as arguments.
 
+import { appliedSkillFromMeta } from "./skills.js";
 import { appendClassifiedTag, computeConversationClassified } from "./classified.js";
 import { messageDocument } from "./messageMeta.js";
 import { relativeLabel } from "./time.js";
@@ -117,7 +118,7 @@ export function mapServerMessage(msg) {
     thinkingElapsedMs: typeof meta.thinking_elapsed_ms === "number" ? meta.thinking_elapsed_ms : null,
     document: messageDocument(meta),
     thinkingLocked: meta.thinking_locked === true,
-    appliedSkill: meta.applied_skill && typeof meta.applied_skill === "object" ? meta.applied_skill : null,
+    appliedSkill: appliedSkillFromMeta(meta),
     usage: meta.usage || null,
     thinkingApplied: meta.thinking_applied || null,
     finishReason:

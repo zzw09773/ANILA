@@ -226,6 +226,7 @@ import {
 import { SettingsModal } from "./components/SettingsModal.jsx";
 import { useUsableSkills } from "./runtime/useUsableSkills.js";
 import { fetchFollowUps } from "./runtime/followUps.js";
+import { appliedSkillFromMeta, cleanSkillIds } from "./runtime/skills.js";
 import { downloadConversationExport } from "./runtime/conversationExport.js";
 import { useBanners } from "./runtime/useBanners.js";
 import { AgentModelControls } from "./components/AgentModelControls.jsx";
@@ -352,6 +353,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 而 442 個測試沒有一個抓得到。鏡像寫在 updater 裡面(不是 useEffect),
   // 所以它與 state 完全同步,不會落後一個 commit。
   const messagesRef = useRef({});
+  // 串流裡實際套用的 skill（anila.skill），以 assistant 訊息 id 為鍵。落庫時
+  // 不只靠 messagesRef：新對話第一輪時那份快照可能還沒有這則訊息，
+  // applied_skill(s) 就會漏存。
+  const appliedSkillByMsgRef = useRef(new Map());
   const convBulkRef = useRef(false);
   const bulkEpochRef = useRef(0);
   const bulkMountedRef = useRef(true);
@@ -484,7 +489,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     return false;
   };
 
-  const { usableSkills, reloadUsableSkills } = useUsableSkills(authRequest, isAuthenticated);
+  const { usableSkills, reloadUsableSkills, skillStackLimit, toggleSkillFavorite } = useUsableSkills(authRequest, isAuthenticated);
 
   // ---- 建議下一個問題 ----
   // 主串流結束、訊息落庫之後另外打一次端點。同一時間只有一個請求：使用者開始
@@ -696,6 +701,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         },
         onSkill: (payload) => {
           if (assistantId && payload && typeof payload === "object") {
+            appliedSkillByMsgRef.current.set(assistantId, payload);
             updateMsg(convId, assistantId, { appliedSkill: payload });
           }
           streamOpts.onSkill?.(payload);
@@ -2005,10 +2011,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
           document: drafted?.document,
-          appliedSkill: drafted?.appliedSkill,
+          appliedSkill: drafted?.appliedSkill || appliedSkillByMsgRef.current.get(assistantId),
           ...thinkingSnap,
         },
       );
+      appliedSkillByMsgRef.current.delete(assistantId);
       if (askSlot && persistMeta) {
         persistMeta.ask_content_spans = Array.isArray(drafted?.askContentSpans)
           ? drafted.askContentSpans
@@ -2571,8 +2578,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ? { document, ...(document.preview ? { text: document.preview } : {}) }
         : {}),
       ...(meta.thinking_applied ? { thinkingApplied: meta.thinking_applied } : {}),
-      ...(meta.applied_skill && typeof meta.applied_skill === "object"
-        ? { appliedSkill: meta.applied_skill }
+      ...(appliedSkillFromMeta(meta)
+        ? { appliedSkill: appliedSkillFromMeta(meta) }
         : {}),
       // Display-only, but it was showing the wrong agent name on every
       // routed answer: BOTH ends of handoff_chain read "anila-router" on the
@@ -2739,10 +2746,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return false;
     }
     const { explicitAgents = [] } = meta;
-    const skillId = Number.isInteger(meta.skillId) && meta.skillId > 0 ? meta.skillId : null;
+    const skillIds = cleanSkillIds(Array.isArray(meta.skillIds) ? meta.skillIds : [meta.skillId]);
+    const skillId = skillIds[0] ?? null;
     cancelFollowUps();
     if (explicitAgents.length > 1) {
-      return sendCompare(text, attachments, { explicitAgents, skillId });
+      return sendCompare(text, attachments, { explicitAgents, skillId, skillIds });
     }
     // ⚠ 這裡要**早於** ensureConversation / createTaskForConversation:那兩個會
     // 拿這段草稿當標題送到伺服器上。等到落庫扼流點才擋,訊息本身是保住了,
@@ -3068,6 +3076,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           taskId,
           attachmentRefs: bindIds,
           skillId,
+          skillIds,
           assistantId,
           onText: (acc) => {
             finalText = acc;
@@ -3172,10 +3181,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
           document: drafted?.document,
-          appliedSkill: drafted?.appliedSkill,
+          appliedSkill: drafted?.appliedSkill || appliedSkillByMsgRef.current.get(assistantId),
           ...thinkingSnap,
         },
       );
+      appliedSkillByMsgRef.current.delete(assistantId);
       if (askSlot && persistMeta) {
         persistMeta.ask_content_spans = Array.isArray(drafted?.askContentSpans)
           ? drafted.askContentSpans
@@ -3855,7 +3865,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       setRuntimeError("尚未登入，請重新登入後再試。");
       return false;
     }
-    const skillId = Number.isInteger(meta.skillId) && meta.skillId > 0 ? meta.skillId : null;
+    const skillIds = cleanSkillIds(Array.isArray(meta.skillIds) ? meta.skillIds : [meta.skillId]);
+    const skillId = skillIds[0] ?? null;
     const explicit = (meta.explicitAgents || []).filter(
       (id) => id !== ROUTER_AGENT.id,
     );
@@ -3908,6 +3919,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               messages: [{ role: "user", content: buildUserContent(text, attachments) }],
             },
             skillId,
+            skillIds,
             onSkill: (payload) => {
               if (!payload || typeof payload !== "object") return;
               setCompareMsgs((prev) => ({
@@ -4526,6 +4538,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   streaming={currentMsgs.some((m) => m.streaming)}
                   restoredDraft={draftRestore}
                   skills={usableSkills}
+                  maxSkills={skillStackLimit}
+                  onToggleSkillFavorite={async (skill) => {
+                    const ok = await toggleSkillFavorite(skill);
+                    if (!ok) toast("釘選沒有存成功，請再試一次", { tone: "error" });
+                  }}
                   agents={agents}
                   redactionMode={redactionMode}
                   onChangeRedactionMode={changeRedactionMode}

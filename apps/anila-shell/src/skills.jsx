@@ -7,6 +7,10 @@ import { IconBook, IconChevDown, IconChevRight, IconPencil, IconPlus, IconTrash,
 import {
   SKILL_STATUS_LABEL,
   appliedSkillLabel,
+  appliedSkillList,
+  copySkill,
+  listUsableSkillsWithLimits,
+  setSkillFavorite,
   assistSkill,
   createSkill,
   deleteSkill,
@@ -78,14 +82,15 @@ const chipButton = {
   background: "transparent", color: "var(--fg-muted)", cursor: "pointer",
 };
 
-export function SkillChip({ skill, onRemove }) {
+export function SkillChip({ skill, onRemove, inline = false }) {
   if (!skill?.name) return null;
   return (
     <div
       data-testid="skill-chip"
+      role={inline ? "listitem" : undefined}
       style={{
         display: "inline-flex", alignItems: "center", gap: 6,
-        margin: "8px 12px 0", padding: "2px 4px 2px 8px",
+        margin: inline ? 0 : "8px 12px 0", padding: "2px 4px 2px 8px",
         border: "1px solid var(--border)", borderRadius: 999,
         fontSize: 12, color: "var(--fg)", background: "var(--bg-subtle)",
         alignSelf: "flex-start",
@@ -93,7 +98,7 @@ export function SkillChip({ skill, onRemove }) {
     >
       <IconBook size={12} />
       <span>{skillChipLabel(skill.name)}</span>
-      <button type="button" aria-label="移除 skill" title="移除 skill" onClick={onRemove} style={chipButton}>
+      <button type="button" aria-label={`移除 skill：${skill.name}`} title="移除 skill" onClick={onRemove} style={chipButton}>
         <IconX size={11} />
       </button>
     </div>
@@ -102,11 +107,14 @@ export function SkillChip({ skill, onRemove }) {
 
 export function AppliedSkillIndicator({ skill, includeManual = false }) {
   const [open, setOpen] = useState(false);
-  if (!skill?.name) return null;
-  const showManual = includeManual && skill.mode === "manual";
-  const showAuto = skill.mode === "auto";
+  const list = appliedSkillList(skill);
+  if (list.length === 0) return null;
+  const mode = list[0].mode;
+  const showManual = includeManual && mode === "manual";
+  const showAuto = mode === "auto";
   if (!showManual && !showAuto) return null;
-  const label = showManual ? skillChipLabel(skill.name) : appliedSkillLabel(skill.name);
+  const names = list.map((item) => item.name).join("、");
+  const label = showManual ? skillChipLabel(names) : appliedSkillLabel(names);
   return (
     <div data-testid="applied-skill" style={{ marginBottom: 8, fontSize: 11 }}>
       <button
@@ -118,26 +126,67 @@ export function AppliedSkillIndicator({ skill, includeManual = false }) {
           padding: "2px 8px", borderRadius: 999,
           border: "1px solid var(--border)", background: "transparent",
           color: "var(--fg-muted)", fontSize: 11, cursor: "pointer",
+          maxWidth: "100%", textAlign: "left",
         }}
       >
         <IconBook size={11} />
-        {label}
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+        {list.length > 1 ? (
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-subtle)" }}>×{list.length}</span>
+        ) : null}
         {open ? <IconChevDown size={10} /> : <IconChevRight size={10} />}
       </button>
-      {open ? (
-        <pre
-          data-testid="applied-skill-body"
-          style={{
-            whiteSpace: "pre-wrap", margin: "6px 0 0", padding: "8px 10px",
-            background: "var(--bg-subtle)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius)", fontSize: 12, lineHeight: 1.6,
-            fontFamily: "inherit", color: "var(--fg)",
-          }}
-        >
-          {skill.body || ""}
-        </pre>
-      ) : null}
+      {open ? list.map((item, index) => (
+        <div key={`${item.id ?? index}-${index}`} style={{ marginTop: 6 }}>
+          {list.length > 1 ? (
+            <div style={{ fontSize: 11, color: "var(--fg-muted)", fontWeight: 500 }}>
+              {index + 1}. {item.name}
+            </div>
+          ) : null}
+          <pre
+            data-testid="applied-skill-body"
+            style={{
+              whiteSpace: "pre-wrap", margin: "4px 0 0", padding: "8px 10px",
+              background: "var(--bg-subtle)", border: "1px solid var(--border)",
+              borderRadius: "var(--radius)", fontSize: 12, lineHeight: 1.6,
+              fontFamily: "inherit", color: "var(--fg)",
+            }}
+          >
+            {item.body || ""}
+          </pre>
+        </div>
+      )) : null}
     </div>
+  );
+}
+
+function UsageCount({ item }) {
+  const count = Number(item?.use_count_30d) || 0;
+  if (!item || count <= 0) return null;
+  return (
+    <span
+      title="最近 30 天你用了幾次"
+      style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", flexShrink: 0 }}
+    >30 天 {count} 次</span>
+  );
+}
+
+function FavoriteButton({ item, onToggle }) {
+  const on = Boolean(item?.favorite);
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-label={on ? `取消釘選 ${item.name}` : `釘選 ${item.name}`}
+      title={on ? "取消釘選" : "釘選到「/」選單最上面"}
+      onClick={() => onToggle(item)}
+      style={{ ...chipButton, width: 24, height: 24, color: on ? "var(--accent)" : "var(--fg-muted)" }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"
+        fill={on ? "currentColor" : "none"} stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round">
+        <path d="M12 3l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.9 6.1 21l1.2-6.5L2.5 9.9 9.1 9z" />
+      </svg>
+    </button>
   );
 }
 
@@ -174,6 +223,9 @@ export function SkillManager({
   const confirm = useConfirm();
   const toast = useToast();
   const [rows, setRows] = useState([]);
+  // 可用清單：帶釘選、最近使用、30 天次數；也是「單位與全院」那一區的來源。
+  const [usable, setUsable] = useState([]);
+  const [copyingId, setCopyingId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
@@ -192,7 +244,12 @@ export function SkillManager({
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      setRows(await listSkills(authRequest, "mine"));
+      const [mine, usableData] = await Promise.all([
+        listSkills(authRequest, "mine"),
+        listUsableSkillsWithLimits(authRequest).catch(() => ({ skills: [] })),
+      ]);
+      setRows(mine);
+      setUsable(usableData.skills);
     } catch (err) {
       toast(err?.message || "讀取 skill 失敗", { tone: "error" });
     } finally {
@@ -393,6 +450,35 @@ export function SkillManager({
       toast(scope === "unit" ? "已送單位審核" : "已送全院審核", { tone: "success" });
     } catch (err) {
       toast(err?.message || "送審失敗", { tone: "error" });
+    }
+  };
+
+  const usableById = new Map(usable.map((item) => [item.id, item]));
+  const shared = usable.filter((item) => item.scope !== "personal" && item.owner_user_id !== user?.id);
+
+  const toggleFavorite = async (item) => {
+    const next = !item.favorite;
+    setUsable((list) => list.map((row) => (row.id === item.id ? { ...row, favorite: next } : row)));
+    try {
+      await setSkillFavorite(authRequest, item.id, next);
+      onChanged?.();
+    } catch (err) {
+      setUsable((list) => list.map((row) => (row.id === item.id ? { ...row, favorite: !next } : row)));
+      toast(err?.message || "釘選失敗", { tone: "error" });
+    }
+  };
+
+  const copyToMine = async (item) => {
+    setCopyingId(item.id);
+    try {
+      await copySkill(authRequest, item.id);
+      await reload();
+      onChanged?.();
+      toast(`已把「${item.name}」複製成你的個人草稿`, { tone: "success" });
+    } catch (err) {
+      toast(err?.message || "複製失敗", { tone: "error" });
+    } finally {
+      setCopyingId(null);
     }
   };
 
@@ -597,6 +683,10 @@ export function SkillManager({
                     {scopeLabel(row)}{row.auto_apply ? " · 可自動套用" : ""}
                   </span>
                   <span style={{ flex: 1 }} />
+                  <UsageCount item={usableById.get(row.id)} />
+                  {usableById.has(row.id) ? (
+                    <FavoriteButton item={usableById.get(row.id)} onToggle={toggleFavorite} />
+                  ) : null}
                   <button
                     type="button"
                     title="編輯"
@@ -630,6 +720,42 @@ export function SkillManager({
           })}
         </ul>
       </div>
+
+      {shared.length > 0 ? (
+        <div data-testid="shared-skills" style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+          <div style={SECTION_TITLE}>單位與全院的 skill</div>
+          <div style={SECTION_HINT}>
+            同仁分享出來、你可以直接用的 skill。釘選後會排在「/」選單最上面；想照自己的需要改，就複製成你的個人草稿。
+          </div>
+          <ul style={{ listStyle: "none", margin: "10px 0 0", padding: 0, display: "grid", gap: 8 }}>
+            {shared.map((item) => (
+              <li key={item.id} style={{
+                border: "1px solid var(--border)", borderRadius: "var(--radius)",
+                padding: "10px 12px", background: "var(--bg-elev)",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ display: "inline-flex", color: "var(--fg-muted)", flexShrink: 0 }}><IconBook size={13} /></span>
+                  <span style={{ fontWeight: 500, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                  <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>{scopeLabel(item)}</span>
+                  <span style={{ flex: 1 }} />
+                  <UsageCount item={item} />
+                  <FavoriteButton item={item} onToggle={toggleFavorite} />
+                </div>
+                <div style={{ ...SECTION_HINT, marginTop: 4 }}>{item.description}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    style={{ ...pillStyle(false), opacity: copyingId === item.id ? 0.55 : 1 }}
+                    disabled={copyingId === item.id}
+                    aria-label={`複製「${item.name}」成我的 skill`}
+                    onClick={() => copyToMine(item)}
+                  >{copyingId === item.id ? "複製中…" : "複製成我的"}</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
         <div style={SECTION_TITLE}>自動套用</div>

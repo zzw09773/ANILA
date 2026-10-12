@@ -16,6 +16,7 @@ export function ComposerDock({
   queuedAttachment, onQueuedAttachmentConsumed,
   onUpload, onFetchAttachmentMeta,
   insertRequest, ghostSuggestion, onTyping,
+  maxSkills, onToggleSkillFavorite,
 }) {
   return (
     <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
@@ -60,6 +61,8 @@ export function ComposerDock({
           onSend={onSend}
           restoredDraft={restoredDraft}
           skills={skills}
+          maxSkills={maxSkills}
+          onToggleSkillFavorite={onToggleSkillFavorite}
           agents={agents}
           redactionMode={redactionMode}
           onChangeRedactionMode={onChangeRedactionMode}

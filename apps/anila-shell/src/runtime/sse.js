@@ -1,4 +1,5 @@
 import { modelUnavailableFromPayload } from "./modelUnavailable.js";
+import { skillHeaders } from "./skills.js";
 import { quotaNotice } from "./quotaNotice.js";
 
 export function parseSseBlocks(buffer) {
@@ -150,6 +151,8 @@ export async function streamChatCompletion({
   attachmentRefs,
   // 這一則要套用的 skill。只送 id，內容由 CSP 讀資料庫。
   skillId,
+  // 疊加：照順序的多個 skill id。有值時優先於 skillId。
+  skillIds,
   onText,
   onTrace,
   onMeta,
@@ -215,7 +218,10 @@ export async function streamChatCompletion({
     const refs = attachmentRefs.map((id) => String(id).trim()).filter(Boolean);
     if (refs.length > 0) headers["X-ANILA-Attachment-Refs"] = refs.join(",");
   }
-  if (typeof skillId === "number" && Number.isInteger(skillId) && skillId > 0) {
+  const stacked = skillHeaders(skillIds);
+  if (stacked) {
+    Object.assign(headers, stacked);
+  } else if (typeof skillId === "number" && Number.isInteger(skillId) && skillId > 0) {
     headers["X-ANILA-Skill-Id"] = String(skillId);
   }
   const response = await fetch(url, {

@@ -168,6 +168,7 @@ describe("Composer 灰字預覽與帶入", () => {
     fireEvent.click(screen.getByRole("button", { name: "送出" }));
     expect(onSend.mock.calls[0][0]).toBe("建議問題");
     expect(onSend.mock.calls[0][2].skillId).toBeUndefined();
+    expect(onSend.mock.calls[0][2].skillIds ?? []).toEqual([]);
   });
 });
 

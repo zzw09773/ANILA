@@ -1,3 +1,4 @@
+import { appliedSkillMeta } from "./skills.js";
 // Persistence helpers for assistant-message metadata.
 //
 // SSE emits `anila.trace` steps incrementally and the closing `anila.meta`
@@ -160,15 +161,11 @@ export function buildPersistMeta(finalMeta, messageState) {
   if (state.finishReason === "length" || state.finishReason === "stop") {
     base.finish_reason = state.finishReason;
   }
-  if (state.appliedSkill && typeof state.appliedSkill === "object" && state.appliedSkill.name) {
-    base.applied_skill = {
-      id: state.appliedSkill.id,
-      version_id: state.appliedSkill.version_id ?? state.appliedSkill.versionId ?? null,
-      version: state.appliedSkill.version ?? null,
-      name: state.appliedSkill.name,
-      body: typeof state.appliedSkill.body === "string" ? state.appliedSkill.body : "",
-      mode: state.appliedSkill.mode === "auto" ? "auto" : "manual",
-    };
+  // 疊加後是一份清單；applied_skill 留第一個給舊畫面與舊對話。
+  const skillMeta = appliedSkillMeta(state.appliedSkill);
+  if (skillMeta) {
+    base.applied_skill = skillMeta.applied_skill;
+    if (skillMeta.applied_skills.length > 1) base.applied_skills = skillMeta.applied_skills;
   }
 
   const document = normalizeDocument(base.document) || normalizeDocument(state.document);
