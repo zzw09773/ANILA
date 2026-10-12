@@ -82,6 +82,7 @@ import {
 } from "./icons.jsx";
 import { useAsrInput, appendTranscript } from "./asr/useAsrInput.js";
 import { AppliedSkillIndicator, SkillChip } from "./skills.jsx";
+import { LetterRewritePanel } from "./letterRewrite.jsx";
 import { filterSkills, removeSlashToken, skillChipLabel, slashQuery } from "./runtime/skills.js";
 import {
   extractStatusReason,
@@ -2429,6 +2430,7 @@ export const Composer = ({
   skills = [],
 }) => {
   const toast = useToast();
+  const [letterOpen, setLetterOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
@@ -3258,7 +3260,7 @@ export const Composer = ({
         if (files.length) onFiles(files);
       }}
       onMouseDown={(e) => {
-        if (e.target.closest("button, input, textarea, a, [role='menu']")) return;
+        if (e.target.closest("button, input, textarea, a, [role='menu'], [role='dialog']")) return;
         taRef.current?.focus();
       }}
       className="anila-inset-surface"
@@ -3628,6 +3630,12 @@ export const Composer = ({
           </span>
         </label>
         <IconButton
+          title="改寫信件與公文"
+          onClick={() => setLetterOpen(true)}
+        >
+          <IconPencil />
+        </IconButton>
+        <IconButton
           title="提及 @agent"
           onClick={() => {
             setText((t) => t + (t.endsWith(" ") || t === "" ? "@" : " @"));
@@ -3980,6 +3988,7 @@ export const Composer = ({
           </span>
         )}
       </div>
+      <LetterRewritePanel open={letterOpen} onClose={() => setLetterOpen(false)} />
     </div>
   );
 };
