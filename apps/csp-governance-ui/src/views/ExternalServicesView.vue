@@ -57,10 +57,17 @@
           </select>
         </TermField>
         <TermField
-          v-if="item.service_key === 'speech' && drafts[item.service_key].protocol === 'openai'"
+          v-if="item.service_key === 'speech'"
           label="模型名稱"
+          :hint="drafts[item.service_key].protocol === 'openai'
+            ? 'openai 協定必填，名稱由對方端點決定。'
+            : '選填。同一端點載入多個模型時填要用的模型名稱；留白就用端點的預設模型。'"
         >
-          <input v-model="drafts[item.service_key].openai_model" class="term-input" />
+          <input
+            v-model="drafts[item.service_key].openai_model"
+            class="term-input"
+            :placeholder="drafts[item.service_key].protocol === 'openai' ? 'whisper-1' : '留白＝端點預設模型'"
+          />
         </TermField>
         <TermField
           label="憑證"
@@ -149,6 +156,8 @@ function titleOf(item) {
   return item.service_key === 'document_parser' ? '文件解析（Docling）' : '語音辨識'
 }
 
+const UNSET_MODEL = 'whisper-1'
+
 function remember(list) {
   services.value = list
   for (const item of list) {
@@ -156,7 +165,10 @@ function remember(list) {
       enabled: item.enabled,
       base_url: item.base_url || '',
       protocol: item.protocol || 'native',
-      openai_model: item.openai_model || 'whisper-1',
+      // native 時 whisper-1 是「沒指定」的佔位值，顯示成留白。
+      openai_model: (item.protocol || 'native') === 'native' && (item.openai_model || 'whisper-1') === UNSET_MODEL
+        ? ''
+        : (item.openai_model || UNSET_MODEL),
       credential: '',
       clearCredential: false,
     }
@@ -176,7 +188,9 @@ function bodyFor(item) {
   }
   if (item.service_key === 'speech') {
     body.protocol = draft.protocol
-    body.openai_model = draft.openai_model
+    const model = (draft.openai_model || '').trim()
+    // 後端不收空字串；native 留白存成佔位值，gateway 會因此不送 model。
+    body.openai_model = model || UNSET_MODEL
   }
   if (draft.clearCredential) body.credential = ''
   else if (draft.credential) body.credential = draft.credential

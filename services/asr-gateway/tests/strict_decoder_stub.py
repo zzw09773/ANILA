@@ -208,6 +208,10 @@ class _Handler(BaseHTTPRequestHandler):
             )
         if len(record.body) % 2:
             return self._reply(record, 400, {"error": "PCM 位元組數必須是偶數(int16)"})
+        requested = (record.query.get("model") or [None])[0]
+        if requested is not None and stub.native_models is not None and requested not in stub.native_models:
+            # 與真實多模型解碼端(.35)一致:不認得的模型回 404。
+            return self._reply(record, 404, {"error": f"unknown model {requested!r}"})
         return self._reply(
             record,
             200,
@@ -273,10 +277,12 @@ class StrictDecoderStub:
         *,
         credential: str,
         model: str | None = None,
+        native_models: tuple[str, ...] | None = None,
         transcript: str = "測試語音",
     ) -> None:
         self.credential = credential
         self.model = model
+        self.native_models = native_models
         self.transcript = transcript
         # 測試要模擬「上游壞掉」時用:非 None 就對所有 POST 回這個狀態碼。
         self.forced_status: int | None = None

@@ -22,6 +22,7 @@ import httpx
 from anila_core.security.upstream_urls import join_upstream_path
 
 from app.decode_client import (
+    native_model_param,
     OPENAI_TRANSCRIPTION_PATH,
     PROTOCOL_NATIVE,
     PROTOCOL_OPENAI,
@@ -105,7 +106,7 @@ async def probe_decode_target(
             return await _probe_openai(
                 client, base, credential, openai_model, limits
             )
-        return await _probe_native(client, base, credential, limits)
+        return await _probe_native(client, base, credential, limits, openai_model)
     finally:
         if owns:
             await client.aclose()
@@ -116,6 +117,7 @@ async def _probe_native(
     base: str,
     credential: str,
     limits: httpx.Timeout,
+    model: str = "",
 ) -> dict[str, Any]:
     try:
         health = await client.get(f"{base}/health", timeout=limits)
@@ -151,10 +153,14 @@ async def _probe_native(
 
     # /health is unauthenticated. A wrong shared secret still yields a
     # green health body and 401 on every utterance — catch that here.
+    params: dict[str, Any] = {"kind": "final", "beam": 1, "prompt": "", "language": "zh"}
+    selected = native_model_param(model)
+    if selected:
+        params["model"] = selected
     try:
         auth = await client.post(
             f"{base}/transcribe",
-            params={"kind": "final", "beam": 1, "prompt": "", "language": "zh"},
+            params=params,
             content=b"\x00\x00",
             headers={
                 "Content-Type": "application/octet-stream",
@@ -186,6 +192,13 @@ async def _probe_native(
             "ok": False,
             "reason": REASON_DECODER_NOT_READY,
             "detail": "decoder /transcribe returned 503 (model not ready)",
+        }
+    if auth.status_code == 404 and selected:
+        # 多模型解碼端對不認得的 model 回 404:設定的模型名稱打錯/沒載入。
+        return {
+            "ok": False,
+            "reason": REASON_DECODER_UNREACHABLE,
+            "detail": f"decoder does not serve model {selected!r} (HTTP 404)",
         }
     if auth.status_code in (200, 400, 422):
         return {"ok": True, "reason": REASON_OK, "detail": None}

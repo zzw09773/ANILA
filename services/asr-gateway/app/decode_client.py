@@ -52,6 +52,23 @@ SUPPORTED_PROTOCOLS = (PROTOCOL_NATIVE, PROTOCOL_OPENAI)
 OPENAI_TRANSCRIPTION_PATH = "/v1/audio/transcriptions"
 
 
+# 治理中心沒填模型時的佔位值(OpenAI 相容端點必填 `model`)。原生契約把它當
+# 「沒指定」—— 送出去會被多模型解碼端以 404 unknown model 拒絕。
+UNSET_MODEL_PLACEHOLDER = "whisper-1"
+
+
+def native_model_param(model: str | None) -> str:
+    """原生契約要送的 `model` query 值;空字串表示不送(由解碼端用預設模型)。
+
+    一個解碼端點可能同時載入多個模型(例:.35 的 breeze-25 / breeze-26),
+    `/transcribe?model=<name>` 選模型,不認得的名稱回 404。
+    """
+    value = (model or "").strip()
+    if not value or value == UNSET_MODEL_PLACEHOLDER:
+        return ""
+    return value
+
+
 class DecodeError(RuntimeError):
     """final 解碼失敗。partial 失敗不會走到這裡(靜默丟棄)。"""
 
@@ -184,6 +201,21 @@ class DecodeClient(_BaseDecodeClient):
 
     protocol = PROTOCOL_NATIVE
 
+    def __init__(
+        self,
+        base_url: str,
+        credential: str,
+        *,
+        model: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        super().__init__(base_url, credential, client=client)
+        self._model = model or ""
+
+    @property
+    def model(self) -> str:
+        return self._model
+
     async def _post(
         self,
         pcm: bytes,
@@ -200,6 +232,9 @@ class DecodeClient(_BaseDecodeClient):
             "prompt": prompt or "",
             "language": language,
         }
+        model = native_model_param(self._model)
+        if model:
+            params["model"] = model
         resp = await self._client.post(
             f"{self._base_url}/transcribe",
             params=params,
@@ -339,7 +374,7 @@ def align_decode_client(
     http = getattr(client, "_client", None) if client is not None else None
     if kind == PROTOCOL_OPENAI:
         return OpenAIDecodeClient(base_url, credential, model=model, client=http)
-    return DecodeClient(base_url, credential, client=http)
+    return DecodeClient(base_url, credential, model=model, client=http)
 
 
 def make_decode_client(settings, *, client: httpx.AsyncClient | None = None):
@@ -353,4 +388,9 @@ def make_decode_client(settings, *, client: httpx.AsyncClient | None = None):
             model=settings.ASR_OPENAI_MODEL,
             client=client,
         )
-    return DecodeClient(settings.ASR_DECODE_URL, credential, client=client)
+    return DecodeClient(
+        settings.ASR_DECODE_URL,
+        credential,
+        model=settings.ASR_OPENAI_MODEL,
+        client=client,
+    )
