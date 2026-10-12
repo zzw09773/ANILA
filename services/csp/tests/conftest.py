@@ -188,6 +188,12 @@ def client(db_engine, monkeypatch):
     # run_inactivity_sweep 驗證,排程本身由 test_account_inactivity 以原始碼檢查。
     from app.services import inactivity_service
     monkeypatch.setattr(inactivity_service, "_sweep_once", lambda: {"phase": None})
+    # 附件保存期限迴圈也一樣：啟動即在 thread 跑 _purge_once(執行當下的
+    # SessionLocal),測試把 SessionLocal 換成 StaticPool engine 後會跟登入請求
+    # 搶同一條連線(test_thinking_selector 平行全套時重現過)。清除邏輯由
+    # test_attachment_retention 直接呼叫 purge_expired_uploads 驗證。
+    from app.services import attachment_retention
+    monkeypatch.setattr(attachment_retention, "_purge_once", lambda: 0)
     Session = sessionmaker(bind=db_engine, expire_on_commit=False)
 
     async def _skip_network_ingestion_pool():
