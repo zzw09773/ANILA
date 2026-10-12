@@ -42,7 +42,6 @@ import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { resolveRoleModel } from "./runtime/modelRole.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { relativeLabel } from "./runtime/time.js";
-import { listSkills } from "./runtime/skills.js";
 import {
   BULK_CONCURRENCY,
   bindExpectedUser,
@@ -81,7 +80,6 @@ import {
   getUiSettings,
   putUiSettings,
   searchConversations,
-  listActiveBanners as apiListActiveBanners,
   getConversationUsage as apiGetConversationUsage,
   setConversationCompact as apiSetConversationCompact,
   clearConversationCompact as apiClearConversationCompact,
@@ -240,6 +238,9 @@ import {
 } from "./runtime/tweaksApply.js";
 import { EmptyState } from "./components/EmptyState.jsx";
 import { SettingsModal } from "./components/SettingsModal.jsx";
+import { useUsableSkills } from "./runtime/useUsableSkills.js";
+import { downloadConversationExport } from "./runtime/conversationExport.js";
+import { useBanners } from "./runtime/useBanners.js";
 
 export { EmptyState } from "./components/EmptyState.jsx";
 
@@ -609,19 +610,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     return () => clearTimeout(t);
   }, [folders, redactionMode, skillAutoApply, isAuthenticated, authRequest, user?.id, persistUiSettings]);
 
-  const [usableSkills, setUsableSkills] = useState([]);
-  const reloadUsableSkills = useCallback(() => {
-    if (!isAuthenticated) {
-      setUsableSkills([]);
-      return;
-    }
-    listSkills(authRequest, "usable")
-      .then((rows) => setUsableSkills(rows))
-      .catch(() => setUsableSkills([]));
-  }, [isAuthenticated, authRequest]);
-  useEffect(() => {
-    reloadUsableSkills();
-  }, [reloadUsableSkills]);
+  const { usableSkills, reloadUsableSkills } = useUsableSkills(authRequest, isAuthenticated);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -635,27 +624,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         msgs = (detail.messages || []).map((m) => ({ role: m.role, text: m.content }));
       } catch { msgs = []; }
     }
-    const title = conv?.title || "對話";
-    let content; let mime; let ext;
-    if (format === "markdown") {
-      const lines = [`# ${title}`, ""];
-      for (const m of msgs) {
-        if (!m.text) continue;
-        lines.push(m.role === "user" ? "## 使用者" : "## ANILA");
-        lines.push("", m.text, "");
-      }
-      content = lines.join("\n"); mime = "text/markdown"; ext = "md";
-    } else {
-      content = JSON.stringify({ title, messages: msgs.map((m) => ({ role: m.role, content: m.text })) }, null, 2);
-      mime = "application/json"; ext = "json";
-    }
-    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title.replace(/[^\w一-鿿 -]/g, "_").slice(0, 40)}.${ext}`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadConversationExport(conv?.title || "對話", msgs, format);
   }, [conversations, messagesByConv, authRequest]);
 
   const createFolder = useCallback((rawName) => {
@@ -697,27 +666,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const scrollRef = useRef(null);
 
   // 管理員公告 banner:登入後抓 active,使用者關閉後 localStorage 記住。
-  const [banners, setBanners] = useState([]);
-  const [dismissedBanners, setDismissedBanners] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("anila-dismissed-banners") || "[]")); }
-    catch { return new Set(); }
-  });
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    let alive = true;
-    apiListActiveBanners(authRequest)
-      .then((rows) => { if (alive) setBanners(Array.isArray(rows) ? rows : []); })
-      .catch(() => { if (alive) setBanners([]); });
-    return () => { alive = false; };
-  }, [isAuthenticated, authRequest]);
-  const visibleBanners = banners.filter((b) => !dismissedBanners.has(b.id));
-  const dismissBanner = useCallback((id) => {
-    setDismissedBanners((prev) => {
-      const next = new Set(prev); next.add(id);
-      try { localStorage.setItem("anila-dismissed-banners", JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }, []);
+  const { visibleBanners, dismissBanner } = useBanners(authRequest, isAuthenticated);
 
   // Changelog「新功能」modal:未看過最新版時頂列鈕顯示小紅點。
   const [changelogOpen, setChangelogOpen] = useState(false);
