@@ -64,6 +64,7 @@ describe("skills runtime：疊加", () => {
 
   it("maxStackFrom 讀 API 給的上限，沒有就 3", () => {
     expect(maxStackFrom({ max_stack: 5 })).toBe(5);
+    expect(maxStackFrom({ max_stack: 25 })).toBe(25);
     expect(maxStackFrom({ limits: { max_stack: 2 } })).toBe(2);
     expect(maxStackFrom({ skills: [] })).toBe(3);
     expect(maxStackFrom({ max_stack: 0 })).toBe(3);

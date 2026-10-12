@@ -122,7 +122,7 @@ export function maxStackFrom(data) {
   const candidates = [data?.max_stack, data?.limits?.max_stack, data?.settings?.max_stack];
   for (const value of candidates) {
     const n = Number(value);
-    if (Number.isInteger(n) && n >= 1) return Math.min(n, 20);
+    if (Number.isInteger(n) && n >= 1) return n;
   }
   return DEFAULT_MAX_SKILL_STACK;
 }
