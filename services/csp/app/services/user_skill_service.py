@@ -1379,11 +1379,31 @@ def _persist_applications(
 
 
 def _stack_limit(db: Session) -> int:
-    return int(get_setting(db, SKILLS_MAX_STACK_KEY))
+    """讀 skills.max_stack，並夾在登錄表的 1–20。
+
+    寫入端拒收範圍外的值。讀取端仍夾邊，避免資料庫裡的舊值或手改值變成無限疊加。
+    """
+    from app.models.platform_setting import PlatformSetting
+    from app.services.settings_registry import SKILLS_MAX_STACK_MAX, SKILLS_MAX_STACK_MIN
+
+    row = db.get(PlatformSetting, SKILLS_MAX_STACK_KEY)
+    source = row.value if row is not None else get_setting(db, SKILLS_MAX_STACK_KEY)
+    try:
+        value = int(str(source).strip())
+    except (TypeError, ValueError):
+        value = 3
+    return min(SKILLS_MAX_STACK_MAX, max(SKILLS_MAX_STACK_MIN, value))
 
 
 def _chars_limit(db: Session) -> int:
     return int(get_setting(db, SKILLS_MAX_TOTAL_CHARS_KEY))
+
+
+def skill_catalog_limits(db: Session) -> dict[str, int]:
+    return {
+        "max_stack": _stack_limit(db),
+        "max_total_chars": _chars_limit(db),
+    }
 
 
 def _guidance_too_long(db: Session, rows: list[UserSkill]) -> bool:
@@ -1391,15 +1411,14 @@ def _guidance_too_long(db: Session, rows: list[UserSkill]) -> bool:
 
 
 def _load_explicit_skills(db: Session, user: User, lineage_ids: list[int]) -> list[UserSkill]:
-    if len(lineage_ids) > _stack_limit(db):
-        raise HTTPException(status_code=422, detail=SKILL_LIMIT_DETAIL)
+    # 先逐一驗權限。名單裡有用不到的 id 就 403，即使數量或字數也超過上限。
     rows: list[UserSkill] = []
     for lineage_id in lineage_ids:
         skill = serving_version(db, user, lineage_id)
         if skill is None:
             raise SkillAccessError()
         rows.append(skill)
-    if _guidance_too_long(db, rows):
+    if len(rows) > _stack_limit(db) or _guidance_too_long(db, rows):
         raise HTTPException(status_code=422, detail=SKILL_LIMIT_DETAIL)
     return rows
 
@@ -1498,8 +1517,11 @@ def parse_explicit_skill_ids(
     ids_raw: str | None,
     legacy_raw: str | None = None,
 ) -> list[int] | None:
-    """沒有明確指定就回 None。新標頭有內容時不再讀舊標頭。重複的 id 只留第一次。"""
-    if ids_raw is not None and str(ids_raw).strip():
+    """沒有這個標頭才回 None。標頭在，卻是空的或不是 id，就拒絕，不改走自動選。
+
+    新標頭有出現時不再讀舊標頭。重複的 id 只留第一次。
+    """
+    if ids_raw is not None:
         found: list[int] = []
         seen: set[int] = set()
         for part in str(ids_raw).split(","):
@@ -1511,7 +1533,9 @@ def parse_explicit_skill_ids(
                 continue
             seen.add(value)
             found.append(value)
-        return found or None
+        if not found:
+            raise SkillAccessError()
+        return found
     single = parse_explicit_skill_id(legacy_raw)
     if single is None:
         return None
@@ -1574,6 +1598,7 @@ async def apply_skill_to_chat(
         return None
     # 自動選完可能換過連線；再確認這位同仁仍用得到這一版，而且內容來自資料庫。
     fresh = serving_version(db, user, skill.lineage_id)
+    # 自動選到的技能超過字數就略過。自動套用不能讓這次對話失敗。
     if fresh is None or _guidance_too_long(db, [fresh]):
         return None
     try:

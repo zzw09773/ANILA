@@ -35,6 +35,7 @@ from app.services.user_skill_service import (
     list_skills,
     publish_targets,
     reject_skill,
+    skill_catalog_limits,
     skill_usage_stats,
     skills_feature_enabled,
     submit_skill,
@@ -139,7 +140,7 @@ def list_my_skills(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return {"skills": list_skills(db, user, view=view)}
+    return {"skills": list_skills(db, user, view=view), **skill_catalog_limits(db)}
 
 
 @router.post("", response_model=SkillOut, status_code=201)

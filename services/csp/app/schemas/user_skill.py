@@ -65,6 +65,8 @@ class SkillOut(ApiResponseModel):
 
 class SkillListOut(ApiResponseModel):
     skills: list[SkillOut]
+    max_stack: int
+    max_total_chars: int
 
 
 class SkillReviewItem(ApiResponseModel):

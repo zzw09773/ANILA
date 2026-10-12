@@ -269,6 +269,14 @@ def _removed_config_env_names() -> set[str]:
     return old_fields - current_fields - active_fallbacks
 
 
+def test_skills_max_stack_domain_is_one_through_twenty():
+    spec = REGISTRY["skills.max_stack"]
+    assert spec.default == 3
+    assert spec.domain_fn(1) and spec.domain_fn(20)
+    assert not spec.domain_fn(0) and not spec.domain_fn(21)
+    assert not spec.domain_fn(True)
+
+
 def test_registry_is_exactly_the_fifteen_immediate_settings():
     assert {spec.key for spec in SETTINGS} == KEEP_KEYS
     assert set(REGISTRY) == KEEP_KEYS

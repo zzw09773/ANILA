@@ -15,7 +15,7 @@ from app.middleware.caller import Caller
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
 from app.models.department import Department
-from app.models.platform_setting import set_setting
+from app.models.platform_setting import PlatformSetting, set_setting
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.models.user_skill import UserSkillFavorite, UserSkillUsage
 from app.services import user_skill_service as skills
@@ -355,6 +355,58 @@ async def test_any_unusable_skill_rejects_the_whole_stack(db, monkeypatch):
             headers={"X-ANILA-Skill-Id": "nope"},
         )
     assert missing.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_oversized_stack_with_unusable_id_is_403(db, monkeypatch):
+    captured = _install_upstream(monkeypatch)
+    owner = make_user(db, username="stack-order", role="admin")
+    stranger = make_user(db, username="stack-order-secret")
+    model = make_model(db, name="order-llm")
+    own = [
+        _skill(db, owner, name=f"順序{index}", body=f"順序內容{index}")
+        for index in range(3)
+    ]
+    secret = _skill(db, stranger, name="順序外人", body="外人內容")
+    header = ",".join(str(row.lineage_id) for row in own + [secret])
+    before = captured["calls"]
+    with pytest.raises(HTTPException) as caught:
+        await _chat(db, owner, model, headers={"X-ANILA-Skill-Ids": header})
+    assert caught.value.status_code == 403
+    assert caught.value.detail != SKILL_LIMIT_DETAIL
+    assert captured["calls"] == before
+
+
+@pytest.mark.asyncio
+async def test_present_malformed_skill_ids_do_not_auto_select(db, monkeypatch):
+    captured = _install_upstream(monkeypatch)
+    user = make_user(db, username="stack-bad-header", role="admin")
+    model = make_model(db, name="bad-header-llm")
+    _skill(db, user, name="會自動", body="不該自動注入", auto_apply=True)
+    conv = Conversation(user_id=user.id, title="壞標頭", origin="anila-ui")
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+
+    async def explode(*args, **kwargs):
+        raise AssertionError("壞掉的技能標頭不該改走自動選")
+
+    monkeypatch.setattr(skills, "_summary_complete", explode)
+    before = captured["calls"]
+    for raw in (",", "abc", "   "):
+        with pytest.raises(HTTPException) as caught:
+            await _chat(
+                db,
+                user,
+                model,
+                headers={
+                    "X-ANILA-Skill-Ids": raw,
+                    "X-ANILA-Conversation-Id": str(conv.id),
+                },
+                content="請整理週報",
+            )
+        assert caught.value.status_code == 403
+    assert captured["calls"] == before
 
 
 @pytest.mark.asyncio
@@ -762,3 +814,36 @@ async def test_sse_event_keeps_the_first_skill_and_lists_the_stack():
     assert data["applied_skill"]["body"] == "甲"
     assert [item["name"] for item in data["applied_skills"]] == ["第一", "第二"]
     assert chunks[1] == "data: [DONE]\n\n"
+
+
+def test_skill_list_exposes_stack_limits_and_clamps_max_stack(client, db):
+    from app.services.settings_registry import REGISTRY
+
+    user = make_user(db, username="stack-limits", role="admin")
+    token = login(client, "stack-limits")
+    spec = REGISTRY["skills.max_stack"]
+    assert spec.domain_fn(1) and spec.domain_fn(20)
+    assert not spec.domain_fn(0) and not spec.domain_fn(21)
+    with pytest.raises(ValueError):
+        set_setting(db, "skills.max_stack", 21)
+    for view in ("usable", "mine"):
+        listed = client.get(f"/api/skills?view={view}", headers=_auth(token))
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert body["max_stack"] == 3
+        assert body["max_total_chars"] == 4000
+        assert "skills" in body
+    set_setting(db, "skills.max_stack", 20)
+    set_setting(db, "skills.max_total_chars", 1200)
+    db.commit()
+    raised = client.get("/api/skills?view=mine", headers=_auth(token))
+    assert raised.json()["max_stack"] == 20
+    assert raised.json()["max_total_chars"] == 1200
+    stored = db.get(PlatformSetting, "skills.max_stack")
+    stored.value = "50"
+    db.commit()
+    clamped = client.get("/api/skills?view=usable", headers=_auth(token))
+    assert clamped.json()["max_stack"] == 20
+    stored.value = "0"
+    db.commit()
+    assert client.get("/api/skills", headers=_auth(token)).json()["max_stack"] == 1
