@@ -3,6 +3,8 @@
 -r requirements.txt
 
 # module boundary lint gate(infra/ci/lint-boundaries.sh + .importlinter)。
+# 沒有 services/csp/.venv 時,腳本只安裝下面這一列的精確版本。
+# 該目錄已存在則不建立、不重裝、不覆蓋。
 import-linter==2.12
 
 # collect-time import: tests/test_conversation_compact.py 讀 alembic
