@@ -60,6 +60,9 @@ const EXPECTED = [
   // 多輪上限與每次提問的模型呼叫預算（2026-09-26）
   ['limits.router_round_cap', null],
   ['limits.router_model_call_budget', null],
+  ['follow_ups.enabled', 'FOLLOW_UPS_ENABLED'],
+  ['follow_ups.allow_classified', 'FOLLOW_UPS_ALLOW_CLASSIFIED'],
+  ['follow_ups.max', 'FOLLOW_UPS_MAX'],
 ]
 
 function row(key, index = 0, overrides = {}) {
@@ -81,8 +84,8 @@ function row(key, index = 0, overrides = {}) {
   }
 }
 
-test('registry and UI contract contain exactly the twenty C settings', () => {
-  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 21)
+test('registry and UI contract contain exactly the twenty-four C settings', () => {
+  assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 24)
   assert.equal(SECTION_DEFS.length, 3)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))
