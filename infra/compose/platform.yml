@@ -797,6 +797,11 @@ services:
       ASR_PARTIALS_ENABLED: ${ASR_PARTIALS_ENABLED:-1}
       ASR_OPENCC_MODE: ${ASR_OPENCC_MODE:-off}
       ASR_MAX_SESSION_SECONDS: ${ASR_MAX_SESSION_SECONDS:-300}
+      # 切句 / 噪音門檻。預設 = 程式預設;現場調整寫在 .env。
+      ASR_VAD_AGGRESSIVENESS: ${ASR_VAD_AGGRESSIVENESS:-2}
+      ASR_SPEECH_END_MS: ${ASR_SPEECH_END_MS:-510}
+      ASR_MIN_RMS: ${ASR_MIN_RMS:-0.008}
+      ASR_START_RMS: ${ASR_START_RMS:-0.008}
       CSP_BASE_URL: http://csp:8000
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
