@@ -86,7 +86,6 @@ import {
   requestConversationCompact as apiRequestConversationCompact,
 } from "./runtime/conversations.js";
 import {
-  compactBoundaryOnPath,
   compactFieldsFromServer,
   compactPutFailureState,
   compactStateFromConv,
@@ -96,7 +95,6 @@ import {
   resolveKeptBoundary,
   writePendingCompact,
 } from "./runtime/compact.js";
-import { CompactBoundaryBanner } from "./compactBoundary.jsx";
 import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
 import { ConversationUsageChip, UsagePage } from "./usage.jsx";
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
@@ -154,7 +152,6 @@ import {
   Composer,
   MessageBubble,
   attachmentAdmissionMap,
-  questionAttachmentBasis,
   Sidebar,
 } from "./chat.jsx";
 import {
@@ -234,12 +231,12 @@ import {
   applyTweaks,
   resolveInitialTweaks,
 } from "./runtime/tweaksApply.js";
-import { EmptyState } from "./components/EmptyState.jsx";
 import { SettingsModal } from "./components/SettingsModal.jsx";
 import { useUsableSkills } from "./runtime/useUsableSkills.js";
 import { downloadConversationExport } from "./runtime/conversationExport.js";
 import { useBanners } from "./runtime/useBanners.js";
 import { AgentModelControls } from "./components/AgentModelControls.jsx";
+import { MessageList } from "./components/MessageList.jsx";
 
 export { EmptyState } from "./components/EmptyState.jsx";
 
@@ -4746,63 +4743,32 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               />
             ) : (
               <>
-                <div ref={scrollRef} style={{
-                  flex: 1, overflowY: "auto", background: "var(--bg)",
-                  display: "flex", flexDirection: "column",
-                }}>
-                  <div style={{
-                    maxWidth: 760, margin: "0 auto", width: "100%",
-                    padding: `calc(var(--density) * 1.2) var(--density)`,
-                    ...(currentMsgs.length === 0
-                      ? { flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }
-                      : {}),
-                  }}>
-                    {currentMsgs.length === 0 ? (
-                      <EmptyState
-                        agent={activeAgent}
-                        agents={agents}
-                        loading={loadingAgents}
-                        onPick={(q) => sendMessage(q, [], {})}
-                      />
-                    ) : (
-                      currentMsgs.map((m, idx) => (
-                        <React.Fragment key={m.id}>
-                          {selectedConv?.compactSummary
-                            && compactBoundaryOnPath(currentMsgs, selectedConv.compactBoundaryMessageId)
-                            && m.dbId === selectedConv.compactBoundaryMessageId ? (
-                            <CompactBoundaryBanner
-                              summary={selectedConv.compactSummary}
-                              onRestore={restoreFullContext}
-                            />
-                          ) : null}
-                          <MessageBubble
-                            msg={m}
-                            agents={agents}
-                            conversationId={selectedConvId}
-                            classified={isClassified}
-                            classificationLevel={selectedConv?.classificationLevel}
-                            onRegenerate={regenerateMessage}
-                            onRate={handleRate}
-                            onEditUser={handleEditUser}
-                            onSwitchBranch={switchBranch}
-                            onDeleteBranch={deleteBranch}
-                            onOpenCitation={onOpenCitation}
-                            onPickFollowUp={(q) => sendMessage(q, [], {})}
-                            messageActions={customActions}
-                            onAction={runMessageAction}
-                            onContinue={continueMessage}
-                            onInterruptSubmit={handleInterruptAnswer}
-                            conversationStreaming={currentMsgs.some((x) => x.streaming)}
-                            isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
-                            questionAttachmentBasis={m.role === "assistant" ? questionAttachmentBasis(currentMsgs, idx) : "none"}
-                            onCiteDocument={(attachment) => setComposerCite(attachment)}
-                            showRawReasoning={canSeeRawReasoning(user)}
-                          />
-                        </React.Fragment>
-                      ))
-                    )}
-                  </div>
-                </div>
+                <MessageList
+                  scrollRef={scrollRef}
+                  messages={currentMsgs}
+                  conversation={selectedConv}
+                  conversationId={selectedConvId}
+                  agents={agents}
+                  activeAgent={activeAgent}
+                  loadingAgents={loadingAgents}
+                  classified={isClassified}
+                  latestAssistantId={latestAssistantId}
+                  messageActions={customActions}
+                  showRawReasoning={canSeeRawReasoning(user)}
+                  onStarterPick={(q) => sendMessage(q, [], {})}
+                  onRestoreFullContext={restoreFullContext}
+                  onRegenerate={regenerateMessage}
+                  onRate={handleRate}
+                  onEditUser={handleEditUser}
+                  onSwitchBranch={switchBranch}
+                  onDeleteBranch={deleteBranch}
+                  onOpenCitation={onOpenCitation}
+                  onPickFollowUp={(q) => sendMessage(q, [], {})}
+                  onAction={runMessageAction}
+                  onContinue={continueMessage}
+                  onInterruptSubmit={handleInterruptAnswer}
+                  onCiteDocument={(attachment) => setComposerCite(attachment)}
+                />
 
                 <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
                   <div style={{ maxWidth: 760, margin: "0 auto" }}>
