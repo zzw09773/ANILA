@@ -22,6 +22,7 @@ from app.services.proxy_service import downstream_identity, proxy_request
 
 logger = logging.getLogger(__name__)
 
+
 async def _embed_query(
     db: Session,
     user: User,

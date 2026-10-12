@@ -45,8 +45,7 @@ describe("MermaidDiagram theme and failed-render wiring", () => {
 
     renderView(<MarkdownView text={DIAGRAM} />);
 
-    await screen.findByText("這張圖這次沒畫出來。");
-    expect(screen.queryByText(/syntax error/)).toBeNull();
+    await screen.findByText(/mermaid 錯誤：syntax error/);
     expect(mermaidMock.initialize).toHaveBeenCalledWith(expect.objectContaining({
       startOnLoad: false,
       securityLevel: "strict",

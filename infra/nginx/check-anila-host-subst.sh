@@ -21,6 +21,7 @@ if command -v envsubst >/dev/null 2>&1; then
   defined=$(awk 'BEGIN { for (name in ENVIRON) printf "${%s} ", name }')
   rendered=$(envsubst "$defined" < "$TEMPLATE")
 else
+  command -v python3 >/dev/null 2>&1 || { echo "找不到 envsubst 或 python3，無法檢查 ANILA_HOST 代入" >&2; exit 2; }
   rendered=$(python3 - "$TEMPLATE" <<'PY'
 import os, re, sys
 text = open(sys.argv[1], encoding="utf-8").read()

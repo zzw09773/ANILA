@@ -339,7 +339,6 @@ class ImageSearchResponse(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-
 async def _expand_relations(
     db: Session,
     store: "CollectionScopedPgVectorStore",
@@ -462,8 +461,6 @@ async def _expand_relations(
     return out
 
 
-
-
 EMBEDDING_ROLE_UNSET = "平台嵌入模型尚未在治理中心設定"
 
 
@@ -481,8 +478,6 @@ def _require_platform_embedding(db):
 
 
 # ── Endpoint ────────────────────────────────────────────────────────────────
-
-
 
 
 @router.post(
