@@ -2,6 +2,7 @@
 // app.jsx re-exports the public ones so existing imports keep working.
 
 import { AGENT_REPLY_OBSERVATION_KEY, agentReplyNotice } from "./agentReplySignal.js";
+import { visibleStarterPrompts } from "../starterPrompts.js";
 
 export const ROUTER_AGENT = Object.freeze({
   id: "anila-router",
@@ -11,24 +12,16 @@ export const ROUTER_AGENT = Object.freeze({
   requiresEncryption: false,
 });
 
-// Default starter — a single card that asks the Router itself to
-// introduce ANILA AND list every agent available to this user. The
-// Router already has the agent manifest in its system prompt so it can
-// produce an accurate, up-to-date answer on first ask, and the user
-// sees their real option set instead of hand-curated marketing cards.
-export function buildStarterPrompts(agents) {
-  const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
-  const countLine = real.length > 0
-    ? `你目前可以使用 ${real.length} 個 agent`
-    : "平台目前尚未註冊 agent";
-  return [
-    {
-      title: "ANILA 可以做什麼？",
-      sub: `${countLine}，點一下讓 ANILA 介紹平台與各助手的能力`,
-      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
-      primary: true,
-    },
-  ];
+// 入門卡只列出程式已從合成示範文件查到原文的問句。查不到的不會出現。
+// `_agents` 留著是因為空狀態本來就會把助手清單傳進來；清單不再決定卡片。
+export function buildStarterPrompts(_agents) {
+  return visibleStarterPrompts().map((prompt, index) => ({
+    id: prompt.id,
+    title: prompt.title,
+    sub: prompt.sub,
+    q: prompt.q,
+    primary: index === 0,
+  }));
 }
 
 export function makeId(prefix) {

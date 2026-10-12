@@ -19,6 +19,7 @@ import {
 } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion, streamSessionAnswer } from "./runtime/sse.js";
+import { localChatReply } from "./runtime/scopeGuard.js";
 import { mergeLiveTrace } from "./runtime/trace.js";
 import { createTaskForConversation } from "./runtime/tasks.js";
 import {
@@ -1675,6 +1676,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   async function generateConversationTitle(convId, userText, assistantText, _effectiveTarget) {
     if (typeof convId !== "number") return;
     if (!isAuthenticated) return;
+    // 這則回答是程式產生的（入門卡原文或範圍外下一步），不再請模型取標題。
+    if (localChatReply(userText)) return;
     let summaryModel;
     try {
       summaryModel = await resolveRoleModel(config.cspBaseUrl, "summary");

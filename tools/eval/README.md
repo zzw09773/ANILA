@@ -78,6 +78,17 @@ python3 tools/eval/run_golden_set.py \
 3. `python3 tools/eval/run_golden_set.py --dry-run` 確認結構。
 4. 在有模型的環境跑完整評測，把報告附在 PR／交接。
 
+## 首頁入門卡（不打模型）
+
+空對話的範例問句要先從合成示範文件查得到才顯示。詞表擋下的代寄信、代核准也在同一支前端路徑，不打模型。
+
+```bash
+python3 tools/eval/verify_starter_prompts.py
+```
+
+預期：印出 `starter prompts OK：3 visible, 1 hidden（前端一致）`，exit 0。
+題庫在 `apps/anila-shell/src/starterPrompts.data.json`。查不到的對照題（停車位）必須維持不顯示。
+
 ## 與平台量測層的關係
 
 | 項目 | 位置 | 行為 |
