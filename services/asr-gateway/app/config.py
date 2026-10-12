@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # 負載過高時的第一個旋鈕:關掉 partial,只留 final。
     ASR_PARTIALS_ENABLED: bool = True
     ASR_VAD_AGGRESSIVENESS: int = 2
+    # ── 切句 / 噪音門檻(預設值 = 原本寫死在 transcriber.py 的值)────────────
+    # 停頓多久算一句講完(毫秒,以 30ms 幀向上取整)。太短會把一句話切成好幾段。
+    ASR_SPEECH_END_MS: int = 510
+    # 整句平均音量低於此值就丟棄,不送解碼(0~1 的 RMS)。
+    ASR_MIN_RMS: float = 0.008
+    # 觸發「開始講話」那幾幀的平均音量門檻。調高可擋冷氣、鍵盤等背景聲。
+    ASR_START_RMS: float = 0.008
 
     # ⚠ 預設 off,且不要改成 s2twp。實測:whisper medium 在 1096 句真實繁中
     # 語料的簡體率 0%,而 OpenCC 對正確繁體的誤傷率 s2t 9.85% / s2tw 6.20% /

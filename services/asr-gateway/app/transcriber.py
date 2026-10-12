@@ -139,7 +139,16 @@ class VadSegmenter:
         vad_aggressiveness: int = 2,
         partials_enabled: bool = True,
         vad: Vad | None = None,
+        speech_end_ms: int | None = None,
+        min_rms: float | None = None,
+        start_rms: float | None = None,
     ) -> None:
+        self.speech_end_frames = (
+            SPEECH_END_FRAMES if speech_end_ms is None
+            else max(1, -(-int(speech_end_ms) // FRAME_MS))
+        )
+        self.min_rms = MIN_RMS if min_rms is None else float(min_rms)
+        self.start_rms = START_RMS if start_rms is None else float(start_rms)
         self._vad = vad if vad is not None else webrtcvad.Vad(vad_aggressiveness)
         self.partials_enabled = partials_enabled
         self._pending = bytearray()
@@ -221,7 +230,7 @@ class VadSegmenter:
             # 那幾幀有真實能量,才不會整天在解碼環境噪音。
             loud_enough = (
                 len(self._trigger_rms) == SPEECH_START_FRAMES
-                and sum(self._trigger_rms) / len(self._trigger_rms) >= START_RMS
+                and sum(self._trigger_rms) / len(self._trigger_rms) >= self.start_rms
             )
             if self._voiced_run >= SPEECH_START_FRAMES and loud_enough:
                 self._in_speech = True
@@ -240,7 +249,7 @@ class VadSegmenter:
         self._speech.extend(frame)
         self._samples_since_partial += FRAME_SAMPLES
         too_long = len(self._speech) >= int(MAX_UTTERANCE_SEC * SAMPLE_RATE) * 2
-        if self._unvoiced_run >= SPEECH_END_FRAMES or too_long:
+        if self._unvoiced_run >= self.speech_end_frames or too_long:
             self._end_utterance(events)
         elif (
             self.partials_enabled
@@ -262,11 +271,11 @@ class VadSegmenter:
         if len(audio) < int(MIN_UTTERANCE_SEC * SAMPLE_RATE) * 2:
             events.append(Discard(utt_id))
             return
-        # 收尾的那 510ms 靜音不該算進音量判斷,否則長尾巴會把整句的 RMS 拉低。
-        tail = SPEECH_END_FRAMES * FRAME_BYTES
+        # 收尾的那段靜音(speech_end_frames)不該算進音量判斷,否則長尾巴會把整句的 RMS 拉低。
+        tail = self.speech_end_frames * FRAME_BYTES
         voiced = audio[:-tail] if len(audio) > tail + FRAME_BYTES else audio
         samples = np.frombuffer(voiced, dtype=np.int16).astype(np.float32) / 32768.0
-        if float(np.sqrt(np.mean(samples**2))) < MIN_RMS:
+        if float(np.sqrt(np.mean(samples**2))) < self.min_rms:
             events.append(Discard(utt_id))
             return
         events.append(FinalReady(utt_id, audio, time.monotonic()))

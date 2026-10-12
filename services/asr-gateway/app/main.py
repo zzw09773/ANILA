@@ -376,6 +376,9 @@ def _register_routes(app: FastAPI) -> None:
             segmenter=VadSegmenter(
                 vad_aggressiveness=s.ASR_VAD_AGGRESSIVENESS,
                 partials_enabled=s.ASR_PARTIALS_ENABLED,
+                speech_end_ms=s.ASR_SPEECH_END_MS,
+                min_rms=s.ASR_MIN_RMS,
+                start_rms=s.ASR_START_RMS,
             ),
             initial_prompt=s.ASR_INITIAL_PROMPT or None,
             beam_size=s.ASR_BEAM_SIZE,
