@@ -73,7 +73,15 @@ def _b64url_decode_int(value: str) -> int:
     return int.from_bytes(raw, "big")
 
 
-def test_jwks_endpoint_returns_200(jwks_client):
+@pytest.mark.parametrize(
+    "_case",
+    [
+        pytest.param('test_jwks_endpoint_returns_200', id='returns_200'),
+        # Public keys are public — no Authorization / cookie should be needed.
+        pytest.param('test_jwks_endpoint_does_not_require_auth', id='does_not_require_auth'),
+    ],
+)
+def test_jwks_endpoint(_case, jwks_client):
     response = jwks_client.get("/.well-known/jwks.json")
     assert response.status_code == 200
 
@@ -172,12 +180,6 @@ def test_jwks_published_key_validates_csp_signed_token(jwks_client):
     token = create_access_token({"sub": "42"})
     payload = jwt.decode(token, reconstructed_pem, algorithms=["RS256"])
     assert payload["sub"] == "42"
-
-
-def test_jwks_endpoint_does_not_require_auth(jwks_client):
-    """Public keys are public — no Authorization / cookie should be needed."""
-    response = jwks_client.get("/.well-known/jwks.json")
-    assert response.status_code == 200
 
 
 def test_jwks_endpoint_idempotent(jwks_client):

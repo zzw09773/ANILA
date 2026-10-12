@@ -30,10 +30,17 @@ from anila_core.ingestion.chunking_plugins import (
 # ── Registry tests ──────────────────────────────────────────────────────────
 
 
-def test_builtins_registered() -> None:
-    """Sprint 1 ships exactly these three; UI / API depends on the names."""
+@pytest.mark.parametrize(
+    "item, item2, item3",
+    [
+        # Sprint 1 ships exactly these three; UI / API depends on the names.
+        pytest.param("hierarchical", "fixed", "markdown-aware", id='builtins_registered'),
+        pytest.param("pdf-page", "cjk-sentence", "semantic", id='sprint3_strategies_registered'),
+    ],
+)
+def test_builtins_registered_cases(item, item2, item3) -> None:
     names = {c["name"] for c in list_chunkers()}
-    assert {"hierarchical", "fixed", "markdown-aware"}.issubset(names)
+    assert {item, item2, item3}.issubset(names)
 
 
 def test_get_chunker_returns_fresh_instance() -> None:
@@ -349,6 +356,3 @@ def test_semantic_split_segments_helper() -> None:
 # ── Sprint 3 strategies registered ─────────────────────────────────────────
 
 
-def test_sprint3_strategies_registered() -> None:
-    names = {c["name"] for c in list_chunkers()}
-    assert {"pdf-page", "cjk-sentence", "semantic"}.issubset(names)

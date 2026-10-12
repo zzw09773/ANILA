@@ -354,17 +354,24 @@ def _prep_dev(client, db, name):
     return login(client, name)
 
 
-def test_missing_profile_is_503(client, db, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "setattr_arg, value, prep_dev_arg, expected",
+    [
+        pytest.param("app.api.agents.registration._QUICKSTART_PROFILE", "nope.json", "dev_no_profile", "profile", id='missing_profile_is_503'),
+        pytest.param("app.api.agents.registration._ANILA_VERIFY_SOURCE", "gone.py", "dev_no_verifier", "驗證器", id='missing_verifier_is_503'),
+    ],
+)
+def test_missing_profile_is_503_cases(setattr_arg, value, prep_dev_arg, expected, client, db, monkeypatch, tmp_path):
     inputs = build_all_inputs(tmp_path)
     _configure(monkeypatch, inputs)
     monkeypatch.setattr(
-        "app.api.agents.registration._QUICKSTART_PROFILE",
-        tmp_path / "nope.json",
+        setattr_arg,
+        tmp_path / value,
     )
-    token = _prep_dev(client, db, "dev_no_profile")
+    token = _prep_dev(client, db, prep_dev_arg)
     resp = _get(client, token, _QUICKSTART_URL)
     assert resp.status_code == 503
-    assert "profile" in resp.json()["detail"]
+    assert expected in resp.json()["detail"]
 
 
 def test_zip_omits_wheelhouse_even_when_wheels_exist(client, db, monkeypatch, tmp_path):
@@ -495,19 +502,6 @@ def test_blank_image_version_is_503(client, db, monkeypatch, tmp_path):
     resp = _get(client, token, _QUICKSTART_URL)
     assert resp.status_code == 503
     assert "IMAGE_VERSION" in resp.json()["detail"]
-
-
-def test_missing_verifier_is_503(client, db, monkeypatch, tmp_path):
-    inputs = build_all_inputs(tmp_path)
-    _configure(monkeypatch, inputs)
-    monkeypatch.setattr(
-        "app.api.agents.registration._ANILA_VERIFY_SOURCE",
-        tmp_path / "gone.py",
-    )
-    token = _prep_dev(client, db, "dev_no_verifier")
-    resp = _get(client, token, _QUICKSTART_URL)
-    assert resp.status_code == 503
-    assert "驗證器" in resp.json()["detail"]
 
 
 def test_empty_verifier_is_503(client, db, monkeypatch, tmp_path):

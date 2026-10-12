@@ -640,8 +640,16 @@ def test_boot_backfill_survives_the_audit_tables_changing_owner(migrated_pg, con
     assert owner.fetchone() is not None, "開機補欄位沒生效"
 
 
-def test_startup_guard_refuses_a_loosened_audit_table(migrated_pg, conn, monkeypatch):
-    """未來哪支 migration 忘了收權,csp **當天**就起不來,而不是半年後在稽核現場發現。"""
+@pytest.mark.parametrize(
+    "execute_arg, expected, expected2, execute_arg2",
+    [
+        # 未來哪支 migration 忘了收權,csp **當天**就起不來,而不是半年後在稽核現場發現。
+        pytest.param("GRANT UPDATE ON audit_logs TO csp_app", "audit_logs", "UPDATE", "REVOKE UPDATE ON audit_logs FROM csp_app", id='a_loosened_audit_table'),
+        # 把 INSERT 發回給檢查點表 = 重新打開「封存被卡死」那條路,開機就該擋。
+        pytest.param("GRANT INSERT ON audit_checkpoints TO csp_app", "audit_checkpoints", "INSERT", "REVOKE INSERT ON audit_checkpoints FROM csp_app", id='insert_on_the_checkpoint_table'),
+    ],
+)
+def test_startup_guard_refuses(execute_arg, expected, expected2, execute_arg2, migrated_pg, conn, monkeypatch):
     import app.services.startup_security as ss
 
     engine = _role_engine(migrated_pg, "csp_app")
@@ -651,33 +659,13 @@ def test_startup_guard_refuses_a_loosened_audit_table(migrated_pg, conn, monkeyp
     try:
         ss.assert_audit_ledger_locked_down()  # 正常姿態:過
 
-        owner.execute("GRANT UPDATE ON audit_logs TO csp_app")
+        owner.execute(execute_arg)
         with pytest.raises(RuntimeError) as exc:
             ss.assert_audit_ledger_locked_down()
-        assert "audit_logs" in str(exc.value)
-        assert "UPDATE" in str(exc.value)
+        assert expected in str(exc.value)
+        assert expected2 in str(exc.value)
     finally:
-        owner.execute("REVOKE UPDATE ON audit_logs FROM csp_app")
+        owner.execute(execute_arg2)
         engine.dispose()
 
 
-def test_startup_guard_refuses_insert_on_the_checkpoint_table(
-    migrated_pg, conn, monkeypatch,
-):
-    """把 INSERT 發回給檢查點表 = 重新打開「封存被卡死」那條路,開機就該擋。"""
-    import app.services.startup_security as ss
-
-    engine = _role_engine(migrated_pg, "csp_app")
-    monkeypatch.setattr("app.database.engine", engine, raising=False)
-    monkeypatch.setattr(ss, "_is_dev_mode", lambda: False)
-    owner = conn.cursor()
-    try:
-        ss.assert_audit_ledger_locked_down()
-        owner.execute("GRANT INSERT ON audit_checkpoints TO csp_app")
-        with pytest.raises(RuntimeError) as exc:
-            ss.assert_audit_ledger_locked_down()
-        assert "audit_checkpoints" in str(exc.value)
-        assert "INSERT" in str(exc.value)
-    finally:
-        owner.execute("REVOKE INSERT ON audit_checkpoints FROM csp_app")
-        engine.dispose()

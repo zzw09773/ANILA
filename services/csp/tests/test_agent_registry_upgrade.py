@@ -76,15 +76,16 @@ class TestManifestValidation:
         with pytest.raises(Exception):
             AgentManifest.model_validate(bad)
 
-    def test_non_five_level_classification_rejected(self):
+    @pytest.mark.parametrize(
+        "value, value2, value3",
+        [
+            pytest.param("classification", "ceiling", "絕密", id='non_five_level_classification_rejected'),
+            pytest.param("trace", "protocol", "not-anila", id='wrong_trace_protocol_rejected'),
+        ],
+    )
+    def test_non_five_level_classification_rejected_cases(self, value, value2, value3):
         bad = _valid_manifest()
-        bad["classification"]["ceiling"] = "絕密"  # not a 四級 value
-        with pytest.raises(Exception):
-            AgentManifest.model_validate(bad)
-
-    def test_wrong_trace_protocol_rejected(self):
-        bad = _valid_manifest()
-        bad["trace"]["protocol"] = "not-anila"
+        bad[value][value2] = value3  # not a 四級 value
         with pytest.raises(Exception):
             AgentManifest.model_validate(bad)
 

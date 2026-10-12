@@ -133,26 +133,22 @@ def test_owner_password_login_allowed_when_locked_down(
     assert resp.json()["access_token"]
 
 
-def test_owner_wrong_password_returns_404_when_locked_down(
+@pytest.mark.parametrize(
+    "username, role, item, item2",
+    [
+        # 失敗姿態統一:owner 密碼錯也回 404,不可與非 owner / 端點關閉區分。
+        pytest.param("boss", "owner", "boss", "wrong-password", id='owner_wrong_password_returns_404_when_locked_down'),
+        # 非 owner 連「帳密完全正確」都拿 404 — owner 例外不外溢到其他角色。
+        pytest.param("staffer", "user", "staffer", "password", id='nonowner_valid_credentials_return_404_when_locked_down'),
+    ],
+)
+def test_owner_wrong_password_returns_404_when_locked_down_cases(username, role, item, item2, 
     client: TestClient, db, card_only_lockdown
 ):
-    """失敗姿態統一:owner 密碼錯也回 404,不可與非 owner / 端點關閉區分。"""
-    make_user(db, username="boss", role="owner")
+    make_user(db, username=username, role=role)
     resp = client.post(
         "/api/auth/login",
-        json={"username": "boss", "password": "wrong-password"},
-    )
-    assert resp.status_code == 404
-
-
-def test_nonowner_valid_credentials_return_404_when_locked_down(
-    client: TestClient, db, card_only_lockdown
-):
-    """非 owner 連「帳密完全正確」都拿 404 — owner 例外不外溢到其他角色。"""
-    make_user(db, username="staffer", role="user")
-    resp = client.post(
-        "/api/auth/login",
-        json={"username": "staffer", "password": "password"},
+        json={"username": item, "password": item2},
     )
     assert resp.status_code == 404
 
@@ -209,14 +205,16 @@ def test_local_login_still_works_when_lockdown_off(client: TestClient, db):
 # ── startup consistency ───────────────────────────────────────────────────────
 
 
-def test_startup_assertion_passes_when_lockdown_off(monkeypatch):
-    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "password")
+@pytest.mark.parametrize(
+    "setattr_arg",
+    [
+        pytest.param("password", id='lockdown_off'),
+        pytest.param("card-only", id='both_flags_on'),
+    ],
+)
+def test_startup_assertion_passes_when(setattr_arg, monkeypatch):
+    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", setattr_arg)
     # 不該 raise — password mode 是合法模式
-    assert_intranet_lockdown_consistency()
-
-
-def test_startup_assertion_passes_when_both_flags_on(monkeypatch):
-    monkeypatch.setattr(settings, "ANILA_AUTH_MODE", "card-only")
     assert_intranet_lockdown_consistency()
 
 

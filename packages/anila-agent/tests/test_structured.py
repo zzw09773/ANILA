@@ -17,8 +17,15 @@ def test_fenced_json_gemma_style():
     assert parse_json_object('```json\n{"names": ["a"]}\n```') == {"names": ["a"]}
 
 
-def test_bare_fence():
-    assert parse_json_object("```\n{\"x\": 1}\n```") == {"x": 1}
+@pytest.mark.parametrize(
+    "parse_json_object_arg",
+    [
+        pytest.param("```\n{\"x\": 1}\n```", id='bare_fence'),
+        pytest.param('結果如下：{"x": 1} 完畢', id='embedded_object_extracted'),
+    ],
+)
+def test_bare_fence_cases(parse_json_object_arg):
+    assert parse_json_object(parse_json_object_arg) == {"x": 1}
 
 
 def test_none_fails_closed():
@@ -31,20 +38,19 @@ def test_empty_or_whitespace_fails_closed():
     assert parse_json_object("   \n  ") == {}
 
 
-def test_garbage_fails_closed():
-    assert parse_json_object("這不是 JSON") == {}
-
-
-def test_array_is_not_object_fails_closed():
-    assert parse_json_object("[1, 2, 3]") == {}
+@pytest.mark.parametrize(
+    "parse_json_object_arg",
+    [
+        pytest.param("這不是 JSON", id='garbage_fails_closed'),
+        pytest.param("[1, 2, 3]", id='array_is_not_object_fails_closed'),
+    ],
+)
+def test_garbage_fails_closed_cases(parse_json_object_arg):
+    assert parse_json_object(parse_json_object_arg) == {}
 
 
 def test_default_returned_on_failure():
     assert parse_json_object(None, {"names": []}) == {"names": []}
-
-
-def test_embedded_object_extracted():
-    assert parse_json_object('結果如下：{"x": 1} 完畢') == {"x": 1}
 
 
 def test_strip_fences_passthrough():

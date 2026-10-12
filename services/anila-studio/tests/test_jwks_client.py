@@ -288,13 +288,20 @@ async def test_network_error_raises_jwks_fetch_error(fast_ttl, csp_base_url):
 # ----------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "item",
+    [
+        pytest.param("not_keys", id='payload_missing_keys_field_raises'),
+        pytest.param("keys", id='payload_keys_empty_array_raises'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_payload_missing_keys_field_raises(fast_ttl, csp_base_url):
+async def test_payload_missing_keys_field_raises_cases(item, fast_ttl, csp_base_url):
     from app.services.jwks_client import JwksClient, JwksPayloadError
 
     async with respx.mock(base_url=csp_base_url) as router:
         router.get("/.well-known/jwks.json").mock(
-            return_value=httpx.Response(200, json={"not_keys": []})
+            return_value=httpx.Response(200, json={item: []})
         )
         client = JwksClient()
         with pytest.raises(JwksPayloadError):
@@ -562,19 +569,6 @@ async def test_payload_keys_is_not_a_list_raises(fast_ttl, csp_base_url):
     async with respx.mock(base_url=csp_base_url) as router:
         router.get("/.well-known/jwks.json").mock(
             return_value=httpx.Response(200, json={"keys": "not-a-list"})
-        )
-        client = JwksClient()
-        with pytest.raises(JwksPayloadError):
-            await client.get_public_key("anila-v1")
-
-
-@pytest.mark.asyncio
-async def test_payload_keys_empty_array_raises(fast_ttl, csp_base_url):
-    from app.services.jwks_client import JwksClient, JwksPayloadError
-
-    async with respx.mock(base_url=csp_base_url) as router:
-        router.get("/.well-known/jwks.json").mock(
-            return_value=httpx.Response(200, json={"keys": []})
         )
         client = JwksClient()
         with pytest.raises(JwksPayloadError):

@@ -171,29 +171,24 @@ async def test_order_and_alignment_survive_the_split():
 # ── (b) boundaries ─────────────────────────────────────────────────────────
 
 
-async def test_exactly_one_batch_is_still_one_request():
-    """No empty trailing request when the count divides evenly."""
+@pytest.mark.parametrize(
+    "texts_arg, item, expected",
+    [
+        # No empty trailing request when the count divides evenly.
+        pytest.param(4, 4, 4, id='exactly_one_batch_is_still_one_request'),
+        pytest.param(1, 1, 1, id='one_chunk_is_one_request'),
+    ],
+)
+async def test_exactly_one_batch_is_still_one_request_cases(texts_arg, item, expected):
     embedder = Embedder(_make_settings(embedding_batch_size=4))
     recorder = _Recorder()
     try:
-        result = await _run(embedder, _texts(4), recorder)
+        result = await _run(embedder, _texts(texts_arg), recorder)
     finally:
         await embedder.close()
 
-    assert recorder.sizes == [4]
-    assert len(result) == 4
-
-
-async def test_one_chunk_is_one_request():
-    embedder = Embedder(_make_settings(embedding_batch_size=4))
-    recorder = _Recorder()
-    try:
-        result = await _run(embedder, _texts(1), recorder)
-    finally:
-        await embedder.close()
-
-    assert recorder.sizes == [1]
-    assert len(result) == 1
+    assert recorder.sizes == [item]
+    assert len(result) == expected
 
 
 async def test_zero_chunks_sends_nothing():

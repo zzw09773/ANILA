@@ -24,11 +24,19 @@ def test_https_always_allowed(monkeypatch):
     validate_outbound_url("https://api.example.com/v1")  # 不該 raise
 
 
-def test_http_blocked_by_default(monkeypatch):
+@pytest.mark.parametrize(
+    "setenv_arg, setenv_arg2, validate_outbound_url_arg",
+    [
+        pytest.param("ANILA_ALLOW_PRIVATE_ENDPOINT", "1", "http://api.example.com/v1", id='http_blocked_by_default'),
+        # Trusted host 僅繞過 host 檢查,scheme 仍受 ANILA_ALLOW_HTTP_ENDPOINT
+        pytest.param("ANILA_TRUSTED_HOSTS", "gemma4", "http://gemma4:8000/v1", id='trusted_host_does_not_bypass_scheme'),
+    ],
+)
+def test_http_blocked_by_default_cases(setenv_arg, setenv_arg2, validate_outbound_url_arg, monkeypatch):
     monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
-    monkeypatch.setenv("ANILA_ALLOW_PRIVATE_ENDPOINT", "1")  # 給 host 通過
+    monkeypatch.setenv(setenv_arg, setenv_arg2)  # 給 host 通過
     with pytest.raises(UnsafeEndpointError) as exc:
-        validate_outbound_url("http://api.example.com/v1")
+        validate_outbound_url(validate_outbound_url_arg)
     assert "ANILA_ALLOW_HTTP_ENDPOINT" in str(exc.value)
 
 
@@ -141,16 +149,6 @@ def test_trusted_host_bypasses_single_label_block(monkeypatch):
     validate_outbound_url("http://gemma4:8000/v1")
     validate_outbound_url("http://gpt-oss-20b:8000/v1")
     validate_outbound_url("http://nv-embed-proxy:8000/v1")
-
-
-def test_trusted_host_does_not_bypass_scheme(monkeypatch):
-    """Trusted host 僅繞過 host 檢查,scheme 仍受 ANILA_ALLOW_HTTP_ENDPOINT
-    管。Defense in depth — 接受 hostname 不等於接受任意 scheme。"""
-    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
-    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma4")
-    with pytest.raises(UnsafeEndpointError) as exc:
-        validate_outbound_url("http://gemma4:8000/v1")
-    assert "ANILA_ALLOW_HTTP_ENDPOINT" in str(exc.value)
 
 
 def test_trusted_host_is_case_insensitive(monkeypatch):

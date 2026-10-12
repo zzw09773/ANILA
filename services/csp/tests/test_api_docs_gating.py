@@ -10,6 +10,7 @@ TestClient (no ``with`` block) to avoid the lifespan startup that the shared
 """
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -18,15 +19,17 @@ from app.main import app
 _client = TestClient(app)
 
 
-def test_openapi_schema_requires_auth():
-    """Unauthenticated callers do not get the schema (401/403, never 200)."""
-    status = _client.get("/openapi.json").status_code
-    assert status in (401, 403)
-
-
-def test_swagger_ui_requires_auth():
-    """Unauthenticated callers do not get Swagger UI (401/403, never 200)."""
-    status = _client.get("/docs").status_code
+@pytest.mark.parametrize(
+    "get_arg",
+    [
+        # Unauthenticated callers do not get the schema (401/403, never 200).
+        pytest.param("/openapi.json", id='openapi_schema_requires_auth'),
+        # Unauthenticated callers do not get Swagger UI (401/403, never 200).
+        pytest.param("/docs", id='swagger_ui_requires_auth'),
+    ],
+)
+def test_openapi_schema_requires_auth_cases(get_arg):
+    status = _client.get(get_arg).status_code
     assert status in (401, 403)
 
 

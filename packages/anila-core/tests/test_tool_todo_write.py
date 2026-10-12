@@ -74,14 +74,16 @@ def test_validate_rejects_more_than_one_in_progress() -> None:
         )
 
 
-def test_validate_rejects_blank_content() -> None:
-    with pytest.raises(TodoValidationError, match="content is required"):
-        _validate([{"content": "  ", "active_form": "doing"}])
-
-
-def test_validate_rejects_blank_active_form() -> None:
-    with pytest.raises(TodoValidationError, match="active_form is required"):
-        _validate([{"content": "x", "active_form": ""}])
+@pytest.mark.parametrize(
+    "match, item, item2",
+    [
+        pytest.param("content is required", "  ", "doing", id='content'),
+        pytest.param("active_form is required", "x", "", id='active_form'),
+    ],
+)
+def test_validate_rejects_blank(match, item, item2) -> None:
+    with pytest.raises(TodoValidationError, match=match):
+        _validate([{"content": item, "active_form": item2}])
 
 
 def test_validate_rejects_unknown_status() -> None:

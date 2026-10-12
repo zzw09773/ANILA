@@ -134,12 +134,17 @@ def test_truncate_embedding_drops_tail_from_native():
     assert out[-1] == EMBED_DIM - 1  # tail dropped, head intact
 
 
-def test_truncate_embedding_raises_on_unexpected_dim():
-    """Loud failure beats silent corruption. A misconfigured
-    embedder would otherwise write garbage that can't be searched.
-    """
-    with pytest.raises(ValueError, match="dim 768"):
-        truncate_embedding([0.1] * 768)
+@pytest.mark.parametrize(
+    "match, value",
+    [
+        # Loud failure beats silent corruption. A misconfigured
+        pytest.param("dim 768", 768, id='raises_on_unexpected_dim'),
+        pytest.param("pad_from|not in", 2048, id='rejects_short_without_pad_from'),
+    ],
+)
+def test_truncate_embedding(match, value):
+    with pytest.raises(ValueError, match=match):
+        truncate_embedding([0.1] * value)
 
 
 def test_truncate_embedding_pads_when_pad_from_matches():
@@ -162,11 +167,6 @@ def test_truncate_embedding_rejects_short_when_pad_from_mismatches():
     """pad_from=2048 must NOT accept a 1536-d vector."""
     with pytest.raises(ValueError, match="1536"):
         truncate_embedding([0.1] * 1536, pad_from=2048)
-
-
-def test_truncate_embedding_rejects_short_without_pad_from():
-    with pytest.raises(ValueError, match="pad_from|not in"):
-        truncate_embedding([0.1] * 2048)
 
 
 def test_truncate_embedding_truncates_when_pad_from_above_column():

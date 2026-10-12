@@ -47,11 +47,18 @@ async def test_returns_none_when_dot_missing() -> None:
     assert out is None
 
 
+@pytest.mark.parametrize(
+    "value, item, item2",
+    [
+        pytest.param(1, b"", b"syntax error", id='on_nonzero_exit'),
+        pytest.param(0, b"not a png", b"", id='when_output_not_png'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_returns_none_on_nonzero_exit() -> None:
+async def test_returns_none(value, item, item2) -> None:
     fake_proc = AsyncMock()
-    fake_proc.returncode = 1
-    fake_proc.communicate = AsyncMock(return_value=(b"", b"syntax error"))
+    fake_proc.returncode = value
+    fake_proc.communicate = AsyncMock(return_value=(item, item2))
 
     with patch(
         "app.services.diagram_renderer.asyncio.create_subprocess_exec",
@@ -73,20 +80,6 @@ async def test_returns_none_on_timeout() -> None:
         return_value=fake_proc,
     ):
         out = await render_dot_to_png(_VALID_DOT, timeout=0.01)
-    assert out is None
-
-
-@pytest.mark.asyncio
-async def test_returns_none_when_output_not_png() -> None:
-    fake_proc = AsyncMock()
-    fake_proc.returncode = 0
-    fake_proc.communicate = AsyncMock(return_value=(b"not a png", b""))
-
-    with patch(
-        "app.services.diagram_renderer.asyncio.create_subprocess_exec",
-        return_value=fake_proc,
-    ):
-        out = await render_dot_to_png(_VALID_DOT)
     assert out is None
 
 

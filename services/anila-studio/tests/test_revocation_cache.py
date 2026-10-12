@@ -196,9 +196,17 @@ async def test_publish_event_updates_cache(
     assert await started_cache.is_revoked(user_id, token_version=8) is False
 
 
-async def test_cache_miss_returns_false(started_cache):
-    """Users never revoked produce cache misses → not revoked."""
-    assert await started_cache.is_revoked(999, token_version=5) is False
+@pytest.mark.parametrize(
+    "token_version",
+    [
+        # Users never revoked produce cache misses → not revoked.
+        pytest.param(5, id='cache_miss_returns_false'),
+        # 從沒被撤銷過的使用者(``token_version`` 仍是 0)不能被誤判。
+        pytest.param(0, id='version_zero_user_is_not_pre_revoked'),
+    ],
+)
+async def test_cache_miss_returns_false_cases(token_version, started_cache):
+    assert await started_cache.is_revoked(999, token_version=token_version) is False
 
 
 # ---------------------------------------------------------------------------
@@ -359,14 +367,6 @@ async def test_old_token_stays_dead_and_second_revocation_kills_the_middle_one(
         "兩次撤銷之間簽發的權杖必須被第二次殺掉"
     )
     assert await started_cache.is_revoked(uid, token_version=6) is False
-
-
-async def test_version_zero_user_is_not_pre_revoked(started_cache):
-    """從沒被撤銷過的使用者(``token_version`` 仍是 0)不能被誤判。
-
-    cache miss → False。這條擋的是「用 0 當哨兵值」那類重構。
-    """
-    assert await started_cache.is_revoked(999, token_version=0) is False
 
 
 # ---------------------------------------------------------------------------

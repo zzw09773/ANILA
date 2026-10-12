@@ -263,16 +263,23 @@ class TestInvariant5FailClosedUnnameable:
     Mutant: missing dept returns empty share instead of 404.
     """
 
-    def test_missing_user(self, client: TestClient, db: Session):
-        owner = make_user(db, username="p43_owner_mu")
+    @pytest.mark.parametrize(
+        "username, item, item2, expected",
+        [
+            pytest.param("p43_owner_mu", "target_username", "no-such-user-xyz", "找不到帳號", id='missing_user'),
+            pytest.param("p43_owner_md", "target_department_name", "不存在的單位-xyz", "找不到單位", id='missing_department'),
+        ],
+    )
+    def test_missing_user_cases(self, username, item, item2, expected,  client: TestClient, db: Session):
+        owner = make_user(db, username=username)
         conv = _make_conv(db, owner, "無機密")
         resp = client.post(
             f"/api/conversations/{conv.id}/shares",
             headers=_bearer(owner),
-            json={"target_username": "no-such-user-xyz"},
+            json={item: item2},
         )
         assert resp.status_code == 404
-        assert "找不到帳號" in resp.json()["detail"]
+        assert expected in resp.json()["detail"]
 
     def test_disabled_user(self, client: TestClient, db: Session):
         owner = make_user(db, username="p43_owner_du")
@@ -287,17 +294,6 @@ class TestInvariant5FailClosedUnnameable:
         )
         assert resp.status_code == 400
         assert "停用" in resp.json()["detail"]
-
-    def test_missing_department(self, client: TestClient, db: Session):
-        owner = make_user(db, username="p43_owner_md")
-        conv = _make_conv(db, owner, "無機密")
-        resp = client.post(
-            f"/api/conversations/{conv.id}/shares",
-            headers=_bearer(owner),
-            json={"target_department_name": "不存在的單位-xyz"},
-        )
-        assert resp.status_code == 404
-        assert "找不到單位" in resp.json()["detail"]
 
     def test_inactive_department(self, client: TestClient, db: Session):
         owner = make_user(db, username="p43_owner_id")

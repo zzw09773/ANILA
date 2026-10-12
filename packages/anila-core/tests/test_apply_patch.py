@@ -29,14 +29,16 @@ def ws(tmp_path: Path) -> Iterator:
 # ---------------------------------------------------------------------------
 
 
-def test_parse_rejects_missing_envelope() -> None:
-    with pytest.raises(PatchParseError, match="markers"):
-        parse_patch("just some text")
-
-
-def test_parse_empty_envelope_raises() -> None:
-    with pytest.raises(PatchParseError, match="no operations"):
-        parse_patch("*** Begin Patch\n*** End Patch\n")
+@pytest.mark.parametrize(
+    "match, parse_patch_arg",
+    [
+        pytest.param("markers", "just some text", id='parse_rejects_missing_envelope'),
+        pytest.param("no operations", "*** Begin Patch\n*** End Patch\n", id='parse_empty_envelope_raises'),
+    ],
+)
+def test_parse_rejects_missing_envelope_cases(match, parse_patch_arg) -> None:
+    with pytest.raises(PatchParseError, match=match):
+        parse_patch(parse_patch_arg)
 
 
 def test_parse_add_file() -> None:
@@ -115,37 +117,16 @@ def test_parse_multiple_operations() -> None:
     assert [op.op_type for op in ops] == ["add", "delete", "update"]
 
 
-def test_parse_add_rejects_non_plus_lines() -> None:
-    body = (
-        "*** Begin Patch\n"
-        "*** Add File: x\n"
-        "+ok\n"
-        "no plus\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchParseError, match="must start with '\\+'"):
-        parse_patch(body)
-
-
-def test_parse_delete_rejects_body() -> None:
-    body = (
-        "*** Begin Patch\n"
-        "*** Delete File: x\n"
-        "stray content\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchParseError, match="takes no body"):
-        parse_patch(body)
-
-
-def test_parse_update_must_start_with_at_at() -> None:
-    body = (
-        "*** Begin Patch\n"
-        "*** Update File: x\n"
-        "-no preceding @@\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchParseError, match="begin with '@@'"):
+@pytest.mark.parametrize(
+    "body, match",
+    [
+        pytest.param('*** Begin Patch\n*** Add File: x\n+ok\nno plus\n*** End Patch\n', "must start with '\\+'", id='parse_add_rejects_non_plus_lines'),
+        pytest.param('*** Begin Patch\n*** Delete File: x\nstray content\n*** End Patch\n', "takes no body", id='parse_delete_rejects_body'),
+        pytest.param('*** Begin Patch\n*** Update File: x\n-no preceding @@\n*** End Patch\n', "begin with '@@'", id='parse_update_must_start_with_at_at'),
+    ],
+)
+def test_parse_add_rejects_non_plus_lines_cases(body, match) -> None:
+    with pytest.raises(PatchParseError, match=match):
         parse_patch(body)
 
 
@@ -189,15 +170,17 @@ def test_add_creates_parent_dirs(ws) -> None:
     assert (ws.path / "deep/nested/file.txt").read_text() == "content"
 
 
-def test_add_refuses_existing_file(ws) -> None:
-    (ws.path / "x").write_text("already here")
-    body = (
-        "*** Begin Patch\n"
-        "*** Add File: x\n"
-        "+new\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchApplyError, match="already exists"):
+@pytest.mark.parametrize(
+    "write_text_arg, body, match",
+    [
+        pytest.param("already here", '*** Begin Patch\n*** Add File: x\n+new\n*** End Patch\n', "already exists", id='add_refuses_existing_file'),
+        pytest.param("foo\nfoo\nfoo\n", '*** Begin Patch\n*** Update File: x\n@@\n-foo\n+bar\n*** End Patch\n', "occurs 3 times", id='update_rejects_when_context_not_unique'),
+        pytest.param("hello world\n", '*** Begin Patch\n*** Update File: x\n@@\n-not present\n+something\n*** End Patch\n', "context not found", id='update_rejects_when_context_missing'),
+    ],
+)
+def test_add_refuses_existing_file_cases(write_text_arg, body, match, ws) -> None:
+    (ws.path / "x").write_text(write_text_arg)
+    with pytest.raises(PatchApplyError, match=match):
         apply_patch(ws, body)
 
 
@@ -218,13 +201,16 @@ def test_delete_existing_file(ws) -> None:
     assert not (ws.path / "stale").exists()
 
 
-def test_delete_missing_file_errors(ws) -> None:
-    body = (
-        "*** Begin Patch\n"
-        "*** Delete File: ghost\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchApplyError, match="does not exist"):
+@pytest.mark.parametrize(
+    "body, match",
+    [
+        pytest.param('*** Begin Patch\n*** Delete File: ghost\n*** End Patch\n', "does not exist", id='delete_missing_file_errors'),
+        pytest.param('*** Begin Patch\n*** Update File: ghost\n@@\n-x\n+y\n*** End Patch\n', "not a regular file", id='update_missing_file_errors'),
+        pytest.param('*** Begin Patch\n*** Add File: ../../etc/oops\n+boom\n*** End Patch\n', "outside", id='path_escape_rejected'),
+    ],
+)
+def test_delete_missing_file_errors_cases(body, match, ws) -> None:
+    with pytest.raises(PatchApplyError, match=match):
         apply_patch(ws, body)
 
 
@@ -269,34 +255,6 @@ def test_update_multiple_hunks(ws) -> None:
     assert (ws.path / "x").read_text() == "ALPHA\nbeta\nGAMMA\n"
 
 
-def test_update_rejects_when_context_not_unique(ws) -> None:
-    (ws.path / "x").write_text("foo\nfoo\nfoo\n")
-    body = (
-        "*** Begin Patch\n"
-        "*** Update File: x\n"
-        "@@\n"
-        "-foo\n"
-        "+bar\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchApplyError, match="occurs 3 times"):
-        apply_patch(ws, body)
-
-
-def test_update_rejects_when_context_missing(ws) -> None:
-    (ws.path / "x").write_text("hello world\n")
-    body = (
-        "*** Begin Patch\n"
-        "*** Update File: x\n"
-        "@@\n"
-        "-not present\n"
-        "+something\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchApplyError, match="context not found"):
-        apply_patch(ws, body)
-
-
 def test_update_with_surrounding_context_disambiguates(ws) -> None:
     (ws.path / "x").write_text(
         "block-a\nfoo\nblock-a-end\n"
@@ -319,33 +277,9 @@ def test_update_with_surrounding_context_disambiguates(ws) -> None:
     assert text.count("foo") == 1
 
 
-def test_update_missing_file_errors(ws) -> None:
-    body = (
-        "*** Begin Patch\n"
-        "*** Update File: ghost\n"
-        "@@\n"
-        "-x\n"
-        "+y\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchApplyError, match="not a regular file"):
-        apply_patch(ws, body)
-
-
 # ---------------------------------------------------------------------------
 # apply_patch — multi-op + path safety
 # ---------------------------------------------------------------------------
-
-
-def test_path_escape_rejected(ws) -> None:
-    body = (
-        "*** Begin Patch\n"
-        "*** Add File: ../../etc/oops\n"
-        "+boom\n"
-        "*** End Patch\n"
-    )
-    with pytest.raises(PatchApplyError, match="outside"):
-        apply_patch(ws, body)
 
 
 def test_multi_op_apply_summary_lines(ws) -> None:

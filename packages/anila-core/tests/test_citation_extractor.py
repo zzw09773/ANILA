@@ -78,27 +78,43 @@ def test_amends():
     assert c.article == "第3條"
 
 
-def test_supersedes():
-    c = _one("廢止個人資料保護辦法。")
-    assert c.relation_type == "supersedes"
-    assert c.target_title == "個人資料保護辦法"
+@pytest.mark.parametrize(
+    "one_arg, expected, expected2",
+    [
+        pytest.param("廢止個人資料保護辦法。", "supersedes", "個人資料保護辦法", id='supersedes'),
+        pytest.param("本細則依公司獎懲辦法訂定。", "based_on", "公司獎懲辦法", id='parent_law_reference_still_extracted'),
+    ],
+)
+def test_supersedes_cases(one_arg, expected, expected2):
+    c = _one(one_arg)
+    assert c.relation_type == expected
+    assert c.target_title == expected2
     assert c.article is None
 
 
-def test_cites_with_article_variant():
-    c = _one("相關事項準用公司治理準則第十條之一規定。")
-    assert c.relation_type == "cites"
-    assert c.article == "第10條之一"
+@pytest.mark.parametrize(
+    "one_arg, expected, expected2",
+    [
+        pytest.param("相關事項準用公司治理準則第十條之一規定。", "cites", "第10條之一", id='cites_with_article_variant'),
+        pytest.param("依採購作業規定第五條第二項第三款辦理。", "based_on", "第5條第2項第3款", id='article_with_item_and_clause'),
+    ],
+)
+def test_cites_with_article_variant_cases(one_arg, expected, expected2):
+    c = _one(one_arg)
+    assert c.relation_type == expected
+    assert c.article == expected2
 
 
-def test_article_with_item_and_clause():
-    c = _one("依採購作業規定第五條第二項第三款辦理。")
-    assert c.relation_type == "based_on"
-    assert c.article == "第5條第2項第3款"
-
-
-def test_no_citation_returns_empty():
-    assert extract_citations("這是一段完全沒有引用任何規章的描述文字。") == []
+@pytest.mark.parametrize(
+    "extract_citations_arg",
+    [
+        pytest.param("這是一段完全沒有引用任何規章的描述文字。", id='no_citation_returns_empty'),
+        pytest.param("權責長官得依本法第五十七條規定辦理。", id='self_reference_with_article_dropped'),
+        pytest.param("悉依法律規定辦理。", id='standalone_generic_dropped'),
+    ],
+)
+def test_no_citation_returns_empty_cases(extract_citations_arg):
+    assert extract_citations(extract_citations_arg) == []
 
 
 def test_multiple_citations_in_one_sentence():
@@ -116,12 +132,6 @@ def test_article_range_preserved():
 
 
 # ── Self-reference filtering (本法 / 本章 / 前項 …) ────────────────────────────
-def test_self_reference_with_article_dropped():
-    # "本法第五十七條規定" is the document referring to its OWN parent law inline,
-    # not a citation of another document — must yield nothing.
-    assert extract_citations("權責長官得依本法第五十七條規定辦理。") == []
-
-
 def test_self_reference_plain_dropped():
     for txt in (
         "依本法規定辦理。",
@@ -142,23 +152,31 @@ def test_article_separated_not_swallowed_into_name():
     assert c.target_ref == "資通安全管理規定 第3條"
 
 
-def test_real_name_starting_with_self_ref_char_kept():
+@pytest.mark.parametrize(
+    "one_arg, expected",
+    [
+        pytest.param("依前瞻基礎建設特別條例第三條辦理。", "前瞻基礎建設特別條例", id='real_name_starting_with_self_ref_char_kept'),
+        pytest.param("依個人資料保護及管理辦法第三條辦理。", "個人資料保護及管理辦法", id='compound_name_with_and_kept'),
+    ],
+)
+def test_real_name_starting_with_self_ref_char_kept_cases(one_arg, expected):
     # "前瞻基礎建設特別條例" starts with 前 but 前+瞻 is NOT a self-ref token —
     # it is a real regulation and must still be extracted.
-    c = _one("依前瞻基礎建設特別條例第三條辦理。")
-    assert c.target_title == "前瞻基礎建設特別條例"
+    c = _one(one_arg)
+    assert c.target_title == expected
     assert c.article == "第3條"
 
 
-def test_numeral_self_reference_dropped():
+@pytest.mark.parametrize(
+    "item, item2, item3",
+    [
+        pytest.param("準用前二項規定。", "依前三條辦理。", "適用本二款規定。", id='numeral_self_reference_dropped'),
+        pytest.param("依其他法辦理。", "準用相關規定。", "依前述辦法辦理。", id='generic_determiner_names_dropped'),
+    ],
+)
+def test_numeral_self_reference_dropped_cases(item, item2, item3):
     # "前二項規定" / "前三條" — self-reference with a numeral, must be filtered.
-    for txt in ("準用前二項規定。", "依前三條辦理。", "適用本二款規定。"):
-        assert extract_citations(txt) == [], txt
-
-
-def test_generic_determiner_names_dropped():
-    # "其他法" / "相關規定" are generic, not citable documents.
-    for txt in ("依其他法辦理。", "準用相關規定。", "依前述辦法辦理。"):
+    for txt in (item, item2, item3):
         assert extract_citations(txt) == [], txt
 
 
@@ -166,25 +184,6 @@ def test_clause_fragment_tails_dropped():
     # "民法之規定" / "…或法" are clause fragments, not names.
     assert extract_citations("準用民法之規定辦理。") == []
     assert extract_citations("依本法得繼受原行政處分所涉權利或法辦理。") == []
-
-
-def test_standalone_generic_dropped():
-    assert extract_citations("悉依法律規定辦理。") == []
-
-
-def test_compound_name_with_and_kept():
-    # real names DO use 及 / 與 — must NOT be treated as a fragment.
-    c = _one("依個人資料保護及管理辦法第三條辦理。")
-    assert c.target_title == "個人資料保護及管理辦法"
-    assert c.article == "第3條"
-
-
-def test_parent_law_reference_still_extracted():
-    # the explicit parent-law citation in a 施行細則 is a real cross-doc edge.
-    c = _one("本細則依公司獎懲辦法訂定。")
-    assert c.relation_type == "based_on"
-    assert c.target_title == "公司獎懲辦法"
-    assert c.article is None
 
 
 # ── Dedup + evidence ─────────────────────────────────────────────────────────

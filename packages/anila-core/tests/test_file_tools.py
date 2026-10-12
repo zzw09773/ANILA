@@ -199,34 +199,22 @@ async def test_edit_replace_all(ws) -> None:
     assert (ws.path / "x").read_text() == "bar bar bar"
 
 
+@pytest.mark.parametrize(
+    "write_text_arg, item, item2, expected",
+    [
+        pytest.param("hello", "absent", "z", "not found", id='edit_old_string_not_found_errors'),
+        pytest.param("foo", "foo", "foo", "identical", id='edit_rejects_identical_strings'),
+        pytest.param("foo", "", "y", "non-empty", id='edit_empty_old_string_errors'),
+    ],
+)
 @pytest.mark.asyncio
-async def test_edit_old_string_not_found_errors(ws) -> None:
-    (ws.path / "x").write_text("hello")
+async def test_edit_old_string_not_found_errors_cases(write_text_arg, item, item2, expected, ws) -> None:
+    (ws.path / "x").write_text(write_text_arg)
     tool = file_edit_tool(ws)
     out = await tool.implementation(
-        {"path": "x", "old_string": "absent", "new_string": "z"}
+        {"path": "x", "old_string": item, "new_string": item2}
     )
-    assert "not found" in out
-
-
-@pytest.mark.asyncio
-async def test_edit_rejects_identical_strings(ws) -> None:
-    (ws.path / "x").write_text("foo")
-    tool = file_edit_tool(ws)
-    out = await tool.implementation(
-        {"path": "x", "old_string": "foo", "new_string": "foo"}
-    )
-    assert "identical" in out
-
-
-@pytest.mark.asyncio
-async def test_edit_empty_old_string_errors(ws) -> None:
-    (ws.path / "x").write_text("foo")
-    tool = file_edit_tool(ws)
-    out = await tool.implementation(
-        {"path": "x", "old_string": "", "new_string": "y"}
-    )
-    assert "non-empty" in out
+    assert expected in out
 
 
 @pytest.mark.asyncio

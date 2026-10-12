@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import importlib
 
+import logging
+
 import pytest
 
 
@@ -101,50 +103,35 @@ def test_production_raises_on_default_secret(monkeypatch, reload_startup_securit
     assert "SECRET_KEY" in str(excinfo.value)
 
 
-def test_production_raises_on_default_admin(monkeypatch, reload_startup_security):
+@pytest.mark.parametrize(
+    "setenv_arg, setenv_arg2, expected",
+    [
+        pytest.param("ADMIN_PASSWORD", "changeme", "ADMIN_PASSWORD", id='admin'),
+        pytest.param("DATABASE_URL", "postgresql://csp_app:csp_password@db:5432/csp", "DB_PASSWORD", id='db_password'),
+        pytest.param("CODESERVER_PASSWORD", "changeme-codeserver", "CODESERVER_PASSWORD", id='codeserver_password'),
+    ],
+)
+def test_production_raises_on_default(setenv_arg, setenv_arg2, expected, monkeypatch, reload_startup_security):
     monkeypatch.delenv("ANILA_ALLOW_DEV_SECRET", raising=False)
     _override_all_to_safe(monkeypatch)
-    monkeypatch.setenv("ADMIN_PASSWORD", "changeme")
+    monkeypatch.setenv(setenv_arg, setenv_arg2)
 
     ss = reload_startup_security()
     with pytest.raises(RuntimeError) as excinfo:
         ss.assert_no_dev_defaults()
-    assert "ADMIN_PASSWORD" in str(excinfo.value)
+    assert expected in str(excinfo.value)
 
 
-def test_production_raises_on_default_db_password(monkeypatch, reload_startup_security):
-    monkeypatch.delenv("ANILA_ALLOW_DEV_SECRET", raising=False)
-    _override_all_to_safe(monkeypatch)
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql://csp_app:csp_password@db:5432/csp",
-    )
-
-    ss = reload_startup_security()
-    with pytest.raises(RuntimeError) as excinfo:
-        ss.assert_no_dev_defaults()
-    assert "DB_PASSWORD" in str(excinfo.value)
-
-
-def test_production_raises_on_default_codeserver_password(
-    monkeypatch, reload_startup_security
-):
-    monkeypatch.delenv("ANILA_ALLOW_DEV_SECRET", raising=False)
-    _override_all_to_safe(monkeypatch)
-    monkeypatch.setenv("CODESERVER_PASSWORD", "changeme-codeserver")
-
-    ss = reload_startup_security()
-    with pytest.raises(RuntimeError) as excinfo:
-        ss.assert_no_dev_defaults()
-    assert "CODESERVER_PASSWORD" in str(excinfo.value)
-
-
-def test_production_passes_with_all_overrides(monkeypatch, reload_startup_security):
+def test_production_passes_with_all_overrides(monkeypatch, reload_startup_security, caplog):
     """All vars overridden → returns cleanly even with dev mode disabled."""
     monkeypatch.delenv("ANILA_ALLOW_DEV_SECRET", raising=False)
     _override_all_to_safe(monkeypatch)
 
     ss = reload_startup_security()
-    ss.assert_no_dev_defaults()  # 不該 raise
+    with caplog.at_level(logging.WARNING):
+        assert ss.assert_no_dev_defaults() is None  # 不該 raise
+    # 全部覆寫後也不該留下任何「仍是預設值」的警告。
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 def test_empty_secret_key_raises_even_in_dev(monkeypatch, reload_startup_security):

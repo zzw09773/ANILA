@@ -28,23 +28,17 @@ from app.services.proxy.service import ProxyTuning
 _PROXY_TUNING = ProxyTuning.from_registry_defaults()
 
 
-
-def test_guard_blocks_cloud_metadata_ip():
+@pytest.mark.parametrize(
+    "guard_outbound_arg",
+    [
+        pytest.param("https://169.254.169.254/v1/chat/completions", id='cloud_metadata_ip'),
+        pytest.param("https://localhost/v1/chat/completions", id='loopback_hostname'),
+        pytest.param("https://csp-db/v1/chat/completions", id='single_label_service_name'),
+    ],
+)
+def test_guard_blocks(guard_outbound_arg):
     with pytest.raises(HTTPException) as exc:
-        _guard_outbound("https://169.254.169.254/v1/chat/completions")
-    assert exc.value.status_code == 502
-
-
-def test_guard_blocks_loopback_hostname():
-    with pytest.raises(HTTPException) as exc:
-        _guard_outbound("https://localhost/v1/chat/completions")
-    assert exc.value.status_code == 502
-
-
-def test_guard_blocks_single_label_service_name():
-    # A bare docker service name is never a legitimate public endpoint.
-    with pytest.raises(HTTPException) as exc:
-        _guard_outbound("https://csp-db/v1/chat/completions")
+        _guard_outbound(guard_outbound_arg)
     assert exc.value.status_code == 502
 
 

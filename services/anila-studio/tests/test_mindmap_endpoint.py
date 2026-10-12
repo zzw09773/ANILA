@@ -404,10 +404,18 @@ def test_download_json_404_for_legacy_job_without_spec(test_app):
         assert "json" not in urls
 
 
-def test_get_nonexistent_job_returns_404(test_app):
+@pytest.mark.parametrize(
+    "get_arg, expected",
+    [
+        pytest.param("/api/mindmaps/jobs/m_doesnotexist", 404, id='get_nonexistent_job_returns_404'),
+        # FastAPI's Literal type validation should reject e.g. ``png``.
+        pytest.param("/api/mindmaps/jobs/m_anything/download/png", 422, id='download_unknown_format_returns_422'),
+    ],
+)
+def test_get_nonexistent_job_returns_404_cases(get_arg, expected, test_app):
     with TestClient(test_app) as client:
-        resp = client.get("/api/mindmaps/jobs/m_doesnotexist")
-    assert resp.status_code == 404
+        resp = client.get(get_arg)
+    assert resp.status_code == expected
 
 
 def test_cross_user_access_returns_404(test_app, other_user_app):
@@ -497,13 +505,3 @@ def test_delete_unknown_job_returns_404(test_app):
     assert resp.status_code == 404
 
 
-def test_download_unknown_format_returns_422(test_app):
-    """FastAPI's Literal type validation should reject e.g. ``png``."""
-    with TestClient(test_app) as client:
-        # No job created — but the path validator should fire first.
-        resp = client.get("/api/mindmaps/jobs/m_anything/download/png")
-    # Either 422 (validator caught the bad fmt) or 404 (job missing) is
-    # acceptable; both prove the endpoint refuses unknown formats. The
-    # FastAPI Literal validator runs before the handler body, so the
-    # actual response will be 422.
-    assert resp.status_code == 422

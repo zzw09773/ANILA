@@ -30,13 +30,21 @@ def test_merge_anila_meta_classified_override_true_upgrades() -> None:
     assert merged["classified"] is True
 
 
-def test_merge_anila_meta_downstream_classified_preserved() -> None:
-    """Downstream anila.meta classified=True is preserved even without override."""
+@pytest.mark.parametrize(
+    "agent_id, latency_ms",
+    [
+        # Downstream anila.meta classified=True is preserved even without override.
+        pytest.param("agent-b", 10, id='downstream_classified_preserved'),
+        # Override=False + downstream classified=True must still latch.
+        pytest.param("ag", 1, id='override_false_with_downstream_true_still_classified'),
+    ],
+)
+def test_merge_anila_meta(agent_id, latency_ms) -> None:
     merged = _merge_anila_meta(
         base_trace=[],
         downstream_meta={"classified": True},
-        agent_id="agent-b",
-        latency_ms=10,
+        agent_id=agent_id,
+        latency_ms=latency_ms,
         classified_override=False,
     )
     assert merged["classified"] is True
@@ -67,18 +75,6 @@ def test_merge_anila_meta_override_wins_over_false_downstream() -> None:
         "Router must never downgrade classified — a misbehaving agent claiming "
         "classified=false on an encryption-required model is a security bug."
     )
-
-
-def test_merge_anila_meta_override_false_with_downstream_true_still_classified() -> None:
-    """Override=False + downstream classified=True must still latch."""
-    merged = _merge_anila_meta(
-        base_trace=[],
-        downstream_meta={"classified": True},
-        agent_id="ag",
-        latency_ms=1,
-        classified_override=False,
-    )
-    assert merged["classified"] is True
 
 
 # ---------------------------------------------------------------------------

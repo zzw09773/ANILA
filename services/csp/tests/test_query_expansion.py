@@ -44,18 +44,19 @@ def test_expand_western_to_roc(db, monkeypatch: pytest.MonkeyPatch) -> None:
     assert "民國113" in out
 
 
-def test_expand_lidar_synonyms(db, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "expand_query_arg, expected, expected2",
+    [
+        pytest.param("激光雷達的測距精度", "光達", "雷射", id='expand_lidar_synonyms'),
+        pytest.param("中科院的無人機", "NCSIST", "國家中山科學研究院", id='expand_ncsist_synonym'),
+        pytest.param("中科院的無人機", "國家中山科學研究院", "NCSIST", id='ncsist_still_expands_without_cas'),
+    ],
+)
+def test_expand_lidar_synonyms_cases(expand_query_arg, expected, expected2, db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    out = expand_query(db, "激光雷達的測距精度")
-    assert "光達" in out
-    assert "雷射" in out
-
-
-def test_expand_ncsist_synonym(db, monkeypatch: pytest.MonkeyPatch) -> None:
-    _on(monkeypatch)
-    out = expand_query(db, "中科院的無人機")
-    assert "NCSIST" in out
-    assert "國家中山科學研究院" in out
+    out = expand_query(db, expand_query_arg)
+    assert expected in out
+    assert expected2 in out
 
 
 def test_pure_english_unchanged(db, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,23 +108,17 @@ def test_cas_disambiguation_no_ncsist(db, monkeypatch: pytest.MonkeyPatch) -> No
 # ── F6 / F4 正向 ────────────────────────────────────────────────────────────
 
 
-def test_bare_roc_year_expands(db, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "expected, expand_query_arg, expected2, expand_query_arg2",
+    [
+        pytest.param("2024", "113年測評", "2024", "113 年報告", id='bare_roc_year_expands'),
+        pytest.param("民國130", "2041年", "民國80", "1991年", id='western_range_symmetric_edges'),
+    ],
+)
+def test_bare_roc_year_expands_cases(expected, expand_query_arg, expected2, expand_query_arg2, db, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
-    assert "2024" in expand_query(db, "113年測評")
-    assert "2024" in expand_query(db, "113 年報告")
-
-
-def test_western_range_symmetric_edges(db, monkeypatch: pytest.MonkeyPatch) -> None:
-    _on(monkeypatch)
-    assert "民國130" in expand_query(db, "2041年")
-    assert "民國80" in expand_query(db, "1991年")
-
-
-def test_ncsist_still_expands_without_cas(db, monkeypatch: pytest.MonkeyPatch) -> None:
-    _on(monkeypatch)
-    out = expand_query(db, "中科院的無人機")
-    assert "國家中山科學研究院" in out
-    assert "NCSIST" in out
+    assert expected in expand_query(db, expand_query_arg)
+    assert expected2 in expand_query(db, expand_query_arg2)
 
 
 def test_western_date_slash_expands(db, monkeypatch: pytest.MonkeyPatch) -> None:

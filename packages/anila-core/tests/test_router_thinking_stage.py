@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import pytest
 import asyncio
 import json
 import random
@@ -284,12 +285,19 @@ def test_reasoning_stages_precede_content_stages(monkeypatch):
     assert [row["index"] for row in meta["thinking_stages"]] == [0, 1]
 
 
-def test_quoted_stage_inside_a_sentence_stays_in_the_answer(monkeypatch):
-    """只有整行的階段標記會拿掉。句子裡提到這個寫法要留著。"""
-    text = "這句提到 STAGE: 只是說明格式。\nSTAGE: 開始撰寫正文\n正文在這裡。"
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # 只有整行的階段標記會拿掉。句子裡提到這個寫法要留著。
+        pytest.param("這句提到 STAGE: 只是說明格式。\nSTAGE: 開始撰寫正文\n正文在這裡。", "這句提到 STAGE: 只是說明格式。\n正文在這裡。", id='quoted_stage_inside_a_sentence_stays_in_the_answer'),
+        # 反引號資訊字串裡再出現反引號就不是程式碼區塊，後面的階段行仍然算。
+        pytest.param("```python `不是欄\nSTAGE: 開始撰寫正文\n正文。\n", "```python `不是欄\n正文。\n", id='info_string_with_a_backtick_does_not_open_a_fence'),
+    ],
+)
+def test_quoted_stage_inside_a_sentence_stays_in_the_answer_cases(text, expected, monkeypatch):
     body = _drive(monkeypatch, content=[text])
     visible, _reasoning, meta = _visible(body)
-    assert visible == "這句提到 STAGE: 只是說明格式。\n正文在這裡。"
+    assert visible == expected
     assert [row["title"] for row in meta["thinking_stages"]] == ["開始撰寫正文"]
 
 
@@ -444,15 +452,6 @@ def test_fenced_stage_line_stays_across_chunk_splits(monkeypatch):
                 first = observed
             else:
                 assert observed == first, label
-
-
-def test_info_string_with_a_backtick_does_not_open_a_fence(monkeypatch):
-    """反引號資訊字串裡再出現反引號就不是程式碼區塊，後面的階段行仍然算。"""
-    text = "```python `不是欄\nSTAGE: 開始撰寫正文\n正文。\n"
-    body = _drive(monkeypatch, content=[text])
-    visible, _reasoning, meta = _visible(body)
-    assert visible == "```python `不是欄\n正文。\n"
-    assert [row["title"] for row in meta["thinking_stages"]] == ["開始撰寫正文"]
 
 
 def test_stage_titles_drop_internal_details_and_keep_the_previous_stage(monkeypatch):

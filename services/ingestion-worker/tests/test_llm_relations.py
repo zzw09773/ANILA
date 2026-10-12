@@ -9,6 +9,7 @@ Neutral regulation names throughout.
 """
 from __future__ import annotations
 
+import pytest
 import json
 
 from ingestion_worker.llm_relations import (
@@ -63,19 +64,17 @@ def test_parse_drops_fabricated_dst():
     assert parse_llm_relations(content, candidate_ids={2, 3}, source_text=SOURCE) == []
 
 
-def test_parse_drops_unknown_relation_type():
+@pytest.mark.parametrize(
+    "item, item2",
+    [
+        pytest.param("inspired_by", "本細則依公司獎懲辦法訂定", id='unknown_relation_type'),
+        pytest.param("based_on", "這句話根本不在原文裡面亂掰的", id='ungrounded_evidence'),
+    ],
+)
+def test_parse_drops(item, item2):
     content = json.dumps([
-        {"dst_document_id": 2, "relation_type": "inspired_by",
-         "evidence": "本細則依公司獎懲辦法訂定", "confidence": 1.0}
-    ])
-    assert parse_llm_relations(content, candidate_ids={2}, source_text=SOURCE) == []
-
-
-def test_parse_drops_ungrounded_evidence():
-    # evidence not present in the source text → hallucinated → dropped
-    content = json.dumps([
-        {"dst_document_id": 2, "relation_type": "based_on",
-         "evidence": "這句話根本不在原文裡面亂掰的", "confidence": 1.0}
+        {"dst_document_id": 2, "relation_type": item,
+         "evidence": item2, "confidence": 1.0}
     ])
     assert parse_llm_relations(content, candidate_ids={2}, source_text=SOURCE) == []
 

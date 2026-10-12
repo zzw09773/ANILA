@@ -72,27 +72,22 @@ def test_cookie_mutation_rejects_a_mismatched_csrf_header(studio_app):
     assert resp.status_code == 403, resp.text
 
 
-def test_matching_csrf_is_not_blocked_by_the_middleware(studio_app):
-    """標頭與 cookie 一致時，請求要進到認證，而不是停在 CSRF。"""
+@pytest.mark.parametrize(
+    "item, item2, item3",
+    [
+        # 標頭與 cookie 一致時，請求要進到認證，而不是停在 CSRF。
+        pytest.param("not-a-jwt", "X-CSRF-Token", "fresh", id='matching_csrf_is_not_blocked_by_the_middleware'),
+        pytest.param("session", "Authorization", "Bearer other-token", id='bearer_request_is_csrf_exempt'),
+    ],
+)
+def test_matching_csrf_is_not_blocked_by_the_middleware_cases(item, item2, item3, studio_app):
     with _client(
-        studio_app, **{ACCESS_COOKIE: "not-a-jwt", CSRF_COOKIE: "fresh"}
+        studio_app, **{ACCESS_COOKIE: item, CSRF_COOKIE: "fresh"}
     ) as client:
         resp = client.post(
             JOBS,
             json={"collection_id": 1},
-            headers={"X-CSRF-Token": "fresh"},
-        )
-    assert resp.status_code != 403, resp.text
-
-
-def test_bearer_request_is_csrf_exempt(studio_app):
-    with _client(
-        studio_app, **{ACCESS_COOKIE: "session", CSRF_COOKIE: "fresh"}
-    ) as client:
-        resp = client.post(
-            JOBS,
-            json={"collection_id": 1},
-            headers={"Authorization": "Bearer other-token"},
+            headers={item2: item3},
         )
     assert resp.status_code != 403, resp.text
 
