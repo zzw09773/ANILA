@@ -2449,6 +2449,8 @@ export const Composer = ({
   skills = [],
   // 建議問題：點 chip 時父層送 { text, token } 進來，帶入輸入框（不送出）。
   insertRequest = null,
+  // 帶入完成後通知父層清掉 insertRequest，Composer 重新掛載時才不會再帶一次。
+  onInsertConsumed,
   // 輸入框是空的時候顯示的灰色預覽（第一個建議問題）。Tab 採用、Esc 收起。
   ghostSuggestion = null,
   // 使用者開始打字。父層拿來取消還在跑的建議問題請求。
@@ -2752,6 +2754,7 @@ export const Composer = ({
       el.focus();
       el.setSelectionRange(incoming.length, incoming.length);
     });
+    onInsertConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insertRequest]);
   const ghost = typeof ghostSuggestion === "string" && ghostSuggestion.trim() ? ghostSuggestion.trim() : null;
@@ -3165,7 +3168,7 @@ export const Composer = ({
       }
     }
     // 灰字預覽：只有輸入框是空的才攔 Tab，有字時 Tab 照舊移到下一個控制項。
-    if (ghostVisible && !composing && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    if (ghostVisible && !skillMenuVisible && !composing && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
       if (e.key === "Tab") {
         e.preventDefault();
         acceptGhost();

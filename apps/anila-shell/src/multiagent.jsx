@@ -79,6 +79,8 @@ export const ParallelCompareView = ({
   AgentSelector, Composer, MessageBubble,
   showRawReasoning = false,
   skills = [],
+  maxSkills,
+  onToggleSkillFavorite,
 }) => {
   const setColAgent = (idx, id) => {
     setColumns(cs => cs.map((c, i) => i === idx ? { ...c, agentId: id } : c));
@@ -172,6 +174,8 @@ export const ParallelCompareView = ({
           onSend={onSend}
           agents={agents}
           skills={skills}
+          maxSkills={maxSkills}
+          onToggleSkillFavorite={onToggleSkillFavorite}
           redactionMode={redactionMode}
           onChangeRedactionMode={onChangeRedactionMode}
         />

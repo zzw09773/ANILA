@@ -15,7 +15,7 @@ export function ComposerDock({
   deepThinkNext, onDeepThinkNextChange,
   queuedAttachment, onQueuedAttachmentConsumed,
   onUpload, onFetchAttachmentMeta,
-  insertRequest, ghostSuggestion, onTyping,
+  insertRequest, onInsertConsumed, ghostSuggestion, onTyping,
   maxSkills, onToggleSkillFavorite,
 }) {
   return (
@@ -83,6 +83,7 @@ export function ComposerDock({
           onUpload={onUpload}
           onFetchAttachmentMeta={onFetchAttachmentMeta}
           insertRequest={insertRequest}
+          onInsertConsumed={onInsertConsumed}
           ghostSuggestion={ghostSuggestion}
           onTyping={onTyping}
         />

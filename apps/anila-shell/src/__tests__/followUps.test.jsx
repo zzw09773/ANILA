@@ -289,4 +289,31 @@ describe("設定：回答後顯示建議問題", () => {
     fireEvent.click(screen.getByRole("button", { name: "不要顯示" }));
     expect(onChange).toHaveBeenCalledWith(false);
   });
+
+  it("帶入後回呼 onInsertConsumed，讓父層清掉請求（重新掛載不會再帶一次）", async () => {
+    const onInsertConsumed = vi.fn();
+    await act(async () => {
+      render(
+        <ConfirmProvider><Composer onSend={() => true} agents={[]} insertRequest={{ text: "建議問題", token: 1 }} onInsertConsumed={onInsertConsumed} /></ConfirmProvider>,
+      );
+    });
+    expect(onInsertConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it("skill 選單開著時 Tab 不會採用灰字", () => {
+    render(
+      <ConfirmProvider><Composer onSend={() => true} agents={[]} skills={[{ id: 7, name: "週報", description: "x" }]} ghostSuggestion="那預算呢？" /></ConfirmProvider>,
+    );
+    const box = screen.getByLabelText("傳訊息給 ANILA");
+    fireEvent.click(screen.getByRole("button", { name: "skill" }));
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box.value).toBe("");
+  });
+
+  it("agentic 給了重複的建議也不會撞 key", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<NextQuestionChips suggestions={["同一題", "同一題"]} onPick={() => {}} />);
+    expect(err.mock.calls.some((c) => String(c[0]).includes("same key"))).toBe(false);
+    err.mockRestore();
+  });
 });

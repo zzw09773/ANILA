@@ -269,3 +269,23 @@ describe("串流標頭：整條路", () => {
     });
   });
 });
+
+describe("並排比較也用治理中心的疊加上限", () => {
+  it("ParallelCompareView 把 maxSkills / onToggleSkillFavorite 傳給 Composer", async () => {
+    const { ParallelCompareView } = await import("../multiagent.jsx");
+    const seen = {};
+    const FakeComposer = (props) => { Object.assign(seen, props); return null; };
+    const fav = () => {};
+    render(
+      <ParallelCompareView
+        agents={[{ id: "a", name: "A" }, { id: "b", name: "B" }]}
+        columns={[{ id: "c1", agentId: "a" }, { id: "c2", agentId: "b" }]}
+        setColumns={() => {}} messagesByColumn={{}} onSend={() => {}} onExit={() => {}} onAdoptColumn={() => {}}
+        AgentSelector={() => null} Composer={FakeComposer} MessageBubble={() => null}
+        maxSkills={2} onToggleSkillFavorite={fav}
+      />,
+    );
+    expect(seen.maxSkills).toBe(2);
+    expect(seen.onToggleSkillFavorite).toBe(fav);
+  });
+});

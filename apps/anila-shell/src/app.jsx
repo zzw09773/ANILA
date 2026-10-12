@@ -494,15 +494,16 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // ---- 建議下一個問題 ----
   // 主串流結束、訊息落庫之後另外打一次端點。同一時間只有一個請求：使用者開始
   // 打字、送出新訊息或換對話就取消。失敗一律靜默（fetchFollowUps 不丟錯）。
-  const followUpsAbortRef = useRef(null);
+  // 以對話 id 為鍵：A 對話收尾要建議時，不會砍掉 B 對話還在跑的請求。
+  const followUpsAbortRef = useRef(new Map());
   const followUpsEnabledRef = useRef(followUpsEnabled);
   followUpsEnabledRef.current = followUpsEnabled;
   const cancelFollowUps = useCallback(() => {
-    const controller = followUpsAbortRef.current;
-    followUpsAbortRef.current = null;
-    if (controller) controller.abort();
+    const pending = followUpsAbortRef.current;
+    for (const controller of pending.values()) controller.abort();
+    pending.clear();
   }, []);
-  useEffect(() => { cancelFollowUps(); }, [selectedConvId, cancelFollowUps]);
+  useEffect(() => { cancelFollowUps(); setComposerInsert(null); }, [selectedConvId, cancelFollowUps]);
   useEffect(() => () => cancelFollowUps(), [cancelFollowUps]);
   const [composerInsert, setComposerInsert] = useState(null);
   const composerInsertSeq = useRef(0);
@@ -2152,11 +2153,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const existing = (messagesRef.current[convId] || []).find((m) => m.id === assistantId);
     // agentic 輪自己帶了 anila.follow_ups，不再另外要。
     if (Array.isArray(existing?.followUps) && existing.followUps.length > 0) return;
-    cancelFollowUps();
+    const pending = followUpsAbortRef.current;
+    pending.get(convId)?.abort();
     const controller = new AbortController();
-    followUpsAbortRef.current = controller;
+    pending.set(convId, controller);
     void fetchFollowUps(authRequest, convId, messageDbId, controller.signal).then((list) => {
-      if (followUpsAbortRef.current === controller) followUpsAbortRef.current = null;
+      if (pending.get(convId) === controller) pending.delete(convId);
       if (controller.signal.aborted || list.length === 0) return;
       updateMsg(convId, assistantId, { followUps: list });
     });
@@ -4490,6 +4492,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 MessageBubble={MessageBubble}
                 showRawReasoning={canSeeRawReasoning(user)}
                 skills={usableSkills}
+                maxSkills={skillStackLimit}
+                onToggleSkillFavorite={toggleSkillFavorite}
               />
             ) : (
               <>
@@ -4555,6 +4559,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   onUpload={uploadComposerAttachment}
                   onFetchAttachmentMeta={fetchComposerAttachmentMeta}
                   insertRequest={composerInsert}
+                  onInsertConsumed={() => setComposerInsert(null)}
                   ghostSuggestion={composerGhost}
                   onTyping={cancelFollowUps}
                 />

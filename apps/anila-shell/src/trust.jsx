@@ -312,9 +312,9 @@ export const NextQuestionChips = ({ suggestions, onPick, lowConfidence = null, t
         {heading}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {list.map((s) => (
+        {list.map((s, i) => (
           <button
-            key={s}
+            key={`${i}-${s}`}
             type="button"
             className="anila-next-question"
             aria-label={`帶入輸入框：${s}`}
