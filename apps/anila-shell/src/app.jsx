@@ -8,14 +8,15 @@
 import React, {
   startTransition,
   useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { config, readCsrfCookie } from "./runtime/api.js";
+import {
+  config,
+} from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion, streamSessionAnswer } from "./runtime/sse.js";
 import { mergeLiveTrace } from "./runtime/trace.js";
@@ -37,17 +38,10 @@ import {
   resolveAnsweringAgentId,
 } from "./runtime/messageMeta.js";
 import { answerTextForPersist, applyDocumentToMessage } from "./runtime/longDocument.js";
-import {
-  AGENT_REPLY_OBSERVATION_KEY,
-  agentReplyNotice,
-} from "./runtime/agentReplySignal.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { resolveRoleModel } from "./runtime/modelRole.js";
 import { resolveEditResend } from "./runtime/editResend.js";
 import { relativeLabel } from "./runtime/time.js";
-import { MemoryTab } from "./memory.jsx";
-import { SkillManager } from "./skills.jsx";
-import { listSkills } from "./runtime/skills.js";
 import {
   BULK_CONCURRENCY,
   bindExpectedUser,
@@ -82,20 +76,14 @@ import {
   bindAttachments as apiBindAttachments,
   admissionForTurn,
   getAttachmentMeta as apiGetAttachmentMeta,
-  createHandoff as apiCreateHandoff,
   listAgentFunctions as apiListAgentFunctions,
-  getUiSettings,
-  putUiSettings,
   searchConversations,
-  listActiveBanners as apiListActiveBanners,
   getConversationUsage as apiGetConversationUsage,
   setConversationCompact as apiSetConversationCompact,
   clearConversationCompact as apiClearConversationCompact,
   requestConversationCompact as apiRequestConversationCompact,
 } from "./runtime/conversations.js";
 import {
-  COMPACT_SUMMARY_PREFIX,
-  compactBoundaryOnPath,
   compactFieldsFromServer,
   compactPutFailureState,
   compactStateFromConv,
@@ -105,11 +93,9 @@ import {
   resolveKeptBoundary,
   writePendingCompact,
 } from "./runtime/compact.js";
-import { CompactBoundaryBanner } from "./compactBoundary.jsx";
 import { CONV_USAGE_DEBOUNCE_MS } from "./runtime/usageDisplay.js";
 import { ConversationUsageChip, UsagePage } from "./usage.jsx";
 import { promoteAdoptedAnswer } from "./runtime/adoptCompare.js";
-import { mapServerAttachments } from "./runtime/messageAttachments.js";
 import {
   applyServerPath,
   persistRegeneratedAssistant,
@@ -131,7 +117,6 @@ import {
   historyBefore,
   makeStreamWriter,
   persistTurnHead,
-  readStreamState,
   streamStateNotice,
   isLengthBudgetError,
   isHarnessEmptyNotice,
@@ -139,12 +124,10 @@ import {
   rescueStatusFromEvent,
 } from "./runtime/reservedTurn.js";
 
-import RouterModelPicker from "./components/RouterModelPicker.jsx";
 import {
   noticeForBoundModel,
   readModelUnavailableError,
 } from "./runtime/modelUnavailable.js";
-import ThinkingPicker from "./components/ThinkingPicker.jsx";
 import {
   conversationSelectionFromServer,
   normalizeThinkingTier,
@@ -165,11 +148,9 @@ import {
   Composer,
   MessageBubble,
   attachmentAdmissionMap,
-  questionAttachmentBasis,
   Sidebar,
 } from "./chat.jsx";
 import {
-  formatAskUserSummary,
   normalizeInterrupt,
 } from "./agentic.jsx";
 import { visibleAskParts } from "./runtime/askTranscript.js";
@@ -178,38 +159,29 @@ import { canSeeRawReasoning } from "./shellNav.jsx";
 import {
   applyThinkingStage,
   mergeThinkingStages,
-  readThinkingStages,
   settleThinkingStages,
 } from "./runtime/thinkingStages.js";
 import {
-  Button,
   IconButton,
-  Input,
-  Modal,
   Dropdown,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
-import { AnilaLogoImg } from "./AnilaBrand.jsx";
 import {
   IconColumns,
-  IconHistory,
   IconLock,
   IconMoon,
   IconNodes,
-  IconBook,
   IconSettings,
   IconShare,
-  IconShield,
   IconGift,
   IconSun,
-  IconUser,
 } from "./icons.jsx";
-import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS, blockingHits, detectPII, summarizePIIHits } from "./data.jsx";
 import {
-  readFoldersCache,
-  resolveFoldersFromServer,
-  writeFoldersCache,
-} from "./runtime/folderSettings.js";
+  BUILTIN_FOLDER_IDS,
+  blockingHits,
+  detectPII,
+  summarizePIIHits,
+} from "./data.jsx";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
@@ -217,8 +189,6 @@ import {
   watermarkLevel,
   watermarkReaderLabel,
   WATERMARK_DISCLAIMER,
-  REDACTION_MODES,
-  REDACTION_MODE_DEFAULT,
 } from "./trust.jsx";
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
@@ -230,336 +200,56 @@ import { classifiedShareDenial, handoffNotice } from "./uxCopy.js";
 import { ArtifactPanel } from "./artifact.jsx";
 import { LongDocumentPanelHost } from "./longDocumentCard.jsx";
 import { ArtifactPreviewProvider } from "./artifactContext.jsx";
+import {
+  ROUTER_AGENT,
+  makeId,
+  streamBusyError,
+  bulkAccountNote,
+  bulkDeleteStatus,
+  staleAccountError,
+  BULK_RELOGIN_MESSAGE,
+  makeConversationTitle,
+  attachmentBindIds,
+  nowIso,
+  liveThinkingPumpMaps,
+  normalizeAgents,
+  kbMetaFields,
+  injectionMetaFields,
+  liveThinkingPumpCount,
+  agentReplyMetaFields,
+} from "./runtime/chatHelpers.js";
+import { buildMessageHistory, buildUserContent, outgoingUserText } from "./runtime/chatPayload.js";
+import {
+  applyTweaks,
+  resolveInitialTweaks,
+} from "./runtime/tweaksApply.js";
+import { SettingsModal } from "./components/SettingsModal.jsx";
+import { useUsableSkills } from "./runtime/useUsableSkills.js";
+import { downloadConversationExport } from "./runtime/conversationExport.js";
+import { useBanners } from "./runtime/useBanners.js";
+import { AgentModelControls } from "./components/AgentModelControls.jsx";
+import { MessageList } from "./components/MessageList.jsx";
+import { ComposerDock } from "./components/ComposerDock.jsx";
+import {
+  mapServerConversation,
+  mapServerMessage,
+  rememberMovedConversation,
+} from "./runtime/serverMappers.js";
+import { submittedInterrupt, pendingInterrupt, nextInterruptState } from "./runtime/interruptState.js";
+import { useUiSettings } from "./runtime/useUiSettings.js";
+
+export { EmptyState } from "./components/EmptyState.jsx";
+
+// Re-exported for tests and other modules that import them from app.jsx.
+export {
+  normalizeAgents,
+  kbMetaFields,
+  injectionMetaFields,
+  liveThinkingPumpCount,
+  agentReplyMetaFields,
+} from "./runtime/chatHelpers.js";
 
 // ---- Router pseudo-agent ----------------------------------------------------
-const ROUTER_AGENT = Object.freeze({
-  id: "anila-router",
-  name: "ANILA",
-  short: "auto",
-  description: "ANILA 會幫你找合適的助手，也可能直接回答你。",
-  requiresEncryption: false,
-});
-
-// Default starter — a single card that asks the Router itself to
-// introduce ANILA AND list every agent available to this user. The
-// Router already has the agent manifest in its system prompt so it can
-// produce an accurate, up-to-date answer on first ask, and the user
-// sees their real option set instead of hand-curated marketing cards.
-function buildStarterPrompts(agents) {
-  const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
-  const countLine = real.length > 0
-    ? `你目前可以使用 ${real.length} 個 agent`
-    : "平台目前尚未註冊 agent";
-  return [
-    {
-      title: "ANILA 可以做什麼？",
-      sub: `${countLine}，點一下讓 ANILA 介紹平台與各助手的能力`,
-      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
-      primary: true,
-    },
-  ];
-}
-
-// ---- Helpers ---------------------------------------------------------------
-// Build an OpenAI chat message `content` for a user turn. When the message
-// has no image attachments we keep the string form (compatible with every
-// model). When images are present we switch to the array form with
-// `image_url` parts so vision-capable models (Gemma4, gpt-4o, ...) can see
-// the image inline. Non-image attachments are referenced by filename in a
-// trailing text note.
-// Fold prior conversation turns (excluding the live streaming assistant)
-// into the OpenAI message history so the model remembers what was said —
-// and, critically, so images from earlier turns stay visible.
-/**
- * 從一個「要送出去的 payload」裡取出**這一輪使用者新講的那段話**。
- *
- * 敏感資訊閘門看的就是這一段:不是整串歷史(那會讓任何一個曾經出現過個資的
- * 對話再也不能重試),而是使用者這次提交的內容。
- *
- * 刻意只認 payload 本身,不讓呼叫端多傳任何東西 —— 呼叫端一旦能選擇「傳不傳」,
- * 這個閘門就退化回一份要大家記得去呼叫的清單,而那份清單已經漏掉兩次了。
- */
-function outgoingUserText(payload) {
-  const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
-  for (let i = msgs.length - 1; i >= 0; i -= 1) {
-    const m = msgs[i];
-    if (!m || m.role !== "user") continue;
-    const c = m.content;
-    if (typeof c === "string") return c;
-    if (Array.isArray(c)) {
-      return c
-        .filter((p) => p && p.type === "text")
-        .map((p) => p.text || "")
-        .join("\n");
-    }
-    return "";
-  }
-  return "";
-}
-
-/**
- * 組出送給 Router 的 OpenAI messages。
- *
- * 刻意不走這函式（不帶對話歷史）的呼叫端：
- * 1. generateConversationTitle — 標題產生器，自帶 system＋單則 Q&A
- * 2. buildDeclarativeActionMessages / runActionInvokeFillback — 宣告式 custom action，只有渲染後的 prompt
- * 3. sendCompare — 比較／direct 並排，每欄只送當則 user
- *
- * CSP `POST /api/conversations/{id}/messages`（append_message）的 role pattern
- * 含 tool，且會原樣持久化。這裡把 persisted `role:"tool"` 轉成帶
- * `tool_result` block 的 user 訊息；Router `_split_turns` 會把它併進前一回合，
- * 不新開回合、不影響 `kept_from_index`。
- */
-function buildMessageHistory(priorMsgs, currentText, currentAttachments, options = null) {
-  const out = [];
-  const sources = [];
-  for (const m of priorMsgs || []) {
-    if (!m || m.streaming) continue;
-    if (m.role === "user") {
-      out.push({ role: "user", content: buildUserContent(m.text || "", m.attachments || []) });
-      sources.push(m);
-    } else if (m.role === "assistant" && m.text) {
-      out.push({ role: "assistant", content: m.text });
-      sources.push(m);
-    } else if (m.role === "tool") {
-      const toolUseId = m.toolCallId || m.tool_call_id || (
-        typeof m.dbId === "number" ? String(m.dbId) : String(m.id ?? "")
-      );
-      out.push({
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: toolUseId,
-          content: m.text || "",
-        }],
-      });
-      sources.push(m);
-    }
-  }
-  if (currentText !== null && currentText !== undefined) {
-    out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
-    sources.push(options?.currentUserMsg || null);
-  }
-  const compact = options?.compact;
-  const boundaryId = compact?.boundaryMessageId;
-  if (
-    compact?.summary
-    && boundaryId != null
-    && sources.some((m) => m && m.dbId === boundaryId)
-  ) {
-    const idx = sources.findIndex((m) => m && m.dbId === boundaryId);
-    const kept = out.slice(idx);
-    const keptSources = sources.slice(idx);
-    const messages = [
-      { role: "system", content: `${COMPACT_SUMMARY_PREFIX}${compact.summary}` },
-      ...kept,
-    ];
-    options?.onBuilt?.({ messages, sources: keptSources });
-    return messages;
-  }
-  options?.onBuilt?.({ messages: out, sources });
-  return out;
-}
-
-function buildUserContent(text, attachments) {
-  const list = Array.isArray(attachments) ? attachments : [];
-  const images = list.filter((a) => a.dataUrl && (a.kind === "image" || (a.contentType || "").startsWith("image/")));
-  const otherFiles = list.filter((a) => !images.includes(a) && a.name);
-  if (images.length === 0) {
-    if (otherFiles.length === 0) return text;
-    const tail = otherFiles.map((a) => `- ${a.name}`).join("\n");
-    return `${text}\n\n[附件]\n${tail}`;
-  }
-  const parts = [{ type: "text", text: text || "" }];
-  for (const img of images) {
-    parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
-  }
-  if (otherFiles.length > 0) {
-    parts[0].text = `${parts[0].text}\n\n[附件]\n${otherFiles.map((a) => `- ${a.name}`).join("\n")}`;
-  }
-  return parts;
-}
-
-function makeId(prefix) {
-  return `${prefix}-${Math.random().toString(16).slice(2, 10)}-${Date.now().toString(36)}`;
-}
-
-function streamBusyError() {
-  const err = new Error("對話正在產生回覆，請等待完成");
-  err.code = "stream-busy";
-  return err;
-}
-
-function bulkAccountNote(errors) {
-  for (const error of errors || []) {
-    if (!error) continue;
-    const message = typeof error.message === "string" ? error.message : "";
-    if (error.status === 409 && message.includes("登入帳號已變更")) return message;
-    if (error.code === "expected-user-missing" && message) return message;
-  }
-  return "";
-}
-
-function bulkDeleteStatus({ succeeded, apiFailed, waiting, accountNote = "" }) {
-  const ok = succeeded.length;
-  const bad = apiFailed.length;
-  const wait = waiting.length;
-  let text;
-  if (bad === 0 && wait === 0) text = `已刪除 ${ok} 則對話。`;
-  else if (bad === 0) {
-    text = ok === 0
-      ? "選取的對話正在產生回覆，請等待完成後再刪除。"
-      : `已刪除 ${ok} 則，${wait} 則正在產生回覆，請等待完成。尚未完成的對話仍保留。`;
-  } else if (wait === 0) {
-    text = `已刪除 ${ok} 則，${bad} 則失敗。失敗的對話仍保留，可以再試一次。`;
-  } else {
-    text = `已刪除 ${ok} 則，${bad} 則失敗，${wait} 則正在產生回覆，請等待完成。失敗的對話仍保留，可以再試一次。`;
-  }
-  return accountNote ? `${text}${accountNote}` : text;
-}
-
-function staleAccountError() {
-  const err = new Error("登入帳號已變更，請重新整理後再操作");
-  err.status = 409;
-  return err;
-}
-
-const BULK_RELOGIN_MESSAGE = "請重新登入或重新整理後再操作。";
-
-function makeConversationTitle(text) {
-  const t = (text || "").trim();
-  if (!t) return "新對話";
-  return t.length > 28 ? `${t.slice(0, 28)}…` : t;
-}
-
-/** reference_id values from composer chips (or AttachmentOut-shaped rows). */
-function attachmentBindIds(attachments) {
-  const ids = [];
-  const seen = new Set();
-  for (const a of attachments || []) {
-    if (!a || typeof a !== "object") continue;
-    const rid = a.referenceId || a.reference_id;
-    const fallback = typeof a.id === "string" ? a.id : null;
-    const value = typeof rid === "string" && rid.trim() ? rid.trim() : fallback;
-    if (typeof value !== "string" || !value.trim()) continue;
-    const key = value.trim();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    ids.push(key);
-  }
-  return ids;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-// Sprint 7 X follow-up：API key UI 已下線（cookie 流程後 SPA 不持有 key），
-// 因此原本的 maskApiKey helper 也一併移除，避免 UI 仍假裝可以管理 key。
-
-// normalize backend /v1/agents payload → UI agent model
-// includes the ROUTER pseudo-agent in front
-export function normalizeAgents(data) {
-  return [
-    ROUTER_AGENT,
-    ...(data || []).map((item) => ({
-      id: item.id,
-      name: item.name || item.id,
-      short: (item.short || item.id || "").slice(0, 12),
-      description: item.description_for_router || item.description || "",
-      endpointUrl: item.endpoint_url,
-      capabilities: item.capabilities || {},
-      requiresEncryption: Boolean(item.requires_encryption),
-    })),
-  ];
-}
-
-/**
- * 院內規章檢索的三個欄位,從 `anila_meta` 抄到 UI 的訊息列上。
- *
- * meta 有**兩個**入口,而且兩個都必須抄:重新載入走 `mapServerMessage`、
- * SSE 現場走 `applyMeta`。只接一邊不會有任何錯誤訊息,只會讓同一則答案在
- * 串完的當下說「依據是人事管理規則」、重新整理之後說不出話來(或反過來)。
- * 抽成一個函式而不是在兩處各寫一次,是為了讓「兩邊講的是同一件事」變成
- * 結構上的事實,而不是靠人記得同步兩份欄位清單。
- *
- * ⚠ **狀態只從 `kb_state` 抄,不從資料反推。** 生產端的事實
- * (`services/csp/app/services/institutional_kb.py:226-233`):`partial_error`
- * **一定帶著命中**,`search_error` 有失敗的庫而沒有命中。所以「有 kb_hits
- * 就當命中」會把 `partial_error` 講成乾淨的命中,使用者就永遠看不到
- * 「這不是全部的依據」——那正是他最需要知道的一句話。
- *
- * `citations` 不在這裡:兩個縫本來就各自映射了那個欄位,CSP 命中時是把
- * 規章**前綴**進既有的 citations(不覆蓋下游來源),沿用原本的管線即可。
- *
- * @param {object | null | undefined} meta - 一份 `anila_meta`
- */
-export function kbMetaFields(meta) {
-  const m = meta && typeof meta === "object" ? meta : {};
-  return {
-    // 缺席就是缺席:這個功能上線前存下來的訊息沒有這個欄位,而
-    // `undefined` 仍在畫面上保持安靜;明帶的 `"not_searched"` 則由 chat.jsx
-    // 揭露「本次未檢索院內規章」,兩者不可混為一談。
-    kbState: typeof m.kb_state === "string" ? m.kb_state : undefined,
-    kbHits: Array.isArray(m.kb_hits) ? m.kb_hits : [],
-    kbFailedCollections: Array.isArray(m.kb_failed_collections)
-      ? m.kb_failed_collections
-      : [],
-    keywordFallback: m.keyword_fallback === true,
-  };
-}
-
-/**
- * The registered-agent observation has the same two ingress seams as KB meta:
- * server-message reload and live SSE.  Unknown or absent observations remain
- * silent so old messages do not acquire a new claim.
- */
-export function injectionMetaFields(meta) {
-  const m = meta && typeof meta === "object" ? meta : {};
-  return {
-    promptInjectionSuspected: m.prompt_injection_suspected === true,
-  };
-}
-
-const liveThinkingPumpMaps = new Set();
-
-export function liveThinkingPumpCount() {
-  let count = 0;
-  for (const map of liveThinkingPumpMaps) count += map.size;
-  return count;
-}
-
-export function agentReplyMetaFields(meta) {
-  const m = meta && typeof meta === "object" ? meta : {};
-  return {
-    agentReplyObservation: m[AGENT_REPLY_OBSERVATION_KEY],
-    agentReplyNotice: agentReplyNotice(m),
-  };
-}
-
-function applyTweaks(t) {
-  const r = document.documentElement;
-  r.setAttribute("data-theme", t.dark ? "dark" : "light");
-  if (t.accent && t.accent !== DEFAULT_TWEAKS.accent) {
-    r.style.setProperty("--accent", t.accent);
-  } else {
-    r.style.removeProperty("--accent");
-  }
-  if (t.density) r.style.setProperty("--density", `${t.density}px`);
-  if (t.sansFamily) {
-    r.style.setProperty(
-      "--font-sans",
-      `"${t.sansFamily}", "Inter", system-ui, sans-serif`,
-    );
-  }
-  if (t.monoFamily) {
-    r.style.setProperty(
-      "--font-mono",
-      `"${t.monoFamily}", ui-monospace, Menlo, monospace`,
-    );
-  }
-}
-
 // ---- Chat Runtime ----------------------------------------------------------
 // Exported so tests can mount the real send path. The behavioural suite for
 // reserve-then-stream drives THIS component — a previous round's tests only
@@ -708,7 +398,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // two files do not mint two conversations (and re-orphan one of them).
   const creatingConversationRef = useRef(null);
 
-
   // --- compare mode ---
   const [compareMode, setCompareMode] = useState(false);
   const [compareColumns, setCompareColumns] = useState([]);
@@ -748,17 +437,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }, []);
   const [folder, setFolder] = useState("all");
 
-  // 敏感資訊模式(提醒／阻擋)。使用者自己在提示列選的偏好,跟資料夾
-  // 共用 users.ui_settings 這個 per-user blob。
-  //
-  // ⚠ 存後端而不是 localStorage,理由和資料夾同一條(見下面那段註解),但對這一
-  // 項更要緊:卡登共用工作站上,localStorage 會把前一個人的選擇留給下一個人 ——
-  // 那不是「使用者的選擇」,而是別人的。blob 跟著卡走才對得起「這是你的偏好」。
-  //
-  // ⚠ 這**不是**管理員政策。後端沒有這種欄位,這裡也刻意不做成那樣:要不要有
-  // 一個管理員層級的強制政策,是還沒裁決的產品問題。
-  // 這裡存的只是使用者自己的選擇。
-  const [redactionMode, setRedactionMode] = useState(REDACTION_MODE_DEFAULT);
+  const {
+    redactionMode,
+    folders,
+    setFolders,
+    skillAutoApply,
+    setSkillAutoApply,
+    foldersRef,
+    uiSettingsLoadError,
+    uiSettingsUnsaved,
+    markUiSettingsUserEdited,
+    changeRedactionMode,
+    retryUiSettings,
+  } = useUiSettings({ authRequest, isAuthenticated, user });
 
   /**
    * 敏感資訊閘門本體。**唯一**判斷「這段文字准不准離開瀏覽器」的地方。
@@ -790,145 +481,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     return false;
   };
 
-  // folders: persisted locally. Users can add/delete; built-ins (all, starred)
-  // are guarded because the sidebar filter logic treats them specially.
-  const [folders, setFolders] = useState(DEFAULT_FOLDERS);
-
-  // Server-synced settings:後端是 source of truth(共用工作站下使用者的資料夾
-  // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
-  // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
-  const uiSettingsHydratedRef = useRef(false);
-  const [skillAutoApply, setSkillAutoApply] = useState(true);
-  const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false, skillAutoApply: false });
-  const uiSettingsSaveErrorRef = useRef(false);
-  const foldersRef = useRef(folders);
-  const redactionModeRef = useRef(redactionMode);
-  const skillAutoApplyRef = useRef(skillAutoApply);
-  const [uiSettingsLoadError, setUiSettingsLoadError] = useState(false);
-  const [uiSettingsUnsaved, setUiSettingsUnsaved] = useState(false);
-  foldersRef.current = folders;
-  redactionModeRef.current = redactionMode;
-  skillAutoApplyRef.current = skillAutoApply;
-
-  const markUiSettingsUserEdited = useCallback((field) => {
-    uiSettingsDirtyRef.current[field] = true;
-    setUiSettingsUnsaved(true);
-  }, []);
-
-  const changeRedactionMode = useCallback((mode) => {
-    markUiSettingsUserEdited("redactionMode");
-    setRedactionMode(mode);
-  }, [markUiSettingsUserEdited]);
-
-  const persistUiSettings = useCallback((nextFolders, nextRedaction, nextSkillAutoApply = skillAutoApplyRef.current) => {
-    return putUiSettings(authRequest, {
-      folders: nextFolders,
-      redactionMode: nextRedaction,
-      skillAutoApply: nextSkillAutoApply !== false,
-    })
-      .then(() => {
-        uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false };
-        uiSettingsSaveErrorRef.current = false;
-        setUiSettingsUnsaved(false);
-        setUiSettingsLoadError(false);
-      })
-      .catch(() => {
-        uiSettingsSaveErrorRef.current = true;
-        setUiSettingsUnsaved(true);
-      });
-  }, [authRequest]);
-
-  const applyServerUiSettings = useCallback((s) => {
-    const dirty = uiSettingsDirtyRef.current;
-    const nextFolders = dirty.folders
-      ? foldersRef.current
-      : resolveFoldersFromServer(s.folders);
-    const nextRedaction = dirty.redactionMode
-      ? redactionModeRef.current
-      : (REDACTION_MODES.includes(s.redactionMode) ? s.redactionMode : REDACTION_MODE_DEFAULT);
-    const nextSkillAutoApply = dirty.skillAutoApply
-      ? skillAutoApplyRef.current
-      : s.skillAutoApply !== false;
-    setFolders(nextFolders);
-    setRedactionMode(nextRedaction);
-    setSkillAutoApply(nextSkillAutoApply);
-    uiSettingsHydratedRef.current = true;
-    setUiSettingsLoadError(false);
-    if (dirty.folders || dirty.redactionMode || dirty.skillAutoApply) {
-      persistUiSettings(nextFolders, nextRedaction, nextSkillAutoApply);
-    } else {
-      uiSettingsSaveErrorRef.current = false;
-      setUiSettingsUnsaved(false);
-    }
-  }, [persistUiSettings]);
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      uiSettingsHydratedRef.current = false;
-      uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false };
-      uiSettingsSaveErrorRef.current = false;
-      setFolders(DEFAULT_FOLDERS);
-      setRedactionMode(REDACTION_MODE_DEFAULT);
-      setSkillAutoApply(true);
-      setUiSettingsLoadError(false);
-      setUiSettingsUnsaved(false);
-      return undefined;
-    }
-    uiSettingsHydratedRef.current = false;
-    setFolders(readFoldersCache(window.localStorage, user?.id));
-    setRedactionMode(REDACTION_MODE_DEFAULT);
-    let alive = true;
-    getUiSettings(authRequest)
-      .then((res) => {
-        if (!alive) return;
-        applyServerUiSettings(res?.ui_settings || {});
-      })
-      .catch(() => {
-        if (!alive) return;
-        setUiSettingsLoadError(true);
-      });
-    return () => { alive = false; };
-  }, [isAuthenticated, authRequest, user?.id]);
-
-  const retryUiSettings = useCallback(() => {
-    if (!isAuthenticated) return;
-    if (uiSettingsSaveErrorRef.current) {
-      persistUiSettings(foldersRef.current, redactionModeRef.current);
-      return;
-    }
-    getUiSettings(authRequest)
-      .then((res) => {
-        applyServerUiSettings(res?.ui_settings || {});
-      })
-      .catch(() => {
-        setUiSettingsLoadError(true);
-      });
-  }, [isAuthenticated, authRequest, persistUiSettings, applyServerUiSettings]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return undefined;
-    if (!isAuthenticated) return undefined;
-    writeFoldersCache(window.localStorage, user?.id, folders);
-    if (!uiSettingsHydratedRef.current) return undefined;
-    const t = setTimeout(() => {
-      persistUiSettings(folders, redactionMode, skillAutoApply);
-    }, 600);
-    return () => clearTimeout(t);
-  }, [folders, redactionMode, skillAutoApply, isAuthenticated, authRequest, user?.id, persistUiSettings]);
-
-  const [usableSkills, setUsableSkills] = useState([]);
-  const reloadUsableSkills = useCallback(() => {
-    if (!isAuthenticated) {
-      setUsableSkills([]);
-      return;
-    }
-    listSkills(authRequest, "usable")
-      .then((rows) => setUsableSkills(rows))
-      .catch(() => setUsableSkills([]));
-  }, [isAuthenticated, authRequest]);
-  useEffect(() => {
-    reloadUsableSkills();
-  }, [reloadUsableSkills]);
+  const { usableSkills, reloadUsableSkills } = useUsableSkills(authRequest, isAuthenticated);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -942,27 +495,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         msgs = (detail.messages || []).map((m) => ({ role: m.role, text: m.content }));
       } catch { msgs = []; }
     }
-    const title = conv?.title || "對話";
-    let content; let mime; let ext;
-    if (format === "markdown") {
-      const lines = [`# ${title}`, ""];
-      for (const m of msgs) {
-        if (!m.text) continue;
-        lines.push(m.role === "user" ? "## 使用者" : "## ANILA");
-        lines.push("", m.text, "");
-      }
-      content = lines.join("\n"); mime = "text/markdown"; ext = "md";
-    } else {
-      content = JSON.stringify({ title, messages: msgs.map((m) => ({ role: m.role, content: m.text })) }, null, 2);
-      mime = "application/json"; ext = "json";
-    }
-    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title.replace(/[^\w一-鿿 -]/g, "_").slice(0, 40)}.${ext}`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadConversationExport(conv?.title || "對話", msgs, format);
   }, [conversations, messagesByConv, authRequest]);
 
   const createFolder = useCallback((rawName) => {
@@ -1004,27 +537,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const scrollRef = useRef(null);
 
   // 管理員公告 banner:登入後抓 active,使用者關閉後 localStorage 記住。
-  const [banners, setBanners] = useState([]);
-  const [dismissedBanners, setDismissedBanners] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("anila-dismissed-banners") || "[]")); }
-    catch { return new Set(); }
-  });
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    let alive = true;
-    apiListActiveBanners(authRequest)
-      .then((rows) => { if (alive) setBanners(Array.isArray(rows) ? rows : []); })
-      .catch(() => { if (alive) setBanners([]); });
-    return () => { alive = false; };
-  }, [isAuthenticated, authRequest]);
-  const visibleBanners = banners.filter((b) => !dismissedBanners.has(b.id));
-  const dismissBanner = useCallback((id) => {
-    setDismissedBanners((prev) => {
-      const next = new Set(prev); next.add(id);
-      try { localStorage.setItem("anila-dismissed-banners", JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }, []);
+  const { visibleBanners, dismissBanner } = useBanners(authRequest, isAuthenticated);
 
   // Changelog「新功能」modal:未看過最新版時頂列鈕顯示小紅點。
   const [changelogOpen, setChangelogOpen] = useState(false);
@@ -1500,146 +1013,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 
   function agentRequiresEncryption(agentId) {
     return Boolean(agents.find((a) => a.id === agentId)?.requiresEncryption);
-  }
-
-  // Map a backend ConversationOut row → the sidebar shape the UI already uses.
-  //
-  // Classification follows the latch invariant in runtime/classified.js:
-  // ANY truthy signal (server-persisted classified + agent.requires_encryption)
-  // wins. Without this OR, a hard refresh that races the agents fetch ahead
-  // of the conversations fetch would silently drop encryption mode for
-  // conversations whose classified=true wasn't (yet) persisted on the row.
-  function mapServerConversation(serverRow, agentNameLookup, agentRequiresEncryptionLookup) {
-    const agentName =
-      serverRow.agent_id != null ? agentNameLookup(serverRow.agent_id) : null;
-    const agentRequiresEncryption =
-      serverRow.agent_id != null && agentRequiresEncryptionLookup
-        ? Boolean(agentRequiresEncryptionLookup(serverRow.agent_id))
-        : false;
-    const classified = computeConversationClassified(
-      { classified: serverRow.classified },
-      { agentRequiresEncryption },
-    );
-    return {
-      id: serverRow.id,
-      title: serverRow.title,
-      ts: relativeLabel(),
-      updatedLabel: relativeLabel(),
-      agent: agentName || null,
-      agentId: serverRow.agent_id || null,
-      agentName: agentName || null,
-      folder: typeof serverRow.folder === "string" && serverRow.folder
-        ? serverRow.folder
-        : "all",
-      tags: (() => {
-        const raw = Array.isArray(serverRow.tags) ? serverRow.tags.filter(Boolean) : [];
-        const userTags = raw.filter((t) => t !== "classified");
-        return classified ? appendClassifiedTag(userTags) : userTags;
-      })(),
-      starred: Boolean(serverRow.starred),
-      classified,
-      // P3: distinguishes inheritance-driven latch from agent-required
-      // or admin-set classification. Drives the warning banner copy
-      // and the (lighter-weight) lock icon variant on the sidebar.
-      classificationInherited: Boolean(serverRow.classification_inherited),
-      // Slice 3c: four-level classification label (added by the multi-level
-      // classification backend). Absent on boolean-only payloads → the level
-      // badge simply renders nothing; the boolean latch above is unaffected.
-      classificationLevel: serverRow.classification_level,
-      // OW-1: server-truth active leaf pointer for the message tree.
-      // ⚠ 這個欄位在 shell 裡**沒有任何讀取者**(2026-08-05 全樹確認):路徑一律
-      // 由伺服器回傳的 messages 決定,leaf 只是鏡像。保留是因為它零成本且是
-      // 除錯時唯一看得到的伺服器指標;動它不會改變任何畫面,所以也不值得測。
-      activeLeafMessageId: serverRow.active_leaf_message_id ?? null,
-      updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
-      routerModelId: serverRow.router_model_id ?? null,
-      routerModelName: serverRow.router_model_name ?? null,
-      routerModelDisplayName: serverRow.router_model_display_name || null,
-      routerModelUnavailableReason: serverRow.router_model_unavailable_reason || null,
-      routerSelectionVersion: serverRow.router_selection_version ?? 0,
-      thinkingTier: normalizeThinkingTier(serverRow.thinking_tier),
-      ...compactFieldsFromServer({
-        compact_summary: serverRow.compact_summary ?? null,
-        compact_boundary_message_id: serverRow.compact_boundary_message_id ?? null,
-        compact_updated_at: serverRow.compact_updated_at ?? null,
-      }),
-    };
-  }
-
-  function mapServerMessage(msg) {
-    const meta = msg.metadata || {};
-    return {
-      id: `srv-${msg.id}`,
-      dbId: msg.id,
-      role: msg.role,
-      text: msg.content || "",
-      toolCallId: msg.tool_call_id || meta.tool_call_id || null,
-      // OW-1 tree nav fields (MessageOut).
-      parentId: msg.parent_id ?? null,
-      siblingIndex: typeof msg.sibling_index === "number" ? msg.sibling_index : 0,
-      siblingCount: typeof msg.sibling_count === "number" ? msg.sibling_count : 1,
-      siblingIds: Array.isArray(msg.sibling_ids) ? msg.sibling_ids : [msg.id],
-      trace: meta.trace || [],
-      citations: meta.citations || [],
-      followUps: meta.follow_ups || [],
-      handoffChain: meta.handoff_chain || [],
-      // 重新載入這一縫。同一份定義也要接在 applyMeta(SSE 現場那一縫)上。
-      ...kbMetaFields(meta),
-      ...agentReplyMetaFields(meta),
-      ...injectionMetaFields(meta),
-      confidence: meta.confidence,
-      classified: meta.classified,
-      traceId: msg.trace_id || meta.trace_id,
-      latencyMs: msg.latency_ms,
-      routedAgentId: meta.routed_agent_id || null,
-      rating: msg.rating || null,
-      ratingScore: typeof msg.rating_score === "number" ? msg.rating_score : null,
-      reasoning: meta.reasoning || null,
-      reasoningPersist: meta.reasoning_persist || null,
-      thinkingSummaries: Array.isArray(meta.thinking_summaries) ? meta.thinking_summaries : [],
-      thinkingStages: readThinkingStages(meta),
-      thinkingStatus: meta.thinking_status || null,
-      thinkingElapsedMs: typeof meta.thinking_elapsed_ms === "number" ? meta.thinking_elapsed_ms : null,
-      document: messageDocument(meta),
-      thinkingLocked: meta.thinking_locked === true,
-      appliedSkill: meta.applied_skill && typeof meta.applied_skill === "object" ? meta.applied_skill : null,
-      usage: meta.usage || null,
-      thinkingApplied: meta.thinking_applied || null,
-      finishReason:
-        meta.finish_reason === "length" || meta.finish_reason === "stop"
-          ? meta.finish_reason
-          : null,
-      interrupt: normalizeInterrupt(meta.interrupt),
-      settledInterrupts: Array.isArray(meta.settled_interrupts)
-        ? meta.settled_interrupts.map((item) => normalizeInterrupt(item)).filter(Boolean)
-        : [],
-      askContentSpans: Array.isArray(meta.ask_content_spans) ? meta.ask_content_spans : null,
-      prefaceText: typeof meta.resume_preface === "string" ? meta.resume_preface : null,
-      resumeText: resumeTextFromPreface(meta.resume_preface, msg.content),
-      sessionId: meta.interrupt?.session_id || meta.session_id || null,
-      // OW-3: action:NAME attribution (second channel alongside metadata.action).
-      agentName: msg.agent_name || null,
-      // OW-3 provenance (metadata.action) — quiet action-name attribution.
-      metadata: meta,
-      // 先預留再串流:一則從伺服器載回來的助理訊息可能是半截的(使用者按
-      // 停止、串流出錯、寫它的分頁消失)。狀態如實帶進 UI,半截的答案一定
-      // 要標示出來,不能長得跟完整答案一樣。
-      streamState: readStreamState(meta),
-      incompleteNotice: streamStateNotice(
-        readStreamState(meta),
-        Boolean(msg.content)
-          || Boolean(meta.interrupt)
-          || (Array.isArray(meta.settled_interrupts) && meta.settled_interrupts.length > 0),
-      ),
-      streaming: false,
-      attachments: mapServerAttachments(msg.attachments),
-      attachmentAdmitted:
-        meta.attachment_admitted && typeof meta.attachment_admitted === "object"
-          ? meta.attachment_admitted
-          : null,
-      conversationId: null, // patched by caller
-      createdAt: msg.created_at,
-    };
   }
 
   /** Reload the server active path into local state (preserves client-only fields). */
@@ -2159,29 +1532,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     } finally {
       convBulkRef.current = false;
     }
-  }
-
-  function rememberMovedConversation(prev, id, folderId, row) {
-    let found = false;
-    const next = prev.map((c) => {
-      if (c.id !== id) return c;
-      found = true;
-      return { ...c, folder: folderId };
-    });
-    if (found) return next;
-    next.push({
-      id,
-      title: row?.title || "對話",
-      folder: folderId,
-      tags: Array.isArray(row?.tags) ? row.tags : [],
-      starred: Boolean(row?.starred),
-      classified: Boolean(row?.classified),
-      updatedAt: row?.updatedAt || row?.updated_at || new Date().toISOString(),
-      createdAt: row?.createdAt || row?.created_at,
-      agentId: row?.agentId ?? row?.agent_id ?? null,
-      agent: row?.agent ?? null,
-    });
-    return next;
   }
 
   async function handleBulkDelete(rows) {
@@ -2786,72 +2136,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
   }
 
-  function resumeTextFromPreface(preface, content) {
-    if (typeof preface !== "string") return null;
-    const text = content || "";
-    if (!text.startsWith(preface)) return null;
-    return text.slice(preface.length).replace(/^\n/, "");
-  }
-
-  function submittedInterrupt(interrupt, answer, sessionId) {
-    const summary = interrupt?.kind === "ask_user"
-      ? formatAskUserSummary(interrupt.payload || {}, answer)
-      : interrupt?.kind === "plan"
-        ? (answer?.approved === true || answer?.decision === "accept" ? "已核准計畫" : "已拒絕計畫")
-        : interrupt?.kind === "tool_approval"
-          ? (answer?.approved ? "已授權工具" : "已拒絕工具")
-          : "已回覆";
-    return normalizeInterrupt({
-      ...interrupt,
-      session_id: sessionId || interrupt?.session_id,
-      answer,
-      status: "answered",
-      summary,
-    });
-  }
-
-  function pendingInterrupt(interrupt, sessionId) {
-    return normalizeInterrupt({
-      interrupt_id: interrupt?.interrupt_id,
-      kind: interrupt?.kind,
-      payload: interrupt?.payload,
-      session_id: sessionId || interrupt?.session_id,
-      status: "pending",
-    });
-  }
-
-  // A resume that already recorded an answer must not be reopened by a
-  // later echo of the same interrupt. A different id is a new ASK and
-  // stays below the summary.
-  function nextInterruptState(row, incomingRaw, sessionFallback) {
-    if (!incomingRaw || typeof incomingRaw !== "object") return null;
-    const current = row?.interrupt || null;
-    const settled = Array.isArray(row?.settledInterrupts) ? row.settledInterrupts : [];
-    const incoming = normalizeInterrupt({
-      ...incomingRaw,
-      session_id:
-        incomingRaw.session_id ||
-        current?.session_id ||
-        row?.sessionId ||
-        sessionFallback ||
-        null,
-      status: incomingRaw.status
-        || ((incomingRaw.answer != null && incomingRaw.answer !== "") ? "answered" : "pending"),
-    });
-    if (current?.status === "answered" && current.interrupt_id === incoming.interrupt_id) {
-      return { interrupt: current, settledInterrupts: settled, stacked: false };
-    }
-    if (current?.status === "answered" && incoming.interrupt_id !== current.interrupt_id) {
-      const already = settled.some((item) => item?.interrupt_id === current.interrupt_id);
-      return {
-        interrupt: incoming,
-        settledInterrupts: already ? settled : [...settled, current],
-        stacked: true,
-      };
-    }
-    return { interrupt: incoming, settledInterrupts: settled, stacked: false };
-  }
-
   function interruptFromMessage(convId, msgId) {
     const row = (messagesRef.current[convId] || []).find((m) => m.id === msgId);
     if (row?.interrupt?.status === "answered") return row.interrupt;
@@ -3298,6 +2582,63 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         setThinkingTier(patch.thinkingTier);
       }
     }
+  }
+
+  // 對話模型下拉:先樂觀切換,存到伺服器失敗就退回並重抓對話的選擇。
+  async function changeRouterModel(id) {
+    const previous = selectedRouterModelId;
+    setSelectedRouterModelId(id);
+    setRouterModelError("");
+    const convId = selectedConvId;
+    const conv = conversations.find((c) => c.id === convId);
+    if (typeof convId === "number" && conv) {
+      try {
+        const saved = await apiSetConversationRouterModel(authRequest, convId, {
+          routerModelId: id,
+          expectedVersion: conv.routerSelectionVersion || 0,
+        });
+        setConversations((prev) => prev.map((row) => row.id === convId ? {
+          ...row,
+          ...conversationSelectionFromServer(saved),
+        } : row));
+        if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
+        setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
+      } catch (err) {
+        setSelectedRouterModelId(previous);
+        setRouterModelError(err?.message || "無法保存對話模型");
+        try {
+          const fresh = await apiGetConversation(authRequest, convId);
+          applySelectionFromServer(convId, fresh);
+        } catch (_) { /* keep previous picker */ }
+      }
+    }
+  }
+
+  // Composer 附件:還沒有對話就先建一個,附件一定綁在數字 id 的對話上。
+  async function uploadComposerAttachment(file) {
+    let convId = selectedConvId;
+    if (typeof convId !== "number") {
+      convId = await ensureConversation(
+        (file && file.name) || "新對話",
+        selectedAgentId,
+      );
+    }
+    if (typeof convId !== "number") {
+      throw new Error("無法建立對話，附件未上傳");
+    }
+    return apiUploadAttachment(multipartRequest, file, {
+      conversationId: convId,
+    });
+  }
+
+  function fetchComposerAttachmentMeta(referenceId) {
+    return apiGetAttachmentMeta(
+      authRequest,
+      referenceId,
+      selectedAgentId === ROUTER_AGENT.id
+        ? (selectedRouterModelName || selectedConv?.routerModelName || null)
+        : null,
+    );
   }
 
   async function persistThinkingTier(nextTier) {
@@ -4770,6 +4111,28 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const showForensicWatermark = Boolean(pageWatermarkLevel && pageWatermarkReader);
 
   // ---- render: classified watermark + top bar + messages + composer ----
+  // Same element in the top bar or above the composer (agentSwitcherPosition).
+  const agentModelControls = (
+    <AgentModelControls
+      agents={agents}
+      selectedAgentId={selectedAgentId}
+      onSelectAgent={setSelectedAgentId}
+      isRouter={selectedAgentId === ROUTER_AGENT.id}
+      routerModels={routerModels}
+      selectedRouterModelId={selectedRouterModelId}
+      routerDefaultId={routerDefaultId}
+      routerFallbackName={selectedConv?.routerModelName || ""}
+      routerModelError={routerModelError}
+      modelNoticeActive={Boolean(modelNotice)}
+      locked={routerPickerLocked}
+      onChangeRouterModel={changeRouterModel}
+      thinkingTier={thinkingTier}
+      selectedThinkingModel={selectedThinkingModel}
+      thinkingError={thinkingError}
+      onChangeThinkingTier={persistThinkingTier}
+    />
+  );
+
   return (
     <ArtifactPreviewProvider
       artifact={artifact}
@@ -4870,66 +4233,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           background: "var(--bg)",
         }}>
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
-            <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>助手</span>
-              <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
-            </div>
-            {selectedAgentId === ROUTER_AGENT.id ? (
-              <>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
-              <RouterModelPicker
-                models={routerModels}
-                selectedId={selectedRouterModelId}
-                defaultModelId={routerDefaultId}
-                fallbackName={selectedConv?.routerModelName || ""}
-                error={routerModelError}
-                highlighted={Boolean(modelNotice)}
-                disabled={routerPickerLocked}
-                onChange={async (id) => {
-                  const previous = selectedRouterModelId;
-                  setSelectedRouterModelId(id);
-                  setRouterModelError("");
-                  const convId = selectedConvId;
-                  const conv = conversations.find((c) => c.id === convId);
-                  if (typeof convId === "number" && conv) {
-                    try {
-                      const saved = await apiSetConversationRouterModel(authRequest, convId, {
-                        routerModelId: id,
-                        expectedVersion: conv.routerSelectionVersion || 0,
-                      });
-                      setConversations((prev) => prev.map((row) => row.id === convId ? {
-                        ...row,
-                        ...conversationSelectionFromServer(saved),
-                      } : row));
-                      if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
-                      setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
-                    } catch (err) {
-                      setSelectedRouterModelId(previous);
-                      setRouterModelError(err?.message || "無法保存對話模型");
-                      try {
-                        const fresh = await apiGetConversation(authRequest, convId);
-                        applySelectionFromServer(convId, fresh);
-                      } catch (_) { /* keep previous picker */ }
-                    }
-                  }
-                }}
-              />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
-              <ThinkingPicker
-                value={thinkingTier}
-                model={selectedThinkingModel}
-                error={thinkingError}
-                disabled={routerPickerLocked}
-                onChange={persistThinkingTier}
-              />
-              </div>
-              </>
-            ) : null}
-            </>
+            agentModelControls
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
               {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
@@ -5117,231 +4421,62 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               />
             ) : (
               <>
-                <div ref={scrollRef} style={{
-                  flex: 1, overflowY: "auto", background: "var(--bg)",
-                  display: "flex", flexDirection: "column",
-                }}>
-                  <div style={{
-                    maxWidth: 760, margin: "0 auto", width: "100%",
-                    padding: `calc(var(--density) * 1.2) var(--density)`,
-                    ...(currentMsgs.length === 0
-                      ? { flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }
-                      : {}),
-                  }}>
-                    {currentMsgs.length === 0 ? (
-                      <EmptyState
-                        agent={activeAgent}
-                        agents={agents}
-                        loading={loadingAgents}
-                        onPick={(q) => sendMessage(q, [], {})}
-                      />
-                    ) : (
-                      currentMsgs.map((m, idx) => (
-                        <React.Fragment key={m.id}>
-                          {selectedConv?.compactSummary
-                            && compactBoundaryOnPath(currentMsgs, selectedConv.compactBoundaryMessageId)
-                            && m.dbId === selectedConv.compactBoundaryMessageId ? (
-                            <CompactBoundaryBanner
-                              summary={selectedConv.compactSummary}
-                              onRestore={restoreFullContext}
-                            />
-                          ) : null}
-                          <MessageBubble
-                            msg={m}
-                            agents={agents}
-                            conversationId={selectedConvId}
-                            classified={isClassified}
-                            classificationLevel={selectedConv?.classificationLevel}
-                            onRegenerate={regenerateMessage}
-                            onRate={handleRate}
-                            onEditUser={handleEditUser}
-                            onSwitchBranch={switchBranch}
-                            onDeleteBranch={deleteBranch}
-                            onOpenCitation={onOpenCitation}
-                            onPickFollowUp={(q) => sendMessage(q, [], {})}
-                            messageActions={customActions}
-                            onAction={runMessageAction}
-                            onContinue={continueMessage}
-                            onInterruptSubmit={handleInterruptAnswer}
-                            conversationStreaming={currentMsgs.some((x) => x.streaming)}
-                            isLatestAssistant={m.role === "assistant" && m.id === latestAssistantId}
-                            questionAttachmentBasis={m.role === "assistant" ? questionAttachmentBasis(currentMsgs, idx) : "none"}
-                            onCiteDocument={(attachment) => setComposerCite(attachment)}
-                            showRawReasoning={canSeeRawReasoning(user)}
-                          />
-                        </React.Fragment>
-                      ))
-                    )}
-                  </div>
-                </div>
+                <MessageList
+                  scrollRef={scrollRef}
+                  messages={currentMsgs}
+                  conversation={selectedConv}
+                  conversationId={selectedConvId}
+                  agents={agents}
+                  activeAgent={activeAgent}
+                  loadingAgents={loadingAgents}
+                  classified={isClassified}
+                  latestAssistantId={latestAssistantId}
+                  messageActions={customActions}
+                  showRawReasoning={canSeeRawReasoning(user)}
+                  onStarterPick={(q) => sendMessage(q, [], {})}
+                  onRestoreFullContext={restoreFullContext}
+                  onRegenerate={regenerateMessage}
+                  onRate={handleRate}
+                  onEditUser={handleEditUser}
+                  onSwitchBranch={switchBranch}
+                  onDeleteBranch={deleteBranch}
+                  onOpenCitation={onOpenCitation}
+                  onPickFollowUp={(q) => sendMessage(q, [], {})}
+                  onAction={runMessageAction}
+                  onContinue={continueMessage}
+                  onInterruptSubmit={handleInterruptAnswer}
+                  onCiteDocument={(attachment) => setComposerCite(attachment)}
+                />
 
-                <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
-                  <div style={{ maxWidth: 760, margin: "0 auto" }}>
-                    {tweaks.agentSwitcherPosition === "bottom" && (
-                      <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                        <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>助手</span>
-              <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
-            </div>
-            {selectedAgentId === ROUTER_AGENT.id ? (
-              <>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
-              <RouterModelPicker
-                models={routerModels}
-                selectedId={selectedRouterModelId}
-                defaultModelId={routerDefaultId}
-                fallbackName={selectedConv?.routerModelName || ""}
-                error={routerModelError}
-                highlighted={Boolean(modelNotice)}
-                disabled={routerPickerLocked}
-                onChange={async (id) => {
-                  const previous = selectedRouterModelId;
-                  setSelectedRouterModelId(id);
-                  setRouterModelError("");
-                  const convId = selectedConvId;
-                  const conv = conversations.find((c) => c.id === convId);
-                  if (typeof convId === "number" && conv) {
-                    try {
-                      const saved = await apiSetConversationRouterModel(authRequest, convId, {
-                        routerModelId: id,
-                        expectedVersion: conv.routerSelectionVersion || 0,
-                      });
-                      setConversations((prev) => prev.map((row) => row.id === convId ? {
-                        ...row,
-                        ...conversationSelectionFromServer(saved),
-                      } : row));
-                      if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
-                      setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
-                    } catch (err) {
-                      setSelectedRouterModelId(previous);
-                      setRouterModelError(err?.message || "無法保存對話模型");
-                      try {
-                        const fresh = await apiGetConversation(authRequest, convId);
-                        applySelectionFromServer(convId, fresh);
-                      } catch (_) { /* keep previous picker */ }
-                    }
+                <ComposerDock
+                  agentControls={tweaks.agentSwitcherPosition === "bottom" ? agentModelControls : null}
+                  encryptionRequired={activeEncryptionRequired}
+                  modelNotice={modelNotice}
+                  isRouter={selectedAgentId === ROUTER_AGENT.id}
+                  activeAgentName={activeAgent?.name}
+                  onSend={sendMessage}
+                  // 「停止產生」= 這個對話現在不要再產生了,包含還在排隊、
+                  // 串流尚未開始的那幾輪。只 abort 當下註冊的那一個
+                  // controller 的話,第一輪停掉、第二輪立刻接著跑,而按鈕
+                  // 仍然顯示「停止產生」—— 使用者按了、畫面照樣在動。
+                  onStop={() =>
+                    stopStreaming(selectedConvId, { cancelQueued: true })
                   }
-                }}
-              />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
-              <ThinkingPicker
-                value={thinkingTier}
-                model={selectedThinkingModel}
-                error={thinkingError}
-                disabled={routerPickerLocked}
-                onChange={persistThinkingTier}
-              />
-              </div>
-              </>
-            ) : null}
-            </>
-                        {activeEncryptionRequired && (
-                          <span title="此 agent 為列管模型（受控存取）" style={{
-                            display: "inline-flex", alignItems: "center", gap: 3,
-                            padding: "1px 7px",
-                            background: "oklch(0.95 0.02 25 / 0.4)",
-                            border: "1px solid var(--danger)",
-                            borderRadius: 999,
-                            fontSize: 11, color: "var(--danger)",
-                            fontFamily: "var(--font-mono)",
-                          }}>
-                            <IconLock size={10} /> 列管模型
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {modelNotice ? (
-                      <div
-                        role="alert"
-                        data-testid="model-unavailable-notice"
-                        style={{
-                          marginBottom: 8,
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius)",
-                          border: "1px solid var(--danger)",
-                          background: "color-mix(in oklch, var(--danger) 12%, var(--bg))",
-                          color: "var(--danger)",
-                          fontSize: 14,
-                          lineHeight: 1.55,
-                        }}
-                      >
-                        {modelNotice}
-                      </div>
-                    ) : null}
-                    <Composer
-                      onSend={sendMessage}
-                      restoredDraft={draftRestore}
-                      skills={usableSkills}
-                      agents={agents}
-                      redactionMode={redactionMode}
-                      onChangeRedactionMode={changeRedactionMode}
-                      conversationId={selectedConvId}
-                      presetPrompts={presetPrompts}
-                      deepThinkNext={deepThinkNext}
-                      onDeepThinkNextChange={setDeepThinkNextFlag}
-                      streaming={currentMsgs.some((m) => m.streaming)}
-                      // 「停止產生」= 這個對話現在不要再產生了,包含還在排隊、
-                      // 串流尚未開始的那幾輪。只 abort 當下註冊的那一個
-                      // controller 的話,第一輪停掉、第二輪立刻接著跑,而按鈕
-                      // 仍然顯示「停止產生」—— 使用者按了、畫面照樣在動。
-                      onStop={() =>
-                        stopStreaming(selectedConvId, { cancelQueued: true })
-                      }
-                      placeholder="傳訊息給 ANILA，Shift+Enter 換行"
-                      footer={
-                        selectedAgentId === ROUTER_AGENT.id
-                          ? "ANILA 會幫你找合適的助手"
-                          : `已指定助手 · ${activeAgent.name}`
-                      }
-                      queuedAttachment={composerCite}
-                      onQueuedAttachmentConsumed={() => setComposerCite(null)}
-                      onUpload={async (file) => {
-                        let convId = selectedConvId;
-                        if (typeof convId !== "number") {
-                          convId = await ensureConversation(
-                            (file && file.name) || "新對話",
-                            selectedAgentId,
-                          );
-                        }
-                        if (typeof convId !== "number") {
-                          throw new Error("無法建立對話，附件未上傳");
-                        }
-                        return apiUploadAttachment(multipartRequest, file, {
-                          conversationId: convId,
-                        });
-                      }}
-                      onFetchAttachmentMeta={(referenceId) =>
-                        apiGetAttachmentMeta(
-                          authRequest,
-                          referenceId,
-                          selectedAgentId === ROUTER_AGENT.id
-                            ? (selectedRouterModelName || selectedConv?.routerModelName || null)
-                            : null,
-                        )
-                      }
-                    />
-                    <div style={{
-                      marginTop: 6, fontSize: 11,
-                      color: "var(--fg-subtle)", textAlign: "center",
-                      fontFamily: "var(--font-mono)",
-                    }}>
-                      ANILA {activeAgent?.id === ROUTER_AGENT.id
-                        ? "會幫你找合適的助手"
-                        : `→ ${activeAgent?.name}`}
-                      {" · 所有呼叫經 CSP · "}
-                      <span
-                        style={{ color: "var(--fg-muted)" }}
-                        title="本系統由大型語言模型(LLM)驅動,輸出內容可能包含錯誤或偏誤,僅供參考、不可作為唯一決策依據。"
-                      >
-                        AI 系統 · 內容僅供參考
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                  streaming={currentMsgs.some((m) => m.streaming)}
+                  restoredDraft={draftRestore}
+                  skills={usableSkills}
+                  agents={agents}
+                  redactionMode={redactionMode}
+                  onChangeRedactionMode={changeRedactionMode}
+                  conversationId={selectedConvId}
+                  presetPrompts={presetPrompts}
+                  deepThinkNext={deepThinkNext}
+                  onDeepThinkNextChange={setDeepThinkNextFlag}
+                  queuedAttachment={composerCite}
+                  onQueuedAttachmentConsumed={() => setComposerCite(null)}
+                  onUpload={uploadComposerAttachment}
+                  onFetchAttachmentMeta={fetchComposerAttachmentMeta}
+                />
               </>
             )}
           </div>
@@ -5452,256 +4587,11 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
 }
 
 // ---- Empty state -----------------------------------------------------------
-export function EmptyState({ agent, agents, onPick, loading }) {
-  const prompts = buildStarterPrompts(agents);
-  return (
-    <div style={{ padding: "72px 16px 32px", textAlign: "center" }}>
-      <AnilaLogoImg variant="mark" height={28} style={{ margin: "0 auto" }} />
-      <div style={{ marginTop: 20, fontSize: 22, fontWeight: 600, letterSpacing: -0.3 }}>
-        你今天想問 ANILA 什麼？
-      </div>
-      <div style={{ marginTop: 8, color: "var(--fg-muted)", fontSize: 14 }}>
-        {loading
-          ? "agent 清單載入中…"
-          : agent?.id === ROUTER_AGENT.id
-            ? "輸入問題，ANILA 會幫你找合適的助手；也可以用 @名稱 直接指定"
-            : `當前助手： ${agent?.name}`}
-      </div>
-      <div style={{
-        marginTop: 32, display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
-        gap: 8,
-        maxWidth: 520, margin: "32px auto 0", textAlign: "left",
-      }}>
-        {prompts.map((s, i) => {
-          const isPrimary = s.primary === true;
-          return (
-            <button key={i} onClick={() => onPick(s.q)} style={{
-              padding: isPrimary ? "14px 16px" : "12px 14px",
-              background: "var(--bg-elev)",
-              border: "1px solid " + (isPrimary ? "var(--border-strong)" : "var(--border)"),
-              borderRadius: "var(--radius)",
-              cursor: "pointer", textAlign: "left",
-              transition: "border-color .12s",
-              fontFamily: "inherit",
-              color: "var(--fg)",
-            }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = "var(--border-strong)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = isPrimary
-                  ? "var(--border-strong)"
-                  : "var(--border)";
-              }}>
-              <div style={{
-                fontSize: 14,
-                fontWeight: 600,
-                color: "var(--fg)",
-              }}>{s.title}</div>
-              <div style={{ fontSize: 13, color: "var(--fg-muted)", marginTop: 4 }}>{s.sub}</div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // Sprint 7 X follow-up：ApiKeyPopover 元件已移除（cookie 流程後完全 dead code）。
-
-function SettingsModal({
-  open, tab, setTab, onClose,
-  user, agents, authRequest,
-  redactionMode, onChangeRedactionMode,
-  skillAutoApply, onSkillAutoApplyChange, onSkillsChanged,
-  onOpenConversation,
-  settingsLoadError, settingsUnsaved, onRetrySettingsLoad,
-}) {
-  return (
-    <Modal open={open} onClose={onClose} title="設定" subtitle="顯示、隱私與帳號" width={680}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingBottom: 8, borderBottom: "1px solid var(--border)" }}>
-          {[
-            { id: "general", label: "一般",       icon: <IconSettings size={13} /> },
-            { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
-            { id: "memory",  label: "記憶",        icon: <IconHistory  size={13} /> },
-            { id: "skills",  label: "我的 skill",  icon: <IconBook     size={13} /> },
-            { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
-            { id: "about",   label: "關於",        icon: <AnilaLogoImg variant="mark" height={13} /> },
-          ].map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
-              display: "flex", alignItems: "center", gap: 8,
-              padding: "7px 10px", fontSize: 13,
-              background: tab === t.id ? "var(--bg-subtle)" : "transparent",
-              border: "1px solid " + (tab === t.id ? "var(--border)" : "transparent"),
-              borderRadius: "var(--radius)",
-              color: "var(--fg)", textAlign: "left", cursor: "pointer",
-            }}>
-              {t.icon}{t.label}
-            </button>
-          ))}
-        </div>
-        {(settingsLoadError || settingsUnsaved) ? (
-          <div
-            role="status"
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-              padding: "8px 10px", fontSize: 12, lineHeight: 1.5,
-              background: "var(--bg-subtle)", border: "1px solid var(--border)",
-              borderRadius: "var(--radius)", color: "var(--fg)",
-            }}
-          >
-            <span>
-              {settingsUnsaved
-                ? "這次修改還沒存到伺服器。"
-                : "設定暫時讀不到伺服器。修改可能還沒保存。"}
-            </span>
-            {onRetrySettingsLoad ? (
-              <button
-                type="button"
-                onClick={onRetrySettingsLoad}
-                style={{
-                  flexShrink: 0, padding: "4px 10px", fontSize: 12, cursor: "pointer",
-                  background: "var(--bg-elev)", border: "1px solid var(--border-strong)",
-                  borderRadius: 4, color: "var(--fg)",
-                }}
-              >
-                重試
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        <div>
-          {tab === "general" && (
-            <div style={{ display: "grid", gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>預設助手</div>
-                <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4 }}>
-                  目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用助手。
-                  切換預設助手 請從主介面的 agent selector 進行。
-                </div>
-              </div>
-              <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                列管等級由 agent 的預設分類等級（無機密／營業秘密／密／機密）決定；對話一旦升至較高等級即單向鎖定，使用者無法手動切換或降級。
-              </div>
-            </div>
-          )}
-
-          {/* Sprint 7 X follow-up：apikey tab 已下線 — SPA 不再持有 key。 */}
-
-          {tab === "privacy" && (
-            <div style={{ display: "grid", gap: 14, fontSize: 13 }}>
-              <div>
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>敏感資訊處理</div>
-                <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  平台只負責提醒你草稿裡可能有什麼，不會替你改寫內容：送給模型的文字、以及存下來的對話紀錄，都是你打的原文（只去掉頭尾的空白），中間一字不改。送出去之後就收不回來，要不要送由你決定。
-                </div>
-                <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6, marginTop: 6 }}>
-                  下面選的模式會存在你的帳號下，換一台機器登入同一張卡也會保留。這是你自己的偏好，沒有管理員替你設定過，你隨時可以改回來。
-                </div>
-                {/* ⚠ 這組按鈕是這個設定在整個平台上**唯一永遠到得了**的入口。
-                    在它之前,唯一能改模式的地方是輸入框上方那條提示列 —— 而那條
-                    提示列只在草稿裡剛好偵測到個資時才出現。於是被「阻擋」擋下來的
-                    人(尤其是從範本或重試被擋的,輸入框根本是空的)看不到任何開關,
-                    而那個偏好現在還是跨機器長期保存的:幾週前在別台機器設的,
-                    今天在這裡把自己鎖在門外。擋人的控制項一定要有一條自救的路。 */}
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  {REDACTION_MODES.map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => onChangeRedactionMode?.(m)}
-                      aria-pressed={redactionMode === m}
-                      style={{
-                        padding: "4px 10px",
-                        fontSize: 11, fontFamily: "var(--font-mono)",
-                        background: redactionMode === m ? "var(--bg-subtle)" : "transparent",
-                        border: "1px solid " + (redactionMode === m ? "var(--border-strong)" : "var(--border)"),
-                        borderRadius: 4, cursor: "pointer", color: "var(--fg)",
-                      }}
-                    >{m === "warn" ? "偵測個資時提醒" : "偵測個資時阻止送出"}</button>
-                  ))}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--fg-subtle)", lineHeight: 1.6, marginTop: 6 }}>
-                  偵測只認得它知道的那幾種形狀（身分證、電話、Email、信用卡、
-                  API 金鑰、權杖、私密金鑰、密碼），認不出來的不代表沒有，認出來的也可能認錯。
-                  「偵測個資時提醒」會先告訴你再照樣送出；「偵測個資時阻止送出」只攔個資。
-                  金鑰、權杖、密碼仍只提醒、不會擋送出。
-                </div>
-              </div>
-              <div>
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>列管對話</div>
-                <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
-                  若指定的 agent 預設分類等級高於無機密，此對話會依該等級列管（受控存取）：
-                  密／機密禁止分享與匯出，營業秘密可分享但會落稽核，並加上浮水印。此狀態無法由使用者解除。
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab === "memory" && (
-            <MemoryTab
-              authRequest={authRequest}
-              onOpenConversation={onOpenConversation}
-              userId={user?.id}
-            />
-          )}
-
-          {tab === "skills" && (
-            <SkillManager
-              authRequest={authRequest}
-              user={user}
-              autoApply={skillAutoApply}
-              onAutoApplyChange={onSkillAutoApplyChange}
-              onChanged={onSkillsChanged}
-            />
-          )}
-
-          {tab === "account" && (
-            <div style={{ fontSize: 13 }}>
-              <div style={{ marginBottom: 4 }}><b>{user?.username}</b></div>
-              <div style={{ color: "var(--fg-muted)", fontSize: 12 }}>
-                角色：{user?.role || "user"}
-              </div>
-            </div>
-          )}
-
-          {tab === "about" && (
-            <div style={{ fontSize: 13, lineHeight: 1.7 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                <AnilaLogoImg variant="logo" height={32} />
-                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA Runtime Client</div>
-              </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-muted)" }}>
-                v{typeof __ANILA_VERSION__ !== "undefined" ? __ANILA_VERSION__ : "dev"} · ANILA 對話介面
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </Modal>
-  );
-}
 
 // Sprint 7 X follow-up：ApiKeyTab 元件已移除（cookie 流程後 dead code）。
 
 // ---- Root App (protected) --------------------------------------------------
-const DEFAULT_TWEAKS = {
-  accent: "#3b5bdb",
-  dark: false,
-  density: 18,
-  sansFamily: "Noto Sans TC",
-  monoFamily: "JetBrains Mono",
-  agentSwitcherPosition: "bottom",
-  traceStyle: "collapsible",
-};
-
-function resolveInitialTweaks() {
-  const globalTweaks =
-    typeof window !== "undefined" ? window.ANILA_TWEAKS : null;
-  return { ...DEFAULT_TWEAKS, ...(globalTweaks || {}) };
-}
-
 export default function App() {
   const { user } = useAuth();
   const [tweaks, setTweaks] = useState(resolveInitialTweaks);

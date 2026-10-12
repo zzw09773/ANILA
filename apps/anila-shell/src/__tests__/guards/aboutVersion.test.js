@@ -11,10 +11,12 @@ const ROOT = resolve(HERE, "../../..");
 const read = (f) => readFileSync(resolve(ROOT, f), "utf8");
 
 describe("關於頁的版本號", () => {
-  it("app.jsx 不再寫死版本字串，改用 __ANILA_VERSION__", () => {
-    const src = read("src/app.jsx");
+  it("設定 → 關於（SettingsModal.jsx）不再寫死版本字串，改用 __ANILA_VERSION__", () => {
+    // 關於頁從 app.jsx 拆到 components/SettingsModal.jsx；兩個檔都不准寫死。
+    const src = read("src/components/SettingsModal.jsx");
     expect(src).not.toMatch(/v0\.2\.0/);
     expect(src).toMatch(/__ANILA_VERSION__/);
+    expect(read("src/app.jsx")).not.toMatch(/v0\.2\.0/);
   });
   it("vite.config 從 package.json 注入 __ANILA_VERSION__（build 與 vitest 同一份）", () => {
     const cfg = read("vite.config.js");
