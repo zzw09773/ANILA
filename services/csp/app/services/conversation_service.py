@@ -423,6 +423,9 @@ def adopt_compare_answer(
         origin=origin,
         collection_id=None,
     )
+    # 比較輪有自己的採用流程，不再對這則回答產生建議追問。
+    stored_meta = dict(assistant_metadata) if isinstance(assistant_metadata, dict) else {}
+    stored_meta["compare"] = True
     # Same chaining ordinary chat uses: user lands as active leaf, then
     # assistant threads onto it (no explicit parent_id needed).
     append_message(
@@ -442,7 +445,7 @@ def adopt_compare_answer(
         trace_id=assistant_trace_id,
         latency_ms=assistant_latency_ms,
         agent_name=assistant_agent_name,
-        metadata=assistant_metadata,
+        metadata=stored_meta,
         set_active=True,
     )
     if agent is not None:

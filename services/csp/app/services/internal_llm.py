@@ -112,11 +112,19 @@ async def complete_chat(
     user_id: int | None,
     department_id: int | None = None,
     on_behalf_of_user: bool = False,
+    request_type_override: str | None = None,
+    deadline: float | None = None,
+    record_usage: bool | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     """對一列模型做一次非串流 chat completion，回傳助理內文。
 
     呼叫端要在進這裡之前讀完資料庫。這個函式會 ``commit`` 把連線還回池子，
     再走出向 HTTP。失敗丟 :class:`InternalCompletionError`。
+
+    預設與既有呼叫端相同：替使用者做的補全不覆寫 ``request_type``（proxy 記成
+    chat）、平台背景記 ``internal``、用量在有 ``user_id`` 時才記、逾時用同步
+    呼叫的 280 秒。建議追問才傳入自己的用途、較短的逾時，以及是否記用量。
     """
     from app.services.proxy.service import (
         proxy_request,
@@ -149,7 +157,16 @@ async def complete_chat(
     db.commit()
     payload = dict(body)
     payload["model"] = snapshot.name
-    record = user_id is not None
+    if record_usage is None:
+        record = user_id is not None
+    else:
+        record = bool(record_usage)
+    if request_type_override is not None:
+        request_type = request_type_override
+    elif on_behalf_of_user:
+        request_type = None
+    else:
+        request_type = "internal"
     try:
         result = await proxy_request(
             model=snapshot,
@@ -158,11 +175,12 @@ async def complete_chat(
             department_id=department_id,
             request_body=payload,
             endpoint_path=f"/{snapshot.api_version}/chat/completions",
+            conversation_id=conversation_id,
             record_usage=record,
             usage_kind="inference" if on_behalf_of_user else "platform",
-            request_type_override=None if on_behalf_of_user else "internal",
+            request_type_override=request_type,
             tuning=tuning,
-            deadline=sync_model_deadline(),
+            deadline=sync_model_deadline() if deadline is None else deadline,
             request_timestamp=started,
         )
     except HTTPException as exc:

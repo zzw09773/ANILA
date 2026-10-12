@@ -322,6 +322,30 @@ SETTINGS: tuple[SettingSpec, ...] = (
         _router_prompts.CALL_BUDGET_DEFAULT,
         "一則回答最多打幾次模型。誰改＝平台管理員；情境＝分輪、自動續寫、救援與過長重試共用這一個預算；為何不能等改版＝線上要能擋住單次成本。允許 1–30 次，預設 12。按「繼續」重新計算。儲存後 router 在 30 秒內生效。",
     ),
+    _spec(
+        "follow_ups.enabled",
+        "FOLLOW_UPS_ENABLED",
+        T_BOOL_NE_0,
+        _is_bool,
+        True,
+        "回答完成後是否產生建議的下一個問題。關閉後不再呼叫模型。",
+    ),
+    _spec(
+        "follow_ups.allow_classified",
+        "FOLLOW_UPS_ALLOW_CLASSIFIED",
+        T_BOOL_NE_0,
+        _is_bool,
+        False,
+        "機密對話是否允許產生建議問題。開啟後只使用本地模型，且不記入用量。",
+    ),
+    _spec(
+        "follow_ups.max",
+        "FOLLOW_UPS_MAX",
+        T_INT,
+        _closed_int_range(1, 10),
+        3,
+        "每則回答最多保留幾個建議問題。允許 1–10 個，預設 3。",
+    ),
 )
 
 
