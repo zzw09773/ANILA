@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     ASR_MIN_RMS: float = 0.008
     # 觸發「開始講話」那幾幀的平均音量門檻。調高可擋冷氣、鍵盤等背景聲。
     ASR_START_RMS: float = 0.008
+    # 去掉 preroll 與收尾靜音後的最短有聲長度(毫秒);短於此視為雜音丟棄。0 = 不檢查。
+    ASR_MIN_SPEECH_MS: int = 0
 
     # ⚠ 預設 off,且不要改成 s2twp。實測:whisper medium 在 1096 句真實繁中
     # 語料的簡體率 0%,而 OpenCC 對正確繁體的誤傷率 s2t 9.85% / s2tw 6.20% /

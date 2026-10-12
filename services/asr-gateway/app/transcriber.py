@@ -64,7 +64,8 @@ PARTIAL_MIN_AVG_LOGPROB = -1.0
 # generic traditional prompt) — drop unconditionally.
 HALLUCINATION_ALWAYS_RE = re.compile(
     r"ming pao|明報|www\.|請訂閱|\bsubscribe\b|copyright|版權所有|"
-    r"thank you for watching|以下是繁體中文",
+    r"thank you for watching|以下是繁體中文|"
+    r"謝謝觀看|謝謝收看|感謝收看|請不吝點贊|點贊訂閱|字幕由|獨播劇場",
     re.IGNORECASE,
 )
 # Everyday words Whisper emits for music/silence; only damning when they are
@@ -72,8 +73,16 @@ HALLUCINATION_ALWAYS_RE = re.compile(
 HALLUCINATION_SHORT_RE = re.compile(r"音樂|music|字幕|subtitle", re.IGNORECASE)
 
 
+# 只有語助詞 / 注音 / 標點的輸出:雜音最常見的產物(實測 .35 對非語音音訊回
+# 「嗯 嗯 嗯」「ㄨ ㄨ ㄧ」)。整句只剩這些才丟,真句子裡的「嗯」不受影響。
+FILLER_ONLY_RE = re.compile(r"^[\s嗯啊阿呃喔哦噢欸誒唉哈呵恩痾\u3105-\u3129\u02c9\u02ca\u02c7\u02cb\u02d9"
+                            r"，。、！？!?,.…~～\-—]+$")
+
+
 def is_hallucination(text: str) -> bool:
     if HALLUCINATION_ALWAYS_RE.search(text):
+        return True
+    if FILLER_ONLY_RE.match(text):
         return True
     return len(text) <= 8 and bool(HALLUCINATION_SHORT_RE.search(text))
 
@@ -142,7 +151,11 @@ class VadSegmenter:
         speech_end_ms: int | None = None,
         min_rms: float | None = None,
         start_rms: float | None = None,
+        min_speech_ms: int | None = None,
     ) -> None:
+        # 去掉 preroll 與收尾靜音後,真正有聲的長度下限。0 = 不檢查(舊行為)。
+        self.min_speech_ms = 0 if min_speech_ms is None else max(0, int(min_speech_ms))
+        self._preroll_bytes = 0
         self.speech_end_frames = (
             SPEECH_END_FRAMES if speech_end_ms is None
             else max(1, -(-int(speech_end_ms) // FRAME_MS))
@@ -241,6 +254,7 @@ class VadSegmenter:
                 # 一部分了。補回前 300ms,否則每句話的頭都會被咬掉。
                 for kept in self._preroll:
                     self._speech.extend(kept)
+                self._preroll_bytes = len(self._speech) - SPEECH_START_FRAMES * FRAME_BYTES
                 self._preroll.clear()
                 self._samples_since_partial = len(self._speech) // 2
                 events.append(SpeechStart(self._utt_id))
@@ -274,6 +288,11 @@ class VadSegmenter:
         # 收尾的那段靜音(speech_end_frames)不該算進音量判斷,否則長尾巴會把整句的 RMS 拉低。
         tail = self.speech_end_frames * FRAME_BYTES
         voiced = audio[:-tail] if len(audio) > tail + FRAME_BYTES else audio
+        if self.min_speech_ms:
+            core = max(0, len(voiced) - max(0, self._preroll_bytes))
+            if core < self.min_speech_ms * SAMPLE_RATE // 1000 * 2:
+                events.append(Discard(utt_id))
+                return
         samples = np.frombuffer(voiced, dtype=np.int16).astype(np.float32) / 32768.0
         if float(np.sqrt(np.mean(samples**2))) < self.min_rms:
             events.append(Discard(utt_id))

@@ -806,6 +806,7 @@ services:
       ASR_SPEECH_END_MS: ${ASR_SPEECH_END_MS:-510}
       ASR_MIN_RMS: ${ASR_MIN_RMS:-0.008}
       ASR_START_RMS: ${ASR_START_RMS:-0.008}
+      ASR_MIN_SPEECH_MS: ${ASR_MIN_SPEECH_MS:-0}
       CSP_BASE_URL: http://csp:8000
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
