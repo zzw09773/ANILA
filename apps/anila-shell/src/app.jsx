@@ -597,7 +597,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const queueCompact = (payload) => {
       compactChain = compactChain.then(() => handleIncomingCompact(convId, payload, opts.payload));
     };
-    const { assistantId, ...streamOpts } = opts;
+    const { assistantId, restoreDraftOnOverload, ...streamOpts } = opts;
     // 中斷事件之後才進來的正文是題目 chunk。只丟掉這一段，不比對答案裡的句子。
     let lastStreamAcc = "";
     let interruptAt = null;
@@ -737,6 +737,19 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               text: draft,
             });
           }
+        }
+        if (
+          typeof restoreDraftOnOverload === "string"
+          && restoreDraftOnOverload
+          && err?.overload
+          && !controller.signal.aborted
+          && !userStoppedRef.current.has(convId)
+        ) {
+          setDraftRestore({
+            token: `${convId}:overload:${assistantId || Date.now()}`,
+            conversationId: convId,
+            text: restoreDraftOnOverload,
+          });
         }
         if (
           assistantId
@@ -3018,6 +3031,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           attachmentRefs: bindIds,
           skillId,
           assistantId,
+          restoreDraftOnOverload: text,
           onText: (acc) => {
             finalText = acc;
             const record = inFlightStreamsRef.current.get(assistantId);

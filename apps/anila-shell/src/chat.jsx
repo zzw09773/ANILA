@@ -118,6 +118,11 @@ import {
 import { THINKING_STAGE_MARK } from "./runtime/thinkingStages.js";
 import { visibleAskParts } from "./runtime/askTranscript.js";
 import { isQuotaExceededMessage } from "./runtime/quotaNotice.js";
+import {
+  DUPLICATE_PENDING_COPY,
+  pendingSendKey,
+  visibleQueueNotice,
+} from "./runtime/pendingReply.js";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -1456,7 +1461,8 @@ export const MessageBubble = ({
           ? displayPreface
           : (bodyExtract.thinking ? bodyExtract.body : (visibleParts.body || ""));
         const continuation = visibleParts.continuation;
-        const queueStatus = msg.streaming && msg.queueNotice ? (
+        const queueLine = visibleQueueNotice(msg.queueNotice);
+        const queueStatus = msg.streaming && queueLine ? (
           <div
             role="status"
             data-testid="model-queue-status"
@@ -1467,7 +1473,7 @@ export const MessageBubble = ({
               color: "var(--fg-subtle)",
             }}
           >
-            {msg.queueNotice}
+            {queueLine}
           </div>
         ) : null;
         const rescueStatus = msg.streaming && msg.rescueNotice ? (
@@ -2471,6 +2477,20 @@ export const Composer = ({
   textRef.current = text;
   const conversationRef = useRef(conversationId);
   conversationRef.current = conversationId;
+  // 同一段文字在回覆回來之前再送一次，不佔下一個排隊位置。
+  // 新對話從 null 變成真正的 id 時不要清，那仍是同一則。
+  const [pendingHold, setPendingHold] = useState("");
+  const inflightSendsRef = useRef(new Map());
+  const convTrackRef = useRef(conversationId);
+  useEffect(() => {
+    const prev = convTrackRef.current;
+    convTrackRef.current = conversationId;
+    if (prev == null) return;
+    if (String(prev) !== String(conversationId ?? "")) {
+      inflightSendsRef.current.clear();
+      setPendingHold("");
+    }
+  }, [conversationId]);
   // 語音輸入。定稿 append 進草稿讓使用者改完再送 —— ASR 不自動送出。
   // setText 用 updater 形式:定稿可能在使用者邊打字時抵達,讀舊 closure 會
   // 蓋掉他剛打的字。disabled(LLM 串流中)對應 anilalm 的 busy。
@@ -2943,16 +2963,34 @@ export const Composer = ({
     const snapshotSkill = currentSkill && Number.isInteger(currentSkill.id)
       ? { id: currentSkill.id, name: currentSkill.name }
       : null;
+    const sendKey = pendingSendKey(v, snapshotAtts);
+    if (sendKey && inflightSendsRef.current.has(sendKey)) {
+      setPendingHold(DUPLICATE_PENDING_COPY);
+      return;
+    }
+    const inflightTicket = sendKey ? {} : null;
+    if (sendKey) inflightSendsRef.current.set(sendKey, inflightTicket);
+    const releaseInflight = () => {
+      if (sendKey && inflightSendsRef.current.get(sendKey) === inflightTicket) {
+        inflightSendsRef.current.delete(sendKey);
+      }
+      if (inflightSendsRef.current.size === 0) setPendingHold("");
+    };
     let outcome;
     try {
       outcome = onSend(v, snapshotAtts, sendMeta());
     } catch {
+      releaseInflight();
       return;
     }
     // 同步的 false（或帶著對話 id 的失敗）代表根本沒送成，輸入框維持原樣。
     const immediate = rejectedSend(outcome);
     const pending = outcome && typeof outcome.then === "function";
-    if (immediate.failed && !pending) return;
+    if (immediate.failed && !pending) {
+      releaseInflight();
+      return;
+    }
+    setPendingHold("");
     const sendConversation = conversationId;
     for (const att of snapshotAtts) {
       if (att.uploadId) liveUploadIds.current.delete(att.uploadId);
@@ -2970,6 +3008,7 @@ export const Composer = ({
     // 使用者已經打了新內容，或另外選了 skill，就整份收起來，用「還原未送出的訊息」換。
     // 失敗若帶著這次送出建立的對話 id，選到那個對話不算使用者換走。
     const finish = (result) => {
+      releaseInflight();
       if (!composerAlive.current) return;
       const failure = rejectedSend(result);
       const current = String(conversationRef.current ?? "");
@@ -3782,6 +3821,7 @@ export const Composer = ({
               textRef.current = e.target.value;
               setText(e.target.value);
               setCaret(e.target.selectionStart || 0);
+              setPendingHold("");
             }}
             onKeyUp={updateCaret}
             onClick={updateCaret}
@@ -3826,7 +3866,7 @@ export const Composer = ({
               才會念;條件式掛載的 live region 常常第一次不報。 */}
           <div className="composer-status" data-testid="composer-status" style={{
             display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
-            marginTop: (text.length > 0 || piiHits.length > 0 || streaming || asr.state === "recording" || asr.state === "listening") ? 4 : 0,
+            marginTop: (text.length > 0 || piiHits.length > 0 || streaming || pendingHold || asr.state === "recording" || asr.state === "listening") ? 4 : 0,
             fontSize: 11, color: "var(--fg-subtle)",
             fontFamily: "var(--font-mono)",
           }}>
@@ -3834,6 +3874,9 @@ export const Composer = ({
             {piiHits.length > 0 && <span style={{ color: "var(--warn)" }}>· 可能含個資 × {piiHits.length}</span>}
             <span className="composer-live-status" data-testid="composer-live-status" aria-live="polite" aria-atomic="true" style={{ display: "inline-flex", gap: 6 }}>
               {streaming && <span>產生中</span>}
+              {pendingHold ? (
+                <span data-testid="duplicate-send-notice">{pendingHold}</span>
+              ) : null}
               {asr.state === "recording" && <span style={{ color: "var(--danger)" }}>辨識中…</span>}
               {asr.state === "listening" && <span>聆聽中…</span>}
             </span>

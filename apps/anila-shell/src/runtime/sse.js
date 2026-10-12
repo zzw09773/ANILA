@@ -1,4 +1,5 @@
 import { modelUnavailableFromPayload } from "./modelUnavailable.js";
+import { applyOverloadCopy } from "./pendingReply.js";
 import { quotaNotice } from "./quotaNotice.js";
 
 export function parseSseBlocks(buffer) {
@@ -66,7 +67,14 @@ function errorFromHttpBody(body, status, fallback) {
   }
   const error = new Error(detail || fallback);
   error.status = status;
-  return error;
+  if (
+    payload?.detail
+    && typeof payload.detail === "object"
+    && typeof payload.detail.code === "string"
+  ) {
+    error.code = payload.detail.code;
+  }
+  return applyOverloadCopy(error);
 }
 
 async function readHttpError(response, label) {
@@ -92,7 +100,9 @@ function errorFromTerminal(terminalError, accumulatedText) {
   const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
   err.isStreamError = true;
   err.partialText = accumulatedText;
-  return err;
+  if (typeof terminalError?.code === "string") err.code = terminalError.code;
+  if (typeof terminalError?.status === "number") err.status = terminalError.status;
+  return applyOverloadCopy(err);
 }
 
 function statusFallback(label, status) {
