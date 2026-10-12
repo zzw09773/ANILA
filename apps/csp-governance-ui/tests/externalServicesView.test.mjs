@@ -288,3 +288,11 @@ test('health 請求的 timeout 不超過剩餘時間，停止時會中止', asyn
   assert.equal(seen[0].config.timeout, 1500)
   assert.equal(seen[0].config.validateStatus(503), true)
 })
+
+test('語音模型名稱欄位 native 協定也顯示，留白存成佔位值', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const view = readFileSync(resolve(here, '../src/views/ExternalServicesView.vue'), 'utf8')
+  assert.doesNotMatch(view, /protocol === 'openai'"\s*\n\s*label="模型名稱"/)
+  assert.match(view, /留白就用端點的預設模型/)
+  assert.match(view, /body\.openai_model = model \|\| UNSET_MODEL/)
+})
