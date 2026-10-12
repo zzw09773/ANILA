@@ -130,12 +130,10 @@ import {
   rescueStatusFromEvent,
 } from "./runtime/reservedTurn.js";
 
-import RouterModelPicker from "./components/RouterModelPicker.jsx";
 import {
   noticeForBoundModel,
   readModelUnavailableError,
 } from "./runtime/modelUnavailable.js";
-import ThinkingPicker from "./components/ThinkingPicker.jsx";
 import {
   conversationSelectionFromServer,
   normalizeThinkingTier,
@@ -241,6 +239,7 @@ import { SettingsModal } from "./components/SettingsModal.jsx";
 import { useUsableSkills } from "./runtime/useUsableSkills.js";
 import { downloadConversationExport } from "./runtime/conversationExport.js";
 import { useBanners } from "./runtime/useBanners.js";
+import { AgentModelControls } from "./components/AgentModelControls.jsx";
 
 export { EmptyState } from "./components/EmptyState.jsx";
 
@@ -2942,6 +2941,36 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
   }
 
+  // 對話模型下拉:先樂觀切換,存到伺服器失敗就退回並重抓對話的選擇。
+  async function changeRouterModel(id) {
+    const previous = selectedRouterModelId;
+    setSelectedRouterModelId(id);
+    setRouterModelError("");
+    const convId = selectedConvId;
+    const conv = conversations.find((c) => c.id === convId);
+    if (typeof convId === "number" && conv) {
+      try {
+        const saved = await apiSetConversationRouterModel(authRequest, convId, {
+          routerModelId: id,
+          expectedVersion: conv.routerSelectionVersion || 0,
+        });
+        setConversations((prev) => prev.map((row) => row.id === convId ? {
+          ...row,
+          ...conversationSelectionFromServer(saved),
+        } : row));
+        if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
+        setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
+      } catch (err) {
+        setSelectedRouterModelId(previous);
+        setRouterModelError(err?.message || "無法保存對話模型");
+        try {
+          const fresh = await apiGetConversation(authRequest, convId);
+          applySelectionFromServer(convId, fresh);
+        } catch (_) { /* keep previous picker */ }
+      }
+    }
+  }
+
   async function persistThinkingTier(nextTier) {
     const previous = thinkingTier;
     const normalized = normalizeThinkingTier(nextTier);
@@ -4512,66 +4541,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           background: "var(--bg)",
         }}>
           {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
-            <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>助手</span>
-              <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
-            </div>
-            {selectedAgentId === ROUTER_AGENT.id ? (
-              <>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
-              <RouterModelPicker
-                models={routerModels}
-                selectedId={selectedRouterModelId}
-                defaultModelId={routerDefaultId}
-                fallbackName={selectedConv?.routerModelName || ""}
-                error={routerModelError}
-                highlighted={Boolean(modelNotice)}
-                disabled={routerPickerLocked}
-                onChange={async (id) => {
-                  const previous = selectedRouterModelId;
-                  setSelectedRouterModelId(id);
-                  setRouterModelError("");
-                  const convId = selectedConvId;
-                  const conv = conversations.find((c) => c.id === convId);
-                  if (typeof convId === "number" && conv) {
-                    try {
-                      const saved = await apiSetConversationRouterModel(authRequest, convId, {
-                        routerModelId: id,
-                        expectedVersion: conv.routerSelectionVersion || 0,
-                      });
-                      setConversations((prev) => prev.map((row) => row.id === convId ? {
-                        ...row,
-                        ...conversationSelectionFromServer(saved),
-                      } : row));
-                      if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
-                      setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
-                    } catch (err) {
-                      setSelectedRouterModelId(previous);
-                      setRouterModelError(err?.message || "無法保存對話模型");
-                      try {
-                        const fresh = await apiGetConversation(authRequest, convId);
-                        applySelectionFromServer(convId, fresh);
-                      } catch (_) { /* keep previous picker */ }
-                    }
-                  }
-                }}
-              />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
-              <ThinkingPicker
-                value={thinkingTier}
-                model={selectedThinkingModel}
-                error={thinkingError}
-                disabled={routerPickerLocked}
-                onChange={persistThinkingTier}
-              />
-              </div>
-              </>
-            ) : null}
-            </>
+            <AgentModelControls
+              agents={agents}
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={setSelectedAgentId}
+              isRouter={selectedAgentId === ROUTER_AGENT.id}
+              routerModels={routerModels}
+              selectedRouterModelId={selectedRouterModelId}
+              routerDefaultId={routerDefaultId}
+              routerFallbackName={selectedConv?.routerModelName || ""}
+              routerModelError={routerModelError}
+              modelNoticeActive={Boolean(modelNotice)}
+              locked={routerPickerLocked}
+              onChangeRouterModel={changeRouterModel}
+              thinkingTier={thinkingTier}
+              selectedThinkingModel={selectedThinkingModel}
+              thinkingError={thinkingError}
+              onChangeThinkingTier={persistThinkingTier}
+            />
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
               {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
@@ -4821,66 +4808,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   <div style={{ maxWidth: 760, margin: "0 auto" }}>
                     {tweaks.agentSwitcherPosition === "bottom" && (
                       <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                        <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>助手</span>
-              <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
-            </div>
-            {selectedAgentId === ROUTER_AGENT.id ? (
-              <>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>模型</span>
-              <RouterModelPicker
-                models={routerModels}
-                selectedId={selectedRouterModelId}
-                defaultModelId={routerDefaultId}
-                fallbackName={selectedConv?.routerModelName || ""}
-                error={routerModelError}
-                highlighted={Boolean(modelNotice)}
-                disabled={routerPickerLocked}
-                onChange={async (id) => {
-                  const previous = selectedRouterModelId;
-                  setSelectedRouterModelId(id);
-                  setRouterModelError("");
-                  const convId = selectedConvId;
-                  const conv = conversations.find((c) => c.id === convId);
-                  if (typeof convId === "number" && conv) {
-                    try {
-                      const saved = await apiSetConversationRouterModel(authRequest, convId, {
-                        routerModelId: id,
-                        expectedVersion: conv.routerSelectionVersion || 0,
-                      });
-                      setConversations((prev) => prev.map((row) => row.id === convId ? {
-                        ...row,
-                        ...conversationSelectionFromServer(saved),
-                      } : row));
-                      if (selectedConvId === convId) setSelectedRouterModelId(saved.router_model_id);
-                      setModelUnavailable((cur) => (cur && cur.convId === convId ? null : cur));
-                    } catch (err) {
-                      setSelectedRouterModelId(previous);
-                      setRouterModelError(err?.message || "無法保存對話模型");
-                      try {
-                        const fresh = await apiGetConversation(authRequest, convId);
-                        applySelectionFromServer(convId, fresh);
-                      } catch (_) { /* keep previous picker */ }
-                    }
-                  }
-                }}
-              />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
-              <ThinkingPicker
-                value={thinkingTier}
-                model={selectedThinkingModel}
-                error={thinkingError}
-                disabled={routerPickerLocked}
-                onChange={persistThinkingTier}
-              />
-              </div>
-              </>
-            ) : null}
-            </>
+                                    <AgentModelControls
+                          agents={agents}
+                          selectedAgentId={selectedAgentId}
+                          onSelectAgent={setSelectedAgentId}
+                          isRouter={selectedAgentId === ROUTER_AGENT.id}
+                          routerModels={routerModels}
+                          selectedRouterModelId={selectedRouterModelId}
+                          routerDefaultId={routerDefaultId}
+                          routerFallbackName={selectedConv?.routerModelName || ""}
+                          routerModelError={routerModelError}
+                          modelNoticeActive={Boolean(modelNotice)}
+                          locked={routerPickerLocked}
+                          onChangeRouterModel={changeRouterModel}
+                          thinkingTier={thinkingTier}
+                          selectedThinkingModel={selectedThinkingModel}
+                          thinkingError={thinkingError}
+                          onChangeThinkingTier={persistThinkingTier}
+                        />
                         {activeEncryptionRequired && (
                           <span title="此 agent 為列管模型（受控存取）" style={{
                             display: "inline-flex", alignItems: "center", gap: 3,
