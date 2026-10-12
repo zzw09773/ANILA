@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 
 import asyncpg  # type: ignore[import-untyped]  # 沒有 py.typed 或 stubs
-from pgvector.asyncpg import register_vector
+from pgvector.asyncpg import register_vector  # type: ignore[import-untyped]  # no py.typed
 
 
 class PgPool:

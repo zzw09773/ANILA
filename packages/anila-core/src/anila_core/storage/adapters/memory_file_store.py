@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import frontmatter
+import frontmatter  # type: ignore[import-untyped]  # no py.typed
 
 from ...models.memory import MemoryFile, MemoryHeader
 

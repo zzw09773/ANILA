@@ -36,7 +36,7 @@ from datetime import datetime
 from typing import Any, AsyncIterator
 
 import asyncpg  # type: ignore[import-untyped]  # 沒有 py.typed 或 stubs
-from pgvector import HalfVector
+from pgvector import HalfVector  # type: ignore[import-untyped]  # no py.typed
 
 from anila_core.storage.embeddable import leaf_predicate
 
