@@ -172,6 +172,25 @@ export function injectionMetaFields(meta) {
   };
 }
 
+/**
+ * 回答完成後的數字／條號比對。兩個入口都要抄：SSE 的 applyMeta、
+ * 重新載入的 mapServerMessage。欄位不在時不要寫 false，否則後到的
+ * 空 meta 會把已經標上的旗標清掉。
+ */
+export function sourceCheckFields(meta) {
+  if (!meta || typeof meta !== "object" || !Object.prototype.hasOwnProperty.call(meta, "source_check")) {
+    return {};
+  }
+  const raw = meta.source_check;
+  if (!raw || typeof raw !== "object") {
+    return { sourceCheck: null, sourceMismatch: false };
+  }
+  return {
+    sourceCheck: raw,
+    sourceMismatch: raw.mismatch === true,
+  };
+}
+
 export const liveThinkingPumpMaps = new Set();
 
 export function liveThinkingPumpCount() {

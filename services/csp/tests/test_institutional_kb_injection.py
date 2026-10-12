@@ -1286,3 +1286,143 @@ def test_less_than_that_is_not_a_tag_survives_the_guard(
     assert "x < 5" in answer
     assert "y <= 3" in answer
     assert "<script" not in answer
+
+
+# ── 數字／條號對來源。程式比，不採用模型自己的核對宣告。────────────────────
+
+
+_LEAVE_PASSAGE = "第三條 請假不得超過三十日，並發給新臺幣三萬元。"
+_MODEL_CERTIFIES = {
+    "source_check": {
+        "checked": True,
+        "mismatch": False,
+        "marker": "已核對，數字正確",
+    }
+}
+
+
+def _stream_answer(content: str, meta: dict | None = None) -> list[str]:
+    lines = [
+        "data: "
+        + json.dumps(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": content},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        "",
+    ]
+    if meta is not None:
+        lines.extend(
+            [
+                "event: anila.meta",
+                "data: " + json.dumps(meta, ensure_ascii=False),
+                "",
+            ]
+        )
+    lines.extend(["data: [DONE]", ""])
+    return lines
+
+
+@pytest.mark.parametrize("exit_kind", _EXITS)
+def test_mismatched_numbers_are_flagged_and_model_certification_is_ignored(
+    client, db, actor, model_target, agent_target, kb, exit_kind
+):
+    kb.result = KbResult(
+        state=KbState.SEARCHED_HIT,
+        hits=[
+            KbHit(
+                collection_id=1,
+                document_id=101,
+                filename="規章-1.pdf",
+                content=_LEAVE_PASSAGE,
+                score=0.9,
+            )
+        ],
+    )
+    _FakeClient.reply_content = "依第9條，給45日，補助50,000元。"
+    _FakeClient.post_meta = _MODEL_CERTIFIES
+    _FakeClient.stream_lines = _stream_answer(
+        _FakeClient.reply_content, _MODEL_CERTIFIES
+    )
+    meta = _run_exit(
+        client, actor, model_target, agent_target, exit_kind, route="direct"
+    )
+    check = meta["source_check"]
+    assert check["checked"] is True
+    assert check["mismatch"] is True
+    assert check["marker"] == "這段對不上來源，以原文卡片為準"
+    assert "已核對" not in check["marker"]
+    values = {row["value"] for row in check["unmatched"]}
+    assert "條:9" in values
+    assert "45" in values
+    assert "50000" in values
+
+
+def test_numbers_past_the_snippet_still_count_as_in_source(
+    client, db, actor, model_target, kb
+):
+    """抽屜只顯示前 200 字。比對要用送進模型的全文，不然會誤標。"""
+    content = "前言。" + ("甲" * 250) + "補助三萬元。"
+    kb.result = KbResult(
+        state=KbState.SEARCHED_HIT,
+        hits=[
+            KbHit(
+                collection_id=1,
+                document_id=101,
+                filename="規章-1.pdf",
+                content=content,
+                score=0.9,
+            )
+        ],
+    )
+    _FakeClient.reply_content = "補助 30,000元。"
+    meta = _run_exit(
+        client, actor, model_target, None, "model_json", route="direct"
+    )
+    assert meta["source_check"]["mismatch"] is False
+    assert meta["citations"][0]["snippet"] == content[: proxy_api._KB_SNIPPET_CHARS]
+    assert "三萬" not in meta["citations"][0]["snippet"]
+
+
+def test_without_passages_the_code_does_not_flag_or_keep_a_model_pass(
+    client, db, actor, model_target, kb
+):
+    kb.result = KbResult(state=KbState.NOT_SEARCHED)
+    _FakeClient.reply_content = "依第9條，給45日。"
+    _FakeClient.post_meta = _MODEL_CERTIFIES
+    meta = _run_exit(
+        client, actor, model_target, None, "model_json", route=None
+    )
+    check = meta["source_check"]
+    assert check["checked"] is False
+    assert check["mismatch"] is False
+    assert "marker" not in check
+
+
+def test_client_passage_text_is_a_source(
+    client, db, actor, model_target, kb
+):
+    kb.result = KbResult(state=KbState.NOT_SEARCHED)
+    _FakeClient.reply_content = "以30日為限。"
+    meta = _run_exit(
+        client,
+        actor,
+        model_target,
+        None,
+        "model_json",
+        route=None,
+        body_extra={
+            "anila_external_passages": [
+                {"source": "kb", "id": "p1", "text": "請假不得超過三十日。"}
+            ]
+        },
+    )
+    assert meta["source_check"]["checked"] is True
+    assert meta["source_check"]["mismatch"] is False

@@ -161,6 +161,33 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
   );
 };
 
+// 回答裡的數字、金額、天數或條號沒出現在送進模型的來源片段時，由程式標這句。
+// 畫面只認 mismatch，不採用 metadata 裡帶來的 marker 文字：模型不能自己換一句
+// 「已核對無誤」蓋掉警告。
+export const SOURCE_MISMATCH_MARKER = "這段對不上來源，以原文卡片為準";
+
+export const SourceMismatchNotice = ({ show }) => {
+  if (!show) return null;
+  return (
+    <div
+      role="status"
+      data-testid="source-mismatch-notice"
+      style={{
+        marginTop: 10,
+        padding: "8px 12px",
+        borderRadius: "var(--radius)",
+        border: "1px solid var(--warning, var(--border-strong))",
+        background: "color-mix(in oklch, var(--warning, var(--accent)) 12%, var(--bg))",
+        color: "var(--fg)",
+        fontSize: 13,
+        lineHeight: 1.55,
+      }}
+    >
+      {SOURCE_MISMATCH_MARKER}
+    </div>
+  );
+};
+
 // ---- 敏感資訊提示列 ----
 
 /**

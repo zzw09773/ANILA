@@ -215,6 +215,7 @@ import {
   normalizeAgents,
   kbMetaFields,
   injectionMetaFields,
+  sourceCheckFields,
   liveThinkingPumpCount,
   agentReplyMetaFields,
 } from "./runtime/chatHelpers.js";
@@ -2506,6 +2507,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ...kbMetaFields(meta),
       ...agentReplyMetaFields(meta),
       ...injectionMetaFields(meta),
+      ...sourceCheckFields(meta),
       latencyMs: meta.latency_ms,
       usage: meta.usage || null,
       classified: meta.classified,

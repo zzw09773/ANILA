@@ -14,6 +14,7 @@ import {
   nowIso,
   kbMetaFields,
   injectionMetaFields,
+  sourceCheckFields,
   agentReplyMetaFields,
 } from "./chatHelpers.js";
 
@@ -102,6 +103,7 @@ export function mapServerMessage(msg) {
     ...kbMetaFields(meta),
     ...agentReplyMetaFields(meta),
     ...injectionMetaFields(meta),
+    ...sourceCheckFields(meta),
     confidence: meta.confidence,
     classified: meta.classified,
     traceId: msg.trace_id || meta.trace_id,
