@@ -16,3 +16,8 @@ afterEach(() => {
 if (typeof Element !== "undefined" && !Element.prototype.scrollTo) {
   Element.prototype.scrollTo = function scrollTo() {};
 }
+
+// jsdom 沒有 URL.revokeObjectURL。下載流程用 setTimeout(..., 1000) 延後撤銷;
+// 測試在 finally 把它還原成 undefined 後,機器忙時計時器才觸發,就變成
+// 「2 unhandled errors」讓整個 npm test 失敗(平行跑全套時重現過)。給一個 no-op 底。
+if (typeof URL.revokeObjectURL !== "function") URL.revokeObjectURL = () => {};

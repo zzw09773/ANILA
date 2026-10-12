@@ -1019,17 +1019,28 @@ def _a1_payloads() -> dict[str, bytes]:
     }
 
 
-def test_a1_exhaustive_single_byte_filler_closed() -> None:
+_A1_CHUNK = 32
+# 切成 8 段讓 pytest-xdist 能分到不同 worker(單支原本 ~146 秒);段落由 range 產生,
+# 合起來一定是完整的 0..255,下面的 coverage 測試守住這點。
+
+
+def test_a1_chunks_cover_every_byte() -> None:
+    covered = [f for start in range(0, 256, _A1_CHUNK) for f in range(start, start + _A1_CHUNK)]
+    assert covered == list(range(256))
+
+
+@pytest.mark.parametrize("start", range(0, 256, _A1_CHUNK))
+def test_a1_exhaustive_single_byte_filler_closed(start: int) -> None:
     """A1/I-B: every f in range(256) × k in {1,2,3,4} × payload → unsupported.
 
-    Written as a loop (not parametrize) so the next filler byte cannot be
-    missed by omitting it from a list.
+    Written as a loop over a generated range (not a hand-written list) so the
+    next filler byte cannot be missed; parametrized only by chunk start.
     """
     payloads = _a1_payloads()
     total = 0
     accepted = 0
     for _name, payload in payloads.items():
-        for f in range(256):
+        for f in range(start, start + _A1_CHUNK):
             for k in (1, 2, 3, 4):
                 total += 1
                 raw = _interleave(payload, bytes([f]), k)
@@ -1039,7 +1050,7 @@ def test_a1_exhaustive_single_byte_filler_closed() -> None:
                 except ParseError as exc:
                     assert exc.code == "E_PARSE_FORMAT_UNSUPPORTED"
     assert accepted == 0, f"A1 leaks: {accepted}/{total} accepted"
-    assert total == len(payloads) * 256 * 4
+    assert total == len(payloads) * _A1_CHUNK * 4
 
 
 def test_a2_multi_byte_filler_still_unsupported() -> None:
