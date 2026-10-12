@@ -330,10 +330,6 @@ export const NextQuestionChips = ({ suggestions, onPick, lowConfidence = null, t
           </button>
         ))}
       </div>
-      {/* 螢幕報讀：建議是回答結束後才非同步出現的，要念一聲。 */}
-      <span aria-live="polite" style={SR_ONLY}>
-        {`有 ${list.length} 個建議問題`}
-      </span>
     </div>
   );
 };
@@ -342,6 +338,14 @@ const SR_ONLY = {
   position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
   overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
 };
+
+// 螢幕報讀：建議是回答結束後才非同步出現的。region 要先掛著（空的），
+// 內容變了才會被念出來；跟著 chip 一起掛載的 live region 常常不報。
+export const FollowUpsLiveRegion = ({ count = 0 }) => (
+  <span aria-live="polite" aria-atomic="true" data-testid="follow-ups-live" style={SR_ONLY}>
+    {count > 0 ? `有 ${count} 個建議問題` : ""}
+  </span>
+);
 
 // 舊名稱保留：MessageBubble 與測試都還用它。所有信心等級都顯示；低／中信心
 // 只是多一行說明。

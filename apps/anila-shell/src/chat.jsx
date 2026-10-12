@@ -94,6 +94,7 @@ import {
   watermarkLevel,
   ConfidenceChip,
   FollowUpSuggestions,
+  FollowUpsLiveRegion,
   RedactionHint,
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
@@ -1054,7 +1055,10 @@ export const MessageBubble = ({
   onCiteDocument,
   showRawReasoning = false,
   includeManualSkill = false,
+  // 使用者設定「回答後顯示建議問題」。
+  followUpsEnabled = true,
 }) => {
+  const showNextQuestions = !msg.streaming && isLatestAssistant && !conversationStreaming && followUpsEnabled !== false;
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(msg.text || "");
@@ -1718,13 +1722,18 @@ export const MessageBubble = ({
         </button>
       )}
 
-      {/* 建議問題只掛在最後一則回答底下；整個對話還在串流時先不出現。 */}
-      {!msg.streaming && isLatestAssistant && !conversationStreaming && (
+      {/* 建議問題只掛在最後一則回答底下；整個對話還在串流時先不出現；
+          使用者在設定關掉就連已存的也不顯示。 */}
+      {showNextQuestions && (
         <FollowUpSuggestions
           suggestions={msg.followUps}
           confidence={msg.confidence}
           onPick={onPickFollowUp}
         />
+      )}
+      {/* live region 先掛著（空的），建議晚到時改內容才念得出來。 */}
+      {msg.role === "assistant" && isLatestAssistant && followUpsEnabled !== false && (
+        <FollowUpsLiveRegion count={showNextQuestions && Array.isArray(msg.followUps) ? msg.followUps.length : 0} />
       )}
 
       {!msg.streaming && msg.citations && msg.citations.length > 0 && (
@@ -2702,8 +2711,23 @@ export const Composer = ({
     appliedInsertToken.current = token;
     const incoming = insertRequest.text;
     const current = textRef.current || "";
-    // 已經打了字就先收進「還原未送出的訊息」，不默默蓋掉。
-    if (current.trim() && current !== incoming) retainRecoverable({ text: current, atts: [] });
+    const currentAtts = attsRef.current || [];
+    const currentSkill = skillRef.current;
+    // 已經有草稿（文字、附件或 skill）就整份收進「還原未送出的訊息」，
+    // 不默默蓋掉，也不讓附件跟著建議問題一起送出去。
+    const hasDraft = (current.trim() && current !== incoming) || currentAtts.length > 0 || currentSkill != null;
+    if (hasDraft) {
+      retainRecoverable({
+        text: current,
+        atts: currentAtts.map((att) => ({ ...att })),
+        skill: currentSkill && Number.isInteger(currentSkill.id)
+          ? { id: currentSkill.id, name: currentSkill.name }
+          : null,
+      });
+      attsRef.current = [];
+      setAtts([]);
+      applySkill(null);
+    }
     textRef.current = incoming;
     setText(incoming);
     writeDraftNow(incoming);
@@ -3840,7 +3864,7 @@ export const Composer = ({
               textRef.current = e.target.value;
               setText(e.target.value);
               setCaret(e.target.selectionStart || 0);
-              if (e.target.value) onTyping?.();
+              onTyping?.();
             }}
             onKeyUp={updateCaret}
             onClick={updateCaret}

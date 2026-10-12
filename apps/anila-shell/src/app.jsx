@@ -4502,6 +4502,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   onDeleteBranch={deleteBranch}
                   onOpenCitation={onOpenCitation}
                   onPickFollowUp={insertIntoComposer}
+                  followUpsEnabled={followUpsEnabled}
                   onAction={runMessageAction}
                   onContinue={continueMessage}
                   onInterruptSubmit={handleInterruptAnswer}

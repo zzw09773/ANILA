@@ -4,7 +4,7 @@ import { render, screen, fireEvent, act, cleanup } from "@testing-library/react"
 
 import { normalizeFollowUps, fetchFollowUps, followUpsPath, followUpsEnabledFrom } from "../runtime/followUps.js";
 import { NextQuestionChips, FollowUpSuggestions } from "../trust.jsx";
-import { Composer } from "../chat.jsx";
+import { Composer, MessageBubble } from "../chat.jsx";
 import { ConfirmProvider } from "../confirm.jsx";
 import {
   mountOrchestrator,
@@ -57,13 +57,27 @@ describe("followUps runtime", () => {
 });
 
 describe("NextQuestionChips", () => {
-  it("一般信心也顯示，點了呼叫 onPick，有 aria-live 通知", () => {
+  it("一般信心也顯示，點了呼叫 onPick", () => {
     const onPick = vi.fn();
     render(<FollowUpSuggestions suggestions={["那預算呢？", "要多久？"]} confidence={{ level: "high" }} onPick={onPick} />);
     expect(screen.getByText("你可能還想問")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "帶入輸入框：要多久？" }));
     expect(onPick).toHaveBeenCalledWith("要多久？");
-    expect(screen.getByText("有 2 個建議問題").getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("live region 在建議到之前就掛著，建議到了才填字；關掉設定就不顯示", () => {
+    const base = { id: "a1", role: "assistant", text: "好", followUps: [] };
+    const { rerender } = render(<MessageBubble msg={base} agents={[]} isLatestAssistant />);
+    const live = screen.getByTestId("follow-ups-live");
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.textContent).toBe("");
+    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？", "要多久？"] }} agents={[]} isLatestAssistant />);
+    expect(screen.getByTestId("follow-ups-live")).toBe(live);
+    expect(live.textContent).toBe("有 2 個建議問題");
+    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？"] }} agents={[]} isLatestAssistant followUpsEnabled={false} />);
+    expect(screen.queryByTestId("next-question-chips")).toBeNull();
+    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？"] }} agents={[]} isLatestAssistant={false} />);
+    expect(screen.queryByTestId("next-question-chips")).toBeNull();
   });
 
   it("低信心多一行說明；空清單不渲染", () => {
@@ -126,6 +140,34 @@ describe("Composer 灰字預覽與帶入", () => {
     expect(onSend).not.toHaveBeenCalled();
     fireEvent.change(box, { target: { value: "接著問這個吧" } });
     expect(onTyping).toHaveBeenCalled();
+    onTyping.mockClear();
+    fireEvent.change(box, { target: { value: "" } });
+    expect(onTyping).toHaveBeenCalledTimes(1);
+  });
+
+  it("帶入時原本的草稿整份收進還原列，不跟著建議送出", async () => {
+    const onSend = vi.fn(() => true);
+    const skills = [{ id: 7, name: "週報", description: "x" }];
+    const { rerender } = render(
+      <ConfirmProvider><Composer onSend={onSend} agents={[]} skills={skills} /></ConfirmProvider>,
+    );
+    const box = screen.getByLabelText("傳訊息給 ANILA");
+    fireEvent.click(screen.getByRole("button", { name: "skill" }));
+    fireEvent.click(screen.getByRole("option", { name: /週報/ }));
+    fireEvent.change(box, { target: { value: "我原本的草稿" } });
+    await act(async () => {
+      rerender(
+        <ConfirmProvider><Composer onSend={onSend} agents={[]} skills={skills} insertRequest={{ text: "建議問題", token: 9 }} /></ConfirmProvider>,
+      );
+    });
+    expect(box.value).toBe("建議問題");
+    expect(screen.queryByTestId("skill-chip")).toBeNull();
+    const parked = screen.getByTestId("recoverable-draft");
+    expect(parked.textContent).toContain("我原本的草稿");
+    expect(parked.textContent).toContain("週報");
+    fireEvent.click(screen.getByRole("button", { name: "送出" }));
+    expect(onSend.mock.calls[0][0]).toBe("建議問題");
+    expect(onSend.mock.calls[0][2].skillId).toBeUndefined();
   });
 });
 
