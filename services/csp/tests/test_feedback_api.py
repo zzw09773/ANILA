@@ -205,7 +205,9 @@ def test_feedback_response_fields_are_exactly_the_whitelist(client, db: Session)
     body = client.get(FEEDBACK_URL, headers=_bearer(admin)).json()
 
     assert set(body.keys()) == {"summary", "items"}
-    assert set(body["summary"].keys()) == {"total", "up", "down", "with_comment", "refusal_suspected"}
+    assert set(body["summary"].keys()) == {
+        "total", "up", "down", "with_comment", "refusal_suspected", "open", "closed",
+    }
     for item in body["items"]:
         assert set(item.keys()) == FEEDBACK_ITEM_KEYS
         assert "content" not in item

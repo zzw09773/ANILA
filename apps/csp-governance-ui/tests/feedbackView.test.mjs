@@ -310,3 +310,75 @@ test('改看另一列時，先開的回應不得覆蓋後開的', async () => {
   assert.doesNotMatch(document.body.textContent, /被評分的非活躍答/)
   app.unmount()
 })
+
+test('差評可以結案；這次不修沒寫原因就送不出去', async () => {
+  setListImpl(async () => ({
+    data: {
+      items: [row({ feedback_status: 'open' })],
+      summary: { total: 1, up: 0, down: 1, with_comment: 1, open: 1, closed: 0 },
+    },
+  }))
+  setPostImpl(async () => ({
+    data: { item: row({ feedback_status: 'closed', feedback_resolution: 'fixed' }), notified: true, unchanged: false },
+  }))
+  const { app } = mountView()
+  await flush()
+  assert.match(document.body.textContent, /未結案/)
+  const close = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('結案') && !b.textContent.includes('通知'))
+  assert.ok(close)
+  close.click()
+  await flush()
+  const select = document.querySelector('[data-testid="feedback-resolution"]')
+  select.value = 'wont_fix'
+  select.dispatchEvent(new Event('change'))
+  await flush()
+  const submit = document.querySelector('[data-testid="feedback-close-submit"]')
+  assert.equal(submit.disabled, true)
+  submit.click()
+  await flush()
+  assert.equal(calls.filter((c) => String(c.url).includes('/close')).length, 0)
+
+  select.value = 'fixed'
+  select.dispatchEvent(new Event('change'))
+  await flush()
+  document.querySelector('[data-testid="feedback-close-submit"]').click()
+  await flush()
+  const posted = calls.filter((c) => String(c.url).includes('/close'))
+  assert.equal(posted.length, 1)
+  assert.equal(posted[0].url, '/api/admin/feedback/4/close')
+  assert.deepEqual(posted[0].body, { resolution: 'fixed', note: null })
+  assert.match(document.body.textContent, /已通知回報者/)
+  app.unmount()
+})
+
+test('已修好可以轉成一行回歸題，畫面上看得到原問句那一行', async () => {
+  setListImpl(async () => ({
+    data: {
+      items: [row({ feedback_status: 'closed', feedback_resolution: 'fixed' })],
+      summary: { total: 1, up: 0, down: 1, with_comment: 1, open: 0, closed: 1 },
+    },
+  }))
+  setPostImpl(async (url) => {
+    if (String(url).includes('/eval-case')) {
+      return {
+        data: {
+          id: 'fb-4',
+          jsonl: '{"id": "fb-4", "prompt": "被評分那一問"}',
+          prompt: '被評分那一問',
+        },
+      }
+    }
+    return { data: {} }
+  })
+  const { app } = mountView()
+  await flush()
+  const button = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('轉成回歸題'))
+  assert.ok(button)
+  button.click()
+  await flush()
+  const posted = calls.filter((c) => String(c.url).includes('/eval-case'))
+  assert.equal(posted.length, 1)
+  assert.equal(posted[0].url, '/api/admin/feedback/4/eval-case')
+  assert.match(document.querySelector('[data-testid="feedback-eval-jsonl"]').textContent, /被評分那一問/)
+  app.unmount()
+})

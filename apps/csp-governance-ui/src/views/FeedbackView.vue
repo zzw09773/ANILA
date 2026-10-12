@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-head__title">使用者回饋</h1>
         <p class="page-head__sub">
-          正讚與倒讚都會進這份清單 · 評分 6–10 為好評、1–5 為差評 · 可依評分 / agent / 模型 / 時間篩選 · 不含對話正文
+          正讚與倒讚都會進這份清單 · 評分 6–10 為好評、1–5 為差評 · 差評可以結案，只通知回報者 · 不含對話正文
         </p>
       </div>
       <div class="page-head__chips">
@@ -14,6 +14,8 @@
           :disabled="marking"
           @click="markAllRead"
         />
+        <TermBadge variant="warn" dot>未結案 · {{ summary.open ?? 0 }}</TermBadge>
+        <TermBadge dot>已結案 · {{ summary.closed ?? 0 }}</TermBadge>
         <TermBadge variant="danger" dot>差評 · {{ summary.down }}</TermBadge>
         <TermBadge variant="ok" dot>好評 · {{ summary.up }}</TermBadge>
         <TermBadge dot>有留言 · {{ summary.with_comment }}</TermBadge>
@@ -62,6 +64,13 @@
             <option value="1">只看有留言</option>
           </select>
         </TermField>
+        <TermField label="狀態">
+          <select v-model="filters.status" @change="fetchData" class="term-select" data-testid="feedback-status-filter">
+            <option value="">全部</option>
+            <option value="open">未結案</option>
+            <option value="closed">已結案</option>
+          </select>
+        </TermField>
         <div class="filters__cta">
           <TermButton @click="fetchData" label="查詢" />
         </div>
@@ -78,6 +87,7 @@
         </span>
       </div>
       <p v-if="exportNote" class="filters__note filters__note--ok">{{ exportNote }}</p>
+      <pre v-if="evalCase" data-testid="feedback-eval-jsonl" class="eval-line">{{ evalCase.jsonl }}</pre>
     </TermBox>
 
     <TermBox :title="`回饋 · ${items.length}`" pad="none" flush hint="查看被評分的回覆及當時提問。匯出 CSV 含提問與被評分回覆。">
@@ -90,6 +100,7 @@
             <th style="width: 18%">Agent · 模型</th>
             <th style="width: 100px">密等</th>
             <th style="width: 140px">訊息時間</th>
+            <th style="width: 140px">狀態</th>
             <th style="width: 120px">對話</th>
           </tr>
         </thead>
@@ -121,6 +132,28 @@
             </td>
             <td class="cell-meta tnum">{{ formatDate(row.message_created_at) }}</td>
             <td class="cell-meta">
+              <div data-testid="feedback-status">{{ statusLabel(row) }}</div>
+              <div v-if="row.feedback_resolution_note" class="cell-meta cell-meta--wrap">
+                {{ row.feedback_resolution_note }}
+              </div>
+              <div class="reply-actions">
+                <TermButton
+                  v-if="row.rating === 'down'"
+                  size="xs"
+                  :label="row.feedback_status === 'closed' ? '改結案' : '結案'"
+                  data-testid="feedback-close"
+                  @click="openClose(row)"
+                />
+                <TermButton
+                  v-if="authStore.isAdmin && row.feedback_resolution === 'fixed'"
+                  size="xs"
+                  label="轉成回歸題"
+                  data-testid="feedback-to-eval"
+                  @click="convertToEval(row)"
+                />
+              </div>
+            </td>
+            <td class="cell-meta">
               <div>對話 #{{ row.conversation_id }}</div>
               <div>訊息 {{ row.message_id }}</div>
               <TermButton
@@ -133,7 +166,7 @@
             </td>
           </tr>
           <tr v-if="items.length === 0">
-            <td colspan="7">
+            <td colspan="8">
               <TermEmpty message="這個篩選區間沒有回饋 — 若剛上線屬正常" />
             </td>
           </tr>
@@ -177,12 +210,49 @@
         </section>
       </div>
     </TermModal>
+
+    <TermModal
+      :visible="!!closeForm.row"
+      title="結案"
+      width="520px"
+      @close="closeClose"
+    >
+      <p class="reply-meta">結案後只會通知送出這則回饋的人。</p>
+      <TermField label="結案方式">
+        <select v-model="closeForm.resolution" class="term-select" data-testid="feedback-resolution">
+          <option value="fixed">已修好</option>
+          <option value="wont_fix">這次不修</option>
+          <option value="duplicate">與既有項目重複</option>
+        </select>
+      </TermField>
+      <TermField :label="closeForm.resolution === 'wont_fix' ? '不修的原因' : '給回報者的說明（可留空）'">
+        <textarea
+          v-model="closeForm.note"
+          class="term-textarea"
+          rows="3"
+          maxlength="500"
+          data-testid="feedback-resolution-note"
+          :placeholder="closeForm.resolution === 'wont_fix' ? '請寫給回報者的原因' : ''"
+        />
+      </TermField>
+      <p v-if="closeForm.message" class="filters__note filters__note--ok" data-testid="feedback-close-message">
+        {{ closeForm.message }}
+      </p>
+      <div class="reply-actions">
+        <TermButton
+          label="結案並通知回報者"
+          data-testid="feedback-close-submit"
+          :disabled="closeForm.saving || (closeForm.resolution === 'wont_fix' && !closeForm.note.trim())"
+          @click="submitClose"
+        />
+      </div>
+    </TermModal>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { listFeedback, exportFeedbackCsv, getConversationAll, markFeedbackRead } from '../api/feedback'
+import { listFeedback, exportFeedbackCsv, getConversationAll, markFeedbackRead, closeFeedback, feedbackEvalCase } from '../api/feedback'
 import { useAuthStore } from '../stores/auth'
 import { refreshOpenAlertBanner } from '../utils/openAlertBanner'
 import { extractError } from '../api/errors'
@@ -192,7 +262,7 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from 
 
 const authStore = useAuthStore()
 const items = ref([])
-const summary = ref({ total: 0, up: 0, down: 0, with_comment: 0 })
+const summary = ref({ total: 0, up: 0, down: 0, with_comment: 0, open: 0, closed: 0 })
 const pageError = ref('')
 const marking = ref(false)
 const exporting = ref(false)
@@ -203,6 +273,7 @@ const filters = ref({
   agent_name: '',
   model_name: '',
   only_with_comment: '0',
+  status: '',
 })
 
 // 查詢與匯出共用同一組參數 —— 匯出「畫面上的東西」不能靠兩份各自維護的
@@ -215,7 +286,19 @@ function buildParams() {
   if (filters.value.rating) params.rating = filters.value.rating
   if (filters.value.agent_name.trim()) params.agent_name = filters.value.agent_name.trim()
   if (filters.value.model_name.trim()) params.model_name = filters.value.model_name.trim()
+  if (filters.value.status) params.status = filters.value.status
   return params
+}
+
+function statusLabel(row) {
+  if (row.feedback_status === 'closed') {
+    if (row.feedback_resolution === 'fixed') return '已修好'
+    if (row.feedback_resolution === 'wont_fix') return '這次不修'
+    if (row.feedback_resolution === 'duplicate') return '重複'
+    return '已結案'
+  }
+  if (row.rating === 'down') return '未結案'
+  return '—'
 }
 
 function newestRatedAt(rows) {
@@ -252,7 +335,7 @@ async function fetchData() {
     const params = buildParams()
     const { data } = await listFeedback(params)
     items.value = Array.isArray(data.items) ? data.items : []
-    summary.value = data.summary || { total: 0, up: 0, down: 0, with_comment: 0 }
+    summary.value = data.summary || { total: 0, up: 0, down: 0, with_comment: 0, open: 0, closed: 0 }
   } catch (e) {
     pageError.value = extractError(e, '載入回饋失敗')
   }
@@ -332,6 +415,82 @@ function closeViewer() {
   replySession.close(applyViewer)
 }
 
+const closeForm = ref({
+  row: null,
+  resolution: 'fixed',
+  note: '',
+  saving: false,
+  message: '',
+})
+const evalCase = ref(null)
+
+function openClose(row) {
+  closeViewer()
+  closeForm.value = {
+    row,
+    resolution: row.feedback_resolution || 'fixed',
+    note: row.feedback_resolution_note || '',
+    saving: false,
+    message: '',
+  }
+}
+
+function closeClose() {
+  closeForm.value = {
+    row: null,
+    resolution: 'fixed',
+    note: '',
+    saving: false,
+    message: '',
+  }
+}
+
+async function submitClose() {
+  const row = closeForm.value.row
+  if (!row || closeForm.value.saving) return
+  const note = closeForm.value.note.trim()
+  if (closeForm.value.resolution === 'wont_fix' && !note) return
+  closeForm.value.saving = true
+  closeForm.value.message = ''
+  try {
+    const { data } = await closeFeedback(row.message_id, {
+      resolution: closeForm.value.resolution,
+      note: note || null,
+    })
+    closeForm.value.message = data.unchanged
+      ? '結案內容沒有變，沒有再通知一次。'
+      : data.notified
+        ? '已通知回報者。'
+        : '已結案。找不到回報者，所以沒有送出通知。'
+    await fetchData()
+  } catch (e) {
+    pageError.value = extractError(e, '結案失敗')
+  } finally {
+    closeForm.value.saving = false
+  }
+}
+
+async function convertToEval(row) {
+  pageError.value = ''
+  exportNote.value = ''
+  try {
+    const { data } = await feedbackEvalCase(row.message_id)
+    evalCase.value = data
+    exportNote.value = '已轉成一筆回歸題（含原問句）。題庫擴充不在這裡；若內容機敏，不要放進公開題庫。'
+    const blob = new Blob([`${data.jsonl}\n`], { type: 'application/x-ndjson;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${data.id}.jsonl`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    pageError.value = extractError(e, '轉成回歸題失敗')
+  }
+}
+
 onBeforeUnmount(closeViewer)
 onMounted(fetchData)
 </script>
@@ -347,7 +506,7 @@ onMounted(fetchData)
 .page-head__chips { display: inline-flex; gap: var(--gap-2); flex-wrap: wrap; }
 .filters {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: var(--gap-2);
   align-items: end;
 }
@@ -385,5 +544,15 @@ onMounted(fetchData)
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-family: inherit; font-size: var(--t-xs); color: var(--c-fg-1);
   background: var(--c-surface-2); padding: var(--gap-2); border: var(--border-w) solid var(--c-border);
+}
+.term-textarea {
+  width: 100%; box-sizing: border-box; margin-top: var(--gap-2);
+  font: inherit; font-size: var(--t-xs); color: var(--c-fg-1);
+  background: var(--c-surface-2); border: var(--border-w) solid var(--c-border);
+  padding: var(--gap-2);
+}
+.eval-line {
+  margin: var(--gap-2) 0 0; white-space: pre-wrap; word-break: break-word;
+  font-size: var(--t-3xs); color: var(--c-fg-1);
 }
 </style>

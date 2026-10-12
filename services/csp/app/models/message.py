@@ -27,6 +27,27 @@ class Message(Base):
             ")",
             name="ck_messages_rating_score_matches_thumb",
         ),
+        CheckConstraint(
+            "feedback_status IS NULL OR feedback_status IN ('open', 'closed')",
+            name="ck_messages_feedback_status",
+        ),
+        CheckConstraint(
+            "feedback_resolution IS NULL OR feedback_resolution IN ('fixed', 'wont_fix', 'duplicate')",
+            name="ck_messages_feedback_resolution",
+        ),
+        CheckConstraint(
+            "feedback_status IS NULL OR feedback_status <> 'closed' OR feedback_resolution IS NOT NULL",
+            name="ck_messages_feedback_closed_has_resolution",
+        ),
+        CheckConstraint(
+            "("
+            "feedback_resolution IS NULL OR feedback_resolution <> 'wont_fix' OR ("
+            "feedback_resolution_note IS NOT NULL AND length(trim(feedback_resolution_note)) > 0"
+            ")"
+            ")",
+            name="ck_messages_feedback_wont_fix_has_note",
+        ),
+        Index("ix_messages_feedback_status", "feedback_status"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -60,6 +81,18 @@ class Message(Base):
     rating_score = Column(Integer, nullable=True)
     # 這次評分寫入的時間。NULL＝遷移前的舊列，未讀通知不把它算進去。
     rated_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # 差評結案。open＝未結案；closed＝已結案。NULL＝不是差評案件（含舊列與好評）。
+    feedback_status = Column(String(16), nullable=True)
+    # fixed＝已修好；wont_fix＝這次不修；duplicate＝與既有項目重複。
+    feedback_resolution = Column(String(16), nullable=True)
+    feedback_resolution_note = Column(Text, nullable=True)
+    feedback_resolved_at = Column(DateTime(timezone=True), nullable=True)
+    # 按下差評的那個人。結案通知只寄給這個人，不寄給其他管理員或分享對象。
+    feedback_submitter_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # ── 四級分類共通欄位────────────────────────────
     classification_level = Column(
         String(20), nullable=False, default="無機密", server_default="無機密"

@@ -493,6 +493,17 @@ export function cancelHandoff(authRequest, handoffId) {
   return authRequest(`/api/handoffs/${handoffId}/cancel`, { method: "POST" });
 }
 
+export function listNotifications(authRequest, { unreadOnly = false, limit = 50 } = {}) {
+  const params = new URLSearchParams();
+  if (unreadOnly) params.set("unread_only", "true");
+  params.set("limit", String(limit));
+  return authRequest(`/api/notifications?${params.toString()}`, { method: "GET" });
+}
+
+export function markNotificationRead(authRequest, notifId) {
+  return authRequest(`/api/notifications/${notifId}/read`, { method: "PUT" });
+}
+
 // `GET /api/handoffs` 同時回「我送出的」與「別人交給我的」。收件匣只該顯示
 // 後者、而且還沒處理的 —— 混進自己送出的那些，使用者會對自己的請求按「接受」。
 export function incomingPendingHandoffs(rows, currentUserId) {
