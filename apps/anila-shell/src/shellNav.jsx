@@ -18,6 +18,7 @@ import {
   ANILA_LM_ENTRY_ENABLED,
 } from "./anilalmReleaseGate.js";
 import { Modal } from "./components.jsx";
+import { HandoverInterviewDialog } from "./handoverInterview.jsx";
 import {
   IconBook,
   IconGauge,
@@ -233,10 +234,12 @@ function NavRow({ entry, collapsed }) {
  *   onOpenUsage?: () => void,
  *   onOpenMemory?: () => void,
  *   currentId?: string,
+ *   authRequest?: Function,
  * }} props
  */
-export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" }) {
+export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks", authRequest }) {
   const [open, setOpen] = useState(false);
+  const [interviewOpen, setInterviewOpen] = useState(false);
   const closeThen = (fn) => () => {
     setOpen(false);
     fn?.();
@@ -308,8 +311,30 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
           {entries.map((entry) => (
             <NavRow key={entry.id} entry={entry} />
           ))}
+          <div style={{ height: 1, background: "var(--border)", margin: "8px 0 4px" }} />
+          <button
+            type="button"
+            data-entry="handover-interview"
+            aria-label="交接訪談"
+            title="調動或離開專案前，用固定問題留下沒寫下來的事"
+            onClick={() => {
+              setOpen(false);
+              setInterviewOpen(true);
+            }}
+            style={{ ...rowBase, color: "var(--fg)" }}
+            onMouseEnter={hoverOn}
+            onMouseLeave={hoverOff}
+          >
+            <IconSpark size={15} style={{ color: "var(--fg-muted)", flexShrink: 0 }} />
+            <span style={{ flex: 1, minWidth: 0 }}>交接訪談</span>
+          </button>
         </div>
       </Modal>
+      <HandoverInterviewDialog
+        open={interviewOpen}
+        onClose={() => setInterviewOpen(false)}
+        {...(typeof authRequest === "function" ? { authRequest } : {})}
+      />
     </>
   );
 }
