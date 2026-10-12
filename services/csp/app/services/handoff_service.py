@@ -167,6 +167,26 @@ def mark_all_read(db: Session, user: User) -> int:
 
 # ── Internal ──────────────────────────────────────────────────────────────────
 
+def notify_user(
+    db: Session,
+    *,
+    user_id: int,
+    type: str,
+    title: str,
+    body: str,
+    payload: Optional[dict] = None,
+) -> Notification:
+    """寫入既有的 in-app 通知。呼叫端負責 commit。"""
+    return _create_notification(
+        db,
+        user_id=user_id,
+        type=type,
+        title=title,
+        body=body,
+        payload=payload,
+    )
+
+
 def _create_notification(
     db: Session,
     *,

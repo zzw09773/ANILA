@@ -2022,6 +2022,9 @@ async def chat_completions(
         return await _complete_dispatched_model(request, caller, db, response)
     pause_request_session(db)
     body = await request.json()
+    from app.services.answer_delivery import apply_short_answer
+
+    apply_short_answer(body, request.headers.get("x-anila-answer-delivery"))
     side, client_passages = _take_external_sidechannel(body)
     model_name = body.get("model")
     if not model_name:

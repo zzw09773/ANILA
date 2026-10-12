@@ -150,6 +150,8 @@ export async function streamChatCompletion({
   attachmentRefs,
   // 這一則要套用的 skill。只送 id，內容由 CSP 讀資料庫。
   skillId,
+  // 快速短回答。只送標頭，CSP 才加簡短指示；不改使用者原文。
+  answerDelivery,
   onText,
   onTrace,
   onMeta,
@@ -217,6 +219,9 @@ export async function streamChatCompletion({
   }
   if (typeof skillId === "number" && Number.isInteger(skillId) && skillId > 0) {
     headers["X-ANILA-Skill-Id"] = String(skillId);
+  }
+  if (answerDelivery === "short") {
+    headers["X-ANILA-Answer-Delivery"] = "short";
   }
   const response = await fetch(url, {
     method: "POST",

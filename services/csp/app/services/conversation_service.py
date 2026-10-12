@@ -932,6 +932,8 @@ def start_turn(
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
     user_metadata: Optional[dict] = None,
+    assistant_content: Optional[str] = None,
+    assistant_extra_metadata: Optional[dict] = None,
 ) -> tuple[Message, Message, Optional[Message]]:
     """使用者訊息落庫 ＋ 助理列預留，在同一個交易裡完成。
 
@@ -980,6 +982,14 @@ def start_turn(
     conv = get_conversation(db, conv_id, user)
     conv_pk = conv.id
     metadata = _check_metadata_size(_reserved_metadata(writer))
+    if assistant_extra_metadata:
+        extra = {
+            key: value
+            for key, value in assistant_extra_metadata.items()
+            if key != STREAM_META_KEY
+        }
+        metadata = _check_metadata_size({**(metadata or {}), **extra})
+    placeholder = assistant_content if isinstance(assistant_content, str) else ""
     # user 原文不動（fail-open），與 append_message 同一條正規化邊界。
     user_content, zh_changed = zh_normalize_service.prepare_message_content(
         db, "user", content,
@@ -1010,7 +1020,7 @@ def start_turn(
             conversation_id=conv_pk,
             parent_id=user_msg.id,
             role="assistant",
-            content="",
+            content=placeholder,
             model_name=model_name,
             agent_name=agent_name,
             metadata_=metadata,
