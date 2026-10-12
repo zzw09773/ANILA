@@ -57,7 +57,7 @@ describe("skill 選擇與套用標示", () => {
     expect(screen.getByTestId("skill-chip").textContent).toContain("套用：週報");
     expect(screen.queryByText("不該送到瀏覽器請求")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "移除 skill" }));
+    fireEvent.click(screen.getByRole("button", { name: /^移除 skill/ }));
     expect(screen.queryByTestId("skill-chip")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "skill" }));

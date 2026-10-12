@@ -82,7 +82,7 @@ import {
 } from "./icons.jsx";
 import { useAsrInput, appendTranscript } from "./asr/useAsrInput.js";
 import { AppliedSkillIndicator, SkillChip } from "./skills.jsx";
-import { filterSkills, removeSlashToken, skillChipLabel, slashQuery } from "./runtime/skills.js";
+import { DEFAULT_MAX_SKILL_STACK, filterSkills, groupSkills, removeSlashToken, skillChipLabel, slashQuery } from "./runtime/skills.js";
 import {
   extractStatusReason,
   pollAttachmentExtractStatus,
@@ -2399,6 +2399,16 @@ function composerSizeLabel(size) {
 // behaviour kept for storyboard / static rendering tests).
 // `onFetchAttachmentMeta(referenceId)` polls extract_status after upload so a
 // failed extraction is visibly signaled (pending → warning chip + banner).
+// 實心／空心星號。icons.jsx 的線條圖示不支援填色，釘選狀態要看得出差別。
+function StarGlyph({ filled, size = 13 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"
+      fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round">
+      <path d="M12 3l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.9 6.1 21l1.2-6.5L2.5 9.9 9.1 9z" />
+    </svg>
+  );
+}
+
 export const Composer = ({
   onSend,
   disabled,
@@ -2427,6 +2437,10 @@ export const Composer = ({
   restoredDraft = null,
   // 這位同仁現在用得到的 skill。只把選中的 id 交給 onSend。
   skills = [],
+  // 一次最多疊幾個 skill（治理中心 skills.max_stack；沒給就是 3）。
+  maxSkills = DEFAULT_MAX_SKILL_STACK,
+  // 在「/」選單裡按星號釘選／取消釘選。沒給就不顯示星號。
+  onToggleSkillFavorite,
 }) => {
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
@@ -2483,18 +2497,23 @@ export const Composer = ({
   attsRef.current = atts;
   const [uploadError, setUploadError] = useState("");
   const [caret, setCaret] = useState(0);
-  const [selectedSkill, setSelectedSkill] = useState(null);
+  // 疊加的 skill，照選的順序。後面的在衝突時優先（後端規則）。
+  const [selectedSkills, setSelectedSkills] = useState([]);
   // 送出的 Promise 可能在下一次 render 前回來。失敗要放回 skill 時，不能讀到
   // 已經清掉、但 state 還沒刷上的那一版。
-  const skillRef = useRef(selectedSkill);
-  skillRef.current = selectedSkill;
-  const applySkill = (skill) => {
-    const next = skill && Number.isInteger(skill.id)
-      ? { id: skill.id, name: skill.name }
-      : null;
+  const skillRef = useRef(selectedSkills);
+  skillRef.current = selectedSkills;
+  const skillLimit = Number.isInteger(maxSkills) && maxSkills >= 1 ? maxSkills : DEFAULT_MAX_SKILL_STACK;
+  const applySkills = (list) => {
+    const next = [];
+    for (const skill of Array.isArray(list) ? list : []) {
+      if (!skill || !Number.isInteger(skill.id) || next.some((s) => s.id === skill.id)) continue;
+      next.push({ id: skill.id, name: skill.name });
+    }
     skillRef.current = next;
-    setSelectedSkill(next);
+    setSelectedSkills(next);
   };
+  const snapshotSkills = () => (skillRef.current || []).map((s) => ({ id: s.id, name: s.name }));
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   // 點旁邊或按 Esc 就收起 skill 清單，跟預設提示詞選單一樣。
   useEffect(() => {
@@ -2587,7 +2606,7 @@ export const Composer = ({
       id: `recover-${++recoverableSeq.current}`,
       text: snapshot.text || "",
       atts: parkedAtts,
-      skill: snapshot.skill || null,
+      skills: Array.isArray(snapshot.skills) ? snapshot.skills : [],
     };
     publishRecoverable([...recoverableRef.current, entry]);
   };
@@ -2609,21 +2628,18 @@ export const Composer = ({
     if (!chosen) return;
     const currentText = textRef.current || "";
     const currentAtts = attsRef.current || [];
-    const currentSkill = skillRef.current;
-    const hasCurrent = Boolean(currentText.trim()) || currentAtts.length > 0 || currentSkill != null;
+    const currentSkills = snapshotSkills();
+    const hasCurrent = Boolean(currentText.trim()) || currentAtts.length > 0 || currentSkills.length > 0;
     const remaining = recoverableRef.current.filter((item) => item.id !== id);
     let next = remaining;
     if (hasCurrent) {
       const parkedAtts = currentAtts.map((att) => ({ ...att }));
       if (parkedAtts.length) heldDraftsRef.current.add(parkedAtts);
-      const parkedSkill = currentSkill && Number.isInteger(currentSkill.id)
-        ? { id: currentSkill.id, name: currentSkill.name }
-        : null;
       next = [...remaining, {
         id: `recover-${++recoverableSeq.current}`,
         text: currentText,
         atts: parkedAtts,
-        skill: parkedSkill,
+        skills: currentSkills,
       }];
     }
     if (chosen.atts) heldDraftsRef.current.delete(chosen.atts);
@@ -2635,7 +2651,7 @@ export const Composer = ({
     textRef.current = restoredText;
     setText(restoredText);
     writeDraftNow(restoredText);
-    applySkill(chosen.skill || null);
+    applySkills(chosen.skills || []);
     publishRecoverable(next);
   };
   useEffect(() => {
@@ -2893,20 +2909,32 @@ export const Composer = ({
   };
 
   const slash = useMemo(() => slashQuery(text, caret), [text, caret]);
-  const skillChoices = useMemo(() => {
-    if (skillMenuOpen) return filterSkills(skills, "");
+  // 選單分組：釘選、最近用過、我的、單位、全院。鍵盤 ↑↓ 走的是攤平後的順序。
+  const skillGroups = useMemo(() => {
+    if (skillMenuOpen) return groupSkills(filterSkills(skills, ""));
     if (slash === null) return [];
-    return filterSkills(skills, slash);
+    return groupSkills(filterSkills(skills, slash));
   }, [skillMenuOpen, skills, slash]);
+  const skillChoices = useMemo(() => skillGroups.flatMap((g) => g.items), [skillGroups]);
   const skillMenuVisible = skillMenuOpen || (slash !== null && skillChoices.length > 0);
 
   useEffect(() => {
     setSkillIdx(0);
   }, [slash, skillMenuOpen, skillChoices.length]);
 
+  const atSkillLimit = selectedSkills.length >= skillLimit;
   const pickSkill = (skill) => {
     if (!skill || typeof skill.id !== "number") return;
-    applySkill(skill);
+    const current = skillRef.current || [];
+    if (current.some((s) => s.id === skill.id)) {
+      // 已經選了：再點一次就拿掉，跟 chip 上的 × 一樣。
+      applySkills(current.filter((s) => s.id !== skill.id));
+    } else if (current.length >= skillLimit) {
+      toast(`一次最多套用 ${skillLimit} 個 skill`, { tone: "error" });
+      return;
+    } else {
+      applySkills([...current, skill]);
+    }
     if (slash !== null) {
       const next = removeSlashToken(text, caret);
       textRef.current = next;
@@ -2918,8 +2946,11 @@ export const Composer = ({
 
   const sendMeta = () => {
     const meta = { explicitAgents: mentionParse.explicitAgents };
-    const skill = skillRef.current;
-    if (skill && Number.isInteger(skill.id)) meta.skillId = skill.id;
+    const ids = (skillRef.current || []).map((s) => s.id).filter((id) => Number.isInteger(id));
+    if (ids.length > 0) {
+      meta.skillIds = ids;
+      meta.skillId = ids[0];
+    }
     return meta;
   };
 
@@ -2939,10 +2970,7 @@ export const Composer = ({
     // referenceId 補進已經交出去的那一次。
     const snapshotAtts = currentAtts.map((att) => ({ ...att }));
     // skill 跟文字、附件同一份草稿：送成才清，失敗放回，被新草稿擠掉時留在還原列。
-    const currentSkill = skillRef.current;
-    const snapshotSkill = currentSkill && Number.isInteger(currentSkill.id)
-      ? { id: currentSkill.id, name: currentSkill.name }
-      : null;
+    const snapshotSkillList = snapshotSkills();
     let outcome;
     try {
       outcome = onSend(v, snapshotAtts, sendMeta());
@@ -2961,7 +2989,7 @@ export const Composer = ({
     heldDraftsRef.current.add(snapshotAtts);
     textRef.current = "";
     attsRef.current = [];
-    applySkill(null);
+    applySkills([]);
     setSkillMenuOpen(false);
     setText("");
     setAtts([]);
@@ -2988,7 +3016,7 @@ export const Composer = ({
       }
       const hasNewer = Boolean((textRef.current || "").trim())
         || attsRef.current.length > 0
-        || skillRef.current != null;
+        || (skillRef.current || []).length > 0;
       if (!hasNewer) {
         heldDraftsRef.current.delete(snapshotAtts);
         textRef.current = v;
@@ -2997,10 +3025,10 @@ export const Composer = ({
         armAttachments(snapshotAtts);
         attsRef.current = snapshotAtts;
         setAtts(snapshotAtts);
-        applySkill(snapshotSkill);
+        applySkills(snapshotSkillList);
         return;
       }
-      retainRecoverable({ text: v, atts: snapshotAtts, skill: snapshotSkill });
+      retainRecoverable({ text: v, atts: snapshotAtts, skills: snapshotSkillList });
     };
     if (outcome && typeof outcome.then === "function") {
       outcome.then(finish, () => finish(false));
@@ -3068,6 +3096,17 @@ export const Composer = ({
         if (slash !== null) setCaret(text.length + 1);
         return;
       }
+    }
+    // 游標在最前面按 Backspace：拿掉最後一個 skill chip。
+    if (
+      e.key === "Backspace" && !composing
+      && (skillRef.current || []).length > 0
+      && (e.currentTarget?.selectionStart ?? 0) === 0
+      && (e.currentTarget?.selectionEnd ?? 0) === 0
+    ) {
+      e.preventDefault();
+      applySkills((skillRef.current || []).slice(0, -1));
+      return;
     }
     if (e.key === "Enter" && !e.shiftKey && !composing) {
       e.preventDefault();
@@ -3284,7 +3323,31 @@ export const Composer = ({
       )}
       <RedactionHint hits={piiHits} mode={mode} onChangeMode={setMode} />
 
-      <SkillChip skill={selectedSkill} onRemove={() => applySkill(null)} />
+      {selectedSkills.length > 0 && (
+        <div
+          role="list"
+          aria-label={`這一則套用的 skill（${selectedSkills.length}/${skillLimit}）`}
+          data-testid="skill-chips"
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: "8px 12px 0" }}
+        >
+          {selectedSkills.map((skill) => (
+            <SkillChip
+              key={skill.id}
+              skill={skill}
+              inline
+              onRemove={() => {
+                applySkills((skillRef.current || []).filter((s) => s.id !== skill.id));
+                setTimeout(() => { taRef.current?.focus(); }, 0);
+              }}
+            />
+          ))}
+          {selectedSkills.length > 1 || atSkillLimit ? (
+            <span style={{ fontSize: 10.5, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+              {selectedSkills.length}/{skillLimit}{atSkillLimit ? " · 已達上限" : ""}
+            </span>
+          ) : null}
+        </div>
+      )}
       {recoverableDrafts.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 12px 0" }}>
           <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.4 }}>
@@ -3317,8 +3380,8 @@ export const Composer = ({
               >
                 {draft.text || "（沒有文字）"}
               </span>
-              {draft.skill?.name ? (
-                <span style={{ color: "var(--fg-muted)" }}>{skillChipLabel(draft.skill.name)}</span>
+              {draft.skills?.length ? (
+                <span style={{ color: "var(--fg-muted)" }}>{skillChipLabel(draft.skills.map((s) => s.name).join("、"))}</span>
               ) : null}
               {(draft.atts || []).map((att, index) => (
                 <span
@@ -3643,7 +3706,7 @@ export const Composer = ({
           <IconButton
             title="套用 skill（也可以在輸入框打 /）"
             aria-label="skill"
-            active={skillMenuOpen || Boolean(selectedSkill)}
+            active={skillMenuOpen || selectedSkills.length > 0}
             onClick={(e) => { e?.stopPropagation?.(); setSkillMenuOpen((open) => !open); }}
           >
             <IconBook />
@@ -3671,34 +3734,75 @@ export const Composer = ({
               <div style={{
                 padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
                 fontFamily: "var(--font-mono)", letterSpacing: 0.4,
-              }}>skill · 只套用在這一則</div>
+              }}>skill · 只套用在這一則 · 最多 {skillLimit} 個</div>
               {skillChoices.length === 0 ? (
                 <div style={{ padding: "8px", fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.6 }}>
                   還沒有可用的 skill。到「設定 → 我的 skill」新增。
                 </div>
               ) : null}
-              {skillChoices.map((skill, index) => (
-                <button
-                  key={skill.id}
-                  type="button"
-                  role="option"
-                  aria-selected={index === skillIdx}
-                  onClick={() => pickSkill(skill)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "6px 8px",
-                    background: index === skillIdx ? "var(--bg-subtle)" : "transparent",
-                    border: "none",
-                    borderRadius: 4,
-                    cursor: "pointer",
-                    color: "var(--fg)",
-                  }}
-                >
-                  <div style={{ fontSize: 13 }}>{skill.name}</div>
-                  <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>{skill.description}</div>
-                </button>
+              {skillGroups.map((group) => (
+                <div key={group.key} role="group" aria-label={group.label} data-testid={`skill-group-${group.key}`}>
+                  <div aria-hidden="true" style={{
+                    padding: "6px 8px 2px", fontSize: 10, color: "var(--fg-subtle)",
+                    fontWeight: 500, letterSpacing: 0.4,
+                  }}>{group.label}</div>
+                  {group.items.map((skill) => {
+                    const index = skillChoices.indexOf(skill);
+                    const chosen = selectedSkills.some((s) => s.id === skill.id);
+                    const blocked = !chosen && atSkillLimit;
+                    return (
+                      <div key={skill.id} style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={index === skillIdx}
+                          data-chosen={chosen ? "true" : undefined}
+                          aria-disabled={blocked || undefined}
+                          title={blocked ? `一次最多套用 ${skillLimit} 個 skill` : (chosen ? "已選，再按一次移除" : undefined)}
+                          onClick={() => pickSkill(skill)}
+                          onMouseEnter={() => setSkillIdx(index)}
+                          style={{
+                            display: "flex", alignItems: "flex-start", gap: 6,
+                            flex: 1, minWidth: 0,
+                            textAlign: "left",
+                            padding: "6px 8px",
+                            background: index === skillIdx ? "var(--bg-subtle)" : "transparent",
+                            border: "none",
+                            borderRadius: 4,
+                            cursor: blocked ? "not-allowed" : "pointer",
+                            color: "var(--fg)",
+                            opacity: blocked ? 0.5 : 1,
+                          }}
+                        >
+                          <span aria-hidden="true" style={{ width: 12, flexShrink: 0, paddingTop: 2, color: "var(--accent)" }}>
+                            {chosen ? <IconCheck size={12} /> : null}
+                          </span>
+                          <span style={{ minWidth: 0 }}>
+                            <span style={{ display: "block", fontSize: 13 }}>{skill.name}</span>
+                            <span style={{ display: "block", fontSize: 11, color: "var(--fg-muted)" }}>{skill.description}</span>
+                          </span>
+                        </button>
+                        {typeof onToggleSkillFavorite === "function" ? (
+                          <button
+                            type="button"
+                            aria-label={skill.favorite ? `取消釘選 ${skill.name}` : `釘選 ${skill.name}`}
+                            aria-pressed={Boolean(skill.favorite)}
+                            title={skill.favorite ? "取消釘選" : "釘選到最上面"}
+                            onClick={(e) => { e.stopPropagation(); onToggleSkillFavorite(skill); }}
+                            style={{
+                              display: "inline-flex", alignItems: "center", justifyContent: "center",
+                              width: 28, flexShrink: 0, padding: 0,
+                              border: "none", borderRadius: 4, background: "transparent", cursor: "pointer",
+                              color: skill.favorite ? "var(--accent)" : "var(--fg-subtle)",
+                            }}
+                          >
+                            <StarGlyph filled={Boolean(skill.favorite)} />
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
               ))}
             </div>
           )}
