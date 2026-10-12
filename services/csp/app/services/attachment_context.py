@@ -271,9 +271,21 @@ def build_attachment_prompt_block(
 
 
 class AttachmentInjectResult:
-    """Status returned by ``_inject_attachments`` for anila_meta.trace."""
+    """Status returned by ``_inject_attachments`` for anila_meta.trace.
 
-    __slots__ = ("status", "label", "detail", "injected_count", "skipped")
+    ``parsed_table_texts`` stays on the server. It is the admitted
+    spreadsheet bodies used to decide the honesty flag, and must not be
+    copied into the client-visible trace.
+    """
+
+    __slots__ = (
+        "status",
+        "label",
+        "detail",
+        "injected_count",
+        "skipped",
+        "parsed_table_texts",
+    )
 
     def __init__(
         self,
@@ -283,12 +295,18 @@ class AttachmentInjectResult:
         detail: str,
         injected_count: int = 0,
         skipped: bool = False,
+        parsed_table_texts: list[str] | None = None,
     ) -> None:
         self.status = status
         self.label = label
         self.detail = detail
         self.injected_count = injected_count
         self.skipped = skipped
+        self.parsed_table_texts = tuple(
+            text
+            for text in (parsed_table_texts or [])
+            if isinstance(text, str) and text
+        )
 
     def to_trace_entry(self) -> dict[str, Any]:
         return {

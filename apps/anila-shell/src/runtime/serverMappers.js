@@ -10,6 +10,7 @@ import { readStreamState, streamStateNotice } from "./reservedTurn.js";
 import { normalizeThinkingTier } from "./thinkingTier.js";
 import { normalizeInterrupt } from "../agentic.jsx";
 import { readThinkingStages } from "./thinkingStages.js";
+import { tableNumberHonestyFields } from "./tableNumberHonesty.js";
 import {
   nowIso,
   kbMetaFields,
@@ -102,6 +103,7 @@ export function mapServerMessage(msg) {
     ...kbMetaFields(meta),
     ...agentReplyMetaFields(meta),
     ...injectionMetaFields(meta),
+    ...tableNumberHonestyFields(meta),
     confidence: meta.confidence,
     classified: meta.classified,
     traceId: msg.trace_id || meta.trace_id,

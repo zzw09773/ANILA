@@ -236,6 +236,7 @@ import {
   rememberMovedConversation,
 } from "./runtime/serverMappers.js";
 import { submittedInterrupt, pendingInterrupt, nextInterruptState } from "./runtime/interruptState.js";
+import { tableNumberHonestyFields } from "./runtime/tableNumberHonesty.js";
 import { useUiSettings } from "./runtime/useUiSettings.js";
 
 export { EmptyState } from "./components/EmptyState.jsx";
@@ -2506,6 +2507,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       ...kbMetaFields(meta),
       ...agentReplyMetaFields(meta),
       ...injectionMetaFields(meta),
+      ...tableNumberHonestyFields(meta),
       latencyMs: meta.latency_ms,
       usage: meta.usage || null,
       classified: meta.classified,
