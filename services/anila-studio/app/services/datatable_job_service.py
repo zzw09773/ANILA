@@ -12,9 +12,11 @@ DatatableJobRecord carries:
   - terminal error string when state="failed"
 
 Artifact bytes live on disk (under settings.ARTIFACTS_DIR), not in memory,
-because XLSX especially can be megabytes for a 200-row table. Cleanup
-happens via STALE_AGE_SECONDS eviction — the orphan files get unlinked
-when the record gets dropped from `_jobs`.
+because XLSX especially can be megabytes for a 200-row table. Dropping a
+record from `_jobs` (overflow / STALE_AGE_SECONDS eviction) keeps the files:
+the durable job record still says `done`, and the download endpoint serves
+them from disk after eviction or restart. Only an explicit DELETE removes
+them; otherwise operators rotate ARTIFACTS_DIR like the other pipelines.
 """
 from __future__ import annotations
 
@@ -138,29 +140,27 @@ def _unlink_artifacts(rec: DatatableJobRecord) -> None:
 
 
 def _evict_user_overflow(user_id: int) -> None:
-    """Trim a user's jobs to MAX_JOBS_PER_USER, oldest-first, deleting
-    artifacts of the evicted records along the way.
+    """Trim a user's in-memory jobs to MAX_JOBS_PER_USER, oldest-first.
+
+    Artifact files stay on disk so an evicted-but-done job is still
+    downloadable through the durable-record fallback.
     """
     user_jobs = [j for j in _jobs.values() if j.user_id == user_id]
     if len(user_jobs) <= MAX_JOBS_PER_USER:
         return
     user_jobs.sort(key=lambda j: j.created_at)
     for j in user_jobs[: len(user_jobs) - MAX_JOBS_PER_USER]:
-        evicted = _jobs.pop(j.job_id, None)
-        if evicted is not None:
-            _unlink_artifacts(evicted)
+        _jobs.pop(j.job_id, None)
 
 
 def _prune_stale() -> None:
-    """Drop jobs older than STALE_AGE_SECONDS + unlink artifacts."""
+    """Drop in-memory jobs older than STALE_AGE_SECONDS (files are kept)."""
     cutoff = _now().timestamp() - STALE_AGE_SECONDS
     stale = [
         jid for jid, j in _jobs.items() if j.created_at.timestamp() < cutoff
     ]
     for jid in stale:
-        evicted = _jobs.pop(jid, None)
-        if evicted is not None:
-            _unlink_artifacts(evicted)
+        _jobs.pop(jid, None)
 
 
 async def create_job(

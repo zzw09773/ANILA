@@ -116,3 +116,34 @@ async def test_datatable_download_after_memory_cleared(store):
     with pytest.raises(HTTPException) as exc:
         await datatables.download_datatable_artifact("d_old", "csv", identity=OTHER)
     assert exc.value.status_code == 404
+
+
+async def test_datatable_real_overflow_eviction_keeps_files_downloadable(store):
+    """The actual eviction path must not delete files the fallback serves."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api import datatables
+    from app.schemas.datatable import DatatablePreset
+    from app.services import datatable_job_service as jobs
+
+    fake, root = store
+    (root / "datatables").mkdir()
+    jobs._jobs.clear()
+    base = datetime.now(timezone.utc)
+    for i in range(jobs.MAX_JOBS_PER_USER + 1):
+        jid = f"dt_{i:02d}"
+        paths = {ext: root / "datatables" / f"{jid}.{ext}" for ext in ("html", "csv", "xlsx")}
+        for p in paths.values():
+            p.write_bytes(f"{jid}".encode())
+        jobs._jobs[jid] = jobs.DatatableJobRecord(
+            job_id=jid, user_id=7, collection_id=1, state="done", step="done",
+            title="t", preset=DatatablePreset.KEY_FIGURES, row_count=1,
+            column_count=1, error=None, artifact_paths=paths,
+            created_at=base + timedelta(seconds=i), updated_at=base,
+        )
+        fake.rows[jid] = _job(jid, "datatable")
+    jobs._evict_user_overflow(7)
+    assert "dt_00" not in jobs._jobs
+    resp = await datatables.download_datatable_artifact("dt_00", "csv", identity=OWNER)
+    assert await _body(resp) == b"dt_00"
+    jobs._jobs.clear()
