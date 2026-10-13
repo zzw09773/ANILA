@@ -363,3 +363,50 @@ async def read_status(job_id: str, user_id: int) -> dict[str, Any] | None:
         "created_at": persisted.created_at or "",
         "updated_at": persisted.updated_at or persisted.created_at or "",
     }
+
+
+@dataclass(frozen=True)
+class PersistedDownload:
+    """What a download endpoint needs when the in-memory record is gone.
+
+    Built from the durable job record after the same owner check that
+    ``read_status`` applies; ``None`` from the reader means 404.
+    """
+
+    job_id: str
+    state: str
+    title: str | None
+    error: str | None
+    download_urls: dict[str, Any] | None
+
+
+def _safe_job_id(job_id: str) -> bool:
+    return bool(job_id) and "/" not in job_id and "\\" not in job_id and ".." not in job_id
+
+
+async def read_download(
+    job_id: str, user_id: int, artifact_type: str
+) -> PersistedDownload | None:
+    """Read-through for a download after a studio restart / cache eviction.
+
+    Returns ``None`` (→ 404) for a missing record, another user's record,
+    another pipeline's record, or a job id that could not name a file.
+    """
+    if not _safe_job_id(job_id):
+        return None
+    persisted = await get_job_store().get(job_id)
+    if persisted is None or persisted.owner_user_id != user_id:
+        return None
+    if persisted.artifact_type != artifact_type:
+        return None
+    view = persisted.status_view or {}
+    urls = view.get("download_urls")
+    if urls is None:
+        urls = (persisted.result_metadata or {}).get("download_urls")
+    return PersistedDownload(
+        job_id=persisted.job_id,
+        state=persisted.state,
+        title=view.get("title"),
+        error=view.get("error"),
+        download_urls=urls if isinstance(urls, dict) else None,
+    )

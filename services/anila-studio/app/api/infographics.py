@@ -702,6 +702,23 @@ async def get_infographic_job(
     )
 
 
+async def _persisted_infographic(job_id: str, user_id: int) -> Any:
+    """Rebuild a download view from the durable record + files on disk."""
+    base = await job_lifecycle.read_download(job_id, user_id, "infographic")
+    if base is None:
+        return None
+    root = Path(settings.ARTIFACTS_DIR)
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        state=base.state,
+        error=base.error,
+        title=base.title,
+        html_path=str(root / f"{job_id}.html"),
+        pdf_path=str(root / f"{job_id}.pdf"),
+    )
+
+
 @router.get(
     "/jobs/{job_id}/download/{fmt}",
     response_class=FileResponse,
@@ -722,7 +739,11 @@ async def download_infographic_artifact(
             detail="fmt must be one of: html, pdf",
         )
 
-    rec = jobs.get_user_job(job_id, identity.id)
+    rec: Any = jobs.get_user_job(job_id, identity.id)
+    if rec is None:
+        # Studio restarted or the record was evicted: rebuild from the
+        # durable job record + files on disk, same owner check.
+        rec = await _persisted_infographic(job_id, identity.id)
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",

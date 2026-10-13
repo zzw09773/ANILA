@@ -170,7 +170,11 @@ async def download_report(
     The actual bytes live on disk (reports are too big to keep in-RAM
     like the slide pptx_bytes — a typical PDF can hit several MB).
     """
-    rec = jobs.get_user_job(job_id, identity.id)
+    rec: Any = jobs.get_user_job(job_id, identity.id)
+    if rec is None:
+        # Studio restarted or the record was evicted: answer from the
+        # durable job record + the file on disk, same owner check.
+        rec = await job_lifecycle.read_download(job_id, identity.id, "report")
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Report job not found."
