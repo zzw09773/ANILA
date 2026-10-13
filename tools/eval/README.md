@@ -119,17 +119,6 @@ ref: 1
 5. `python3 -m unittest tools/eval/test_golden_set.py`。
 6. 在有模型的環境跑完整評測，把報告附在 PR／交接。
 
-## 首頁入門卡（不打模型）
-
-空對話的範例問句要先從合成示範文件查得到才顯示。詞表擋下的代寄信、代核准也在同一支前端路徑，不打模型。
-
-```bash
-python3 tools/eval/verify_starter_prompts.py
-```
-
-預期：印出 `starter prompts OK：3 visible, 1 hidden（前端一致）`，exit 0。
-題庫在 `apps/anila-shell/src/starterPrompts.data.json`。查不到的對照題（停車位）必須維持不顯示。
-
 ## 從已修好的回饋轉一題
 
 管理端把差評結案為「已修好」之後，可以依**原問句**產生一行回歸題。這條路徑不改 `golden_set.jsonl`，也不負責把題庫擴充到幾十題。
