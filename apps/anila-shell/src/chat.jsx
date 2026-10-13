@@ -2,7 +2,7 @@
 // ESM port of ANILA_templete/anila-ui/src/chat.jsx, with backend-driven classification:
 // no user-controlled "lock/unlock" icons here.
 
-import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback, useId } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { appendRemoteHits, moveFolderOptions, positiveUserId } from "./runtime/bulkActions.js";
@@ -24,6 +24,7 @@ import {
 } from "./runtime/audienceDraft.js";
 import { AudiencePrompt, UserDraftText } from "./components/AudiencePrompt.jsx";
 import { classifiedCopyDenial } from "./uxCopy.js";
+import AnswerDeliveryPicker from "./components/AnswerDeliveryPicker.jsx";
 import { filesFromComposerClipboard } from "./runtime/composerPaste.js";
 import {
   resolveActionIcon,
@@ -2521,6 +2522,10 @@ export const Composer = ({
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [answerDelivery, setAnswerDelivery] = useState("short");
+  const answerDeliveryRef = useRef("short");
+  answerDeliveryRef.current = answerDelivery;
+  const answerGroup = useId();
   const sendWrapRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const longPressFiredRef = useRef(false);
@@ -3093,7 +3098,10 @@ export const Composer = ({
   };
 
   const sendMeta = () => {
-    const meta = { explicitAgents: mentionParse.explicitAgents };
+    const meta = {
+      explicitAgents: mentionParse.explicitAgents,
+      answerDelivery: answerDeliveryRef.current === "background" ? "background" : "short",
+    };
     const ids = (skillRef.current || []).map((s) => s.id).filter((id) => Number.isInteger(id));
     if (ids.length > 0) {
       meta.skillIds = ids;
@@ -3883,6 +3891,11 @@ export const Composer = ({
         </div>
       )}
 
+      <AnswerDeliveryPicker
+        value={answerDelivery}
+        groupName={answerGroup}
+        onChange={setAnswerDelivery}
+      />
       <div className="composer-toolbar">
         <label>
           <input type="file" multiple hidden onChange={(e) => onFiles(e.target.files)}

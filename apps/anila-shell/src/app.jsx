@@ -84,6 +84,7 @@ import {
   clearConversationCompact as apiClearConversationCompact,
   requestConversationCompact as apiRequestConversationCompact,
 } from "./runtime/conversations.js";
+import { postBackgroundAnswer } from "./runtime/answerDelivery.js";
 import {
   compactFieldsFromServer,
   compactPutFailureState,
@@ -1096,6 +1097,33 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     }
     await flushPendingCompact(convId, nextPath);
   }
+
+  const openAnswerRef = useRef(null);
+  openAnswerRef.current = (conversationId, { select }) => {
+    if (typeof conversationId !== "number") return;
+    if (select) setSelectedConvId(conversationId);
+    refreshActivePath(conversationId).catch(() => {});
+  };
+  useEffect(() => {
+    const readId = (event) => {
+      const id = event?.detail?.conversationId;
+      return typeof id === "number" ? id : null;
+    };
+    const onReady = (event) => {
+      const id = readId(event);
+      if (id != null) openAnswerRef.current?.(id, { select: false });
+    };
+    const onOpen = (event) => {
+      const id = readId(event);
+      if (id != null) openAnswerRef.current?.(id, { select: true });
+    };
+    window.addEventListener("anila-answer-ready", onReady);
+    window.addEventListener("anila-open-conversation", onOpen);
+    return () => {
+      window.removeEventListener("anila-answer-ready", onReady);
+      window.removeEventListener("anila-open-conversation", onOpen);
+    };
+  }, []);
 
   // Fetch the user's conversations on login and whenever JWT changes. Messages
   // are loaded lazily when a conversation is clicked (keeps the initial
@@ -2768,7 +2796,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const skillId = skillIds[0] ?? null;
     cancelFollowUps();
     if (explicitAgents.length > 1) {
-      return sendCompare(text, attachments, { explicitAgents, skillId, skillIds });
+      return sendCompare(text, attachments, { ...meta, explicitAgents, skillId, skillIds });
     }
     // ⚠ 這裡要**早於** ensureConversation / createTaskForConversation:那兩個會
     // 拿這段草稿當標題送到伺服器上。等到落庫扼流點才擋,訊息本身是保住了,
@@ -2834,8 +2862,46 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       toast(msg, { tone: "error" });
       return failSend();
     }
-    const oneShotDeep = consumeOneShotDeep();
     const attachmentAdmitted = attachmentAdmissionMap(admittedAttachments);
+    if (meta?.answerDelivery === "background") {
+      if (typeof convId !== "number") {
+        const msg = "對話尚未建立，無法在背景完成完整回答。";
+        setRuntimeError(msg);
+        toast(msg, { tone: "error" });
+        return failSend();
+      }
+      try {
+        const saved = await postBackgroundAnswer(authRequest, convId, {
+          content: text,
+          agentName: typeof effectiveTarget === "string" ? effectiveTarget : null,
+          referenceIds: bindIds,
+          attachmentAdmitted,
+        });
+        const paint = (row) => ({ ...mapServerMessage(row), conversationId: convId });
+        const rows = [];
+        if (saved?.unanswered) rows.push(paint(saved.unanswered));
+        if (saved?.user) rows.push(paint(saved.user));
+        if (saved?.assistant) rows.push(paint(saved.assistant));
+        setMessagesByConv((prev) => ({
+          ...prev,
+          [convId]: [...(prev[convId] || []), ...rows],
+        }));
+        if (typeof saved?.assistant?.id === "number") {
+          updateConv(convId, {
+            activeLeafMessageId: saved.assistant.id,
+            updatedAt: nowIso(),
+          });
+        }
+        toast("完整回答已在背景進行，做好會通知你。");
+        return true;
+      } catch (err) {
+        const msg = err?.message || "完整回答沒有開始";
+        setRuntimeError(msg);
+        toast(msg, { tone: "error" });
+        return failSend();
+      }
+    }
+    const oneShotDeep = consumeOneShotDeep();
     const userMsg = {
       id: makeId("u"),
       role: "user",
@@ -3095,6 +3161,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           attachmentRefs: bindIds,
           skillId,
           skillIds,
+          answerDelivery: meta?.answerDelivery === "short" ? "short" : undefined,
           assistantId,
           restoreDraftOnOverload: text,
           onText: (acc) => {
@@ -3882,6 +3949,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   async function sendCompare(text, attachments = [], meta = {}) {
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
+      return false;
+    }
+    if (meta?.answerDelivery === "background") {
+      setRuntimeError("比較模式請改用快速短回答。");
       return false;
     }
     const skillIds = cleanSkillIds(Array.isArray(meta.skillIds) ? meta.skillIds : [meta.skillId]);

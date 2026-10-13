@@ -23,6 +23,7 @@ from app.api.thinking import router as thinking_router
 from app.api.attachments import router as attachments_router
 import app.api.follow_ups  # noqa: F401  註冊建議追問路由
 from app.api.handoffs import router as handoffs_router
+from app.api.background_answers import router as background_answers_router
 from app.api.directory import router as directory_router
 from app.api.platform_settings import router as platform_settings_router
 from app.api.router_prompts import router as router_prompts_router
@@ -869,6 +870,7 @@ app.include_router(conversations_router)
 app.include_router(thinking_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)
+app.include_router(background_answers_router)
 app.include_router(directory_router)
 # 設定頁的後端（登錄表上的立即生效 C 類設定）。
 app.include_router(platform_settings_router)

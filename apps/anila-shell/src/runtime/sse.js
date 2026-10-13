@@ -164,6 +164,8 @@ export async function streamChatCompletion({
   skillId,
   // 疊加：照順序的多個 skill id。有值時優先於 skillId。
   skillIds,
+  // 快速短回答。只送標頭，CSP 才加簡短指示；不改使用者原文。
+  answerDelivery,
   onText,
   onTrace,
   onMeta,
@@ -242,6 +244,9 @@ export async function streamChatCompletion({
     Object.assign(headers, stacked);
   } else if (typeof skillId === "number" && Number.isInteger(skillId) && skillId > 0) {
     headers["X-ANILA-Skill-Id"] = String(skillId);
+  }
+  if (answerDelivery === "short") {
+    headers["X-ANILA-Answer-Delivery"] = "short";
   }
   const response = await fetch(url, {
     method: "POST",
