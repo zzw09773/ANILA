@@ -71,10 +71,15 @@ describe('artifact cache across accounts', () => {
     expect(localStorage.getItem('anilalm:artifacts')).toBeNull()
   })
 
-  it('server list is authoritative for finished rows', async () => {
-    const { mergeArtifactLists } = await import('./artifacts')
-    const merged = mergeArtifactLists([reportRow('stale', '舊的')], [])
-    expect(merged).toEqual([])
+  it('server list is authoritative for finished rows past the sync grace period', async () => {
+    const { mergeArtifactLists, setNowForTests, UNSYNCED_GRACE_MS } = await import('./artifacts')
+    const created = Date.parse('2026-10-13T00:00:00Z')
+    setNowForTests(() => created + UNSYNCED_GRACE_MS + 1)
+    expect(mergeArtifactLists([reportRow('stale', '舊的')], [])).toEqual([])
+    // 剛完成、CSP 可能還沒登錄的自己的工作先留著。
+    setNowForTests(() => created + 60_000)
+    expect(mergeArtifactLists([reportRow('fresh', '剛完成')], [])).toHaveLength(1)
+    setNowForTests(null)
   })
 })
 

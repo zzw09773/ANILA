@@ -173,3 +173,30 @@ async def test_datatable_delete_after_eviction_removes_files(store):
     with pytest.raises(HTTPException) as exc:
         await datatables.download_datatable_artifact("dt_gone", "csv", identity=OWNER)
     assert exc.value.status_code == 404
+
+
+async def test_infographic_delete_after_eviction_and_drops_durable_record(store):
+    from app.api import infographics
+    from app.services import infographic_job_service as jobs
+
+    fake, root = store
+    jobs._jobs.clear()
+
+    async def _delete(job_id):
+        fake.rows.pop(job_id, None)
+
+    fake.delete = _delete
+    fake.rows["i_gone"] = _job("i_gone", "infographic")
+    (root / "i_gone.pdf").write_bytes(b"%PDF")
+    (root / "i_gone.html").write_bytes(b"<html/>")
+    with pytest.raises(HTTPException) as exc:
+        await infographics.delete_infographic_job("i_gone", identity=OTHER)
+    assert exc.value.status_code == 404
+    assert (root / "i_gone.pdf").exists()
+
+    resp = await infographics.delete_infographic_job("i_gone", identity=OWNER)
+    assert resp.status_code == 204
+    assert not (root / "i_gone.pdf").exists() and "i_gone" not in fake.rows
+    with pytest.raises(HTTPException) as exc:
+        await infographics.download_infographic_artifact("i_gone", "pdf", identity=OWNER)
+    assert exc.value.status_code == 404

@@ -43,6 +43,14 @@ interface ArtifactState {
  * 伺服器列是這個知識庫已回報的產出。本機列只留下伺服器還沒看到的
  * （多半是還在鑄造、尚未 POST /v1/artifacts 的工作）。
  */
+/** 完成後等 CSP 登錄的寬限期，與 Studio 記憶體工作的保留時間相同。 */
+export const UNSYNCED_GRACE_MS = 60 * 60 * 1000
+let nowMs = () => Date.now()
+/** 測試用：固定現在時間。 */
+export function setNowForTests(fn: (() => number) | null): void {
+  nowMs = fn ?? (() => Date.now())
+}
+
 export function mergeArtifactLists(
   local: StudioArtifact[],
   server: StudioArtifact[],
@@ -55,9 +63,17 @@ export function mergeArtifactLists(
     if (row.jobId && serverJobIds.has(row.jobId)) return false
     return true
   })
-  // 伺服器清單是權威：本機只保留還在鑄造中的工作，其他一律以伺服器為準。
+  // 伺服器清單是權威。本機只多留兩種（快取已按帳號隔離，都是自己的）：
+  // 還在鑄造中的工作，以及剛完成、Studio 可能還沒登錄到 CSP 的工作。
+  // 超過寬限期仍不在伺服器清單裡的，就以伺服器為準移除。
+  const now = nowMs()
   const pending = extras.filter((row) => (row.state ?? 'done') === 'pending')
-  return [...pending, ...server]
+  const unsynced = extras.filter((row) => {
+    if ((row.state ?? 'done') === 'pending') return false
+    const created = Date.parse(row.createdAt)
+    return Number.isFinite(created) && now - created < UNSYNCED_GRACE_MS
+  })
+  return [...pending, ...server, ...unsynced]
 }
 
 /** 舊版所有帳號共用的快取 key，裡面可能有別人的產出。 */
