@@ -11,6 +11,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
+from anila_core.source_number_check import check_answer_against_sources
 from anila_core.security.external_content import (
     AUDIT_ACTION,
     PRIORITY_RULE_EN,
@@ -1008,6 +1009,77 @@ def _inject_client_passages(body: dict, raw, side: TurnSidechannel | None) -> No
     body["messages"] = messages
 
 
+def _passages_sent_to_model(kb_result: KbResult, client_passages) -> list[str]:
+    """這次真的送進模型的來源片段。抽屜預覽只有前 200 字，不能拿來比。"""
+    texts: list[str] = []
+    for hit in kb_result.hits or []:
+        content = getattr(hit, "content", None)
+        if isinstance(content, str) and content.strip():
+            texts.append(content)
+    if isinstance(client_passages, list):
+        for item in client_passages[:_CLIENT_PASSAGE_CAP]:
+            if isinstance(item, dict):
+                text = item.get("text")
+            elif isinstance(item, str):
+                text = item
+            else:
+                continue
+            if isinstance(text, str) and text.strip():
+                texts.append(text[:_CLIENT_PASSAGE_CHARS])
+    return texts
+
+
+def _assistant_visible_text(payload: dict | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    parts: list[str] = []
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        _append_visible_content(message.get("content"), parts)
+    return "".join(parts)
+
+
+def _append_visible_content(content, parts: list[str]) -> None:
+    if isinstance(content, str):
+        if content:
+            parts.append(content)
+        return
+    if not isinstance(content, list):
+        return
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text") or item.get("content")
+            if isinstance(text, str):
+                parts.append(text)
+
+
+def _source_check_verdict(answer: str, passages: list[str]) -> dict:
+    try:
+        return check_answer_against_sources(answer, passages)
+    except Exception:
+        logger.exception("source_number_check failed")
+        # 比對壞掉時不標「對不上」，但也不留下模型自己的核對宣告。
+        return {"checked": False, "mismatch": False, "reason": "error"}
+
+
+def _stamp_source_check(payload, passages: list[str]):
+    """非串流：用程式結果蓋掉 ``source_check``。模型帶的值不算數。"""
+    if not isinstance(payload, dict):
+        return payload
+    meta = payload.get("anila_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        payload["anila_meta"] = meta
+    meta["source_check"] = _source_check_verdict(
+        _assistant_visible_text(payload), passages,
+    )
+    return payload
+
+
 def _has_cjk(text: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in text or "")
 
@@ -1491,6 +1563,79 @@ async def _sse_with_kb_meta(
         )
     if pending_done:
         yield pending_done
+
+
+def _sse_block_parts(block: str) -> tuple[str | None, list[str]]:
+    event_name = None
+    data_lines: list[str] = []
+    for line in block.split("\n"):
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].strip())
+    return event_name, data_lines
+
+
+def _append_sse_choice_text(payload, parts: list[str]) -> None:
+    if not isinstance(payload, dict):
+        return
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        choice = payload.get("choice")
+        if isinstance(choice, list):
+            choices = choice
+        elif isinstance(choice, dict):
+            choices = [choice]
+        else:
+            choices = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        before = len(parts)
+        _append_visible_content(delta.get("content"), parts)
+        if len(parts) == before:
+            _append_visible_content(message.get("content"), parts)
+
+
+async def _sse_with_source_check(
+    upstream: AsyncIterator[str],
+    passages: list[str],
+) -> AsyncIterator[str]:
+    """串流出口：回答收齊後，用程式比對結果蓋上 ``source_check``。
+
+    包在 kb／注入標記的外層，合成出來的 ``anila.meta`` 也看得到。只補這個欄位，
+    不改 ``kb_state``。模型若自己帶了核對結果，這裡覆寫。
+    """
+    buf = ""
+    parts: list[str] = []
+
+    def _consume(block: str) -> str:
+        event_name, data_lines = _sse_block_parts(block)
+        parsed: list[dict] = []
+        for line in data_lines:
+            if not line or line == "[DONE]":
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                parsed.append(payload)
+                _append_sse_choice_text(payload, parts)
+        if event_name != "anila.meta" or len(parsed) != 1:
+            return block
+        parsed[0]["source_check"] = _source_check_verdict("".join(parts), passages)
+        return _format_sse(event_name, parsed[0])
+
+    async for chunk in upstream:
+        buf += chunk
+        while "\n\n" in buf:
+            block, buf = buf.split("\n\n", 1)
+            yield _consume(block) + "\n\n"
+    if buf:
+        yield _consume(buf) if buf.strip() else buf
 
 
 def _schedule_memory_write(
@@ -2151,6 +2296,7 @@ async def chat_completions(
     _inject_kb_passages(body, kb_result, side)
     _inject_client_passages(body, client_passages, side)
     kb_meta = _kb_meta_fragment(kb_result)
+    source_passages = _passages_sent_to_model(kb_result, client_passages)
     # P3: latch the consuming conversation into classified state when
     # memory recall pulled at least one encrypted chunk. One-shot — once
     # set, never cleared by a later non-encrypted turn (would otherwise
@@ -2315,10 +2461,12 @@ async def chat_completions(
             )
             # Same attachment trace entry as non-streaming anila_meta.
             traced = _sse_with_attachment_trace(teed, attach_inject)
-            # 出口 1/4（agent SSE）：kb 包在最外層，狀態是最後一個寫入者。
+            # 出口 1/4（agent SSE）：kb 先寫狀態。數字比對包在最外層，只補
+            # source_check，不改 kb_state。
             traced = _sse_with_kb_meta(traced, kb_meta)
             traced = _sse_with_injection_notice(traced, side)
             traced = _sse_with_applied_skill(traced, applied_skill)
+            traced = _sse_with_source_check(traced, source_passages)
             release_request_session(db)
             return StreamingResponse(
                 traced,
@@ -2410,11 +2558,14 @@ async def chat_completions(
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
                 # 出口 2/4（agent 非串流）。回傳 dict，讓直接 await 的呼叫端能下標。
-                body_out = _attach_applied_skill(
-                    _merge_kb_meta(
-                        _merge_attachment_trace(payload, attach_inject), kb_meta,
+                body_out = _stamp_source_check(
+                    _attach_applied_skill(
+                        _merge_kb_meta(
+                            _merge_attachment_trace(payload, attach_inject), kb_meta,
+                        ),
+                        applied_skill,
                     ),
-                    applied_skill,
+                    source_passages,
                 )
                 _stamp_reveal(response, reveal_hdrs)
                 return body_out
@@ -2616,6 +2767,7 @@ async def chat_completions(
         traced = _sse_with_kb_meta(traced, kb_meta)
         traced = _sse_with_injection_notice(traced, side)
         traced = _sse_with_applied_skill(traced, applied_skill)
+        traced = _sse_with_source_check(traced, source_passages)
         return StreamingResponse(
             traced,
             media_type="text/event-stream",
@@ -2668,11 +2820,14 @@ async def chat_completions(
         is_encrypted=inherited_encryption,
     )
     # 出口 4/4（model 非串流）。回傳 dict，讓直接 await 的呼叫端能下標。
-    body_out = _attach_applied_skill(
-        _merge_kb_meta(
-            _merge_attachment_trace(payload, attach_inject), kb_meta,
+    body_out = _stamp_source_check(
+        _attach_applied_skill(
+            _merge_kb_meta(
+                _merge_attachment_trace(payload, attach_inject), kb_meta,
+            ),
+            applied_skill,
         ),
-        applied_skill,
+        source_passages,
     )
     _stamp_reveal(response, reveal_hdrs)
     return body_out

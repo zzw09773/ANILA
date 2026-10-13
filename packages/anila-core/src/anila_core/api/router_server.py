@@ -2308,6 +2308,20 @@ def merge_round_anila_meta(
             if candidate in states:
                 merged["kb_state"] = candidate
                 break
+    # 各輪各自對過的數字要拿全部來源再對一次。後一輪的 source_check
+    # 不能蓋掉前一輪，也不能沿用模型自己寫的核對結果。
+    if "source_check" in prior or "source_check" in newer:
+        from anila_core.source_number_check import reconcile_source_checks
+
+        merged["source_check"] = reconcile_source_checks(
+            prior.get("source_check"),
+            newer.get("source_check"),
+            [
+                hit.get("content")
+                for hit in hits
+                if isinstance(hit, dict) and isinstance(hit.get("content"), str)
+            ],
+        )
     return merged
 
 

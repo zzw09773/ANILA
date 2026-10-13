@@ -109,6 +109,7 @@ import {
   FollowUpSuggestions,
   FollowUpsLiveRegion,
   RedactionHint,
+  SourceMismatchNotice,
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
@@ -1428,6 +1429,10 @@ export const MessageBubble = ({
   // citation affordance below. A hit can still arrive without citations; keep
   // the state explicit in that case instead of leaving the answer silent.
   const hasCitationSources = msg.citations && msg.citations.length > 0;
+  // 程式比對的結果。mismatch 以外的文字（含模型自己寫的 marker）不採用。
+  const showSourceMismatch = !isStreaming && (
+    msg.sourceMismatch === true || msg.metadata?.source_check?.mismatch === true
+  );
   const citationDrawerVisible = !msg.streaming && hasCitationSources;
   const showKbStateBadge = !(
     msg.kbState === "searched_hit" && citationDrawerVisible
@@ -1690,6 +1695,9 @@ export const MessageBubble = ({
               >
                 {msg.incompleteNotice}
               </div>
+            )}
+            {!msg.streaming && showSourceMismatch && (
+              <SourceMismatchNotice show />
             )}
             {!msg.streaming && msg.agentReplyNotice && (
               <div
