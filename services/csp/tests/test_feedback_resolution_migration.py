@@ -1,4 +1,4 @@
-"""r1_0073：差評結案欄位可以加上、也可以拿掉。"""
+"""r1_0074：差評結案欄位可以加上、也可以拿掉。"""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ def _migration():
         Path(__file__).resolve().parents[1]
         / "migrations"
         / "versions"
-        / "r1_0073_feedback_resolution.py"
+        / "r1_0074_feedback_resolution.py"
     )
-    spec = importlib.util.spec_from_file_location("r1_0073_feedback_resolution", path)
+    spec = importlib.util.spec_from_file_location("r1_0074_feedback_resolution", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -32,8 +32,8 @@ def _apply(engine, fn) -> None:
 
 def test_revision_follows_the_current_head_and_names_the_three_fields():
     module = _migration()
-    assert module.revision == "r1_0073"
-    assert module.down_revision == "r1_0072"
+    assert module.revision == "r1_0074"
+    assert module.down_revision == "r1_0073"
     source = Path(module.__file__).read_text(encoding="utf-8")
     for column in ("feedback_status", "feedback_resolution", "feedback_resolved_at"):
         assert column in source

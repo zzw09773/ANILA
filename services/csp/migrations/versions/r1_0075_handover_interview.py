@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """交接訪談：固定題目的回答，確認後才有清單。
 
-Revision ID: r1_0073
-Revises: r1_0072
+Revision ID: r1_0075
+Revises: r1_0074
 """
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision: str = "r1_0073"
-down_revision: Union[str, None] = "r1_0072"
+revision: str = "r1_0075"
+down_revision: Union[str, None] = "r1_0074"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

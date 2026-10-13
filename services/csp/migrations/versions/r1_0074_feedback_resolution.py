@@ -4,8 +4,8 @@
 結案通知走既有的 notifications 表（一筆對一個使用者），
 不另開廣播表。回報者是 messages.feedback_submitter_id。
 
-Revision ID: r1_0073
-Revises: r1_0072
+Revision ID: r1_0074
+Revises: r1_0073
 Create Date: 2026-10-12
 """
 from __future__ import annotations
@@ -15,8 +15,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "r1_0073"
-down_revision: Union[str, None] = "r1_0072"
+revision: str = "r1_0074"
+down_revision: Union[str, None] = "r1_0073"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
