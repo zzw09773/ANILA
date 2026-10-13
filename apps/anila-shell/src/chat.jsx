@@ -14,6 +14,15 @@ import {
 } from "./runtime/sidebarWidth.js";
 import { hasBranch, neighbourId, pagerState } from "./runtime/messageTree.js";
 import { resolveEditResend } from "./runtime/editResend.js";
+import {
+  draftWordingDependsOnAudience,
+  prepareDraftSend,
+  audienceIdFromMarker,
+  recallDraftAudience,
+  rememberDraftAudience,
+  stripAudienceMarker,
+} from "./runtime/audienceDraft.js";
+import { AudiencePrompt, UserDraftText } from "./components/AudiencePrompt.jsx";
 import { classifiedCopyDenial } from "./uxCopy.js";
 import { filesFromComposerClipboard } from "./runtime/composerPaste.js";
 import {
@@ -1068,6 +1077,7 @@ export const MessageBubble = ({
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(msg.text || "");
+  const [askAudience, setAskAudience] = useState(false);
   const [steerText, setSteerText] = useState("");
   // OW-3 action picker (clone of regenerate popover idiom).
   const [openActionId, setOpenActionId] = useState(null);
@@ -1116,14 +1126,24 @@ export const MessageBubble = ({
     setActionInput("");
   }, [assistantActionsLocked]);
 
+  useEffect(() => {
+    if (!askAudience) return;
+    if (!draftWordingDependsOnAudience(draft)) setAskAudience(false);
+  }, [askAudience, draft]);
+
   if (msg.role === "user") {
     const canEdit = !classified && typeof onEditUser === "function";
     const startEdit = () => {
-      setDraft(msg.text || "");
+      const existing = audienceIdFromMarker(msg.text || "") || recallDraftAudience(msg.text || "");
+      const body = stripAudienceMarker(msg.text || "").trim();
+      if (existing) rememberDraftAudience(body, existing);
+      setDraft(body);
+      setAskAudience(false);
       setEditing(true);
     };
     const cancelEdit = () => {
       setEditing(false);
+      setAskAudience(false);
       setDraft(msg.text || "");
     };
     const saveEdit = () => {
@@ -1134,8 +1154,23 @@ export const MessageBubble = ({
         cancelEdit();
         return;
       }
+      const prepared = prepareDraftSend(decision.text);
+      if (!prepared.send) {
+        setAskAudience(true);
+        return;
+      }
+      setAskAudience(false);
       setEditing(false);
-      onEditUser(msg, decision.text);
+      onEditUser(msg, prepared.text);
+    };
+    const chooseEditAudience = (id) => {
+      if (!draftWordingDependsOnAudience(draft)) {
+        setAskAudience(false);
+        return;
+      }
+      if (!rememberDraftAudience(draft, id)) return;
+      setAskAudience(false);
+      saveEdit();
     };
     const canSubmitEdit = resolveEditResend(draft).ok;
 
@@ -1214,6 +1249,10 @@ export const MessageBubble = ({
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     e.preventDefault();
+                    if (askAudience) {
+                      setAskAudience(false);
+                      return;
+                    }
                     cancelEdit();
                   }
                   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -1235,6 +1274,9 @@ export const MessageBubble = ({
                   outline: "none",
                 }}
               />
+              {askAudience ? (
+                <AudiencePrompt onChoose={chooseEditAudience} onDismiss={() => setAskAudience(false)} />
+              ) : null}
               <div style={{
                 display: "flex",
                 alignItems: "center",
@@ -1275,7 +1317,7 @@ export const MessageBubble = ({
               </div>
             </div>
           ) : (
-            msg.text
+            <UserDraftText text={msg.text} />
           )}
           {/* OW-1: user-bubble pager + delete — edit-re-ask siblings switchable/removable.
               Only when the message actually HAS siblings; a lone turn is not a branch. */}
@@ -2559,6 +2601,7 @@ export const Composer = ({
   };
   const snapshotSkills = () => (skillRef.current || []).map((s) => ({ id: s.id, name: s.name }));
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+  const [audienceOpen, setAudienceOpen] = useState(false);
   // 點旁邊或按 Esc 就收起 skill 清單，跟預設提示詞選單一樣。
   useEffect(() => {
     if (!skillMenuOpen) return undefined;
@@ -2572,6 +2615,12 @@ export const Composer = ({
       document.removeEventListener("keydown", onKey);
     };
   }, [skillMenuOpen]);
+  useEffect(() => {
+    if (!audienceOpen) return;
+    if (!draftWordingDependsOnAudience(text) || recallDraftAudience(text)) {
+      setAudienceOpen(false);
+    }
+  }, [audienceOpen, text]);
   const [skillIdx, setSkillIdx] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
   const taRef = useRef(null);
@@ -3057,11 +3106,17 @@ export const Composer = ({
 
   const submit = () => {
     const raw = textRef.current || "";
-    const v = raw.trim();
+    const source = raw.trim();
     const currentAtts = attsRef.current;
-    if (!v && currentAtts.length === 0) return;
+    if (!source && currentAtts.length === 0) return;
     if (currentAtts.some((att) => att.uploading)) return;
     if (!passesRedactionGate(detectPII(raw))) return;
+    const prepared = prepareDraftSend(source);
+    if (!prepared.send) {
+      setAudienceOpen(true);
+      return;
+    }
+    const v = prepared.text;
     // 跟送出去的是同一批物件的複本。晚到的上傳完成只更新複本，不會把
     // referenceId 補進已經交出去的那一次。
     const snapshotAtts = currentAtts.map((att) => ({ ...att }));
@@ -3134,16 +3189,16 @@ export const Composer = ({
         || (skillRef.current || []).length > 0;
       if (!hasNewer) {
         heldDraftsRef.current.delete(snapshotAtts);
-        textRef.current = v;
-        setText(v);
-        writeDraftNow(v);
+        textRef.current = source;
+        setText(source);
+        writeDraftNow(source);
         armAttachments(snapshotAtts);
         attsRef.current = snapshotAtts;
         setAtts(snapshotAtts);
         applySkills(snapshotSkillList);
         return;
       }
-      retainRecoverable({ text: v, atts: snapshotAtts, skills: snapshotSkillList });
+      retainRecoverable({ text: source, atts: snapshotAtts, skills: snapshotSkillList });
     };
     if (outcome && typeof outcome.then === "function") {
       outcome.then(finish, () => finish(false));
@@ -3151,6 +3206,17 @@ export const Composer = ({
     }
     finish(outcome);
     // 清空後縮回一行由 text 的 layout effect 負責,不需要再補一次。
+  };
+
+  const chooseAudience = (id) => {
+    const source = (textRef.current || "").trim();
+    if (!draftWordingDependsOnAudience(source)) {
+      setAudienceOpen(false);
+      return;
+    }
+    if (!rememberDraftAudience(source, id)) return;
+    setAudienceOpen(false);
+    submit();
   };
 
   const onKey = (e) => {
@@ -3211,6 +3277,11 @@ export const Composer = ({
         if (slash !== null) setCaret(text.length + 1);
         return;
       }
+    }
+    if (audienceOpen && e.key === "Escape") {
+      e.preventDefault();
+      setAudienceOpen(false);
+      return;
     }
     // 灰字預覽：只有輸入框是空的才攔 Tab，有字時 Tab 照舊移到下一個控制項。
     if (ghostVisible && !skillMenuVisible && !composing && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -3792,6 +3863,9 @@ export const Composer = ({
           定稿才進 value。 */}
       {/* 即時預覽改放在 textarea 欄位裡(見下方 composer-partial)——放在這裡
           會貼著外框圓角頂端,看起來像畫在框外。 */}
+      {audienceOpen ? (
+        <AudiencePrompt onChoose={chooseAudience} onDismiss={() => setAudienceOpen(false)} />
+      ) : null}
       {asr.error && (
         <div role="alert" style={{
           padding: "0 14px 4px", fontSize: 12, color: "var(--danger)",
