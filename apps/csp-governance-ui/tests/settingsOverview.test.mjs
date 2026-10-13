@@ -86,7 +86,7 @@ function row(key, index = 0, overrides = {}) {
 
 test('registry and UI contract contain exactly the twenty-eight C settings', () => {
   assert.equal((registrySource.match(/^    _spec\(/gm) ?? []).length, 28)
-  assert.equal(SECTION_DEFS.length, 3)
+  assert.equal(SECTION_DEFS.length, 4)
   assert.ok(SECTION_DEFS.every((s) => s.classes.includes('C')))
   assert.ok(SECTION_DEFS.every((s) => s.editable === true))
   for (const [key, env] of EXPECTED) {
@@ -108,7 +108,7 @@ test('registry and UI contract contain exactly the twenty-eight C settings', () 
 test('all rows stay in one editable section and no row is silently dropped', () => {
   const rows = EXPECTED.map(([key], index) => row(key, index))
   const sections = groupIntoSections(rows)
-  assert.deepEqual(sections.map((section) => section.id), ['models', 'account', 'conversation'])
+  assert.deepEqual(sections.map((section) => section.id), ['models', 'account', 'conversation', 'followups-skills'])
   const shown = sections.flatMap((section) => section.items.map((item) => item.key))
   assert.deepEqual(shown.sort(), EXPECTED.map(([key]) => key).sort())
   assert.equal(sectionIdFor(rows[0]), 'models')
@@ -191,4 +191,20 @@ test('閒置天數在帳號區，單位是天，每日排程才套用', () => {
   assert.equal(sectionIdFor(item), 'account')
   assert.equal(settingUnit(item), '天')
   assert.equal(applyWhenLabel(item), '下一次每日排程檢查就生效')
+})
+
+test('追問與技能：七顆設定都歸到同一區，且可編輯', () => {
+  const keys = [
+    'follow_ups.enabled', 'follow_ups.allow_classified', 'follow_ups.max',
+    'skills.enabled', 'skills.max_stack', 'skills.max_total_chars', 'skills.campus_publish_enabled',
+  ]
+  const rows = keys.map((key, index) => row(key, index))
+  const section = groupIntoSections(rows).find((s) => s.id === 'followups-skills')
+  assert.equal(section.title, '追問與技能')
+  assert.deepEqual(section.items.map((item) => item.key), keys)
+  for (const item of rows) {
+    assert.equal(sectionIdFor(item), 'followups-skills')
+    assert.equal(canEdit(item), true)
+  }
+  assert.equal(sectionIdFor(row('limits.something', 0)), 'conversation')
 })

@@ -25,6 +25,13 @@ export const SECTION_DEFS = [
     hint: '附件預算與動作頻率等對話期間限制。',
     editable: true,
   },
+  {
+    id: 'followups-skills',
+    classes: ['C'],
+    title: '追問與技能',
+    hint: '回答後的建議問題（開關、機密對話、數量 1–10）與技能（總開關、疊加上限 1–20、總字數、全院發布）。儲存後下一個請求生效。',
+    editable: true,
+  },
 ]
 
 const UNKNOWN_SECTION = {
@@ -40,6 +47,7 @@ export function sectionIdFor(item) {
   const k = item.key || ''
   if (k.startsWith('auth.') || k === 'limits.department_max_depth') return 'account'
   if (k.startsWith('limits.')) return 'conversation'
+  if (k.startsWith('follow_ups.') || k.startsWith('skills.')) return 'followups-skills'
   return 'models'
 }
 
