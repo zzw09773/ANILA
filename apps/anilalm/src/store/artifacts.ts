@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { StudioArtifact } from '../types'
 
 // 製作台產出清單。權威來源是 CSP GET /api/artifacts。
-// localStorage（anilalm:artifacts）只當快取：換瀏覽器時以伺服器清單為準，
+// localStorage（anilalm:artifacts:v2，記錄擁有者帳號）只當快取：換瀏覽器時以伺服器清單為準，
 // 伺服器還沒有的進行中工作仍留在本機，直到回報完成。
 //
 // Slides artifacts now carry a `state` ("pending" | "done" | "failed")
@@ -13,7 +13,11 @@ import type { StudioArtifact } from '../types'
 // `update` action exists for that transition.
 
 interface ArtifactState {
+  /** 快取屬於哪個帳號。null = 身分未確認，不顯示任何快取。 */
+  ownerId: number | null
   byCollection: Record<number, StudioArtifact[]>
+  /** 身分確認或切換時呼叫。帳號不同就清空前一人的快取。 */
+  setOwner: (userId: number | null) => void
   add: (artifact: StudioArtifact) => void
   /**
    * Patch fields on an existing artifact. Used by the polling loop to
@@ -51,15 +55,31 @@ export function mergeArtifactLists(
     if (row.jobId && serverJobIds.has(row.jobId)) return false
     return true
   })
+  // 伺服器清單是權威：本機只保留還在鑄造中的工作，其他一律以伺服器為準。
   const pending = extras.filter((row) => (row.state ?? 'done') === 'pending')
-  const kept = extras.filter((row) => (row.state ?? 'done') !== 'pending')
-  return [...pending, ...server, ...kept]
+  return [...pending, ...server]
+}
+
+/** 舊版所有帳號共用的快取 key，裡面可能有別人的產出。 */
+export const LEGACY_ARTIFACT_CACHE_KEY = 'anilalm:artifacts'
+export const ARTIFACT_CACHE_KEY = 'anilalm:artifacts:v2'
+
+if (typeof localStorage !== 'undefined') {
+  try {
+    localStorage.removeItem(LEGACY_ARTIFACT_CACHE_KEY)
+  } catch {
+    // 無法存取 localStorage 就略過。
+  }
 }
 
 export const useArtifactStore = create<ArtifactState>()(
   persist(
     (set, get) => ({
+      ownerId: null,
       byCollection: {},
+
+      setOwner: (userId) =>
+        set((s) => (s.ownerId === userId ? s : { ownerId: userId, byCollection: {} })),
 
       add: (artifact) =>
         set((s) => {
@@ -126,8 +146,11 @@ export const useArtifactStore = create<ArtifactState>()(
         })),
     }),
     {
-      name: 'anilalm:artifacts',
+      name: ARTIFACT_CACHE_KEY,
+      version: 2,
       storage: createJSONStorage(() => localStorage),
+      // 舊版本沒有 ownerId，無法確定是誰的，直接丟掉。
+      migrate: () => ({ ownerId: null, byCollection: {} }) as unknown as ArtifactState,
     },
   ),
 )

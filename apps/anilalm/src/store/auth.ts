@@ -3,6 +3,7 @@ import { bindAuthAdapter } from '../api/client'
 import { getMe, logoutApi, refreshToken as refreshApi } from '../api/auth'
 import type { UserMe } from '../types'
 import { wipeAuthStorage } from './authStorage'
+import { useArtifactStore } from './artifacts'
 
 interface AuthState {
   user: UserMe | null
@@ -51,8 +52,11 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   fetchMe: async () => {
     try {
       const { data } = await getMe()
+      // 先切換產出快取的擁有者，換帳號時清掉前一人的清單。
+      useArtifactStore.getState().setOwner(data.id)
       set({ user: data, status: 'authed' })
     } catch {
+      useArtifactStore.getState().setOwner(null)
       set({ user: null, status: 'unauth' })
     }
   },
@@ -60,6 +64,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   logout: () => {
     // 伺服器登出是盡力而為。本地狀態先清，網路失敗也算已登出。
     void logoutApi().catch(() => undefined)
+    useArtifactStore.getState().setOwner(null)
     set({
       user: null,
       status: 'unauth',

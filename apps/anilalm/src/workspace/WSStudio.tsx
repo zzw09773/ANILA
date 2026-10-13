@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { useArtifactStore } from '../store/artifacts'
+import { useAuthStore } from '../store/auth'
 import { Icon } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
 import { CommandModal, type FormatSpec } from './CommandModal'
@@ -171,8 +172,12 @@ export function WSStudio({ width = 380 }: { width?: number }) {
   // new map) and pick the slice in render. This trades one extra closure
   // for a stable subscription source.
   const byCollection = useArtifactStore((s) => s.byCollection)
+  const cacheOwner = useArtifactStore((s) => s.ownerId)
+  const userId = useAuthStore((s) => s.user?.id ?? null)
+  // 身分確認、且快取確實屬於目前帳號，才顯示快取。
+  const identityReady = userId !== null && cacheOwner === userId
   const artifacts =
-    (collection && byCollection[collection.id]) || EMPTY_ARTIFACTS
+    (identityReady && collection && byCollection[collection.id]) || EMPTY_ARTIFACTS
   const removeArtifact = useArtifactStore((s) => s.remove)
   const updateArtifact = useArtifactStore((s) => s.update)
 
@@ -186,7 +191,12 @@ export function WSStudio({ width = 380 }: { width?: number }) {
       if (typeof merge !== 'function') return
       void listWorkspaceArtifacts(collectionId)
         .then((rows) => {
-          if (!cancelled) merge(collectionId, rows)
+          if (cancelled) return
+          const st = useArtifactStore.getState()
+          const uid = useAuthStore.getState().user?.id ?? null
+          if (uid === null) return
+          if (st.ownerId !== uid) st.setOwner(uid)
+          merge(collectionId, rows)
         })
         .catch(() => {
           // 這次讀不到就留著快取，下次進工作區再試。
