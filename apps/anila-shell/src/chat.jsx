@@ -91,6 +91,7 @@ import { BUILTIN_FOLDER_IDS, blockingHits, detectPII, summarizePIIHits } from ".
 import {
   AuditWatermark,
   ClassificationWatermark,
+  CoverageFooter,
   watermarkLevel,
   ConfidenceChip,
   FollowUpSuggestions,
@@ -1759,6 +1760,11 @@ export const MessageBubble = ({
           查看 {msg.citations.length} 筆來源
         </button>
       )}
+
+      <CoverageFooter
+        msg={msg}
+        attachmentsOmitted={questionAttachmentBasis === "omitted"}
+      />
 
       {/* Actions stay available after a mid-stream failure (text and/or
           error) so the user can regenerate without retyping.
