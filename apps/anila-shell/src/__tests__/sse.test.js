@@ -6,6 +6,7 @@ import {
   streamChatCompletion,
   streamSessionAnswer,
 } from "../runtime/sse.js";
+import { visibleStarterPrompts } from "../starterPrompts.js";
 
 describe("parseSseEvent", () => {
   it("returns null for empty block", () => {
@@ -625,5 +626,67 @@ describe.each([
       consoleError.mockRestore();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("streamChatCompletion local replies", () => {
+  it("answers an out-of-scope action without calling fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const texts = [];
+    let reason = "";
+    const reply = await streamChatCompletion({
+      url: "/v1/chat/completions",
+      payload: { model: "demo", messages: [{ role: "user", content: "幫我寄信" }] },
+      onText: (text) => texts.push(text),
+      onFinishReason: (value) => { reason = value; },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reply).toContain("附加檔案");
+    expect(reply).toContain("交給同事接手");
+    expect(texts).toEqual([reply]);
+    expect(reason).toBe("stop");
+    vi.unstubAllGlobals();
+  });
+
+  it("answers a verified starter question from the sample passage", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const question = visibleStarterPrompts().find((item) => item.id === "meeting-hours").q;
+    const texts = [];
+    const reply = await streamChatCompletion({
+      url: "/v1/chat/completions",
+      payload: {
+        model: "demo",
+        messages: [
+          { role: "user", content: "先前的問題" },
+          { role: "assistant", content: "先前的回答" },
+          { role: "user", content: [{ type: "text", text: question }] },
+        ],
+      },
+      onText: (text) => texts.push(text),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reply).toContain("四小時");
+    expect(texts).toEqual([reply]);
+    vi.unstubAllGlobals();
+  });
+
+  it("does not emit a local reply after abort", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const onText = vi.fn();
+    const controller = new AbortController();
+    controller.abort();
+    const reply = await streamChatCompletion({
+      url: "/v1/chat/completions",
+      payload: { model: "demo", messages: [{ role: "user", content: "幫我核准" }] },
+      signal: controller.signal,
+      onText,
+    });
+    expect(reply).toBe("");
+    expect(onText).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

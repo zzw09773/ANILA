@@ -1,6 +1,7 @@
 import { modelUnavailableFromPayload } from "./modelUnavailable.js";
 import { skillHeaders } from "./skills.js";
 import { quotaNotice } from "./quotaNotice.js";
+import { latestUserText, localChatReply } from "./scopeGuard.js";
 
 export function parseSseBlocks(buffer) {
   const normalized = buffer.replace(/\r\n/g, "\n");
@@ -186,6 +187,14 @@ export async function streamChatCompletion({
   // 已累積文字保留(onText 已即時寫入),中止不視為錯誤(回傳累積值)。
   signal,
 }) {
+  // 範圍外的動作，以及已核對的入門問句，由程式回答，不打模型。
+  const localReply = localChatReply(latestUserText(payload));
+  if (localReply) {
+    if (signal?.aborted) return "";
+    onText?.(localReply);
+    onFinishReason?.("stop");
+    return localReply;
+  }
   // Sprint 7 X follow-up：SPA 完全走 httpOnly cookie + double-submit CSRF。
   // `apiKey` parameter 已移除，避免讓呼叫端誤以為前端可以管理 key（dead
   // 路徑也是攻擊面）。SDK / curl 使用者請改打 ``apiKeyRequest`` 或自己組
