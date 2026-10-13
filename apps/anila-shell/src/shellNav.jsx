@@ -1,6 +1,6 @@
 // ANILA Shell 主導覽 —  唯一產品入口 +  Shell IA。
 //
-// 一般使用者只看到 ANILA 的入口：對話 / 我的知識庫 / 專案入口 / 用量 / 記憶。
+// 一般使用者只看到 ANILA 的入口：對話 / 我的知識庫 / 專案入口 / 用量 / 記憶 / 文件比對。
 // （原本另有「產出中心」，但它與「我的知識庫」是同一個 /anilalm 連結，
 //   兩個標籤指同一頁只會讓人以為點錯；產出中心這個產品概念仍在 anilalm 裡。）
 // 治理中心（CSP 控制面）不是一般使用者的日常入口，只對 owner / admin /
@@ -18,8 +18,10 @@ import {
   ANILA_LM_ENTRY_ENABLED,
 } from "./anilalmReleaseGate.js";
 import { Modal } from "./components.jsx";
+import { DocumentVersionCompare } from "./documentVersionDiff.jsx";
 import {
   IconBook,
+  IconFile,
   IconGauge,
   IconGrid,
   IconHistory,
@@ -72,9 +74,9 @@ export function originHref(path) {
 
 /**
  * 使用者入口。
- * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, onOpenMemory?: () => void, currentId?: string }} handlers
+ * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, onOpenMemory?: () => void, onOpenDocDiff?: () => void, currentId?: string }} handlers
  */
-export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" } = {}) {
+export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, onOpenDocDiff, currentId = "tasks" } = {}) {
   const knowledge = ANILA_LM_ENTRY_ENABLED
     ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") }
     : {
@@ -95,6 +97,7 @@ export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, o
     { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },
     { id: "usage", label: "用量", Icon: IconGauge, current: currentId === "usage", onClick: onOpenUsage },
     { id: "memory", label: "記憶", Icon: IconHistory, current: currentId === "memory", onClick: onOpenMemory },
+    { id: "doc-diff", label: "文件比對", Icon: IconFile, current: currentId === "doc-diff", onClick: onOpenDocDiff },
   ];
 }
 
@@ -237,6 +240,7 @@ function NavRow({ entry, collapsed }) {
  */
 export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" }) {
   const [open, setOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const closeThen = (fn) => () => {
     setOpen(false);
     fn?.();
@@ -246,6 +250,7 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
     onOpenServices: closeThen(onOpenServices),
     onOpenUsage: closeThen(onOpenUsage),
     onOpenMemory: closeThen(onOpenMemory),
+    onOpenDocDiff: closeThen(() => setCompareOpen(true)),
     currentId,
   });
   if (canSeeGovernance(user)) {
@@ -301,7 +306,7 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
         open={open}
         onClose={() => setOpen(false)}
         title="平台入口"
-        subtitle="對話、知識庫、專案與用量"
+        subtitle="對話、知識庫、專案、用量與文件比對"
         width={360}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "-8px 0" }}>
@@ -309,6 +314,15 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
             <NavRow key={entry.id} entry={entry} />
           ))}
         </div>
+      </Modal>
+      <Modal
+        open={compareOpen}
+        onClose={() => setCompareOpen(false)}
+        title="文件比對"
+        subtitle="程式依條號比對兩份 Word。讀不了的地方不會被說成沒有差異。"
+        width={720}
+      >
+        <DocumentVersionCompare />
       </Modal>
     </>
   );
