@@ -12,6 +12,14 @@ export const listFeedback = (params = {}) =>
 export const markFeedbackRead = (readAt) =>
   client.post('/api/admin/feedback/read', { read_at: readAt })
 
+/** 結案。resolution = fixed | wont_fix | duplicate。這次不修必須帶 note。 */
+export const closeFeedback = (messageId, body) =>
+  client.post(`/api/admin/feedback/${messageId}/close`, body)
+
+/** 已修好的那一筆 → 一行回歸題。不寫入題庫。 */
+export const feedbackEvalCase = (messageId) =>
+  client.post(`/api/admin/feedback/${messageId}/eval-case`)
+
 /**
  * 依「目前畫面上的篩選」匯出 CSV(同一支端點、同一份白名單,一樣不含正文)。
  * 匯出的是整個篩選結果而非當前這頁,所以刻意不帶 limit;

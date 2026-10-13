@@ -10,6 +10,7 @@ import React from "react";
 import { IconX } from "./icons.jsx";
 import { useAuth } from "./runtime/auth.jsx";
 import { HandoffInbox } from "./collab.jsx";
+import { FeedbackResolutionNotice } from "./feedbackNotice.jsx";
 
 const LEVEL_STYLE = {
   info:    { bg: "var(--accent-soft)", fg: "var(--fg)", border: "var(--accent)" },
@@ -24,6 +25,7 @@ export function BannerBar({ banners, onDismiss }) {
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       <HandoffInbox authRequest={authRequest} currentUserId={user?.id} />
+      <FeedbackResolutionNotice authRequest={authRequest} />
       {rows.map((b) => {
         const s = LEVEL_STYLE[b.level] || LEVEL_STYLE.info;
         return (

@@ -1511,6 +1511,9 @@ def set_message_rating(
         raise HTTPException(status_code=400, detail="僅助理訊息可評分")
 
     prev_rating = msg.rating
+    prev_score = msg.rating_score
+    prev_meta = msg.metadata_ if isinstance(msg.metadata_, dict) else {}
+    prev_feedback = prev_meta.get("feedback") if isinstance(prev_meta.get("feedback"), dict) else {}
     if score_provided:
         _validate_rating_score(rating, rating_score)
         msg.rating_score = rating_score
@@ -1532,6 +1535,20 @@ def set_message_rating(
             "reasons": reasons or [],
         }
     msg.metadata_ = meta or None
+    from app.services.feedback_resolution import apply_rating_case_state
+
+    apply_rating_case_state(
+        msg,
+        user,
+        rating=rating,
+        prev_rating=prev_rating,
+        prev_score=prev_score,
+        prev_feedback=prev_feedback,
+        comment=comment,
+        reasons=reasons,
+        rating_score=rating_score,
+        score_provided=score_provided,
+    )
     db.commit()
     db.refresh(msg)
     return msg

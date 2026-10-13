@@ -89,6 +89,18 @@ python3 tools/eval/verify_starter_prompts.py
 預期：印出 `starter prompts OK：3 visible, 1 hidden（前端一致）`，exit 0。
 題庫在 `apps/anila-shell/src/starterPrompts.data.json`。查不到的對照題（停車位）必須維持不顯示。
 
+## 從已修好的回饋轉一題
+
+管理端把差評結案為「已修好」之後，可以依**原問句**產生一行回歸題。這條路徑不改 `golden_set.jsonl`，也不負責把題庫擴充到幾十題。
+
+```bash
+python3 tools/eval/feedback_to_case.py \
+  --message-id 42 \
+  --prompt "合成問句：圖書館週末開嗎？"
+```
+
+stdout 是單行 jsonl。要收進題庫時，操作者自己接到檔尾，再跑 `--dry-run`。題幹若含機敏內容，不要放進公開題庫。
+
 ## 與平台量測層的關係
 
 | 項目 | 位置 | 行為 |

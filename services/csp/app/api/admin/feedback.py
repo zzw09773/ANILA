@@ -43,6 +43,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -52,7 +53,9 @@ from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import is_admin_tier, require_admin, require_steward
 from app.services.reasoning_gate import redact_visible_text
+from app.services.feedback_eval import build_regression_case, case_to_jsonl
 from app.services.feedback_notice import mark_feedback_read
+from app.services.feedback_resolution import close_feedback
 from app.schemas.base import ApiResponseModel
 from app.schemas.contracts.classification import (
     ClassificationLevel,
@@ -77,6 +80,10 @@ FEEDBACK_ITEM_KEYS = frozenset(
         "message_created_at",
         "rated_at",
         "username",
+        "feedback_status",
+        "feedback_resolution",
+        "feedback_resolution_note",
+        "feedback_resolved_at",
     }
 )
 
@@ -104,6 +111,10 @@ _CSV_COLUMNS: tuple[tuple[str, str], ...] = (
     ("message_created_at", "訊息時間"),
     ("rated_at", "評分時間"),
     ("username", "使用者"),
+    ("feedback_status", "處理狀態"),
+    ("feedback_resolution", "結案方式"),
+    ("feedback_resolution_note", "結案說明"),
+    ("feedback_resolved_at", "結案時間"),
     ("conversation_id", "對話 ID"),
     ("message_id", "訊息 ID"),
 )
@@ -115,6 +126,12 @@ _CSV_BODY_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 _RATING_LABELS = {"down": "差評", "up": "好評"}
+_STATUS_LABELS = {"open": "未結案", "closed": "已結案"}
+_RESOLUTION_LABELS = {
+    "fixed": "已修好",
+    "wont_fix": "這次不修",
+    "duplicate": "重複",
+}
 
 
 class FeedbackItem(ApiResponseModel):
@@ -134,6 +151,11 @@ class FeedbackItem(ApiResponseModel):
     # 這次評分寫入的時間。舊列是 null。頁面「全部標為已讀」只推到載入列裡最新的這個。
     rated_at: datetime | None = None
     username: str | None = None
+    # 差評案件。null＝還沒納入結案（舊列或好評）。
+    feedback_status: str | None = None
+    feedback_resolution: str | None = None
+    feedback_resolution_note: str | None = None
+    feedback_resolved_at: datetime | None = None
 
 
 class FeedbackSummary(BaseModel):
@@ -141,6 +163,9 @@ class FeedbackSummary(BaseModel):
     up: int
     down: int
     with_comment: int
+    # 同一時間窗裡還沒收口的差評，以及已經結案的筆數。不受「只看未結案」影響。
+    open: int = 0
+    closed: int = 0
     # 拒答監測：同一時間窗內被標 ``refusal_suspected`` 的
     # assistant 訊息數——不限有沒有評分，因為拒答很少被按拇指。
     refusal_suspected: int = 0
@@ -218,6 +243,10 @@ def _item_from_row(
         message_created_at=msg.created_at,
         rated_at=msg.rated_at,
         username=username,
+        feedback_status=msg.feedback_status,
+        feedback_resolution=msg.feedback_resolution,
+        feedback_resolution_note=msg.feedback_resolution_note,
+        feedback_resolved_at=msg.feedback_resolved_at,
     )
 
 
@@ -244,6 +273,10 @@ def _csv_value(key: str, value) -> str:
         return " · ".join(value or [])
     if key == "rating":
         return _RATING_LABELS.get(value, value or "")
+    if key == "feedback_status":
+        return _STATUS_LABELS.get(value, "")
+    if key == "feedback_resolution":
+        return _RESOLUTION_LABELS.get(value, "")
     if key == "rating_score":
         return "" if value is None else str(value)
     if isinstance(value, datetime):
@@ -407,6 +440,9 @@ def list_feedback(
     only_with_comment: bool = Query(
         False, description="只看有文字留言的(差評追查常用)"
     ),
+    status: Literal["open", "closed"] | None = Query(
+        None, description="open＝未結案差評（含尚未標狀態的舊列）；closed＝已結案"
+    ),
     limit: int = Query(100, ge=1, le=500),
     format: Literal["json", "csv"] = Query(
         "json", description="csv = 依目前篩選匯出(忽略 limit,匯出整個篩選結果)"
@@ -437,6 +473,13 @@ def list_feedback(
     q = base.order_by(Message.created_at.desc())
     if rating:
         q = q.filter(Message.rating == rating)
+    if status == "closed":
+        q = q.filter(Message.feedback_status == "closed")
+    elif status == "open":
+        q = q.filter(or_(
+            Message.feedback_status == "open",
+            and_(Message.feedback_status.is_(None), Message.rating == "down"),
+        ))
 
     if format == "csv":
         if not is_admin_tier(admin):
@@ -446,6 +489,11 @@ def list_feedback(
     # 頂部好評／差評看同一時間窗與 agent／模型篩選，不受「目前只看差評」影響。
     window_up = base.filter(Message.rating == "up").count()
     window_down = base.filter(Message.rating == "down").count()
+    window_open = base.filter(or_(
+        Message.feedback_status == "open",
+        and_(Message.feedback_status.is_(None), Message.rating == "down"),
+    )).count()
+    window_closed = base.filter(Message.feedback_status == "closed").count()
 
     # Pull a bit more than limit when filtering comments in Python — feedback
     # lives in JSON metadata and SQLite/Postgres JSON path differs; keep the
@@ -467,6 +515,114 @@ def list_feedback(
         up=window_up,
         down=window_down,
         with_comment=sum(1 for i in items if i.comment or i.reasons),
+        open=window_open,
+        closed=window_closed,
         refusal_suspected=_count_refusals(db, since, agent_name=agent_name, model_name=model_name),
     )
     return FeedbackListResponse(summary=summary, items=items)
+
+
+class FeedbackCloseRequest(BaseModel):
+    resolution: Literal["fixed", "wont_fix", "duplicate"]
+    note: str | None = Field(None, max_length=500)
+
+
+class FeedbackCloseResult(BaseModel):
+    item: FeedbackItem
+    notified: bool
+    unchanged: bool = False
+
+
+class FeedbackEvalCaseOut(BaseModel):
+    """一筆回歸題。prompt 是原問句，不含被評分的回覆。"""
+
+    id: str
+    category: str
+    prompt: str
+    system_mode: str
+    checks: list[str]
+    jsonl: str
+
+
+@router.post("/{message_id}/close", response_model=FeedbackCloseResult)
+def close_one_feedback(
+    message_id: int,
+    body: FeedbackCloseRequest,
+    _admin: User = Depends(require_steward),
+    db: Session = Depends(get_db),
+) -> FeedbackCloseResult:
+    """結案並只通知回報者。同樣的結案內容再送一次不會多通知。"""
+    outcome = close_feedback(
+        db,
+        message_id,
+        resolution=body.resolution,
+        note=body.note,
+    )
+    return FeedbackCloseResult(
+        item=_item_from_row(outcome.message, outcome.conversation, outcome.username),
+        notified=outcome.notified,
+        unchanged=outcome.unchanged,
+    )
+
+
+def _audit_classified_eval(db: Session, admin: User, conv: Conversation) -> None:
+    try:
+        level = ClassificationLevel.from_storage(conv.classification_level)
+    except ValueError:
+        level = ClassificationLevel.UNCLASSIFIED
+    if not classification_audit_required(level):
+        return
+    db.add(AuditLog(
+        actor_user_id=admin.id,
+        actor_username=admin.username,
+        action="access_classified_conversation",
+        resource_type="conversation",
+        resource_id=str(conv.id),
+        status="success",
+        detail=(
+            f"User {admin.username} exported classified "
+            f"conversation {conv.id} via feedback eval case"
+        ),
+    ))
+    db.commit()
+
+
+@router.post("/{message_id}/eval-case", response_model=FeedbackEvalCaseOut)
+def feedback_eval_case(
+    message_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FeedbackEvalCaseOut:
+    """已修好的差評 → 一行回歸題。不寫入題庫檔。"""
+    row = (
+        db.query(Message, Conversation)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .filter(Message.id == message_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="找不到這則回饋")
+    msg, conv = row
+    if not (
+        msg.rating == "down"
+        and msg.feedback_status == "closed"
+        and msg.feedback_resolution == "fixed"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="只有結案為已修好的回饋可以轉成回歸題",
+        )
+    prompt = redact_visible_text(_user_prompt_for(db, msg, {}), reveal=False) or ""
+    prompt = prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="找不到當時的提問，不能轉成回歸題")
+    case = build_regression_case(message_id=msg.id, prompt=prompt)
+    _audit_classified_eval(db, admin, conv)
+    return FeedbackEvalCaseOut(
+        id=case["id"],
+        category=case["category"],
+        prompt=case["prompt"],
+        system_mode=case["system_mode"],
+        checks=list(case["checks"]),
+        jsonl=case_to_jsonl(case),
+    )
