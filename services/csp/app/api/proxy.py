@@ -44,6 +44,13 @@ from app.models.platform_setting import get_kb_threshold, get_setting
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
 from app.services.agent_reply_signal import attach_agent_reply_observation
+from app.services.table_number_honesty import (
+    TABLE_NUMBER_HONESTY_KEY,
+    apply_table_number_honesty,
+    assistant_piece_from_sse_data,
+    assistant_text_from_completion,
+    spreadsheet_bodies,
+)
 from app.services.institutional_kb import (
     KbResult,
     KbState,
@@ -680,6 +687,7 @@ async def _inject_attachments_async(
             label="附件注入",
             detail="；".join(detail_parts),
             injected_count=ok_n,
+            parsed_table_texts=spreadsheet_bodies(views, admitted_set),
         )
     except Exception as exc:
         logger.exception(
@@ -721,7 +729,13 @@ def _inject_attachments(
 
 def _merge_attachment_trace(payload: dict, inject_result) -> dict:
     """Append an attachment trace entry onto ``payload['anila_meta']``."""
-    if inject_result is None or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
+        return payload
+    if inject_result is None:
+        # 沒有附件注入時，模型也不准自己宣布表格數字已核對。
+        meta = payload.get("anila_meta")
+        if isinstance(meta, dict):
+            meta.pop(TABLE_NUMBER_HONESTY_KEY, None)
         return payload
     meta = payload.get("anila_meta")
     if not isinstance(meta, dict):
@@ -735,6 +749,11 @@ def _merge_attachment_trace(payload: dict, inject_result) -> dict:
         trace = []
         meta["trace"] = trace
     trace.append(inject_result.to_trace_entry())
+    apply_table_number_honesty(
+        meta,
+        assistant_text_from_completion(payload),
+        getattr(inject_result, "parsed_table_texts", ()),
+    )
     return payload
 
 
@@ -754,10 +773,15 @@ async def _sse_with_attachment_trace(
 
     if inject_result is None:
         async for chunk in upstream:
-            yield chunk
+            if TABLE_NUMBER_HONESTY_KEY in chunk:
+                yield _drop_forged_table_honesty(chunk)
+            else:
+                yield chunk
         return
 
     entry = inject_result.to_trace_entry()
+    table_texts = getattr(inject_result, "parsed_table_texts", ())
+    assistant_parts: list[str] = []
     buf = ""
     async for chunk in upstream:
         buf += chunk
@@ -783,6 +807,9 @@ async def _sse_with_attachment_trace(
                         trace = []
                         meta["trace"] = trace
                     trace.append(entry)
+                    apply_table_number_honesty(
+                        meta, "".join(assistant_parts), table_texts,
+                    )
                     yield (
                         "event: anila.meta\n"
                         + "data: "
@@ -790,9 +817,63 @@ async def _sse_with_attachment_trace(
                         + "\n\n"
                     )
                     continue
+            elif data_line and data_line != "[DONE]":
+                piece = assistant_piece_from_sse_data(data_line)
+                if piece:
+                    assistant_parts.append(piece)
             yield block_out
     if buf:
         yield buf
+
+
+def _drop_forged_table_honesty(chunk: str) -> str:
+    """沒有試算表注入時，拿掉上游自己塞進 anila.meta 的誠實旗標。
+
+    其他事件原樣送出。回答正文裡剛好出現鍵名時也不改那一格。
+    """
+    if "\n\n" not in chunk and not chunk.startswith("event:"):
+        return chunk
+    trailing = chunk.endswith("\n\n")
+    parts = chunk.split("\n\n")
+    if trailing and parts and parts[-1] == "":
+        parts = parts[:-1]
+    changed = False
+    out: list[str] = []
+    for part in parts:
+        if not part:
+            out.append(part)
+            continue
+        event_name = None
+        data_lines: list[str] = []
+        for line in part.split("\n"):
+            if line.startswith("event:"):
+                event_name = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+        if event_name != "anila.meta" or len(data_lines) != 1:
+            out.append(part)
+            continue
+        try:
+            meta = json.loads(data_lines[0])
+        except (json.JSONDecodeError, TypeError):
+            out.append(part)
+            continue
+        if not isinstance(meta, dict) or TABLE_NUMBER_HONESTY_KEY not in meta:
+            out.append(part)
+            continue
+        meta.pop(TABLE_NUMBER_HONESTY_KEY, None)
+        changed = True
+        out.append(
+            "event: anila.meta\n"
+            + "data: "
+            + json.dumps(meta, ensure_ascii=False)
+        )
+    if not changed:
+        return chunk
+    body = "\n\n".join(out)
+    if trailing:
+        body += "\n\n"
+    return body
 
 
 # ── 院內規章檢索與注入（不需要 agent 時用院內知識庫直答）────────────────────

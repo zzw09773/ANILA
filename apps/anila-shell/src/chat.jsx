@@ -1700,6 +1700,23 @@ export const MessageBubble = ({
             {!msg.streaming && showSourceMismatch && (
               <SourceMismatchNotice show />
             )}
+            {!msg.streaming && msg.tableNumberHonestyNotice && (
+              <div
+                role="status"
+                data-testid="table-number-honesty-notice"
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius)",
+                  border: "1px dashed var(--warning, var(--muted))",
+                  color: "var(--muted-fg, var(--muted))",
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                }}
+              >
+                {msg.tableNumberHonestyNotice}
+              </div>
+            )}
             {!msg.streaming && msg.agentReplyNotice && (
               <div
                 role="status"
