@@ -149,7 +149,7 @@ export function TranslationPanel({ open, onClose, translateText }) {
       open={open}
       onClose={close}
       title="翻譯"
-      subtitle="快速閱讀直接出整篇譯文。對外使用由程式比對原文和譯文。"
+      subtitle="快速閱讀是給自己看懂；對外使用是要寄出的譯文，程式會核對原文和譯文。"
       width={760}
     >
       <div data-testid="translation-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -170,8 +170,8 @@ export function TranslationPanel({ open, onClose, translateText }) {
                   <span style={{ fontWeight: 600 }}>{MODE_LABELS[id]}</span>
                   <span style={{ display: "block", color: "var(--fg-muted)" }}>
                     {id === MODE_READING
-                      ? "整篇譯文，方便自己看。不做數字、單位、否定詞檢查。"
-                      : "譯完後由程式比對數字、單位、否定詞。對不上就用紅框標出。同一個詞有兩種譯法，標「未定譯」。"}
+                      ? "給自己看：快速出整篇譯文，方便讀懂內容。不做數字、單位、否定詞檢查。"
+                      : "要寄出、公告或交給別人的文字：譯完由程式核對數字、單位、否定詞，對不上用紅框標出；同一個詞有兩種譯法，標「未定譯」。"}
                   </span>
                 </span>
               </label>

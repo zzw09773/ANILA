@@ -205,6 +205,9 @@ describe("Composer — 抽取終態必須可見", () => {
     });
 
     const banner = await screen.findByRole("alert");
+    // 原因只出現一次：在附件標籤上，不再在下方重複一行。
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(banner.closest(".composer-att-chip")).toBeTruthy();
     expect(banner.textContent).toContain("api.py");
     expect(banner.textContent).toContain("不支援的檔案格式");
 

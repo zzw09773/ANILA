@@ -51,7 +51,6 @@ import {
   MenuItem,
 } from "./components.jsx";
 import { useConfirm, useToast } from "./confirm.jsx";
-import { TranslationPanel } from "./translationPanel.jsx";
 import { AnilaLogoImg } from "./AnilaBrand.jsx"
 import { ThinkingStatus, orbStateFromLabel } from "./ThinkingStatus.jsx";
 import {
@@ -94,7 +93,6 @@ import {
 } from "./icons.jsx";
 import { useAsrInput, appendTranscript } from "./asr/useAsrInput.js";
 import { AppliedSkillIndicator, SkillChip } from "./skills.jsx";
-import { LetterRewritePanel } from "./letterRewrite.jsx";
 import { DEFAULT_MAX_SKILL_STACK, filterSkills, groupSkills, removeSlashToken, skillChipLabel, slashQuery } from "./runtime/skills.js";
 import {
   extractStatusReason,
@@ -111,6 +109,7 @@ import {
   FollowUpsLiveRegion,
   RedactionHint,
   SourceMismatchNotice,
+  SourceCheckHint,
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
@@ -1700,6 +1699,9 @@ export const MessageBubble = ({
             {!msg.streaming && showSourceMismatch && (
               <SourceMismatchNotice show />
             )}
+            {!msg.streaming && (msg.sourceCheck || msg.metadata?.source_check) && (
+              <SourceCheckHint check={msg.sourceCheck || msg.metadata?.source_check} />
+            )}
             {!msg.streaming && msg.tableNumberHonestyNotice && (
               <div
                 role="status"
@@ -2544,8 +2546,6 @@ export const Composer = ({
   onToggleSkillFavorite,
 }) => {
   const toast = useToast();
-  const [translationOpen, setTranslationOpen] = useState(false);
-  const [letterOpen, setLetterOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
@@ -3495,16 +3495,10 @@ export const Composer = ({
         // Banner only if this attachment is still live (not removed / sent).
         // Inline image path (dataUrl) delivers the file to the model regardless
         // of extract_status — never accuse those of failure.
-        const filename = result.filename || file.name;
-        if (liveRefs.current.has(referenceId) && !dataUrl && overflow) {
-          setUploadError(`${filename}：${overflow}`);
-        } else if (
-          liveRefs.current.has(referenceId)
-          && !dataUrl
-          && EXTRACT_FAIL_STATUSES.has(outcome.status)
-          && reason
-        ) {
-          setUploadError(`${filename}：${reason}`);
+        // 解析失敗／超量的原因只寫在附件標籤上（標籤本身是 role=alert），
+        // 不再在下方重複一行同樣的字。
+        if (stillLive && !dataUrl && (overflow || (EXTRACT_FAIL_STATUSES.has(outcome.status) && reason))) {
+          setUploadError("");
         }
       } catch (error) {
         liveUploadIds.current.delete(uploadId);
@@ -3547,7 +3541,6 @@ export const Composer = ({
         borderRadius: 24,
         boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
       }}>
-      <TranslationPanel open={translationOpen} onClose={() => setTranslationOpen(false)} />
       {dragOver && (
         <div style={{
           position: "absolute", inset: 0, zIndex: 90,
@@ -3799,13 +3792,21 @@ export const Composer = ({
                 <IconFile size={12} />
                 {a.name}
                 {statusLabel ? (
-                  <span style={{
+                  <span
+                    role={extractFailed || extractOverflow ? "alert" : undefined}
+                    data-testid={
+                      extractOverflow
+                        ? "attachment-overflow-notice"
+                        : extractFailed ? "composer-att-chip-reason" : undefined
+                    }
+                    style={{
                     color: extractFailed
                       ? "var(--danger)"
                       : extractOverflow
                         ? "var(--warn)"
                         : "var(--fg-subtle)",
                   }}>
+                    {extractFailed || extractOverflow ? <span className="sr-only">{a.name}：</span> : null}
                     {statusLabel}
                   </span>
                 ) : null}
@@ -3937,12 +3938,6 @@ export const Composer = ({
           </span>
         </label>
         <IconButton
-          title="改寫信件與公文"
-          onClick={() => setLetterOpen(true)}
-        >
-          <IconPencil />
-        </IconButton>
-        <IconButton
           title="提及 @agent"
           onClick={() => {
             setText((t) => t + (t.endsWith(" ") || t === "" ? "@" : " @"));
@@ -3950,13 +3945,6 @@ export const Composer = ({
           }}
         >
           <IconAt />
-        </IconButton>
-        <IconButton
-          title="翻譯"
-          data-testid="open-translation"
-          onClick={() => setTranslationOpen(true)}
-        >
-          <IconMessage />
         </IconButton>
 
         {/* Per-agent preset prompts(開發者在 CSP 設計):點開清單,選一個填入輸入框。
@@ -4358,7 +4346,6 @@ export const Composer = ({
           </span>
         )}
       </div>
-      <LetterRewritePanel open={letterOpen} onClose={() => setLetterOpen(false)} />
     </div>
   );
 };
@@ -4691,9 +4678,9 @@ export const Sidebar = ({
         <IconButton onClick={onToggleCollapsed} title="展開側邊" style={railBtn}><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話" disabled={acting} style={railBtn}><IconPlus /></IconButton>
         <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} />
-        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} currentId={currentNavId} />
+        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} onOpenSkills={typeof onOpenSettings === "function" ? () => onOpenSettings("skills") : undefined} currentId={currentNavId} />
         <div style={{ flex: 1 }} />
-        <IconButton onClick={onOpenSettings} title="設定" style={railBtn}><IconSettings /></IconButton>
+        <IconButton onClick={() => onOpenSettings?.()} title="設定" style={railBtn}><IconSettings /></IconButton>
       </div>
     );
   }
@@ -4769,7 +4756,7 @@ export const Sidebar = ({
 
       {/* ANILA Shell 主導覽：對話 / 我的知識庫 / 專案入口
           （+ admin 才顯示的 治理中心）。唯一產品入口。 */}
-      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} currentId={currentNavId} />
+      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} onOpenSkills={typeof onOpenSettings === "function" ? () => onOpenSettings("skills") : undefined} currentId={currentNavId} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
       <div style={{

@@ -187,11 +187,10 @@ describe("HandoverInterviewDialog", () => {
 });
 
 describe("ShellNav handover entry", () => {
-  it("opens the interview from the platform menu without adding it to the main entries", async () => {
+  it("opens the interview from 增益集 without adding it to the main entries", async () => {
     const { authRequest } = mockApi();
     render(<ShellNav user={{ role: "user" }} authRequest={authRequest} />);
-    fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
-    fireEvent.click(screen.getByRole("button", { name: "交接訪談" }));
+    fireEvent.click(screen.getByRole("button", { name: /^交接訪談/ }));
 
     expect(await screen.findByRole("dialog", { name: "交接訪談" })).toBeTruthy();
     expect(screen.getByText(/這不是把對話交給同事/)).toBeTruthy();

@@ -20,9 +20,13 @@ import {
 import { Modal } from "./components.jsx";
 import { DocumentVersionCompare } from "./documentVersionDiff.jsx";
 import { HandoverInterviewDialog } from "./handoverInterview.jsx";
+import { TranslationPanel } from "./translationPanel.jsx";
+import { LetterRewritePanel } from "./letterRewrite.jsx";
 import {
   IconBook,
-  IconFile,
+  IconColumns,
+  IconPencil,
+  IconUser,
   IconGauge,
   IconGrid,
   IconHistory,
@@ -77,7 +81,7 @@ export function originHref(path) {
  * 使用者入口。
  * @param {{ onTaskCenter?: () => void, onOpenServices?: () => void, onOpenUsage?: () => void, onOpenMemory?: () => void, onOpenDocDiff?: () => void, currentId?: string }} handlers
  */
-export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, onOpenDocDiff, currentId = "tasks" } = {}) {
+export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks" } = {}) {
   const knowledge = ANILA_LM_ENTRY_ENABLED
     ? { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") }
     : {
@@ -98,8 +102,88 @@ export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, o
     { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },
     { id: "usage", label: "用量", Icon: IconGauge, current: currentId === "usage", onClick: onOpenUsage },
     { id: "memory", label: "記憶", Icon: IconHistory, current: currentId === "memory", onClick: onOpenMemory },
-    { id: "doc-diff", label: "文件比對", Icon: IconFile, current: currentId === "doc-diff", onClick: onOpenDocDiff },
   ];
+}
+
+/**
+ * 增益集：不是對話本身、各自開一個視窗的工具。每項一行白話說明。
+ * 翻譯的說明要分清楚兩種模式的用途。
+ */
+export const ADDIN_ITEMS = [
+  {
+    id: "translation",
+    label: "翻譯",
+    Icon: IconMessage,
+    description: "快速閱讀：給自己看懂；對外使用：要寄出的譯文，程式核對數字、單位與否定詞。",
+  },
+  {
+    id: "letter-rewrite",
+    label: "改寫信件與公文",
+    Icon: IconPencil,
+    description: "把信或公文改得更正式、更和緩或更精簡，和原文並排對照。",
+  },
+  {
+    id: "doc-diff",
+    label: "文件比對",
+    Icon: IconColumns,
+    description: "比對兩版 Word，依條號或「一、（一）」列出改了哪裡。",
+  },
+  {
+    id: "handover-interview",
+    label: "交接訪談",
+    Icon: IconUser,
+    description: "調動或離開專案前，用固定問題留下沒寫下來的事。",
+  },
+  {
+    id: "skills",
+    label: "我的 skill",
+    Icon: IconBook,
+    description: "建立、修改常用的 skill，對話時從 / 或輸入框的 skill 按鈕套用。",
+  },
+];
+
+function AddinRow({ item, collapsed, onOpen }) {
+  const { Icon, label, description } = item;
+  const descId = `addin-desc-${item.id}`;
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        data-addin={item.id}
+        onClick={onOpen}
+        title={`${label}：${description}`}
+        aria-label={label}
+        aria-description={description}
+        style={{ ...rowBase, width: 36, height: 36, padding: 0, justifyContent: "center", color: "var(--fg-muted)" }}
+        onMouseEnter={hoverOn}
+        onMouseLeave={hoverOff}
+      >
+        <Icon size={18} />
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-addin={item.id}
+      onClick={onOpen}
+      aria-describedby={descId}
+      style={{ ...rowBase, alignItems: "flex-start", color: "var(--fg)" }}
+      onMouseEnter={hoverOn}
+      onMouseLeave={hoverOff}
+    >
+      <Icon size={15} style={{ color: "var(--fg-muted)", flexShrink: 0, marginTop: 2 }} />
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "block" }}>{label}</span>
+        <span
+          id={descId}
+          style={{ display: "block", fontSize: 11, fontWeight: 400, lineHeight: 1.45, color: "var(--fg-muted)" }}
+        >
+          {description}
+        </span>
+      </span>
+    </button>
+  );
 }
 
 // 治理中心入口（僅 admin 面向）——連到同源 CSP 治理 UI（origin 根路徑）。
@@ -240,10 +324,20 @@ function NavRow({ entry, collapsed }) {
  *   authRequest?: Function,
  * }} props
  */
-export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, currentId = "tasks", authRequest }) {
+export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, onOpenSkills, currentId = "tasks", authRequest }) {
   const [open, setOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
+  const [translationOpen, setTranslationOpen] = useState(false);
+  const [letterOpen, setLetterOpen] = useState(false);
+  const openAddin = {
+    translation: () => setTranslationOpen(true),
+    "letter-rewrite": () => setLetterOpen(true),
+    "doc-diff": () => setCompareOpen(true),
+    "handover-interview": () => setInterviewOpen(true),
+    skills: () => onOpenSkills?.(),
+  };
+  const addins = ADDIN_ITEMS.filter((item) => item.id !== "skills" || typeof onOpenSkills === "function");
   const closeThen = (fn) => () => {
     setOpen(false);
     fn?.();
@@ -253,7 +347,6 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
     onOpenServices: closeThen(onOpenServices),
     onOpenUsage: closeThen(onOpenUsage),
     onOpenMemory: closeThen(onOpenMemory),
-    onOpenDocDiff: closeThen(() => setCompareOpen(true)),
     currentId,
   });
   if (canSeeGovernance(user)) {
@@ -301,49 +394,59 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
             </>
           )}
         </button>
-        {canSeeGovernance(user) ? (
-          <NavRow entry={governanceEntry()} collapsed={collapsed} />
-        ) : null}
       </nav>
+      <section
+        aria-label="增益集"
+        style={
+          collapsed
+            ? { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, marginTop: 4 }
+            : { display: "flex", flexDirection: "column", gap: 2, padding: "0 10px 8px" }
+        }
+      >
+        {collapsed ? (
+          <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} aria-hidden="true" />
+        ) : (
+          <h2
+            style={{
+              margin: "4px 10px 2px",
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--fg-muted)",
+              fontFamily: "var(--font-mono)",
+              letterSpacing: 0.4,
+            }}
+          >
+            增益集
+          </h2>
+        )}
+        {addins.map((item) => (
+          <AddinRow key={item.id} item={item} collapsed={collapsed} onOpen={openAddin[item.id]} />
+        ))}
+      </section>
       <Modal
         open={open}
         onClose={() => setOpen(false)}
         title="平台入口"
-        subtitle="對話、知識庫、專案、用量與文件比對"
+        subtitle="對話、知識庫、專案、用量與治理中心"
         width={360}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "-8px 0" }}>
           {entries.map((entry) => (
             <NavRow key={entry.id} entry={entry} />
           ))}
-          <div style={{ height: 1, background: "var(--border)", margin: "8px 0 4px" }} />
-          <button
-            type="button"
-            data-entry="handover-interview"
-            aria-label="交接訪談"
-            title="調動或離開專案前，用固定問題留下沒寫下來的事"
-            onClick={() => {
-              setOpen(false);
-              setInterviewOpen(true);
-            }}
-            style={{ ...rowBase, color: "var(--fg)" }}
-            onMouseEnter={hoverOn}
-            onMouseLeave={hoverOff}
-          >
-            <IconSpark size={15} style={{ color: "var(--fg-muted)", flexShrink: 0 }} />
-            <span style={{ flex: 1, minWidth: 0 }}>交接訪談</span>
-          </button>
         </div>
       </Modal>
       <Modal
         open={compareOpen}
         onClose={() => setCompareOpen(false)}
         title="文件比對"
-        subtitle="程式依條號比對兩份 Word。讀不了的地方不會被說成沒有差異。"
+        subtitle="程式依條號或「一、（一）」大綱編號比對兩份 Word；都沒有時改依標題或段落，並會註明。"
         width={720}
       >
         <DocumentVersionCompare />
       </Modal>
+      <TranslationPanel open={translationOpen} onClose={() => setTranslationOpen(false)} />
+      <LetterRewritePanel open={letterOpen} onClose={() => setLetterOpen(false)} />
       <HandoverInterviewDialog
         open={interviewOpen}
         onClose={() => setInterviewOpen(false)}

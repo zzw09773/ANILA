@@ -86,7 +86,6 @@ describe("buildShellEntries", () => {
       "專案入口",
       "用量",
       "記憶",
-      "文件比對",
     ]);
   });
 
@@ -130,7 +129,9 @@ describe("ShellNav", () => {
     expect(screen.queryByText("專案入口")).toBeNull();
     expect(screen.queryByText("用量")).toBeNull();
     expect(screen.queryByText("記憶")).toBeNull();
-    expect(screen.queryByText("文件比對")).toBeNull();
+    // 工具類放在平台入口下方的「增益集」，不用打開彈窗。
+    const addins = screen.getByRole("region", { name: "增益集" });
+    expect(within(addins).getByText("文件比對")).toBeTruthy();
   });
 
   it("renders the user entries inside the modal", () => {
@@ -161,22 +162,20 @@ describe("ShellNav", () => {
     expect(screen.queryByText("治理中心")).toBeNull();
   });
 
-  it("shows 治理中心 in the sidebar before the popup, and the popup uses the same href", () => {
+  it("puts 治理中心 inside 平台入口 only, not as a separate sidebar link", () => {
     render(<ShellNav user={{ role: "admin" }} />);
     const nav = screen.getByRole("navigation", { name: "ANILA 主導覽" });
-    const direct = within(nav).getByRole("link", { name: "治理中心" });
-    expect(direct.getAttribute("href")).toBe(`${ORIGIN}/`);
-    expect(screen.queryByText("對話")).toBeNull();
+    expect(within(nav).queryByRole("link", { name: "治理中心" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
     const links = screen.getAllByRole("link", { name: "治理中心" });
-    expect(links).toHaveLength(2);
-    expect(links.map((el) => el.getAttribute("href"))).toEqual([`${ORIGIN}/`, `${ORIGIN}/`]);
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute("href")).toBe(`${ORIGIN}/`);
   });
 
-  it("shows the sidebar 治理中心 link for a unit admin", () => {
+  it("shows 治理中心 in 平台入口 for a unit admin", () => {
     render(<ShellNav user={{ role: "user", is_unit_admin: true }} />);
-    const nav = screen.getByRole("navigation", { name: "ANILA 主導覽" });
-    expect(within(nav).getByRole("link", { name: "治理中心" }).getAttribute("href")).toBe(`${ORIGIN}/`);
+    fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
+    expect(screen.getByRole("link", { name: "治理中心" }).getAttribute("href")).toBe(`${ORIGIN}/`);
   });
 
   it("does not put 治理中心 in the sidebar for a plain user", () => {

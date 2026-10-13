@@ -125,8 +125,8 @@ describe("文件比對面板", () => {
 describe("平台入口裡的文件比對", () => {
   it("從導覽打開比對面板", () => {
     render(<ShellNav user={{ role: "user" }} />);
-    fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
-    fireEvent.click(screen.getByRole("button", { name: "文件比對" }));
+    // 文件比對在平台入口下方的「增益集」。
+    fireEvent.click(screen.getByRole("button", { name: /^文件比對/ }));
     expect(screen.getByLabelText("上一版")).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "文件比對" })).toBeTruthy();
   });

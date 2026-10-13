@@ -1,4 +1,5 @@
 import React from "react";
+import { ShellNav } from "../shellNav.jsx";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
@@ -68,13 +69,19 @@ describe("翻譯雙模式", () => {
     expect(translateText.mock.calls[0][0].mode).toBeUndefined();
   });
 
-  it("輸入列可以打開翻譯視窗", () => {
-    render(
+  it("增益集可以打開翻譯視窗，說明分清楚兩種模式；輸入列不再有翻譯鈕", () => {
+    const { unmount } = render(
       <ConfirmProvider>
         <Composer onSend={vi.fn()} agents={[{ id: "anila-router", name: "ANILA", short: "auto" }]} />
       </ConfirmProvider>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "翻譯" }));
+    expect(screen.queryByRole("button", { name: "翻譯" })).toBeNull();
+    unmount();
+    render(<ShellNav user={{ role: "user" }} />);
+    const entry = screen.getByRole("button", { name: /^翻譯/ });
+    expect(entry.textContent).toContain("快速閱讀：給自己看懂");
+    expect(entry.textContent).toContain("對外使用：要寄出的譯文");
+    fireEvent.click(entry);
     expect(screen.getByRole("dialog", { name: "翻譯" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /快速閱讀/ })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /對外使用/ })).toBeInTheDocument();

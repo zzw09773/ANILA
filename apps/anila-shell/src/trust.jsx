@@ -208,6 +208,37 @@ export const SourceMismatchNotice = ({ show }) => {
   );
 };
 
+// 數字核對平常是安靜的：只有對不上才出現警告，使用者不知道有這個功能。
+// 程式真的比對過（checked）且回答裡有數字時，在回答下方用一行小字說明，
+// 對不上時再列出是哪幾個值。字句全由前端決定，不採用 metadata 帶來的文字。
+export function sourceCheckSummary(check) {
+  if (!check || typeof check !== "object" || check.checked !== true) return null;
+  const claims = Array.isArray(check.claims) ? check.claims : [];
+  const unmatched = Array.isArray(check.unmatched) ? check.unmatched : [];
+  if (!claims.length && !unmatched.length) return null;
+  if (check.mismatch === true) {
+    const values = unmatched
+      .map((c) => (c && typeof c.text === "string" ? c.text : c?.value))
+      .filter((v) => typeof v === "string" && v.trim())
+      .slice(0, 5);
+    return values.length ? `來源片段裡找不到：${values.join("、")}` : null;
+  }
+  return `數字核對：回答裡的 ${claims.length} 個數字、金額、天數或條號都出現在來源片段中（程式比對，不代表解讀正確）。`;
+}
+
+export const SourceCheckHint = ({ check }) => {
+  const text = sourceCheckSummary(check);
+  if (!text) return null;
+  return (
+    <div
+      data-testid="source-check-hint"
+      style={{ marginTop: 6, fontSize: 12, color: "var(--fg-subtle)", lineHeight: 1.5 }}
+    >
+      {text}
+    </div>
+  );
+};
+
 // ---- 敏感資訊提示列 ----
 
 /**

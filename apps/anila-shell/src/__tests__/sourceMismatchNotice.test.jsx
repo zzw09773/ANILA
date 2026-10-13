@@ -178,3 +178,51 @@ describe("兩個映射縫都看得到標記", () => {
     expect(notice.textContent).toBe(SOURCE_MISMATCH_MARKER);
   });
 });
+
+describe("數字核對看得到", () => {
+  it("比對過且都對得上：一行小字說明程式核對過", () => {
+    render(
+      <MessageBubble
+        msg={assistant({
+          sourceCheck: {
+            checked: true,
+            mismatch: false,
+            unmatched: [],
+            claims: [{ kind: "article", text: "第9條", value: "9" }, { kind: "days", text: "45日", value: "45" }],
+          },
+        })}
+        agents={[]}
+      />,
+    );
+    expect(screen.getByTestId("source-check-hint").textContent).toContain("2 個數字");
+    expect(screen.queryByTestId("source-mismatch-notice")).toBeNull();
+  });
+
+  it("對不上時列出找不到的值", () => {
+    render(
+      <MessageBubble
+        msg={assistant({
+          sourceMismatch: true,
+          sourceCheck: {
+            checked: true,
+            mismatch: true,
+            unmatched: [{ kind: "days", text: "45日", value: "45" }],
+            claims: [{ kind: "days", text: "45日", value: "45" }],
+          },
+        })}
+        agents={[]}
+      />,
+    );
+    expect(screen.getByTestId("source-check-hint").textContent).toBe("來源片段裡找不到：45日");
+  });
+
+  it("沒有來源（沒比對）就不顯示", () => {
+    render(
+      <MessageBubble
+        msg={assistant({ sourceCheck: { checked: false, mismatch: false, claims: [{ kind: "days", text: "45日", value: "45" }] } })}
+        agents={[]}
+      />,
+    );
+    expect(screen.queryByTestId("source-check-hint")).toBeNull();
+  });
+});

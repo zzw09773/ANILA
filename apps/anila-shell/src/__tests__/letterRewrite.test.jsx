@@ -1,4 +1,5 @@
 import React from "react";
+import { ShellNav } from "../shellNav.jsx";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
@@ -75,15 +76,18 @@ describe("改寫信件面板", () => {
 });
 
 describe("輸入框可以打開改寫", () => {
-  it("從對話輸入列打開並排改寫", async () => {
+  it("從增益集打開並排改寫，輸入框工具列不再有這顆", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false })));
     requestLetterRewrite.mockResolvedValue("敬請於3月2日前回覆，費用新臺幣1,200元。");
-    render(
+    const { unmount } = render(
       <ConfirmProvider>
         <Composer onSend={vi.fn()} agents={[{ id: "anila-router", name: "ANILA", short: "auto" }]} />
       </ConfirmProvider>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "改寫信件與公文" }));
+    expect(screen.queryByRole("button", { name: "改寫信件與公文" })).toBeNull();
+    unmount();
+    render(<ShellNav user={{ role: "user" }} />);
+    fireEvent.click(screen.getByRole("button", { name: /^改寫信件與公文/ }));
     fireEvent.change(screen.getByLabelText("信件或公文原文"), {
       target: { value: "3月2日前回覆，費用新臺幣1,200元。" },
     });

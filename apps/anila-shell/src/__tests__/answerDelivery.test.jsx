@@ -48,7 +48,16 @@ describe("回答方式", () => {
     expect(screen.getByRole("radio", { name: "快速短回答" }).checked).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "完整回答，做好再通知我" }));
     expect(onChange).toHaveBeenCalledWith("background");
-    expect(screen.getByText("這則會先給簡短結論。")).toBeTruthy();
+    // 說明不常駐：平常只給螢幕閱讀器，聚焦或滑鼠移上去才顯示 tooltip。
+    const shortRadio = screen.getByRole("radio", { name: "快速短回答" });
+    const tip = screen.getByTestId("answer-delivery-tip-short");
+    expect(shortRadio.getAttribute("aria-describedby")).toBe(tip.id);
+    expect(tip.textContent).toBe("這則會先給簡短結論。");
+    expect(tip.dataset.visible).toBe("false");
+    fireEvent.focus(shortRadio);
+    expect(tip.dataset.visible).toBe("true");
+    fireEvent.keyDown(shortRadio, { key: "Escape" });
+    expect(tip.dataset.visible).toBe("false");
   });
 
   it("預設送出是快速短回答，改選後才改成背景完整回答", () => {

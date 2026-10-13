@@ -1280,6 +1280,158 @@ class OdtParser:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# .xlsx — stdlib reader (zip + XML), no openpyxl / docling needed
+# ──────────────────────────────────────────────────────────────────────
+
+_XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_XLSX_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_XLSX_PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_XLSX_MAX_CELLS = 200_000
+_XLSX_MAX_CHARS = 2_000_000
+_XLSX_MAX_XML_BYTES = 64 * 1024 * 1024  # 解壓後單一 XML 的上限，防 zip bomb
+_XLSX_COL_RE = re.compile(r"^([A-Z]+)")
+
+
+def _xlsx_col_index(ref: str) -> int:
+    match = _XLSX_COL_RE.match(ref or "")
+    if not match:
+        return -1
+    index = 0
+    for char in match.group(1):
+        index = index * 26 + (ord(char) - 64)
+    return index - 1
+
+
+class XlsxParser:
+    """Read cell values (cached results for formulas) sheet by sheet.
+
+    Each sheet becomes a Markdown section with a pipe table. Values are the
+    ones Excel last saved; formulas are not recalculated. Hidden sheets are
+    included and marked, so nothing is silently dropped.
+    """
+
+    def parse(self, file_path: str) -> ParsedDocument:
+        import xml.etree.ElementTree as ET
+        import zipfile
+
+        path = Path(file_path)
+        with zipfile.ZipFile(file_path) as package:
+            def read(name: str) -> bytes | None:
+                try:
+                    info = package.getinfo(name)
+                except KeyError:
+                    return None
+                if info.file_size > _XLSX_MAX_XML_BYTES:
+                    raise ValueError(f"{name} is too large to read")
+                return package.read(name)
+
+            workbook_xml = read("xl/workbook.xml")
+            if workbook_xml is None:
+                raise ValueError("not an xlsx workbook (xl/workbook.xml missing)")
+            workbook = ET.fromstring(workbook_xml)
+            rels: dict[str, str] = {}
+            rels_xml = read("xl/_rels/workbook.xml.rels")
+            if rels_xml is not None:
+                for rel in ET.fromstring(rels_xml).iter(f"{_XLSX_PKG_REL_NS}Relationship"):
+                    target = rel.get("Target") or ""
+                    target = target.lstrip("/")
+                    if not target.startswith("xl/"):
+                        target = "xl/" + target
+                    rels[rel.get("Id") or ""] = target
+            shared: list[str] = []
+            shared_xml = read("xl/sharedStrings.xml")
+            if shared_xml is not None:
+                for item in ET.fromstring(shared_xml).iter(f"{_XLSX_NS}si"):
+                    shared.append("".join(t.text or "" for t in item.iter(f"{_XLSX_NS}t")))
+
+            parts: list[str] = []
+            total_cells = 0
+            total_chars = 0
+            truncated = False
+            sheet_names: list[str] = []
+            for index, sheet in enumerate(workbook.iter(f"{_XLSX_NS}sheet"), start=1):
+                name = sheet.get("name") or f"工作表{index}"
+                hidden = (sheet.get("state") or "visible") != "visible"
+                rel_id = sheet.get(f"{_XLSX_REL_NS}id") or ""
+                target = rels.get(rel_id) or f"xl/worksheets/sheet{index}.xml"
+                sheet_xml = read(target)
+                if sheet_xml is None:
+                    continue
+                sheet_names.append(name)
+                rows: list[list[str]] = []
+                for row in ET.fromstring(sheet_xml).iter(f"{_XLSX_NS}row"):
+                    values: dict[int, str] = {}
+                    for position, cell in enumerate(row.findall(f"{_XLSX_NS}c")):
+                        value = self._cell_value(cell, shared)
+                        if value == "":
+                            continue
+                        column = _xlsx_col_index(cell.get("r") or "")
+                        values[column if column >= 0 else position] = value
+                        total_cells += 1
+                        total_chars += len(value)
+                    if values:
+                        width = max(values) + 1
+                        rows.append([values.get(i, "") for i in range(width)])
+                    if total_cells > _XLSX_MAX_CELLS or total_chars > _XLSX_MAX_CHARS:
+                        truncated = True
+                        break
+                heading = f"## 工作表：{name}" + ("（隱藏）" if hidden else "")
+                parts.append(heading)
+                parts.append(self._table(rows) if rows else "（空白工作表）")
+                if truncated:
+                    parts.append("（內容過多，後面的儲存格沒有讀入。）")
+                    break
+
+        return ParsedDocument(
+            content="\n\n".join(parts),
+            metadata={
+                "title": path.stem,
+                "sheets": sheet_names,
+                "truncated": truncated,
+                "parser": "xlsx-native",
+            },
+            source_path=file_path,
+            format="xlsx",
+        )
+
+    @staticmethod
+    def _cell_value(cell: Any, shared: list[str]) -> str:
+        kind = cell.get("t") or "n"
+        if kind == "inlineStr":
+            node = cell.find(f"{_XLSX_NS}is")
+            if node is None:
+                return ""
+            return "".join(t.text or "" for t in node.iter(f"{_XLSX_NS}t")).strip()
+        value_node = cell.find(f"{_XLSX_NS}v")
+        raw = (value_node.text or "") if value_node is not None else ""
+        if kind == "s":
+            try:
+                return shared[int(raw)].strip()
+            except (ValueError, IndexError):
+                return ""
+        if kind == "b":
+            return "TRUE" if raw.strip() == "1" else ("FALSE" if raw.strip() == "0" else "")
+        if kind == "e":
+            return raw.strip()  # 例如 #DIV/0!，照原樣保留
+        return raw.strip()
+
+    @staticmethod
+    def _table(rows: list[list[str]]) -> str:
+        width = max(len(row) for row in rows)
+
+        def cell(text: str) -> str:
+            return text.replace("|", "\\|").replace("\n", " ")
+
+        lines = []
+        for number, row in enumerate(rows):
+            padded = row + [""] * (width - len(row))
+            lines.append("| " + " | ".join(cell(value) for value in padded) + " |")
+            if number == 0:
+                lines.append("|" + "---|" * width)
+        return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Standalone image files
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1340,6 +1492,8 @@ class ParserRegistry:
     through the remote Docling parser instead.
     """
 
+    _NATIVE_PREFERRED: frozenset[str] = frozenset({".xlsx"})
+
     _PARSERS: dict[str, DocumentParser] = {
         ".txt": PlainTextParser(),
         ".md": MarkdownParser(),
@@ -1355,6 +1509,7 @@ class ParserRegistry:
         ".docx": DocxParser(),
         ".doc": DocParser(),
         ".odt": OdtParser(),
+        ".xlsx": XlsxParser(),
         # text-class / source formats — decoded by ``_decode_text_bytes``
         # (strict UTF-8, or BOM'd ASCII-dominant UTF-16; anything else is
         # refused). NOT errors="replace": that was the base-version bug
@@ -1476,8 +1631,10 @@ class ParserRegistry:
             return PlainTextParser()
 
         # Docling override for the formats it actually handles.
+        # 試算表一律用本地讀取：儲存格值是確定的，不需要版面分析或 OCR，
+        # 也不會因為遠端解析服務的設定問題而整份讀不到。
         from .docling_parser import DOCLING_SUPPORTED_EXTS  # local import: cheap, no model load
-        if ext in DOCLING_SUPPORTED_EXTS:
+        if ext in DOCLING_SUPPORTED_EXTS and ext not in cls._NATIVE_PREFERRED:
             docling = cls._get_docling_parser()
             if docling is not None:
                 return docling

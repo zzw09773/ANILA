@@ -83,13 +83,26 @@ describe("coverageFromMessage", () => {
     expect(coverage.line).toContain("查了 2 份、引用 0 份");
   });
 
-  it("沒命中仍列出查了 0 份，並說明未找到不等於不存在", () => {
+  it("知識庫沒命中也沒引用時，不暗示沒有來源（助手可能用自己的資料庫）", () => {
     const coverage = coverageFromMessage(assistantMsg({
       kb_state: "searched_miss",
       kb_hits: [],
     }));
     expect(coverage.line).toBe(
-      "查了 0 份、引用 0 份；送進模型 0 份。未找到不等於不存在。",
+      "本次未列出可追溯的文件引用（助手可能使用自己的資料庫或工具）。",
+    );
+    expect(coverage.line).not.toContain("查了 0 份");
+  });
+
+  it("有工具呼叫紀錄時列出工具名稱", () => {
+    const coverage = coverageFromMessage(assistantMsg({
+      kb_state: "not_searched",
+      kb_hits: [],
+    }, {
+      tool_calls: [{ name: "社團名冊查詢" }, { name: "社團名冊查詢" }, { function: { name: "場地查詢" } }],
+    }));
+    expect(coverage.line).toBe(
+      "本次未列出可追溯的文件引用（助手可能使用自己的資料庫或工具）。這次用了工具：社團名冊查詢、場地查詢。",
     );
   });
 

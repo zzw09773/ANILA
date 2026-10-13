@@ -73,17 +73,44 @@ function excerptedFilenames(hits) {
   return names;
 }
 
+// 平台知識庫沒有命中、也沒有對得上的引用時，不能說成「沒有來源」：
+// 助手（尤其外部 agent）可能用自己的資料庫或工具，只是沒有列出引用。
+export const NO_TRACEABLE_CITATION = "本次未列出可追溯的文件引用（助手可能使用自己的資料庫或工具）。";
+
+function toolNames(msg) {
+  const calls = Array.isArray(msg?.toolCalls)
+    ? msg.toolCalls
+    : (Array.isArray(msg?.tool_calls) ? msg.tool_calls : []);
+  const names = [];
+  for (const call of calls) {
+    const raw = call?.display_name || call?.name || call?.tool || call?.function?.name;
+    const name = typeof raw === "string" ? raw.trim() : "";
+    if (name && !names.includes(name)) names.push(name);
+    if (names.length >= 5) break;
+  }
+  return names;
+}
+
 export function formatCoverageLine({
   searched,
   sent,
   cited,
   excerpted = [],
   attachmentsOmitted = false,
+  tools = [],
 }) {
+  const toolPart = tools.length > 0 ? `這次用了工具：${tools.join("、")}。` : "";
+  if (searched === 0 && cited === 0) {
+    const parts = [NO_TRACEABLE_CITATION];
+    if (toolPart) parts.push(toolPart);
+    if (attachmentsOmitted) parts.push("附件未納入這次回答。");
+    return parts.join("");
+  }
   const parts = [
     `查了 ${searched} 份、引用 ${cited} 份；送進模型 ${sent} 份。`,
     "未找到不等於不存在。",
   ];
+  if (toolPart) parts.push(toolPart);
   if (attachmentsOmitted) parts.push("附件未納入這次回答。");
   if (excerpted.length > 0) {
     parts.push(`摘錄、不是全文：${excerpted.join("、")}。`);
@@ -138,6 +165,7 @@ export function coverageFromMessage(msg, options = {}) {
       cited: citedKeys.size,
       excerpted,
       attachmentsOmitted,
+      tools: toolNames(msg),
     }),
   };
 }
