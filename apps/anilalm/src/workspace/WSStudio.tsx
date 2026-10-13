@@ -183,8 +183,10 @@ export function WSStudio({ width = 380 }: { width?: number }) {
 
   // 打開工作區時向 CSP 要這個知識庫的產出。localStorage 只是先畫出來的快取。
   useEffect(() => {
-    if (!collection) return
+    if (!collection || userId === null) return
     const collectionId = collection.id
+    // 綁定發出請求時的帳號：換帳號後，舊帳號遲到的回應一律丟棄。
+    const requestUserId = userId
     let cancelled = false
     const pull = () => {
       const merge = useArtifactStore.getState().mergeServer
@@ -192,10 +194,10 @@ export function WSStudio({ width = 380 }: { width?: number }) {
       void listWorkspaceArtifacts(collectionId)
         .then((rows) => {
           if (cancelled) return
-          const st = useArtifactStore.getState()
           const uid = useAuthStore.getState().user?.id ?? null
-          if (uid === null) return
-          if (st.ownerId !== uid) st.setOwner(uid)
+          if (uid !== requestUserId) return
+          const st = useArtifactStore.getState()
+          if (st.ownerId !== requestUserId) return
           merge(collectionId, rows)
         })
         .catch(() => {
@@ -216,7 +218,7 @@ export function WSStudio({ width = 380 }: { width?: number }) {
       cancelled = true
       unsubscribe()
     }
-  }, [collection])
+  }, [collection, userId])
 
   // Match the rendered CATEGORIES (all/visual/doc); 'audio'/'study' were
   // dropped from the UI so they no longer belong in the filter type.
