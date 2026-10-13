@@ -83,6 +83,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// 輸入框的「快速短回答／背景完整回答」也是 radio；這裡只看 ASK 卡片的選項。
+const ANSWER_DELIVERY_VALUES = new Set(["short", "background"]);
+const askRadios = () => screen.queryAllByRole("radio").filter((r) => !ANSWER_DELIVERY_VALUES.has(r.value));
+
 describe("ask_user interrupt — 主聊天流程", () => {
   it("把 object options 畫成 label+description，送出 {selected, other_text}", async () => {
     const backend = createFakeBackend()
@@ -361,7 +365,7 @@ describe("ask_user interrupt — 主聊天流程", () => {
     expect(await screen.findByText("要挑哪幾個來拆成三種版本？")).toBeTruthy();
     await waitForIdle();
     await waitForPersistedInterrupt(backend);
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(askRadios()).toEqual([]);
     expect(screen.getAllByRole("checkbox").length).toBe(3);
     const convId = backend.conversationIds()[0];
     const pending = backend
@@ -373,7 +377,7 @@ describe("ask_user interrupt — 主聊天流程", () => {
     const second = await mountOrchestrator({ backend });
     await selectConversation("挑幾個來拆");
     expect(await screen.findByText("要挑哪幾個來拆成三種版本？")).toBeTruthy();
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(askRadios()).toEqual([]);
     const sensor = screen.getByRole("checkbox", { name: /環境感測器/ });
     const antenna = screen.getByRole("checkbox", { name: /電網天線/ });
     expect(sensor).toBeTruthy();
@@ -702,7 +706,7 @@ describe("ask_user interrupt — 主聊天流程", () => {
 
     expect(await screen.findByTestId("interrupt-summary")).toBeTruthy();
     expect(screen.getByTestId("interrupt-summary").textContent).toBe("已選擇：重點摘要");
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(askRadios()).toEqual([]);
     expect(screen.queryByRole("button", { name: "送出回答" })).toBeNull();
   });
 
@@ -772,7 +776,7 @@ describe("ask_user interrupt — 主聊天流程", () => {
     await submitFreeText("量子計算在密碼學的應用");
 
     expect(await screen.findByText("要附上哪些比較？")).toBeTruthy();
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(askRadios()).toEqual([]);
     fireEvent.click(screen.getByRole("checkbox", { name: /威脅模型/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /實作成本/ }));
     fireEvent.change(screen.getByPlaceholderText(/或輸入其他回應/), {
