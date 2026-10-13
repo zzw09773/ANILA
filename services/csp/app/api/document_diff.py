@@ -42,6 +42,7 @@ class DiffOut(BaseModel):
     readable: bool
     summary: str
     warnings: list[str] = Field(default_factory=list)
+    alignment: str | None = None  # articles / outline / headings / paragraphs
     changes: list[ChangeOut] = Field(default_factory=list)
     explanations: list[ExplanationOut] = Field(default_factory=list)
     model_status: Literal[

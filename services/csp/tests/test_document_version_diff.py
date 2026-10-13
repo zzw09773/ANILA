@@ -110,7 +110,8 @@ def test_unparsed_docx_does_not_claim_no_other_differences(client, db):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["changes"] == []
+    # 沒有條號時改依段落比對：有差異卡片，但仍不宣稱完整。
+    assert [change["id"] for change in body["changes"]] == ["diff:1:modified"]
     assert body["parse_complete"] is False
     assert "沒有找到差異" not in body["summary"]
     assert "不能據此" in body["summary"]

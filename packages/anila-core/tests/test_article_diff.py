@@ -93,7 +93,9 @@ def test_preamble_change_is_its_own_id():
 def test_unparsed_text_does_not_claim_there_are_no_other_differences():
     result = compare_texts("今天茶會改到週四。", "今天茶會仍在週三。")
     assert result["parse_complete"] is False
-    assert result["changes"] == []
+    # 沒有條號時改依段落比對，並明說不完整。
+    assert result["alignment"] == "paragraphs"
+    assert len(result["changes"]) == 1
     assert "沒有找到差異" not in result["summary"]
     assert "不能據此" in result["summary"]
     assert any("不能據此" in warning for warning in result["warnings"])
@@ -101,7 +103,8 @@ def test_unparsed_text_does_not_claim_there_are_no_other_differences():
 
 def test_one_sided_articles_are_not_reported_as_a_complete_add_list():
     result = compare_texts("第一條\n圖書館週一休息。", "這段沒有條號，只寫茶會改期。")
-    assert result["changes"] == []
+    assert result["alignment"] == "paragraphs"
+    assert all(change["kind"] != "added" or change["before"] == "" for change in result["changes"])
     assert result["parse_complete"] is False
     assert "沒有找到差異" not in result["summary"]
 
@@ -183,18 +186,19 @@ def test_model_output_drops_invented_ids_and_invented_articles():
 def test_incomplete_parse_rejects_a_completeness_claim():
     diff = compare_texts("沒有條號的通知。", "還是沒有條號。")
     request = explanation_request(diff)
-    assert request["allowed_ids"] == []
+    # 段落比對的差異編號仍可說明，但 parse_complete 是 false。
+    assert request["allowed_ids"] == ["diff:1:modified"]
     assert "parse_complete: false" in request["messages"][1]["content"]
-    raw = '[{"id":"diff:1:added","text":"已完整比對，沒有其他差異。"}]'
+    raw = '[{"id":"diff:1:modified","text":"已完整比對，沒有其他差異。"}]'
     attached = attach_model_output(
         diff,
         raw,
-        allowed_ids=["diff:1:added"],
-        allowed_article_keys=["1"],
+        allowed_ids=request["allowed_ids"],
+        allowed_article_keys=request["allowed_article_keys"],
         prompt_truncated=False,
     )
     assert attached["explanations"] == []
-    assert attached["changes"] == []
+    assert [change["id"] for change in attached["changes"]] == ["diff:1:modified"]
     assert "沒有找到差異" not in attached["summary"]
 
 

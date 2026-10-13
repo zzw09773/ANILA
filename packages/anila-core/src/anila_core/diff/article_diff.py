@@ -42,7 +42,14 @@ _CN = {
     "九": 9,
 }
 _UNIT = {"十": 10, "百": 100, "千": 1000}
+# 大寫數字（壹、貳…）先換成一般寫法再解析。
+_FORMAL = str.maketrans("壹貳參叁肆伍陸柒捌玖拾佰仟", "一二三三四五六七八九十百千")
 _NUM_CLASS = "0-9０-９一二三四五六七八九十百千零〇兩"
+_OUTLINE_NUM = "一二三四五六七八九十百千零〇兩壹貳參叁肆伍陸柒捌玖拾佰仟"
+# 「一、」「壹、」：第一層大綱。「（一）」：第二層。
+_OUTLINE_L1_RE = re.compile(rf"^([{_OUTLINE_NUM}]+)\s*[、．]\s*(.*)$")
+_OUTLINE_L2_RE = re.compile(rf"^[（(]\s*([{_OUTLINE_NUM}]+)\s*[)）]\s*(.*)$")
+_LABEL_MAX = 40
 _ARTICLE_RE = re.compile(
     rf"^第\s*([{_NUM_CLASS}]+)\s*條(?:\s*之\s*([{_NUM_CLASS}]+))?(.*)$"
 )
@@ -82,7 +89,7 @@ _UNREADABLE = "程式讀不了這份 Word，不能據此說沒有其他差異。
 
 def parse_article_number(token: str) -> int | None:
     """Parse an Arabic or Chinese article number. Zero and unreadable tokens are None."""
-    text = (token or "").translate(_FW_DIGITS).strip()
+    text = (token or "").translate(_FW_DIGITS).translate(_FORMAL).strip()
     if not text:
         return None
     if text.isdigit():
@@ -132,6 +139,8 @@ def compare_docx_bytes(before: bytes, after: bytes) -> dict[str, Any]:
         right["lines"],
         before_skipped=left["skipped"],
         after_skipped=right["skipped"],
+        before_levels=left.get("levels"),
+        after_levels=right.get("levels"),
     )
 
 
@@ -152,13 +161,16 @@ def load_docx(data: bytes) -> dict[str, Any]:
                 xml_bytes = package.read("word/document.xml")
             except KeyError:
                 return _loaded([], 0, False, _UNREADABLE)
+            styles_xml = _optional_part(package, "word/styles.xml")
+            numbering_xml = _optional_part(package, "word/numbering.xml")
     except zipfile.BadZipFile:
         return _loaded([], 0, False, _UNREADABLE)
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return _loaded([], 0, False, _UNREADABLE)
-    lines, skipped, too_long = _extract_body(root)
+    context = _DocContext(styles_xml, numbering_xml)
+    lines, skipped, too_long = _extract_body(root, context)
     if too_long:
         return _loaded(
             [],
@@ -166,7 +178,7 @@ def load_docx(data: bytes) -> dict[str, Any]:
             False,
             "文件過長，這次沒有完整讀取，不能據此說沒有其他差異。",
         )
-    return _loaded(lines, skipped, True, None)
+    return _loaded(lines, skipped, True, None, context.levels)
 
 
 def explanation_request(diff: dict[str, Any]) -> dict[str, Any]:
@@ -311,7 +323,20 @@ def compare_lines(
     *,
     before_skipped: int = 0,
     after_skipped: int = 0,
+    before_levels: list[int | None] | None = None,
+    after_levels: list[int | None] | None = None,
 ) -> dict[str, Any]:
+    """Diff two documents. Tries, in order, the alignment both sides support:
+
+    1. 第N條 article numbers;
+    2. outline numbers (「一、」 then 「（一）」), typed or produced by Word
+       auto-numbering;
+    3. heading text (Word heading styles);
+    4. paragraph order (difflib).
+
+    Modes 3 and 4 add a notice saying what the alignment was based on. Mode 4
+    never claims the comparison is complete.
+    """
     warnings: list[str] = []
     parse_complete = True
     if before_skipped or after_skipped:
@@ -322,7 +347,7 @@ def compare_lines(
     before_parsed = _parse_articles(before_lines)
     after_parsed = _parse_articles(after_lines)
     problem = before_parsed["error"] or after_parsed["error"]
-    if problem:
+    if problem and problem != "no-articles":
         parse_complete = False
         warnings.append(_parse_error_warning(problem))
         return _result(
@@ -332,17 +357,55 @@ def compare_lines(
             warnings=warnings,
             changes=[],
         )
+    mode = "articles"
+    if problem == "no-articles":
+        mode, before_parsed, after_parsed, notice = _fallback_parse(
+            before_lines, after_lines, before_levels, after_levels
+        )
+        if notice:
+            warnings.append(notice)
+        if mode == "paragraphs":
+            parse_complete = False
     changes, truncated = _diff_segments(before_parsed, after_parsed)
     if truncated:
         parse_complete = False
-        warnings.append("有條文超過可顯示長度，卡片不是全文，不能據此說沒有其他差異。")
+        warnings.append("有段落超過可顯示長度，卡片不是全文，不能據此說沒有其他差異。")
     return _result(
         parse_complete=parse_complete,
         readable=True,
-        summary=_summary(parse_complete, changes),
+        summary=_summary(parse_complete, changes, mode),
         warnings=warnings,
         changes=changes,
+        mode=mode,
     )
+
+
+NOTICE_OUTLINE = "這兩份文件沒有「第N條」，程式改依「一、」「（一）」等大綱編號對齊。"
+NOTICE_HEADINGS = (
+    "這兩份文件沒有可對齊的條號或大綱編號，程式改依標題文字對齊；"
+    "標題改名會顯示成一刪一增。"
+)
+NOTICE_PARAGRAPHS = (
+    "這兩份文件沒有可對齊的條號、大綱編號或標題，程式改依段落順序逐段比對，"
+    "不能據此說沒有其他差異。"
+)
+
+
+def _fallback_parse(
+    before_lines: list[str],
+    after_lines: list[str],
+    before_levels: list[int | None] | None,
+    after_levels: list[int | None] | None,
+) -> tuple[str, dict[str, Any], dict[str, Any], str | None]:
+    left = _parse_outline(before_lines, before_levels)
+    right = _parse_outline(after_lines, after_levels)
+    if not left["error"] and not right["error"]:
+        return "outline", left, right, NOTICE_OUTLINE
+    left, right = _parse_by_headings(before_lines, after_lines, before_levels, after_levels)
+    if left is not None and right is not None:
+        return "headings", left, right, NOTICE_HEADINGS
+    left, right = _parse_by_paragraphs(before_lines, after_lines)
+    return "paragraphs", left, right, NOTICE_PARAGRAPHS
 
 
 def _parse_error_warning(problem: str) -> str:
@@ -353,15 +416,26 @@ def _parse_error_warning(problem: str) -> str:
     return "程式無法依條號解析其中一份文件，不能據此說沒有其他差異。"
 
 
-def _summary(parse_complete: bool, changes: list[dict[str, Any]]) -> str:
+_MODE_BASIS = {
+    "articles": "條號",
+    "outline": "大綱編號",
+    "headings": "標題",
+    "paragraphs": "段落順序",
+}
+
+
+def _summary(parse_complete: bool, changes: list[dict[str, Any]], mode: str = "articles") -> str:
     count = len(changes)
+    basis = _MODE_BASIS.get(mode, "條號")
     if not parse_complete:
         if count:
-            return f"程式找到 {count} 處條文差異，但文件沒有完整解析，不能據此說沒有其他差異。"
+            return f"程式依{basis}找到 {count} 處差異，但比對不完整，不能據此說沒有其他差異。"
+        if mode == "paragraphs":
+            return "程式依段落順序比對，沒有看到文字差異，但不能據此說沒有其他差異。"
         return "程式無法完整解析這份文件，不能據此說沒有其他差異。"
     if count == 0:
-        return "依條號比對，沒有找到差異。"
-    return f"依條號比對，找到 {count} 處差異。"
+        return f"依{basis}比對，沒有找到差異。"
+    return f"依{basis}比對，找到 {count} 處差異。"
 
 
 def _result(
@@ -371,18 +445,273 @@ def _result(
     summary: str,
     warnings: list[str],
     changes: list[dict[str, Any]],
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "parse_complete": parse_complete,
         "readable": readable,
         "summary": summary,
         "warnings": warnings,
         "changes": changes,
     }
+    if mode:
+        result["alignment"] = mode
+    return result
 
 
-def _loaded(lines: list[str], skipped: int, readable: bool, warning: str | None) -> dict[str, Any]:
-    return {"lines": lines, "skipped": skipped, "readable": readable, "warning": warning}
+def _loaded(
+    lines: list[str],
+    skipped: int,
+    readable: bool,
+    warning: str | None,
+    levels: list[int | None] | None = None,
+) -> dict[str, Any]:
+    return {
+        "lines": lines,
+        "skipped": skipped,
+        "readable": readable,
+        "warning": warning,
+        "levels": levels,
+    }
+
+
+def _optional_part(package: zipfile.ZipFile, name: str) -> bytes | None:
+    try:
+        return package.read(name)
+    except KeyError:
+        return None
+
+
+# ---- Word 自動編號與標題層級 ----
+
+_CN_DIGITS = "〇一二三四五六七八九"
+_TRAD_STEMS = "甲乙丙丁戊己庚辛壬癸"
+_CHINESE_FORMATS = {
+    "taiwaneseCounting",
+    "taiwaneseCountingThousand",
+    "chineseCounting",
+    "chineseCountingThousand",
+    "ideographDigital",
+    "japaneseCounting",
+}
+
+
+def _chinese_number(value: int) -> str:
+    if value <= 0:
+        return str(value)
+    if value < 10:
+        return _CN_DIGITS[value]
+    if value < 20:
+        return "十" + (_CN_DIGITS[value % 10] if value % 10 else "")
+    if value < 100:
+        tens, ones = divmod(value, 10)
+        return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
+    if value < 1000:
+        hundreds, rest = divmod(value, 100)
+        tail = ""
+        if rest:
+            tail = ("零" if rest < 10 else "") + (
+                _chinese_number(rest) if rest >= 20 or rest < 10 else "一" + _chinese_number(rest)
+            )
+        return _CN_DIGITS[hundreds] + "百" + tail
+    return str(value)
+
+
+def _roman(value: int) -> str:
+    pairs = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+             (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+    out = []
+    for amount, glyph in pairs:
+        while value >= amount:
+            out.append(glyph)
+            value -= amount
+    return "".join(out)
+
+
+def _format_counter(value: int, fmt: str) -> str:
+    if fmt in _CHINESE_FORMATS:
+        return _chinese_number(value)
+    if fmt == "ideographTraditional":
+        return _TRAD_STEMS[(value - 1) % 10]
+    if fmt == "decimalFullWidth":
+        return str(value).translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+    if fmt in ("upperLetter", "lowerLetter"):
+        letter = chr(ord("A") + (value - 1) % 26)
+        return letter if fmt == "upperLetter" else letter.lower()
+    if fmt in ("upperRoman", "lowerRoman"):
+        roman = _roman(value)
+        return roman if fmt == "upperRoman" else roman.lower()
+    return str(value)
+
+
+class _DocContext:
+    """Styles and numbering of one .docx, plus the level of each extracted line."""
+
+    def __init__(self, styles_xml: bytes | None, numbering_xml: bytes | None):
+        self.levels: list[int | None] = []
+        self._style_outline: dict[str, int] = {}
+        self._style_num: dict[str, tuple[str, int]] = {}
+        self._num_levels: dict[str, dict[int, dict[str, Any]]] = {}
+        self._num_abstract: dict[str, str] = {}
+        self._counters: dict[str, dict[int, int]] = {}
+        self._load_styles(styles_xml)
+        self._load_numbering(numbering_xml)
+
+    def _load_styles(self, data: bytes | None) -> None:
+        root = _safe_xml(data)
+        if root is None:
+            return
+        based_on: dict[str, str] = {}
+        for style in root.iter(f"{_W}style"):
+            style_id = style.get(f"{_W}styleId") or ""
+            if not style_id:
+                continue
+            parent = style.find(f"{_W}basedOn")
+            if parent is not None and parent.get(f"{_W}val"):
+                based_on[style_id] = parent.get(f"{_W}val")
+            ppr = style.find(f"{_W}pPr")
+            outline = ppr.find(f"{_W}outlineLvl") if ppr is not None else None
+            if outline is not None and (outline.get(f"{_W}val") or "").isdigit():
+                self._style_outline[style_id] = int(outline.get(f"{_W}val"))
+            else:
+                name = style.find(f"{_W}name")
+                label = (name.get(f"{_W}val") if name is not None else "") or ""
+                match = re.fullmatch(r"(?i)heading\s*([1-9])", label.strip())
+                if match:
+                    self._style_outline[style_id] = int(match.group(1)) - 1
+            num = _num_pr(ppr)
+            if num is not None:
+                self._style_num[style_id] = num
+        # 繼承：子樣式沒寫的大綱層級／編號沿用 basedOn。
+        for style_id in list(based_on):
+            seen = {style_id}
+            current = based_on.get(style_id)
+            while current and current not in seen:
+                seen.add(current)
+                if style_id not in self._style_outline and current in self._style_outline:
+                    self._style_outline[style_id] = self._style_outline[current]
+                if style_id not in self._style_num and current in self._style_num:
+                    self._style_num[style_id] = self._style_num[current]
+                current = based_on.get(current)
+
+    def _load_numbering(self, data: bytes | None) -> None:
+        root = _safe_xml(data)
+        if root is None:
+            return
+        abstract: dict[str, dict[int, dict[str, Any]]] = {}
+        for node in root.findall(f"{_W}abstractNum"):
+            abstract_id = node.get(f"{_W}abstractNumId") or ""
+            abstract[abstract_id] = {
+                level: spec for level, spec in (_level_spec(lvl) for lvl in node.findall(f"{_W}lvl"))
+                if level is not None
+            }
+        for node in root.findall(f"{_W}num"):
+            num_id = node.get(f"{_W}numId") or ""
+            ref = node.find(f"{_W}abstractNumId")
+            abstract_id = ref.get(f"{_W}val") if ref is not None else ""
+            levels = {k: dict(v) for k, v in abstract.get(abstract_id or "", {}).items()}
+            for override in node.findall(f"{_W}lvlOverride"):
+                ilvl = override.get(f"{_W}ilvl")
+                if ilvl is None or not ilvl.isdigit():
+                    continue
+                lvl = override.find(f"{_W}lvl")
+                if lvl is not None:
+                    level, spec = _level_spec(lvl)
+                    if level is not None:
+                        levels[int(ilvl)] = spec
+                start = override.find(f"{_W}startOverride")
+                if start is not None and (start.get(f"{_W}val") or "").isdigit():
+                    levels.setdefault(int(ilvl), {"fmt": "decimal", "text": "", "start": 1})
+                    levels[int(ilvl)]["start"] = int(start.get(f"{_W}val"))
+            self._num_levels[num_id] = levels
+            self._num_abstract[num_id] = abstract_id or num_id
+
+    def paragraph_level(self, paragraph: ET.Element) -> int | None:
+        ppr = paragraph.find(f"{_W}pPr")
+        if ppr is None:
+            return None
+        outline = ppr.find(f"{_W}outlineLvl")
+        if outline is not None and (outline.get(f"{_W}val") or "").isdigit():
+            value = int(outline.get(f"{_W}val"))
+            return value if value < 9 else None
+        style = ppr.find(f"{_W}pStyle")
+        if style is not None:
+            return self._style_outline.get(style.get(f"{_W}val") or "")
+        return None
+
+    def number_prefix(self, paragraph: ET.Element) -> str:
+        """The text Word would draw in front of an auto-numbered paragraph."""
+        ppr = paragraph.find(f"{_W}pPr")
+        num = _num_pr(ppr)
+        if num is None and ppr is not None:
+            style = ppr.find(f"{_W}pStyle")
+            if style is not None:
+                num = self._style_num.get(style.get(f"{_W}val") or "")
+        if num is None:
+            return ""
+        num_id, ilvl = num
+        if num_id in ("", "0"):
+            return ""
+        levels = self._num_levels.get(num_id)
+        if not levels or ilvl not in levels:
+            return ""
+        counter_key = self._num_abstract.get(num_id, num_id)
+        counters = self._counters.setdefault(counter_key, {})
+        spec = levels[ilvl]
+        counters[ilvl] = counters.get(ilvl, spec.get("start", 1) - 1) + 1
+        for deeper in [k for k in counters if k > ilvl]:
+            del counters[deeper]
+        if spec.get("fmt") in ("bullet", "none"):
+            return ""
+        text = spec.get("text") or ""
+
+        def fill(match: re.Match[str]) -> str:
+            level = int(match.group(1)) - 1
+            value = counters.get(level, levels.get(level, {}).get("start", 1))
+            fmt = levels.get(level, {}).get("fmt", "decimal")
+            return _format_counter(value, fmt)
+
+        prefix = re.sub(r"%([1-9])", fill, text).strip()
+        return prefix
+
+
+def _safe_xml(data: bytes | None) -> ET.Element | None:
+    if not data:
+        return None
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError:
+        return None
+
+
+def _num_pr(ppr: ET.Element | None) -> tuple[str, int] | None:
+    if ppr is None:
+        return None
+    num = ppr.find(f"{_W}numPr")
+    if num is None:
+        return None
+    num_id = num.find(f"{_W}numId")
+    ilvl = num.find(f"{_W}ilvl")
+    value = (ilvl.get(f"{_W}val") if ilvl is not None else "0") or "0"
+    return (
+        (num_id.get(f"{_W}val") if num_id is not None else "") or "",
+        int(value) if value.isdigit() else 0,
+    )
+
+
+def _level_spec(lvl: ET.Element) -> tuple[int | None, dict[str, Any]]:
+    ilvl = lvl.get(f"{_W}ilvl") or ""
+    if not ilvl.isdigit():
+        return None, {}
+    fmt = lvl.find(f"{_W}numFmt")
+    text = lvl.find(f"{_W}lvlText")
+    start = lvl.find(f"{_W}start")
+    start_value = (start.get(f"{_W}val") if start is not None else "1") or "1"
+    return int(ilvl), {
+        "fmt": (fmt.get(f"{_W}val") if fmt is not None else "decimal") or "decimal",
+        "text": (text.get(f"{_W}val") if text is not None else "") or "",
+        "start": int(start_value) if start_value.isdigit() else 1,
+    }
 
 
 def _lines(text: str) -> list[str]:
@@ -390,16 +719,22 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in cleaned.splitlines() if line.strip()]
 
 
-def _extract_body(root: ET.Element) -> tuple[list[str], int, bool]:
+def _extract_body(
+    root: ET.Element, context: "_DocContext | None" = None
+) -> tuple[list[str], int, bool]:
     body = root.find(f"{_W}body")
     if body is None:
         return [], 0, False
+    if context is None:
+        context = _DocContext(None, None)
     lines: list[str] = []
+    levels = context.levels
     skipped = 0
     total = 0
 
-    def take(text: str) -> bool:
+    def take(text: str, level: int | None = None) -> bool:
         nonlocal total
+        first = True
         for piece in text.splitlines():
             stripped = piece.strip()
             if not stripped:
@@ -408,6 +743,8 @@ def _extract_body(root: ET.Element) -> tuple[list[str], int, bool]:
             if total > _MAX_CHARS:
                 return True
             lines.append(stripped)
+            levels.append(level if first else None)
+            first = False
         return False
 
     for child in list(body):
@@ -417,7 +754,10 @@ def _extract_body(root: ET.Element) -> tuple[list[str], int, bool]:
             text, hidden = _paragraph_text(child)
             if hidden:
                 skipped += 1
-            if take(text):
+            prefix = context.number_prefix(child)
+            if prefix and text:
+                text = f"{prefix}{text}" if prefix.endswith(("、", "）", ")")) else f"{prefix} {text}"
+            if take(text, context.paragraph_level(child) if text else None):
                 return [], skipped, True
             continue
         if child.tag == f"{_W}tbl":
@@ -508,6 +848,165 @@ def _parse_articles(lines: list[str]) -> dict[str, Any]:
     }
 
 
+def _clip_label(text: str) -> str:
+    text = _WS_RE.sub(" ", text).strip()
+    return text if len(text) <= _LABEL_MAX else text[: _LABEL_MAX - 1] + "…"
+
+
+def _outline_heading(line: str) -> tuple[int, int, str] | None:
+    """(level, number, rest) for 「一、…」(level 1) or 「（一）…」(level 2)."""
+    stripped = line.strip()
+    for level, pattern in ((1, _OUTLINE_L1_RE), (2, _OUTLINE_L2_RE)):
+        match = pattern.match(stripped)
+        if match is None:
+            continue
+        number = parse_article_number(match.group(1))
+        if number is None:
+            continue
+        return level, number, (match.group(2) or "").strip()
+    return None
+
+
+def _parse_outline(lines: list[str], levels: list[int | None] | None) -> dict[str, Any]:
+    """Split at 「一、」 and 「（一）」 headings. Key "4" or "4-2" (四、 / 四、（二）).
+
+    When the document marks headings with Word heading styles and at least one
+    styled heading carries an outline number, only styled lines count, so a
+    「一、」 inside a table cell or a body list does not start a new section.
+    """
+    styled = levels is not None and len(levels) == len(lines)
+    candidates = [
+        (index, found)
+        for index, line in enumerate(lines)
+        if (found := _outline_heading(line)) is not None
+    ]
+    if styled and any(levels[index] is not None for index, _ in candidates):
+        candidates = [(i, f) for i, f in candidates if levels[i] is not None]
+    if not any(found[0] == 1 for _, found in candidates):
+        return {"error": "no-articles", "preamble": "", "articles": []}
+    heading_at = dict(candidates)
+    preamble: list[str] = []
+    articles: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    seen: set[str] = set()
+    major: int | None = None
+    major_label = ""
+    for index, line in enumerate(lines):
+        found = heading_at.get(index)
+        if found is not None and (found[0] == 1 or major is not None):
+            level, number, _rest = found
+            if level == 1:
+                major = number
+                major_label = _clip_label(line)
+                key, label = str(number), major_label
+            else:
+                key = f"{major}-{number}"
+                label = _clip_label(f"{major_label} ／ {line.strip()}")
+            if key in seen:
+                return {"error": "duplicate", "preamble": "", "articles": []}
+            if len(articles) + 1 >= _MAX_ARTICLES:
+                return {"error": "too-many", "preamble": "", "articles": []}
+            seen.add(key)
+            if current is not None:
+                articles.append(current)
+            current = {"key": key, "label": label, "body": [line.strip()], "raw": True}
+            continue
+        if current is None:
+            preamble.append(line)
+        else:
+            current["body"].append(line)
+    if current is not None:
+        articles.append(current)
+    return {"error": None, "preamble": "\n".join(preamble).strip(), "articles": articles}
+
+
+def _parse_by_headings(
+    before_lines: list[str],
+    after_lines: list[str],
+    before_levels: list[int | None] | None,
+    after_levels: list[int | None] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Align sections by heading text. Both sides need Word heading styles."""
+    sides = [(before_lines, before_levels), (after_lines, after_levels)]
+    tops: list[int] = []
+    for lines, levels in sides:
+        if levels is None or len(levels) != len(lines):
+            return None, None
+        present = [level for level in levels if level is not None]
+        if not present:
+            return None, None
+        tops.append(min(present))
+    split_level = min(tops) + 1  # 最上兩層標題都切段
+    numbering: dict[str, int] = {}
+    parsed: list[dict[str, Any]] = []
+    for lines, levels in sides:
+        preamble: list[str] = []
+        articles: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        occurrences: dict[str, int] = {}
+        parent = ""
+        for line, level in zip(lines, levels):
+            if level is not None and level <= split_level:
+                title = _WS_RE.sub(" ", line).strip()
+                if level < split_level:
+                    parent = title
+                    path = title
+                else:
+                    path = f"{parent} ／ {title}" if parent else title
+                occurrences[path] = occurrences.get(path, 0) + 1
+                ident = f"{path}#{occurrences[path]}"
+                if ident not in numbering:
+                    numbering[ident] = len(numbering) + 1
+                if len(articles) + 1 >= _MAX_ARTICLES:
+                    return None, None
+                if current is not None:
+                    articles.append(current)
+                current = {
+                    "key": str(numbering[ident]),
+                    "label": _clip_label(path),
+                    "body": [line.strip()],
+                    "raw": True,
+                }
+                continue
+            if current is None:
+                preamble.append(line)
+            else:
+                current["body"].append(line)
+        if current is not None:
+            articles.append(current)
+        parsed.append(
+            {"error": None, "preamble": "\n".join(preamble).strip(), "articles": articles}
+        )
+    return parsed[0], parsed[1]
+
+
+def _parse_by_paragraphs(
+    before_lines: list[str], after_lines: list[str]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Last resort: difflib over paragraphs; each changed run is one card."""
+    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
+    left: list[dict[str, Any]] = []
+    right: list[dict[str, Any]] = []
+    number = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        number += 1
+        if number >= _MAX_ARTICLES:
+            break
+        key = str(number)
+        anchor = before_lines[i1] if i1 < i2 else (after_lines[j1] if j1 < j2 else "")
+        label = _clip_label(f"第 {number} 處段落差異：{anchor}")
+        if i1 < i2:
+            left.append({"key": key, "label": label, "body": before_lines[i1:i2], "raw": True})
+        if j1 < j2:
+            right.append({"key": key, "label": label, "body": after_lines[j1:j2], "raw": True})
+    return (
+        {"error": None, "preamble": "", "articles": left},
+        {"error": None, "preamble": "", "articles": right},
+    )
+
+
 def _match_heading(line: str) -> tuple[str, str, str] | None:
     match = _ARTICLE_RE.match(line.strip())
     if match is None:
@@ -546,7 +1045,11 @@ def _segments(parsed: dict[str, Any]) -> dict[str, tuple[str, str]]:
     if preamble:
         segments["preamble"] = ("條文之前", preamble)
     for article in parsed["articles"]:
-        segments[article["key"]] = (article["label"], _render(article["label"], article["body"]))
+        if article.get("raw"):
+            text = "\n".join(line for line in article["body"] if line.strip()).strip()
+            segments[article["key"]] = (article["label"], text)
+        else:
+            segments[article["key"]] = (article["label"], _render(article["label"], article["body"]))
     return segments
 
 
