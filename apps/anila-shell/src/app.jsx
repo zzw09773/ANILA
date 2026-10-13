@@ -492,9 +492,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const { usableSkills, reloadUsableSkills, skillStackLimit, toggleSkillFavorite } = useUsableSkills(authRequest, isAuthenticated);
 
   // ---- 建議下一個問題 ----
-  // 主串流結束、訊息落庫之後另外打一次端點。同一時間只有一個請求：使用者開始
+  // 主串流結束、訊息落庫之後另外打一次端點。每個對話同時最多一個請求；使用者開始
   // 打字、送出新訊息或換對話就取消。失敗一律靜默（fetchFollowUps 不丟錯）。
-  // 以對話 id 為鍵：A 對話收尾要建議時，不會砍掉 B 對話還在跑的請求。
+  // A 對話收尾要建議時，不會砍掉 B 對話還在跑的請求。
   const followUpsAbortRef = useRef(new Map());
   const followUpsEnabledRef = useRef(followUpsEnabled);
   followUpsEnabledRef.current = followUpsEnabled;
