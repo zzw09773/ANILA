@@ -225,6 +225,11 @@ export function WSStudio({ width = 380 }: { width?: number }) {
   const [filter, setFilter] = useState<'all' | 'visual' | 'doc'>('all')
   const [modalFormat, setModalFormat] = useState<FormatSpec | null>(null)
   const [viewing, setViewing] = useState<StudioArtifact | null>(null)
+  // 換帳號時關掉已開啟的產出檢視，B 不能繼續看到 A 開著的內容。
+  useEffect(() => {
+    setViewing(null)
+    setModalFormat(null)
+  }, [userId])
 
   // ── Background polling for pending Slides jobs ────────────────────
   //

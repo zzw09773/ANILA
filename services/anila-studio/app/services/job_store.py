@@ -165,6 +165,15 @@ class JobStore:
             logger.warning("job store: corrupt record for %s, ignoring", job_id)
             return None
 
+    async def delete(self, job_id: str) -> None:
+        """Drop the durable record (explicit user DELETE). Best-effort."""
+        if self._redis is None:
+            return
+        try:
+            await self._redis.delete(self._key(job_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("job store: delete failed for %s: %s", job_id, exc)
+
     async def put_quietly(self, job: PersistedJob) -> None:
         """Best-effort write — swallow + log any error.
 

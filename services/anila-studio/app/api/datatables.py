@@ -786,10 +786,22 @@ async def cancel_datatable_job(
     """
     rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
-        )
+        # Evicted or restarted: the files were kept for download, so a
+        # DELETE must still be able to remove them (same owner check).
+        persisted = await _persisted_datatable(job_id, identity.id)
+        if persisted is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
+            )
+        for path in persisted.artifact_paths.values():
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Datatable job %s: failed to unlink %s: %s", job_id, path, exc)
+        await job_lifecycle.get_job_store().delete(job_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     # Cancel if running, then hard-delete the record + artifacts.
     await jobs.cancel_job(job_id, identity.id)
     await jobs.delete_job(job_id, identity.id)
+    await job_lifecycle.get_job_store().delete(job_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

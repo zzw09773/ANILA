@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
-import { useArtifactStore } from '../store/artifacts'
+import { addForOwner, currentArtifactOwner } from '../store/artifacts'
 import { Modal } from '../components/Modal'
 import { Icon, type IconName } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
@@ -181,6 +181,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
 
   const submit = async () => {
     if (!format || !collection || !isSupported) return
+    const owner = currentArtifactOwner()
     setBusy(true)
     setErr(null)
     try {
@@ -274,7 +275,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           jobId: job.job_id,
           step: job.step,
         }
-        useArtifactStore.getState().add(artifact)
+        addForOwner(owner, artifact)
         onGenerated(artifact)
         reset()
         onClose()

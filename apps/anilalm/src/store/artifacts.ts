@@ -154,3 +154,26 @@ export const useArtifactStore = create<ArtifactState>()(
     },
   ),
 )
+
+/** 建立工作的回應抵達時帳號已換人，不能把前一人的工作放進新帳號的快取。 */
+export class ArtifactOwnerChangedError extends Error {
+  constructor() {
+    super('帳號已切換，這次產出不會顯示在目前的帳號。')
+    this.name = 'ArtifactOwnerChangedError'
+  }
+}
+
+/** 目前快取擁有者。發出建立請求前先記下來，回應回來時交給 addForOwner。 */
+export function currentArtifactOwner(): number | null {
+  return useArtifactStore.getState().ownerId
+}
+
+/**
+ * 只有在快取仍屬於發出請求的那個帳號時才新增；否則丟出
+ * ArtifactOwnerChangedError，呼叫端不要再把這筆交給畫面。
+ */
+export function addForOwner(owner: number | null, artifact: StudioArtifact): void {
+  const st = useArtifactStore.getState()
+  if (owner === null || st.ownerId !== owner) throw new ArtifactOwnerChangedError()
+  st.add(artifact)
+}

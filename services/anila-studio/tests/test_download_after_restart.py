@@ -147,3 +147,29 @@ async def test_datatable_real_overflow_eviction_keeps_files_downloadable(store):
     resp = await datatables.download_datatable_artifact("dt_00", "csv", identity=OWNER)
     assert await _body(resp) == b"dt_00"
     jobs._jobs.clear()
+
+
+async def test_datatable_delete_after_eviction_removes_files(store):
+    from app.api import datatables
+
+    fake, root = store
+
+    async def _delete(job_id):
+        fake.rows.pop(job_id, None)
+
+    fake.delete = _delete
+    fake.rows["dt_gone"] = _job("dt_gone", "datatable")
+    (root / "datatables").mkdir()
+    for ext in ("html", "csv", "xlsx"):
+        (root / "datatables" / f"dt_gone.{ext}").write_bytes(b"x")
+    with pytest.raises(HTTPException) as exc:
+        await datatables.cancel_datatable_job("dt_gone", identity=OTHER)
+    assert exc.value.status_code == 404
+    assert (root / "datatables" / "dt_gone.csv").exists()
+
+    resp = await datatables.cancel_datatable_job("dt_gone", identity=OWNER)
+    assert resp.status_code == 204
+    assert not any((root / "datatables").iterdir())
+    with pytest.raises(HTTPException) as exc:
+        await datatables.download_datatable_artifact("dt_gone", "csv", identity=OWNER)
+    assert exc.value.status_code == 404

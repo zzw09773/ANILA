@@ -24,7 +24,13 @@ vi.mock('../store/workspace', () => {
 vi.mock('../components/Icon', () => ({ Icon: () => null }))
 vi.mock('../components/Spinner', () => ({ Spinner: () => null }))
 vi.mock('./CommandModal', () => ({ CommandModal: () => null }))
-vi.mock('./ArtifactViewer', () => ({ ArtifactViewer: () => null }))
+vi.mock('./ArtifactViewer', async () => {
+  const { createElement: h } = await import('react')
+  return {
+    ArtifactViewer: ({ artifact }: { artifact: { title: string } | null }) =>
+      artifact ? h('div', { 'data-testid': 'viewer' }, artifact.title) : null,
+  }
+})
 vi.mock('../api/studio', () => ({
   downloadSlidesJobPptx: vi.fn(),
   getSlidesJobStatus: vi.fn(),
@@ -71,5 +77,27 @@ describe('WSStudio account switch', () => {
       pending[pending.length - 1]([bRow])
     })
     expect(useArtifactStore.getState().list(7).map((r) => r.title)).toEqual(['B 的報告'])
+  })
+
+  it('closes an open viewer when the account changes', async () => {
+    const { useAuthStore } = await import('../store/auth')
+    const { useArtifactStore } = await import('../store/artifacts')
+    const { WSStudio } = await import('./WSStudio')
+    const { screen, fireEvent } = await import('@testing-library/react')
+
+    me.mockResolvedValueOnce({ data: { id: 3, username: 'a', email: null, role: 'user' } })
+    await act(() => useAuthStore.getState().fetchMe())
+    useArtifactStore.getState().add({
+      id: 'local-a', kind: 'report', collectionId: 7, title: 'A 開著的報告',
+      preset: 'p', sourceCount: 1, createdAt: '2026-10-13T00:00:00Z', state: 'done', jobId: 'job-va',
+    } as never)
+    render(createElement(WSStudio))
+    fireEvent.click(screen.getAllByText('A 開著的報告')[0])
+    expect(screen.getByTestId('viewer').textContent).toBe('A 開著的報告')
+
+    me.mockResolvedValueOnce({ data: { id: 8, username: 'b', email: null, role: 'user' } })
+    await act(() => useAuthStore.getState().fetchMe())
+    expect(screen.queryByTestId('viewer')).toBeNull()
+    expect(screen.queryByText('A 開著的報告')).toBeNull()
   })
 })

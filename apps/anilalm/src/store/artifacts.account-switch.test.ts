@@ -77,3 +77,37 @@ describe('artifact cache across accounts', () => {
     expect(merged).toEqual([])
   })
 })
+
+describe('late create-job responses', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    localStorage.clear()
+    me.mockReset()
+  })
+
+  it('a create response for A that lands after switching to B is not cached for B', async () => {
+    const { useAuthStore } = await import('./auth')
+    const { useArtifactStore, addForOwner, currentArtifactOwner, ArtifactOwnerChangedError } =
+      await import('./artifacts')
+    me.mockResolvedValueOnce({ data: { id: 3, username: 'a', email: null, role: 'user' } })
+    await useAuthStore.getState().fetchMe()
+    const ownerAtRequest = currentArtifactOwner()
+
+    me.mockResolvedValueOnce({ data: { id: 8, username: 'b', email: null, role: 'user' } })
+    await useAuthStore.getState().fetchMe()
+
+    expect(() => addForOwner(ownerAtRequest, reportRow('job-a', 'A 的報告'))).toThrow(
+      ArtifactOwnerChangedError,
+    )
+    useArtifactStore.getState().mergeServer(SHARED_KB, [])
+    expect(useArtifactStore.getState().list(SHARED_KB)).toEqual([])
+
+    addForOwner(currentArtifactOwner(), reportRow('job-b', 'B 的報告'))
+    expect(useArtifactStore.getState().list(SHARED_KB)).toHaveLength(1)
+  })
+
+  it('refuses to add while identity is unknown', async () => {
+    const { addForOwner } = await import('./artifacts')
+    expect(() => addForOwner(null, reportRow('x', 'x'))).toThrow()
+  })
+})
