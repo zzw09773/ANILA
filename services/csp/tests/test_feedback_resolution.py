@@ -363,7 +363,7 @@ def test_eval_case_is_the_original_question_only(client, db: Session):
     finally:
         path.unlink(missing_ok=True)
     assert cases[0]["id"] == body["id"]
-    assert run_golden_set._validate_only(cases) == 0
+    assert run_golden_set._validate_only(cases, {}) == 0  # 回歸題不引用固定文件
 
 
 def test_eval_case_audits_classified_conversations(client, db: Session):
