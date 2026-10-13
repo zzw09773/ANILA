@@ -298,6 +298,7 @@ def attach_model_output(
         "readable": bool(diff.get("readable")),
         "summary": diff.get("summary") or "",
         "warnings": list(diff.get("warnings") or []),
+        "alignment": diff.get("alignment"),
         "changes": list(diff.get("changes") or []),
         "explanations": bound["explanations"],
         "model_status": status,
