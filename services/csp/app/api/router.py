@@ -20,6 +20,7 @@ from app.api.message_actions import router as message_actions_router
 from app.api.departments import router as departments_router
 from app.api.memory import router as memory_router
 from app.api.skills import router as skills_router
+from app.api.handover_interviews import router as handover_interviews_router
 from app.api.platform_links import router as platform_links_router
 from app.api.proxy import router as proxy_router
 from app.api.artifacts import router as artifacts_router
@@ -80,6 +81,7 @@ api_router.include_router(message_actions_router)
 api_router.include_router(departments_router)
 api_router.include_router(memory_router)
 api_router.include_router(skills_router)
+api_router.include_router(handover_interviews_router)
 api_router.include_router(platform_links_router)
 api_router.include_router(service_access_grants_router)
 api_router.include_router(service_clients_router)

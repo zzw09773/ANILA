@@ -43,6 +43,7 @@ import app.models.usage_quota  # noqa: F401
 import app.models.attachment       # noqa: F401
 import app.models.conversation     # noqa: F401
 import app.models.handoff          # noqa: F401
+import app.models.handover_interview  # noqa: F401
 import app.models.ingestion        # noqa: F401
 import app.models.message          # noqa: F401
 import app.models.platform_link    # noqa: F401
