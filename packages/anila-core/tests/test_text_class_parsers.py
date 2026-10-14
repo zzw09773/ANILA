@@ -1804,32 +1804,6 @@ _F3_SYSTEM_BINARIES = (
     "/bin/bash", "/bin/ls", "/bin/cat", "/bin/date", "/bin/grep",
     "/bin/dircolors", "/bin/sed",
 )
-# basename -> (exact byte size when recorded, {(slice offset, bom order)}).
-# The size is part of the key: a rebuilt libc is a different population and
-# must not be silently checked against another build's offsets.
-_F3_RECORDED_FLIPS: dict[str, tuple[int, frozenset[tuple[int, str]]]] = {
-    "python3": (5917224, frozenset({(3990675, "be")})),
-    "libc.so.6": (2220400, frozenset({
-        (1833664, "le"), (1837757, "be"), (1841850, "le"),
-        (1845943, "be"), (1850036, "le"),
-    })),
-    "locale-archive": (6075312, frozenset({
-        (253766, "le"), (261952, "le"), (270138, "le"), (286510, "le"),
-        (306975, "be"), (311068, "le"), (5861176, "le"), (5877548, "le"),
-        (5885734, "le"), (5893920, "le"), (5902106, "le"), (5918478, "le"),
-    })),
-    "libcrypto.so.3": (4455728, frozenset()),
-    "libstdc++.so.6": (2260296, frozenset()),
-    "libm.so.6": (940560, frozenset()),
-    "libz.so.1": (108936, frozenset()),
-    "bash": (1396520, frozenset()),
-    "ls": (138216, frozenset()),
-    "cat": (35288, frozenset()),
-    "date": (104968, frozenset()),
-    "grep": (182728, frozenset()),
-    "dircolors": (39440, frozenset()),
-    "sed": (113224, frozenset()),
-}
 
 
 def _bom_flip_offsets(blob: bytes) -> set[tuple[int, str]]:
@@ -1912,57 +1886,76 @@ def test_bom_prefix_accepts_no_whole_binary_and_no_small_binary_slice() -> None:
     assert small_slices > 300, f"too few small-binary slices: {small_slices}"
 
 
+def _f3_residual_blob(seed: int, noise: float, encoding: str) -> bytes:
+    """Deterministic stand-in for a binary that embeds UTF-16 string tables.
+
+    Mostly UTF-16 words (as in resource sections) with short random byte
+    runs spliced in at rate ``noise``. Built from a fixed seed so the flip
+    set below is reproducible on any host and Python version.
+    """
+    import random
+
+    rnd = random.Random(seed)
+    words = "Requirement note section value index table entry 測試 資料".split()
+    out = bytearray()
+    while len(out) < 60_000:
+        if rnd.random() < noise:
+            out += bytes(rnd.randrange(256) for _ in range(rnd.randrange(2, 40)))
+        else:
+            out += (rnd.choice(words) + " ").encode(encoding)
+    return bytes(out)
+
+
+# name -> (seed, noise, encoding). Versioned fixture: change the recipe and
+# the recorded flips below must be re-recorded in the same commit.
+_F3_RESIDUAL_CORPUS: dict[str, tuple[int, float, str]] = {
+    "le-noise-1pct": (10, 0.01, "utf-16-le"),
+    "le-noise-2pct": (20, 0.02, "utf-16-le"),
+    "be-noise-1pct": (10, 0.01, "utf-16-be"),
+    "be-noise-2pct": (20, 0.02, "utf-16-be"),
+    "le-noise-5pct": (50, 0.05, "utf-16-le"),
+    "be-noise-10pct": (100, 0.10, "utf-16-be"),
+}
+
+# Recorded with the fixture above: name -> (blob size, exact flip set).
+_F3_RESIDUAL_FLIPS: dict[str, tuple[int, frozenset[tuple[int, str]]]] = {
+    'le-noise-1pct': (60001, frozenset({(0, 'le'), (32744, 'le'), (36837, 'le'), (40930, 'be')})),
+    'le-noise-2pct': (60007, frozenset({(4093, 'be'), (20465, 'le'), (49116, 'le')})),
+    'be-noise-1pct': (60001, frozenset({(0, 'be'), (20465, 'be'), (24558, 'le'), (28651, 'le'), (36837, 'be'), (53209, 'le')})),
+    'be-noise-2pct': (60007, frozenset({(16372, 'le'), (20465, 'be')})),
+    'le-noise-5pct': (60013, frozenset()),
+    'be-noise-10pct': (60003, frozenset()),
+}
+
+
 def test_bom_flip_residual_equals_the_recorded_set_file_by_file() -> None:
     """The residual is a record, not a budget: growth by one flip is red.
 
-    For every recorded binary still present at its recorded byte size, the
-    set of (offset, byte order) flips must equal the recorded set exactly.
-    There is no headroom and no ratio — a file that gains a flip fails, and
-    so does a file that gains one and loses another.
-
-    Files that are absent or rebuilt are skipped individually and named in
-    the failure message, so a different distribution relaxes the pin for
-    that file alone; if none of the fourteen still matches, the record no
-    longer describes this host and the test says so rather than passing.
+    Runs over a versioned, generated corpus (``_F3_RESIDUAL_CORPUS``) rather
+    than host system binaries, so every machine checks the same bytes. For
+    each blob the set of (offset, byte order) flips must equal the recorded
+    set exactly — no headroom, no ratio: a blob that gains a flip fails, and
+    so does one that gains one and loses another.
     """
-    import pathlib
-
-    checked: list[str] = []
-    unmatched: list[str] = []
-    for spec in _F3_SYSTEM_BINARIES:
-        path = pathlib.Path(spec)
-        record = _F3_RECORDED_FLIPS.get(path.name)
-        if record is None or not path.is_file():
-            unmatched.append(f"{path.name}: absent")
-            continue
-        size, expected = record
-        if path.stat().st_size != size:
-            unmatched.append(
-                f"{path.name}: {path.stat().st_size} bytes, recorded {size}"
-            )
-            continue
-        blob = path.read_bytes()
+    assert set(_F3_RESIDUAL_CORPUS) == set(_F3_RESIDUAL_FLIPS)
+    total = 0
+    for name, (seed, noise, encoding) in _F3_RESIDUAL_CORPUS.items():
+        blob = _f3_residual_blob(seed, noise, encoding)
+        size, expected = _F3_RESIDUAL_FLIPS[name]
+        assert len(blob) == size, f"{name}: fixture drifted ({len(blob)} != {size})"
         observed = _bom_flip_offsets(blob)
         assert observed == set(expected), (
-            f"{path.name}: BOM-flip set changed. "
+            f"{name}: BOM-flip set changed. "
             f"new {sorted(observed - set(expected))[:10]}, "
             f"gone {sorted(set(expected) - observed)[:10]}"
         )
         # A flip may never come from a slice that already starts with a BOM:
         # the BOM is always something an attacker prepends by hand.
         for off, _tag in observed:
-            assert blob[off:off + 2] not in (b"\xff\xfe", b"\xfe\xff"), (
-                path.name, off
-            )
-        checked.append(path.name)
-
-    assert checked, (
-        "no recorded binary matched this host, so the residual record was "
-        f"not exercised at all: {unmatched}"
-    )
-    # 18 flips over 14 files / 5 853 slices, recorded 2026-08-02.
-    total = sum(len(_F3_RECORDED_FLIPS[name][1]) for name in checked)
-    assert total <= 18, f"recorded set itself grew: {total} flips in {checked}"
+            assert blob[off:off + 2] not in (b"\xff\xfe", b"\xfe\xff"), (name, off)
+        total += len(observed)
+    # The corpus must actually exercise the residual, or the pin is vacuous.
+    assert total == 15, f"recorded residual changed: {total} flips"
 
 
 def test_r14_natural_bom_prefixed_slices_never_accept() -> None:

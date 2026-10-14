@@ -646,6 +646,31 @@ async def get_mindmap_job(
     )
 
 
+async def _persisted_mindmap(job_id: str, user_id: int) -> Any:
+    """Rebuild a download view from the durable record + files on disk."""
+    base = await job_lifecycle.read_download(job_id, user_id, "mindmap")
+    if base is None:
+        return None
+    root = Path(settings.ARTIFACTS_DIR)
+
+    def _read(ext: str, binary: bool) -> Any:
+        path = root / f"{job_id}.{ext}"
+        if not path.is_file():
+            return None
+        return path.read_bytes() if binary else path.read_text(encoding="utf-8")
+
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        state=base.state,
+        error=base.error,
+        title=base.title,
+        svg_bytes=_read("svg", True),
+        dot_source=_read("dot", False),
+        spec_json=_read("json", False),
+    )
+
+
 @router.get(
     "/jobs/{job_id}/download/{fmt}",
     responses={
@@ -674,7 +699,11 @@ async def download_mindmap(
     rendered SVG. Returns 404 for unknown/cross-user jobs, 409 if still
     running, and 410 if the job is failed/cancelled.
     """
-    rec = jobs.get_user_job(job_id, identity.id)
+    rec: Any = jobs.get_user_job(job_id, identity.id)
+    if rec is None:
+        # Studio restarted or the record was evicted: rebuild from the
+        # durable job record + files on disk, same owner check.
+        rec = await _persisted_mindmap(job_id, identity.id)
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",

@@ -702,6 +702,23 @@ async def get_infographic_job(
     )
 
 
+async def _persisted_infographic(job_id: str, user_id: int) -> Any:
+    """Rebuild a download view from the durable record + files on disk."""
+    base = await job_lifecycle.read_download(job_id, user_id, "infographic")
+    if base is None:
+        return None
+    root = Path(settings.ARTIFACTS_DIR)
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        state=base.state,
+        error=base.error,
+        title=base.title,
+        html_path=str(root / f"{job_id}.html"),
+        pdf_path=str(root / f"{job_id}.pdf"),
+    )
+
+
 @router.get(
     "/jobs/{job_id}/download/{fmt}",
     response_class=FileResponse,
@@ -722,7 +739,11 @@ async def download_infographic_artifact(
             detail="fmt must be one of: html, pdf",
         )
 
-    rec = jobs.get_user_job(job_id, identity.id)
+    rec: Any = jobs.get_user_job(job_id, identity.id)
+    if rec is None:
+        # Studio restarted or the record was evicted: rebuild from the
+        # durable job record + files on disk, same owner check.
+        rec = await _persisted_infographic(job_id, identity.id)
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
@@ -771,11 +792,21 @@ async def delete_infographic_job(
     """Cancel + delete a job, best-effort removing the artifact files."""
     removed = await jobs.delete_job(job_id, identity.id)
     if not removed:
-        # Either not yours or already gone — same DELETE semantics as
-        # the slides side (return 404 only when the row truly never
-        # existed for this user).
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found.",
-        )
+        # Evicted or restarted: the files on disk are still downloadable
+        # through the durable record, so DELETE must reach them too (same
+        # owner + type check). 404 only when no record is yours.
+        persisted = await _persisted_infographic(job_id, identity.id)
+        if persisted is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found.",
+            )
+        for path_str in (persisted.html_path, persisted.pdf_path):
+            try:
+                Path(path_str).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Failed to delete infographic artifact %s: %s", path_str, exc)
+    # Drop the durable record so the download fallback cannot serve a
+    # deleted job even if a best-effort unlink failed.
+    await job_lifecycle.get_job_store().delete(job_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

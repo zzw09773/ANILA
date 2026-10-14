@@ -685,6 +685,22 @@ async def get_datatable_job(
     )
 
 
+async def _persisted_datatable(job_id: str, user_id: int) -> Any:
+    """Rebuild a download view from the durable record + files on disk."""
+    base = await job_lifecycle.read_download(job_id, user_id, "datatable")
+    if base is None:
+        return None
+    root = Path(settings.ARTIFACTS_DIR) / "datatables"
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        state=base.state,
+        error=base.error,
+        title=base.title,
+        artifact_paths={ext: root / f"{job_id}.{ext}" for ext in ("html", "csv", "xlsx")},
+    )
+
+
 @router.get("/jobs/{job_id}/download/{fmt}")
 async def download_datatable_artifact(
     job_id: str,
@@ -708,7 +724,11 @@ async def download_datatable_artifact(
             detail=f"Unknown format '{fmt}'. Expected one of: html, csv, xlsx.",
         )
 
-    rec = jobs.get_user_job(job_id, identity.id)
+    rec: Any = jobs.get_user_job(job_id, identity.id)
+    if rec is None:
+        # Studio restarted or the record was evicted: rebuild from the
+        # durable job record + files on disk, same owner check.
+        rec = await _persisted_datatable(job_id, identity.id)
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
@@ -766,10 +786,22 @@ async def cancel_datatable_job(
     """
     rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
-        )
+        # Evicted or restarted: the files were kept for download, so a
+        # DELETE must still be able to remove them (same owner check).
+        persisted = await _persisted_datatable(job_id, identity.id)
+        if persisted is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
+            )
+        for path in persisted.artifact_paths.values():
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Datatable job %s: failed to unlink %s: %s", job_id, path, exc)
+        await job_lifecycle.get_job_store().delete(job_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     # Cancel if running, then hard-delete the record + artifacts.
     await jobs.cancel_job(job_id, identity.id)
     await jobs.delete_job(job_id, identity.id)
+    await job_lifecycle.get_job_store().delete(job_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

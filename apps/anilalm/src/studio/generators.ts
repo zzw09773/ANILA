@@ -2,7 +2,7 @@ import { chatComplete } from '../api/chat'
 import { resolveKnowledgeChatModel } from '../api/modelRole'
 import { searchCollection, type SearchHit } from '../api/search'
 import { COMMON_PREAMBLE } from '../generated/preamble'
-import { useArtifactStore } from '../store/artifacts'
+import { addForOwner, currentArtifactOwner } from '../store/artifacts'
 import {
   createReportJob,
   createMindmapJob,
@@ -222,6 +222,7 @@ export async function generateReport({
   preset,
   extraInstructions,
 }: GenerateReportInput): Promise<ReportArtifact> {
+  const owner = currentArtifactOwner()
   // Slice 8b: bind a CSP Task before launching (degrades to null on failure).
   const binding = await createArtifactTask({
     title: `${collection.name} · 深度報告`,
@@ -247,7 +248,7 @@ export async function generateReport({
     jobId: status.job_id,
     step: status.step ?? null,
   }
-  useArtifactStore.getState().add(artifact)
+  addForOwner(owner, artifact)
   return artifact
 }
 
@@ -278,6 +279,7 @@ export async function generateSlides({
   preset,
   extraInstructions,
 }: GenerateSlidesInput): Promise<SlidesArtifact> {
+  const owner = currentArtifactOwner()
   const countHint = SLIDE_COUNT_HINT[preset] ?? '預設 10-12 張投影片。'
   const hits = await retrieveContext(collection, preset, extraInstructions)
   const system = [
@@ -353,7 +355,7 @@ export async function generateSlides({
     sourceCount: docs.length,
     createdAt: new Date().toISOString(),
   }
-  useArtifactStore.getState().add(artifact)
+  addForOwner(owner, artifact)
   return artifact
 }
 
@@ -378,6 +380,7 @@ export async function generateMindmap({
   extraInstructions,
   maxDepth,
 }: GenerateMindmapInput): Promise<MindmapArtifact> {
+  const owner = currentArtifactOwner()
   const binding = await createArtifactTask({
     title: `${collection.name} · 心智圖`,
     outputType: 'mindmap',
@@ -403,7 +406,7 @@ export async function generateMindmap({
     jobId: status.job_id,
     step: status.step ?? null,
   }
-  useArtifactStore.getState().add(artifact)
+  addForOwner(owner, artifact)
   return artifact
 }
 
@@ -420,6 +423,7 @@ export async function generateInfographic({
   preset,
   extraInstructions,
 }: GenerateInfographicInput): Promise<InfographicArtifact> {
+  const owner = currentArtifactOwner()
   const binding = await createArtifactTask({
     title: `${collection.name} · 資訊圖表`,
     outputType: 'infographic',
@@ -444,7 +448,7 @@ export async function generateInfographic({
     jobId: status.job_id,
     step: status.step ?? null,
   }
-  useArtifactStore.getState().add(artifact)
+  addForOwner(owner, artifact)
   return artifact
 }
 
@@ -463,6 +467,7 @@ export async function generateDatatable({
   extraInstructions,
   targetColumns,
 }: GenerateDatatableInput): Promise<DatatableArtifact> {
+  const owner = currentArtifactOwner()
   const binding = await createArtifactTask({
     title: `${collection.name} · 資料表`,
     outputType: 'datatable',
@@ -488,6 +493,6 @@ export async function generateDatatable({
     jobId: status.job_id,
     step: status.step ?? null,
   }
-  useArtifactStore.getState().add(artifact)
+  addForOwner(owner, artifact)
   return artifact
 }

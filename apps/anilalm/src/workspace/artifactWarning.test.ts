@@ -23,7 +23,10 @@ const artifact = {
 }
 
 let currentArtifact = { ...artifact }
-const artifactState = { byCollection: { 1: [currentArtifact] } }
+const artifactState = {
+  ownerId: 7 as number | null,
+  byCollection: { 1: [currentArtifact] },
+}
 const workspaceState = {
   collection: { id: 1 },
   setStudioOpen: vi.fn(),
@@ -47,6 +50,13 @@ vi.mock('../store/artifacts', () => {
     get: () => currentArtifact,
   })
   return { useArtifactStore }
+})
+
+vi.mock('../store/auth', () => {
+  const authState = { user: { id: 7 } }
+  const useAuthStore = (selector: (state: typeof authState) => unknown) => selector(authState)
+  useAuthStore.getState = () => authState
+  return { useAuthStore }
 })
 
 vi.mock('../components/Icon', () => ({ Icon: () => null }))

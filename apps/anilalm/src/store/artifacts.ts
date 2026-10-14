@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { StudioArtifact } from '../types'
 
 // 製作台產出清單。權威來源是 CSP GET /api/artifacts。
-// localStorage（anilalm:artifacts）只當快取：換瀏覽器時以伺服器清單為準，
+// localStorage（anilalm:artifacts:v2，記錄擁有者帳號）只當快取：換瀏覽器時以伺服器清單為準，
 // 伺服器還沒有的進行中工作仍留在本機，直到回報完成。
 //
 // Slides artifacts now carry a `state` ("pending" | "done" | "failed")
@@ -13,7 +13,11 @@ import type { StudioArtifact } from '../types'
 // `update` action exists for that transition.
 
 interface ArtifactState {
+  /** 快取屬於哪個帳號。null = 身分未確認，不顯示任何快取。 */
+  ownerId: number | null
   byCollection: Record<number, StudioArtifact[]>
+  /** 身分確認或切換時呼叫。帳號不同就清空前一人的快取。 */
+  setOwner: (userId: number | null) => void
   add: (artifact: StudioArtifact) => void
   /**
    * Patch fields on an existing artifact. Used by the polling loop to
@@ -39,6 +43,14 @@ interface ArtifactState {
  * 伺服器列是這個知識庫已回報的產出。本機列只留下伺服器還沒看到的
  * （多半是還在鑄造、尚未 POST /v1/artifacts 的工作）。
  */
+/** 完成後等 CSP 登錄的寬限期，與 Studio 記憶體工作的保留時間相同。 */
+export const UNSYNCED_GRACE_MS = 60 * 60 * 1000
+let nowMs = () => Date.now()
+/** 測試用：固定現在時間。 */
+export function setNowForTests(fn: (() => number) | null): void {
+  nowMs = fn ?? (() => Date.now())
+}
+
 export function mergeArtifactLists(
   local: StudioArtifact[],
   server: StudioArtifact[],
@@ -51,15 +63,39 @@ export function mergeArtifactLists(
     if (row.jobId && serverJobIds.has(row.jobId)) return false
     return true
   })
+  // 伺服器清單是權威。本機只多留兩種（快取已按帳號隔離，都是自己的）：
+  // 還在鑄造中的工作，以及剛完成、Studio 可能還沒登錄到 CSP 的工作。
+  // 超過寬限期仍不在伺服器清單裡的，就以伺服器為準移除。
+  const now = nowMs()
   const pending = extras.filter((row) => (row.state ?? 'done') === 'pending')
-  const kept = extras.filter((row) => (row.state ?? 'done') !== 'pending')
-  return [...pending, ...server, ...kept]
+  const unsynced = extras.filter((row) => {
+    if ((row.state ?? 'done') === 'pending') return false
+    const created = Date.parse(row.createdAt)
+    return Number.isFinite(created) && now - created < UNSYNCED_GRACE_MS
+  })
+  return [...pending, ...server, ...unsynced]
+}
+
+/** 舊版所有帳號共用的快取 key，裡面可能有別人的產出。 */
+export const LEGACY_ARTIFACT_CACHE_KEY = 'anilalm:artifacts'
+export const ARTIFACT_CACHE_KEY = 'anilalm:artifacts:v2'
+
+if (typeof localStorage !== 'undefined') {
+  try {
+    localStorage.removeItem(LEGACY_ARTIFACT_CACHE_KEY)
+  } catch {
+    // 無法存取 localStorage 就略過。
+  }
 }
 
 export const useArtifactStore = create<ArtifactState>()(
   persist(
     (set, get) => ({
+      ownerId: null,
       byCollection: {},
+
+      setOwner: (userId) =>
+        set((s) => (s.ownerId === userId ? s : { ownerId: userId, byCollection: {} })),
 
       add: (artifact) =>
         set((s) => {
@@ -126,8 +162,34 @@ export const useArtifactStore = create<ArtifactState>()(
         })),
     }),
     {
-      name: 'anilalm:artifacts',
+      name: ARTIFACT_CACHE_KEY,
+      version: 2,
       storage: createJSONStorage(() => localStorage),
+      // 舊版本沒有 ownerId，無法確定是誰的，直接丟掉。
+      migrate: () => ({ ownerId: null, byCollection: {} }) as unknown as ArtifactState,
     },
   ),
 )
+
+/** 建立工作的回應抵達時帳號已換人，不能把前一人的工作放進新帳號的快取。 */
+export class ArtifactOwnerChangedError extends Error {
+  constructor() {
+    super('帳號已切換，這次產出不會顯示在目前的帳號。')
+    this.name = 'ArtifactOwnerChangedError'
+  }
+}
+
+/** 目前快取擁有者。發出建立請求前先記下來，回應回來時交給 addForOwner。 */
+export function currentArtifactOwner(): number | null {
+  return useArtifactStore.getState().ownerId
+}
+
+/**
+ * 只有在快取仍屬於發出請求的那個帳號時才新增；否則丟出
+ * ArtifactOwnerChangedError，呼叫端不要再把這筆交給畫面。
+ */
+export function addForOwner(owner: number | null, artifact: StudioArtifact): void {
+  const st = useArtifactStore.getState()
+  if (owner === null || st.ownerId !== owner) throw new ArtifactOwnerChangedError()
+  st.add(artifact)
+}
