@@ -18,7 +18,7 @@ export const INGESTION_FILE_EXTENSIONS: string[] = [
   '.txt', '.md', '.markdown', '.json', '.html', '.htm', '.rtf',
   '.pdf', '.docx', '.doc', '.odt',
   // 純文字 / 設定 / 原始碼
-  '.py', '.csv', '.tsv', '.log', '.yaml', '.yml', '.toml', '.ini', '.xml',
+  '.py', '.csv', '.tsv', '.xlsx', '.log', '.yaml', '.yml', '.toml', '.ini', '.xml',
   '.sh', '.bash', '.sql', '.js', '.ts', '.tsx', '.jsx',
   '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
   '.rb', '.php', '.r', '.m', '.tex',

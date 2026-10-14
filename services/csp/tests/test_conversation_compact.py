@@ -419,11 +419,15 @@ def test_alembic_heads_single_r1_0072():
     ).read_text(encoding="utf-8")
     assert 'revision: str = "r1_0073"' in skill_usage
     assert 'down_revision: Union[str, None] = "r1_0072"' in skill_usage
+    for rev, prev, name in (("r1_0074", "r1_0073", "r1_0074_feedback_resolution.py"), ("r1_0075", "r1_0074", "r1_0075_handover_interview.py")):
+        body = (CSP_ROOT / "migrations" / "versions" / name).read_text(encoding="utf-8")
+        assert f'revision: str = "{rev}"' in body
+        assert f'down_revision: Union[str, None] = "{prev}"' in body
     cfg = Config(str(CSP_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0073"], f"alembic head 應為 r1_0073，實得 {heads}"
+    assert heads == ["r1_0075"], f"alembic head 應為 r1_0075，實得 {heads}"
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -440,7 +444,7 @@ def test_alembic_heads_single_r1_0072():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0073" in cli.stdout
+    assert "r1_0075" in cli.stdout
     nullable = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0055_collection_embedding_model_nullable.py"
