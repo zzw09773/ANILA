@@ -134,7 +134,7 @@ def collection_usable(db, user, coll):
         coll.department_id is not None and coll.department_id == user.department_id
     ):
         return can_read_collection(db, user, coll)
-    publication = db.get(QuickCollectionPublication, coll.id)
+    publication = db.get(QuickCollectionPublication, coll.id, populate_existing=True)
     return bool(publication and can_read_collection(db, user, coll))
 
 
@@ -149,7 +149,9 @@ def validate_sources(db, user, payload, *, complete=False, check_model_access=Tr
         fail(422, "SOURCE_NOT_DECLARED", "請先將檢索文件集加入助手的資料來源")
     level = ClassificationLevel.from_storage(payload["classification_level"])
     for source_id in declared:
-        coll = db.get(IngestionCollection, source_id)
+        # A run retains its Session across awaited services. Never authorize
+        # from an identity-map row loaded before a source was revoked/raised.
+        coll = db.get(IngestionCollection, source_id, populate_existing=True)
         if (
             coll is None
             or not collection_usable(db, user, coll)
@@ -163,7 +165,7 @@ def validate_sources(db, user, payload, *, complete=False, check_model_access=Tr
             fail(422, "SOURCE_CLASSIFICATION", "助手密等必須涵蓋所選文件集的密等")
         if complete and (
             coll.department_id is None
-            or db.get(QuickCollectionPublication, coll.id) is None
+            or db.get(QuickCollectionPublication, coll.id, populate_existing=True) is None
         ):
             fail(
                 422,
@@ -178,7 +180,7 @@ def validate_sources(db, user, payload, *, complete=False, check_model_access=Tr
         if expected and expected != approved_tools[tool_id]["fingerprint"]:
             fail(409, "TOOL_CHANGED", "查詢工具的參數已變更，請另存版本並重新送審")
     model = (
-        db.get(ModelRegistry, payload.get("model_id"))
+        db.get(ModelRegistry, payload.get("model_id"), populate_existing=True)
         if payload.get("model_id")
         else None
     )

@@ -66,7 +66,7 @@ def can_read_collection(db: Session, user: User, coll: IngestionCollection) -> b
         return coll.created_by == user.id
     from app.models.quick_builder import QuickCollectionPublication
 
-    publication = db.get(QuickCollectionPublication, coll.id)
+    publication = db.get(QuickCollectionPublication, coll.id, populate_existing=True)
     if publication:
         return (
             user.department_id == coll.department_id
@@ -93,7 +93,7 @@ def can_write_collection(db: Session, user: User, coll: IngestionCollection) -> 
         return True
     from app.models.quick_builder import QuickCollectionPublication
 
-    if db.get(QuickCollectionPublication, coll.id) is not None:
+    if db.get(QuickCollectionPublication, coll.id, populate_existing=True) is not None:
         return coll.department_id == user.department_id
     return department_scope_contains(db, coll.department_id, user.department_id)
 
@@ -117,6 +117,7 @@ def select_visible_collections(
         p.collection_id: p
         for p in db.query(QuickCollectionPublication)
         .filter(QuickCollectionPublication.collection_id.in_([c.id for c in rows]))
+        .populate_existing()
         .all()
     }
     visible: list[IngestionCollection] = []
