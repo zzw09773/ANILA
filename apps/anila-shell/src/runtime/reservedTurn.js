@@ -46,7 +46,7 @@ export const STREAM_STATE = {
  *     一列被別的東西寫進奇怪的值,回 null 會讓那一列渲染得**跟完整答案
  *     一模一樣**。沒有 envelope(null/undefined)才是「這是一則普通訊息」,
  *     那一種才回 null。
- *  2. **沒有內容時措辭要換掉**。「以下是中斷前的內容」底下什麼都沒有,
+ *  2. **沒有內容時措辭要換掉**。「上方保留中斷前已收到的內容」底下什麼都沒有,
  *     那句話本身就是假的(排隊中被取消、開頭就斷線都會這樣)。
  *
  * @param {string|null|undefined} state
@@ -99,15 +99,15 @@ export function streamStateNotice(state, hasContent = true) {
       return hasContent ? null : "模型沒有留下正文。";
     case STREAM_STATE.STOPPED:
       return hasContent
-        ? "已停止產生，以下是中斷前的內容。"
+        ? "已停止產生，上方保留中斷前已收到的內容。"
         : "已停止產生，這則回答沒有留下任何內容。";
     case STREAM_STATE.FAILED:
       return hasContent
-        ? "產生過程發生錯誤，以下是中斷前的內容。"
+        ? "產生過程發生錯誤，上方保留中斷前已收到的內容。"
         : "產生過程發生錯誤，這則回答沒有留下任何內容。";
     case STREAM_STATE.INTERRUPTED:
       return hasContent
-        ? "這則回答沒有產生完成（連線中斷或視窗關閉），以下是中斷前的內容。"
+        ? "這則回答沒有產生完成（連線中斷或視窗關閉），上方保留中斷前已收到的內容。"
         : "這則回答沒有產生完成（連線中斷或視窗關閉），而且沒有留下任何內容。";
     case STREAM_STATE.UNANSWERED:
       // 這一列不是「答到一半」,是「從來沒有答」——所以措辭跟上面三種不同,

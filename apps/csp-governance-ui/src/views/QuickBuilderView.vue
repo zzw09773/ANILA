@@ -369,7 +369,11 @@
             <h4>模型內容調整</h4>
             <ul><li v-for="(event, index) in modelContextNotices(step.context_replacements)" :key="index">{{ contextSourceLabel(event.sourceId) }}：{{ event.message }}</li></ul>
           </template>
-          <p v-if="step.error && !completionErrorIsShown(step)" role="alert">{{ pretty(step.error) }}；請檢查這個步驟的設定後重試。</p>
+          <div v-if="step.error && !completionErrorIsShown(step)" class="qb-step-error" role="alert">
+            <p>{{ executionErrorNotice(step.error).message }}</p>
+            <p>錯誤類型：{{ executionErrorNotice(step.error).type }}</p>
+            <p v-if="executionErrorNotice(step.error).action">{{ executionErrorNotice(step.error).action }}</p>
+          </div>
         </details>
       </template>
     </section>
@@ -387,6 +391,7 @@ import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
 import { completionNotices, completionTestResult, completionErrorIsShown, testRunStatus, modelCompletionDetails } from '../quickBuilder/completion';
+import { executionErrorNotice } from '../quickBuilder/executionError';
 import { retrievalNotices, modelContextNotices } from '../quickBuilder/retrievalNotices';
 import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel, GRAPH_GEOMETRY, layoutGraph, edgeGeometry, graphBounds, canvasPoint, canvasDelta } from '../quickBuilder/graph';
 const assistants = ref([]),

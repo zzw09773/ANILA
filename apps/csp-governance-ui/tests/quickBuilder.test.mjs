@@ -282,3 +282,26 @@ test('空filter回覆仍顯示completion fallback，缺漏或非法用量明示�
   assert.match(document.body.textContent,/MODEL_CONTENT_FILTER/)
   assert.doesNotMatch(document.body.textContent,/COMPLETION_USAGE_CANARY|9007199254740992/)
 })
+
+test('測試窗服務失敗與EOF只顯白話及獨立錯誤類型，不輸出JSON或誤導為設定問題', async () => {
+  for (const type of ['PROVIDER_ERROR', 'STREAM_INTERRUPTED']) {
+    await runCompletionFixture({status:'failed',output:'已收到的部分',steps:[{node_id:'condition',elapsed_ms:1,input:'問題',output:'已收到的部分',error:{type,message:'EXECUTION_ERROR_CANARY',debug:'EXECUTION_ERROR_CANARY',stderr:'EXECUTION_ERROR_CANARY',api_key:'EXECUTION_ERROR_CANARY'}}]})
+    const error=document.querySelector('.qb-step-error')
+    assert.ok(error)
+    assert.match(error.textContent,new RegExp(`錯誤類型：${type}`))
+    assert.match(error.textContent,type==='PROVIDER_ERROR'?/授權服務執行失敗/:/回覆連線在結束前中斷/)
+    assert.doesNotMatch(error.textContent,/檢查.*設定|\{|\}|message|stderr|debug|EXECUTION_ERROR_CANARY/)
+    assert.doesNotMatch(document.body.textContent,/EXECUTION_ERROR_CANARY/)
+    assert.match(document.body.textContent,/已收到的部分/)
+  }
+})
+test('設定缺漏才有固定設定建議，未知錯誤類型不得帶出自由欄位', async () => {
+  await runCompletionFixture({status:'failed',output:'',steps:[{node_id:'condition',elapsed_ms:1,input:'',output:'',error:{type:'CONFIGURATION_REQUIRED',message:'EXECUTION_ERROR_CANARY'}}]})
+  assert.match(document.querySelector('.qb-step-error').textContent,/尚缺少必要設定/)
+  assert.match(document.querySelector('.qb-step-error').textContent,/請確認已選擇所需文件集/)
+  await runCompletionFixture({status:'failed',output:'',steps:[{node_id:'condition',elapsed_ms:1,input:'',output:'',error:{type:'EXECUTION_ERROR_CANARY',message:'EXECUTION_ERROR_CANARY',action:'修改設定 EXECUTION_ERROR_CANARY'}}]})
+  const error=document.querySelector('.qb-step-error')
+  assert.match(error.textContent,/錯誤類型：UNKNOWN_ERROR/)
+  assert.equal(error.querySelectorAll('p').length,2)
+  assert.doesNotMatch(document.body.textContent,/EXECUTION_ERROR_CANARY|修改設定/)
+})

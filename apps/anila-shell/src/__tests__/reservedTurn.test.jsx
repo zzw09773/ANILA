@@ -16,7 +16,7 @@ import {
   HttpError,
   makeAuthRequest,
 } from "./fakeConversationBackend.js";
-import { makeStreamWriter } from "../runtime/reservedTurn.js";
+import { makeStreamWriter, streamStateNotice } from "../runtime/reservedTurn.js";
 import { config } from "../runtime/api.js";
 
 // ── 受控串流 ─────────────────────────────────────────────────────────────────
@@ -410,7 +410,7 @@ describe("stop mid-stream", () => {
     // 這一條擋的突變:把 app.jsx 串流 finally 裡的
     // `userStoppedRef.current.delete(convId)` 刪掉。426 個測試全綠,但在
     // 瀏覽器裡的行為是:按過一次停止之後,下一則「正常跑完」的答案被寫成
-    // stopped,並且掛上「已停止產生，以下是中斷前的內容。」——一個完整的
+    // stopped,並且掛上「已停止產生，上方保留中斷前已收到的內容。」——一個完整的
     // 答案被呈現成半截的。這正是本專案第四條教訓反過來的形態:控制項告訴
     // 使用者發生了一件沒有發生的事。
     //
@@ -1167,7 +1167,7 @@ describe("Stop means this conversation stops", () => {
       ),
     ).toEqual([]);
 
-    // 使用者看到的那一面:沒有內容的那一則不能說「以下是中斷前的內容」。
+    // 使用者看到的那一面:沒有內容的那一則不能說「上方保留中斷前已收到的內容」。
     const notices = await screen.findAllByTestId("message-incomplete-notice");
     expect(notices.length).toBe(2);
     expect(notices.map((n) => n.textContent).join("|")).toContain(
@@ -1597,7 +1597,7 @@ describe("edit and re-ask — honesty about a stopped answer", () => {
   });
 });
 
-// ── 「沒有留下任何內容」不能講成「以下是中斷前的內容」 ───────────────────────
+// ── 「沒有留下任何內容」不能講成「上方保留中斷前已收到的內容」 ───────────────────────
 //
 // 這是這個 commit 存在的理由本身。唯一覆蓋到那句措辭的測試打的是「排隊中被
 // 取消」那條分支,而那條分支的 hasContent 是寫死的 false —— 兩條真正用算出來
@@ -1616,8 +1616,8 @@ describe("a stopped turn that produced nothing says so", () => {
 
     const notice = await screen.findByTestId("message-incomplete-notice");
     expect(notice.textContent).toContain("沒有留下任何內容");
-    // 底下一個字都沒有,所以絕不能說「以下是中斷前的內容」。
-    expect(notice.textContent).not.toContain("以下是中斷前的內容");
+    // 底下一個字都沒有,所以絕不能說「上方保留中斷前已收到的內容」。
+    expect(notice.textContent).not.toContain("上方保留中斷前已收到的內容");
     await waitFor(() => {
       const row = [...backend.messages.values()].find((m) => m.role === "assistant");
       expect(row.content).toBe("");
@@ -1651,7 +1651,7 @@ describe("a stopped turn that produced nothing says so", () => {
 
     const notice = await screen.findByTestId("message-incomplete-notice");
     expect(notice.textContent).toContain("沒有留下任何內容");
-    expect(notice.textContent).not.toContain("以下是中斷前的內容");
+    expect(notice.textContent).not.toContain("上方保留中斷前已收到的內容");
 
     await act(async () => {
       releasePath();
@@ -1955,5 +1955,15 @@ describe("a question that never got an answer", () => {
     const regens = await screen.findAllByTitle(/重新產生/);
     expect(regens.length).toBeGreaterThan(0);
     expect(regens.some((b) => !b.disabled)).toBe(true);
+  });
+});
+
+
+describe('stream notices describe content above the notice', () => {
+  it.each(['stopped', 'failed', 'interrupted'])('%s points to preserved content above, while empty replies claim no content', state => {
+    expect(streamStateNotice(state, true)).toContain('上方保留中斷前已收到的內容');
+    expect(streamStateNotice(state, true)).not.toContain('以下');
+    expect(streamStateNotice(state, false)).toContain('沒有留下任何內容');
+    expect(streamStateNotice(state, false)).not.toContain('上方保留');
   });
 });
