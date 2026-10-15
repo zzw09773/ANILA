@@ -1,10 +1,6 @@
-"""回答完成後，另外產生「建議下一個問題」。
+"""追問建議停用：不生成、不回放快取，保留資格與存取檢查。
 
-不進主回答的 prompt，也不往主串流插事件。呼叫端在訊息已經存好之後
-打 POST。這裡只讀最後一則使用者訊息和這則回答，寫回該訊息的 meta。
-
-失敗、逾時、額度、上游 5xx、並行額滿都回空清單，不把錯誤丟給畫面。
-只有還沒產生過的成功結果（含模型說 NONE）會寫進 meta。
+任意模型文字沒有核定的簡繁驗證能力，parser 一律回空清單。
 """
 from __future__ import annotations
 
@@ -22,6 +18,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.platform_setting import get_setting
 from app.models.user import User
+from app.services.follow_ups_policy import follow_ups_available
 
 FOLLOW_UP_PROMPT = (
     "以繁體中文（台灣用語）列出使用者最可能接著問的 3 個問題，每行一個，每個 30 字內，"
@@ -55,11 +52,10 @@ _DISPATCH_RE = re.compile(r"^\s*dispatch to\s+(\S.*?)\s*$", re.IGNORECASE)
 
 _gate = threading.Lock()
 _inflight = 0
-_s2t = None
 
 
 class FollowUpParseError(Exception):
-    """簡繁檢查無法執行。這次當成產生失敗，不寫快取。"""
+    """追問解析不可用；保留例外型別供既有呼叫端相容。"""
 
 
 def followups_timeout_seconds() -> float:
@@ -153,45 +149,9 @@ def _near_identical(suggestion: str, question: str) -> bool:
     return shorter in longer and (len(shorter) / len(longer)) >= NEAR_IDENTICAL_RATIO
 
 
-def _converter():
-    global _s2t
-    if _s2t is None:
-        from opencc import OpenCC
-
-        _s2t = OpenCC("s2t")
-    return _s2t
-
-
-def _contains_simplified(text: str) -> bool:
-    """整句轉成繁體後有變，就當裡面有簡體。轉換器壞掉則整次產生作廢。"""
-    try:
-        converted = _converter().convert(text)
-    except Exception as exc:
-        raise FollowUpParseError("簡繁檢查失敗") from exc
-    return converted != text
-
-
 def parse_follow_ups(raw: str, user_question: str, *, limit: int) -> list[str]:
-    """清編號與引號、丢掉 NONE、過短過長、簡體、與原問題幾乎一樣的，再去重。"""
-    if limit < 1:
-        return []
-    kept: list[str] = []
-    for line in (raw or "").splitlines():
-        text = _clean_line(line)
-        if not text or _NONE_RE.match(text):
-            continue
-        if len(text) < MIN_SUGGESTION_CHARS or len(text) > MAX_SUGGESTION_CHARS:
-            continue
-        if _contains_simplified(text):
-            continue
-        if _near_identical(text, user_question or ""):
-            continue
-        if text in kept:
-            continue
-        kept.append(text)
-        if len(kept) >= limit:
-            break
-    return kept
+    """功能不可用時拒收所有任意追問文字，不作簡繁猜測或反向轉換。"""
+    return []
 
 
 def _stream_state(msg: Message) -> str | None:
@@ -216,6 +176,8 @@ def _require_suggestable(msg: Message) -> None:
 
 
 def _cached(msg: Message) -> list[str] | None:
+    if not follow_ups_available():
+        return None
     meta = msg.metadata_ if isinstance(msg.metadata_, dict) else None
     if not meta or meta.get(GENERATED_FLAG) is not True:
         return None
@@ -363,6 +325,8 @@ def _model_input(question: str, answer: str) -> str:
 
 
 def _persist(db: Session, message_id: int, suggestions: list[str]) -> list[str]:
+    if not follow_ups_available():
+        return []
     try:
         msg = db.get(Message, message_id)
         if msg is None:
@@ -393,6 +357,8 @@ async def _generate(
     question: str,
     model,
 ) -> list[str]:
+    if not follow_ups_available():
+        return []
     from app.services.internal_llm import complete_chat
 
     limit = _follow_ups_max(db)
@@ -438,8 +404,10 @@ async def suggest_follow_ups(
     conv: Conversation,
     msg: Message,
 ) -> list[str]:
-    """產生或回放這則助理訊息的建議問題。不合資格的訊息丟 422。"""
+    """先驗訊息資格；能力停用時不生成或回放，不合資格仍回 422。"""
     _require_suggestable(msg)
+    if not follow_ups_available():
+        return []
     cached = _cached(msg)
     if cached is not None:
         return cached
@@ -457,6 +425,8 @@ async def suggest_follow_ups(
     try:
         try:
             db.refresh(msg)
+            if not follow_ups_available():
+                return []
             cached = _cached(msg)
             if cached is not None:
                 return cached

@@ -17,7 +17,7 @@ Pipeline:
        field can't be filled from chunks, leave it blank — DO NOT
        make up data.
     4. Validate via Pydantic. On failure, ONE correction pass.
-    5. strip_latex + s2twp normalise every visible string.
+    5. strip_latex + fixed-term normalise every visible string.
     6. matplotlib render each ChartSpec → PNG bytes (in-process,
        single thread, Agg backend).
     7. Jinja2 render HTML with PNG base64 inline.
@@ -89,7 +89,7 @@ from app.services.retrieval_status import (
     RETRIEVAL_FAILED_PROMPT_NOTE,
     RETRIEVAL_FAILED_WARNING,
 )
-from app.services.studio_text_normalizer import strip_inline_citations, strip_latex
+from app.services.studio_text_normalizer import apply_taiwan_terms, strip_inline_citations, strip_latex
 
 logger = logging.getLogger(__name__)
 
@@ -389,29 +389,19 @@ async def _generate_validated_spec(
 
 
 def _normalize_string(text: str | None) -> str | None:
-    """strip_latex + strip_inline_citations + s2twp on a single string.
-
-    Re-using the slide pipeline's helpers — same dependency that's
-    pinned in pyproject.toml. The OpenCC converter is module-level
-    cached so this is cheap on the hot path.
-    """
+    """Apply citation/LaTeX cleanup and fixed terms without full script conversion."""
     if text is None or text == "":
         return text
     text = strip_inline_citations(text) or ""
     text = strip_latex(text) or ""
-    # OpenCC s2twp — lazy import so the chart-only tests can mock at
-    # the renderer boundary without touching this.
-    from app.services.studio_text_normalizer import _get_converter
-
-    converter = _get_converter()
-    return converter.convert(text)
+    return apply_taiwan_terms(text)
 
 
 def _normalize_spec(spec: InfographicSpec) -> InfographicSpec:
     """Return a new InfographicSpec with every user-visible string normalised.
 
     ``StatBlock.value`` stays untouched (it's typically a numeric token
-    like "47%" / "3.5×" where OpenCC could corrupt the units).
+    like "47%" / "3.5×" where text replacement could corrupt the units).
     ``StatBlock.icon`` and ``ChartSpec.chart_type`` are enum-like;
     likewise untouched.
     """

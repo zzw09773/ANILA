@@ -50,23 +50,13 @@ Decode = Callable[..., Awaitable[dict]]
 
 
 def make_text_filter(mode: str) -> Callable[[str], str]:
-    """繁體後處理。預設 `off` = 原樣回傳。
-
-    ⚠ 不要預設開:實測 whisper medium 在 1096 句真實繁中語料的簡體率是 0%,
-    而 OpenCC 對正確繁體的誤傷率 6~10%。opencc 不在 runtime
-    相依裡,設了非 off 卻沒裝就 ImportError —— 這是刻意的 fail-loud。
-    """
+    """只支援 off 原文輸出；非 off 設定須明確遷移，沒有簡繁轉換能力。"""
     if mode == "off":
         return lambda text: text
-    if mode == "s2twp":
-        raise ValueError(
-            "ASR_OPENCC_MODE=s2twp 被明令禁止:實測對正確繁體誤傷 10.58%"
-            "(會把「類型」轉成「型別」)。"
-        )
-    import opencc  # noqa: PLC0415 — 只在真的要用時才 import
-
-    converter = opencc.OpenCC(mode)
-    return converter.convert
+    raise ValueError(
+        "ASR_TEXT_CONVERSION_UNAVAILABLE：文字轉換目前未提供，"
+        "請將 ASR_OPENCC_MODE 設為 off，保留辨識原文。"
+    )
 
 
 class AsrSession:

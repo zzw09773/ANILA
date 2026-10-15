@@ -94,7 +94,7 @@ class TimelineEvent(BaseModel):
 class InfographicSpec(BaseModel):
     """The validated, normalised infographic intent.
 
-    LLM 輸出後過 Pydantic 驗證 → s2twp 正規化 → renderer 出 PNG/HTML/PDF。
+    LLM 輸出後過 Pydantic 驗證 → 固定用語清理 → renderer 出 PNG/HTML/PDF。
     所有人讀的字串欄位都會被 normalizer 過一遍（不是這裡的責任 —
     這裡只負責結構約束）。
 

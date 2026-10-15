@@ -45,7 +45,8 @@ Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health`
 ## Stack
 
 - Python `>=3.11`, runtime image `python:3.11-slim`, port **8100** (compose only `expose`s it, not host-published).
-- Core: FastAPI `>=0.110,<1.0`, uvicorn[standard] `>=0.27`, httpx `>=0.27,<1.0`, python-jose[cryptography] `>=3.3` (RS256/JWKS), pydantic `>=2.6` + pydantic-settings `>=2.2`, redis `>=5.0`, cachetools `>=5.3`, numpy `>=1.26`, opencc-python-reimplemented `>=0.1.7` (Simplified→Traditional).
+- Core: FastAPI `>=0.110,<1.0`, uvicorn[standard] `>=0.27`, httpx `>=0.27,<1.0`, python-jose[cryptography] `>=3.3` (RS256/JWKS), pydantic `>=2.6` + pydantic-settings `>=2.2`, redis `>=5.0`, cachetools `>=5.3`, numpy `>=1.26`.
+- Text cleanup uses citation/LaTeX rules and the existing repository Taiwan term table. Unlisted characters retain their original script; full Simplified-to-Traditional conversion is unavailable. OpenCC and its dictionaries are not loaded.
 - **Artifact render stack**: jinja2 `>=3.1`, playwright `>=1.43` (headless Chromium → PDF), pypandoc `>=1.13` (HTML → DOCX), matplotlib `>=3.8`, openpyxl `>=3.1` (XLSX), markdown-it-py `>=3.0`, python-docx `>=1.1`.
 - dev: pytest, pytest-asyncio, respx, fakeredis, freezegun.
 - Dockerfile system packages: `graphviz`, `pandoc`, `curl`, `wget`, `ca-certificates`, `fonts-noto-cjk` + Chromium/Playwright dep libs + `fontconfig`; the build downloads single-face Noto Sans CJK TC OTFs (Regular + Bold) and runs `playwright install chromium` into `/opt/playwright-browsers`; runs as non-root user `anila` (uid 10001).

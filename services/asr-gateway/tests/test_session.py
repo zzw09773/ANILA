@@ -336,12 +336,14 @@ async def test_partials_disabled_never_decodes_partial():
 def test_text_filter_off_is_identity():
     f = make_text_filter("off")
     assert f("機庫內有50架無人機") == "機庫內有50架無人機"
+    assert f("导弹 软件 原始辨识") == "导弹 软件 原始辨识"
 
 
-def test_s2twp_is_refused():
-    """實測對正確繁體誤傷 10.58%(「類型」→「型別」)→ 明令禁止。"""
-    with pytest.raises(ValueError, match="s2twp"):
-        make_text_filter("s2twp")
+@pytest.mark.parametrize("mode", ["s2t", "s2tw", "s2twp", "t2s", "unknown", ""])
+def test_non_off_script_conversion_requires_configuration_migration(mode):
+    """非 off 明確不可用；不載入替代詞典或默默改變辨識文字。"""
+    with pytest.raises(ValueError, match="ASR_TEXT_CONVERSION_UNAVAILABLE.*設為 off"):
+        make_text_filter(mode)
 
 
 async def test_partial_and_final_use_separate_beams():

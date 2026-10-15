@@ -45,7 +45,7 @@ def _chunk(i: int) -> ChunkHit:
         filename=f"doc_{i}.pdf",
         chunk_key=f"k_{i}",
         content=(
-            f"chunk content {i} 视频测试。"  # 簡體片段:OpenCC test fixture,故意保留
+            f"chunk content {i} 视频测试。"  # 簡體片段:original-script fixture,故意保留
             f"第 {i} 段是模擬實際從 collection 取出的 chunk 內容,"
             f"需要足夠長度才能通過 chunking artifact 過濾門檻。"
         ),
@@ -256,11 +256,10 @@ async def test_per_section_draft_failure_degrades_gracefully(
 
 
 @pytest.mark.asyncio
-async def test_normalize_converts_simplified_to_taiwan_phrasing(
+async def test_normalize_preserves_script_and_applies_only_fixed_terms(
     runner_env, monkeypatch
 ):
-    """The spec's title is "测试标题" — OpenCC s2twp should output
-    Taiwan-style traditional characters in the rendered HTML."""
+    """Unlisted original script remains; only the existing repository term table applies."""
 
     async def chunks(*a, **kw):
         return [_chunk(1), _chunk(2)]
@@ -300,10 +299,10 @@ async def test_normalize_converts_simplified_to_taiwan_phrasing(
 
     html_path = runner_env / f"{updater.job_id}.html"
     body = html_path.read_text(encoding="utf-8")
-    # OpenCC s2twp turns 视频 → 影片, 信息 → 資訊, 数据 → 數據, etc.
-    # We assert at least *one* canonical Taiwan transformation happened
-    # in any of those words.
-    assert ("影片" in body) or ("資訊" in body) or ("數據" in body)
+    assert "视频测试标题" in body
+    assert "使用视频与数据进行测试。" in body
+    assert "資訊处理" in body
+    assert "影片" not in body
 
 
 @pytest.mark.asyncio

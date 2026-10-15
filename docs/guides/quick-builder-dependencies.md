@@ -8,7 +8,7 @@
 
 文件集採管由既有 CSP 管理 API 與資料庫權限處理，不因助手儲存或公開改動文件集 ACL。採管庫寫入精確限制單位，範本隨公開來源撤回而隱藏；停用恢復、Agent 管理護欄及 QuickRun 私有執行脈絡均由同一服務處理。文件草稿提供純文字 RTF，以及既有 Studio 四固定 ReportPreset、HTML／PDF／DOCX，已有 12 組離線轉檔工程證據，正式院內串接仍待驗。Studio 路徑只 render，不另叫 LLM 或 RAG，沿用既有 RegisteredService、caller 授權與 Artifact 匯出 gate；專屬 120 秒 JWT 的 type 為 `studio_quick_document`、aud 為 `studio-quick-document`，由既有 keyring 簽發，不能用於通用登入。SSE 可將終端模型的回覆即時送到畫面；流程須只有一個輸出，且直接連接最後的模型或格式步驟，模型亦須支援串流。其他結構與非終端步驟不保證即時 token 串流；來源、文件與最終結果仍須通過完整執行及授權檢查。
 
-對照基準 `816f2b2b053023b9113892e4f7d595d2fc1ba18c` 時，所核對的治理前端／Shell／ANILA LM manifest 與 lock、CSP requirements、anila-core manifest／lock、ingestion-worker manifest 沒有本功能新增 npm／Python 套件的差異。這只說明指定檔案的變更範圍，不代表既有套件與完整傳遞依賴已全體複核，也不能替代實際映像的 SBOM。交付前須重新比對最後提交。
+不引入替代簡繁套件或系統轉換工具。Runtime manifest 與 core lock 不宣告 OpenCC；依賴比較必須以最後提交重生的 SBOM 為準，包含移除觀測，不能沿用「依賴完全無差異」的結論。這只涵蓋 repo 指定檔案，不代表既有套件、傳遞依賴、正式映像或來源限制已全部核准。
 
 | 範圍 | 倉庫內盤點依據 | 版本判讀與交付要求 |
 |---|---|---|
@@ -25,33 +25,32 @@
 | 院內 Docling | 治理中心「外部服務」及 `ingestion/parser_registry.py` | 屬既有院內服務介接；服務映像、OCR 模型／語料的來源清單另附，不能只盤點 client |
 | MCP 開發範本 | `examples/quick-builder-mcp/server.py`、`postgresql-readonly.sql` 及[開發指南](quick-builder-mcp.md) | 重用現有 FastAPI、httpx、python-jose、uvicorn、psycopg2 與 SQLite 標準庫；SQLite 臨時資料／PostgreSQL 替身測試不能代表院內真資料庫驗收 |
 
-倉庫現有 requirements 包含 `opencc-python-reimplemented==0.1.7`；其他現有套件也可能有待核對的維護者或來源背景。本文件不對其國別、控制關係或合規作推定。NF-11 必須對完整清單逐項提供可查證來源並由院方審認；有疑義者列為未決，不能僅憑名稱、網站網域、上傳平台或某位貢獻者認定產地。
+## 來源限制與文字處理契約
 
-## 有限路徑盤點與合規阻礙
+來源／控制關係未知的元件不能標成合規或准用。OpenCC Python 的[官方套件定義](https://github.com/yichen0831/opencc-python/blob/master/setup.py)列版本 0.1.7、作者 Yichen Huang 與 Apache 授權；[官方 NOTICE](https://github.com/yichen0831/opencc-python/blob/master/NOTICE.txt)明列使用 BYVoid/OpenCC 詞典及設定。這能核對專案及授權自述，不能證明國別／控制關係符合院方限制，因此產品不載入或呼叫 OpenCC，也不複製其詞典或改用另一個未核定簡繁庫。
 
-快製路徑的有限盤點核對 12 份已知 npm／Python manifest 與 lock，對固定基準沒有依賴差異；另讀取本機已安裝 distribution metadata 及靜態 import／呼叫位置，區分直接使用、共用啟動匯入、條件執行與只在宣告中存在的元件。這份範圍不含完整傳遞依賴閉包、遠端 Docling 映像／模型／語料、所有 OS 套件、字型或實際出貨映像，不能當作完整 SBOM。既有元件來源背景仍有未決事項，NF-11 尚未通過。
+| 路徑 | 實際能力與限制 |
+|---|---|
+| CSP／core 保存與共用文字工具 | `normalize_zh_tw`／`normalize_report` 僅套用倉庫原有 `domain_terms` 固定表；未列入的字元保留原文。None、空值及變更字數契約保留。`intl.zh_normalize` 只控制這個固定用語處理，不能啟用完整簡繁轉換。 |
+| Studio 投影片、報告、資訊圖表、資料表 | 使用服務原有的 citation／LaTeX 清理及固定台灣用語表；數字、ID、檔名與來源欄位依既有型別／欄位規則保留。Studio 不匯入 anila_core 或外部轉換詞典；未列字元不轉換，不等價於 s2tw／s2twp。心智圖保持引用／LaTeX 清理，不提供字形轉換。 |
+| 建議追問 | 能力固定不可用，`FOLLOW_UPS_UNAVAILABLE`，畫面為「追問建議目前未提供」。API 保留身分、擁有者及訊息狀態檢查；生成、parser、快取回放均回空建議，不因使用者或管理設定開啟。GET／寫入回覆不外送舊 `follow_ups`／`follow_ups_generated`，資料庫歷史保留供稽核。 |
+| ASR | `ASR_OPENCC_MODE=off` 保留辨識原文。所有非 off 值明確回報 `ASR_TEXT_CONVERSION_UNAVAILABLE`，須將部署設定遷移為 off；不默默轉換或載入替代套件。 |
 
-## Repository manifest／lock SBOM
-
-[產生工具與重跑說明](../../tools/sbom/README.md)採 Python 3.11 標準函式庫及固定 28 份白名單，輸出 CycloneDX 1.6 JSON；不載入應用程式、不解析 include、不安裝套件、不讀取密鑰或 `.npmrc`。固定基準為 `816f2b2b053023b9113892e4f7d595d2fc1ba18c`。目前有 1,482 筆觀測：205 筆 declared、1,255 筆 locked、22 筆 project，全部為 baseline-existing；新增、版本／範圍變動與移除均為 0。這是按來源檔案與套件定位保留的觀測紀錄數，包含同名不同版本、不同宣告及 lock 位置，並非去重後的實體安裝套件數。
-
-`declared` 表示 manifest 宣告；精確釘版或含 hash 的 requirements.txt 仍不等於 lock。`locked` 表示鎖檔記錄；direct／transitive 僅在鎖檔與明確輸入可判定時標示，無法判定者為 unknown。可選的 `--installed-root` 只讀指定既有 distribution metadata，產生獨立 installed 觀測，不能覆蓋 lock、證明實際出貨或當作此次新增。版本範圍不偽裝精確版本；授權檔路徑不偽裝已讀取授權內容。來源、授權及開發者為宣告資料，國別／控制關係均標 unknown。URL 的 userinfo、query 及 fragment 在 JSON 與摘要各欄位移除。
-
-官方 [CycloneDX 1.6 schema](https://github.com/CycloneDX/specification/blob/1.6/schema/bom-1.6.schema.json)及其 SPDX／JSF 相依 schema 可預先存於離線環境；獨立驗證器使用既有 jsonschema 4.19.2，禁止網路及保護檔讀取。本次 repo JSON 通過官方 schema 與 format 檢查，並通過參照完整性、輸出脫敏及重跑一致性檢查。Schema 合法不等於依賴完整、授權核准或 NF-11 通過。建構器本身只做結構檢核；未執行獨立驗證器的交付物，不可引用本次檢核結果。
-
-此 repo SBOM 保留所有宣告的 optional／dev／平台條件項目，不執行 resolver 或安裝環境 marker；部分 Python 宣告缺少傳遞鎖檔，未解決或有歧義的依賴邊列於 notices。28 份白名單外的元件、OS、映像、二進位、瀏覽器、字型、模型、OCR 語料、遠端 Docling 與院內 MCP 服務另行盤點；實際出貨仍須與映像及安裝清單對帳。OpenCC 的實際呼叫鏈與上游詞典來源不因 repo manifest 無變更而排除。
-
-OpenCC 在快製流程有實際依賴，不能因不是新增套件就排除：
-
-- 串流模型步驟由 `quick_execution` 進 `quick_model_stream`，再匯入 `reasoning_gate` 的 `anila_core.text.leaked_thought`；Python 會先執行文字子套件 `__init__.py`，其 `zh_normalizer` 匯入 `opencc.OpenCC`。
-- ANILA 儲存助手回覆經 `conversation_service.append_message`、`zh_normalize_service.prepare_message_content`，當正規化設定啟用時，實際呼叫 `normalize_report`、`normalize_zh_tw` 與 `OpenCC('s2twp').convert`。此設定程式預設開啟，部署當下狀態另核對，不能以關閉設定當成套件已從映像移除。
-- Studio 固定文件排版本身直接走 `quick_document_render → report_renderer`，沒有 OpenCC 轉換呼叫；但既有 `app.main → api.reports → report_runner → studio_text_normalizer` 的共用啟動匯入仍帶入 OpenCC。
-
-OpenCC Python 的[官方套件定義](https://github.com/yichen0831/opencc-python/blob/master/setup.py)列版本 0.1.7、開發者與 Apache 授權；[官方 NOTICE](https://github.com/yichen0831/opencc-python/blob/master/NOTICE.txt)明列使用 BYVoid/OpenCC 詞典及設定，不能只審 Python 包裝而漏掉資料來源。這些第一手資料可核對專案與授權自述，尚不足以認定國別／控制關係或通過院內來源審查。
+這些固定詞表僅代表可追溯的倉庫既有規則，不能由「在 repo 內」推定所有資料的來源國別已核定。除明列詞彙外，不承諾任意簡體轉繁體、完整台灣字形或簡體偵測；人名、引文及未列字元以原文為準。正式交付仍須核對詞表、其餘套件及所有隨附資源的來源證據；任何未決來源不得列成 NF-11 通過。
 
 限定本機快製、CSP、worker、core 與 Studio 程式搜尋未發現 jieba／Paddle 的 import 或呼叫。中文關鍵字採標準函式庫的字元組合；院內遠端 Docling 所使用的 OCR 引擎仍需另附 SBOM，不能由本機沒有這些 import 推定遠端也沒有。
 
-不新增 Python 套件的替代方案仍須設計與品質驗證：可評估解除文字子套件的非必要啟動匯入、保留原文並使用院方自行核定的固定詞彙對照。這不等價於完整簡繁轉換，且只改 import 不會移除映像裡的套件及詞典。ICU／uconv 也僅屬候選：本機沒有 uconv CLI，只有 libicu70；引入 CLI 或新的系統執行依賴前，須先核定來源、授權、離線封裝及與 s2twp 的台灣用語差異，不能直接宣稱可替代或已符合 NF-11。
+產品原始碼與宣告不包含 OpenCC 執行依賴，不代表既有主機或舊映像已卸載套件。正式離線產物須另核對 distribution、詞典、設定檔及完整映像清單。ICU／uconv 也不是已啟用的替代方案；不因存在其他系統函式庫就推定可用或准用。沒有新套件不能替代來源審認。
+
+## Repository manifest／lock SBOM
+
+[產生工具與重跑說明](../../tools/sbom/README.md)採 Python 3.11 標準函式庫及固定 manifest／lock 白名單，輸出 CycloneDX 1.6 JSON；不載入應用程式、不解析 include、不安裝套件、不讀取密鑰或 `.npmrc`。比較基準為 `816f2b2b053023b9113892e4f7d595d2fc1ba18c`。觀測數、宣告／鎖檔數及新增／版本變動／移除數量以最後提交重生的 JSON 摘要為準。數量按來源檔案與套件定位保留，包含同名不同版本、不同宣告及 lock 位置，並非去重後的實體安裝套件數。
+
+`declared` 表示 manifest 宣告；精確釘版或含 hash 的 requirements.txt 仍不等於 lock。`locked` 表示鎖檔記錄；direct／transitive 僅在鎖檔與明確輸入可判定時標示，無法判定者為 unknown。可選的 `--installed-root` 只讀指定既有 distribution metadata，產生獨立 installed 觀測，不能覆蓋 lock、證明實際出貨或當作此次新增。版本範圍不偽裝精確版本；授權檔路徑不偽裝已讀取授權內容。來源、授權及開發者為宣告資料，國別／控制關係未證實者標 unknown 並保留未決，不當作准用。URL 的 userinfo、query 及 fragment 在 JSON 與摘要各欄位移除。
+
+官方 [CycloneDX 1.6 schema](https://github.com/CycloneDX/specification/blob/1.6/schema/bom-1.6.schema.json)及其 SPDX／JSF 相依 schema 可預先存於離線環境；獨立驗證器使用既有 jsonschema，禁止網路及保護檔讀取。建構器本身只做結構檢核；每份交付 JSON 須另執行官方 schema、format 與參照檢查。Schema 合法不等於依賴完整、授權核准或 NF-11 通過。
+
+此 repo SBOM 保留所有宣告的 optional／dev／平台條件項目，不執行 resolver 或安裝環境 marker；部分 Python 宣告缺少傳遞鎖檔，未解決或有歧義的依賴邊列於 notices。白名單外的元件、OS、映像、二進位、瀏覽器、字型、模型、OCR 語料、遠端 Docling 與院內 MCP 服務另行盤點；實際出貨仍須與映像及安裝清單對帳。NF-11 尚未通過。
 
 ## 系統工具與語料的狀態
 

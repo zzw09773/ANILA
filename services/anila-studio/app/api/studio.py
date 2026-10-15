@@ -868,13 +868,8 @@ async def _run_pipeline(
     # model wrote — has to happen before normalize_spec strips them.
     if chunks:
         spec = attach_source_lines(spec, chunks)
-    # ── Step 6.5: zh-CN → zh-TW post-processing ──
-    # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
-    # 33-39 行有量化證據). The system prompt fights this with an explicit
-    # mapping table, but enforcement isn't 100% — we run OpenCC s2twp as
-    # a deterministic safety net AFTER spec validate (so the LLM-emitted
-    # structural integrity check has already passed) and BEFORE render
-    # / vision QA (so all downstream steps see clean Traditional Chinese).
+    # Apply existing citation/LaTeX cleanup and fixed Taiwan terms.
+    # Unlisted characters retain their original script.
     spec = normalize_spec(spec)
     # Round 3 Patch P: apply theme_override after spec is validated.
     # Bypasses LLM theme selection per the API request. Applied here
@@ -921,7 +916,7 @@ async def _run_pipeline(
                 spec = SlidesSpec.model_validate(rebalanced)
                 # Rebalance 透過 LLM 重生 bullets,新內容會帶 LaTeX 控制字元
                 # (e.g. $\nightarrow$)跟簡體字。必須再過 normalize_spec
-                # 才能 render,否則先前的 strip_latex / s2twp / 引用清理
+                # 才能 render,否則先前的 strip_latex / 固定用語 / 引用清理
                 # 全部白做(production 觀察到 $\nightarrow$ 8 處殘留即此因)。
                 spec = normalize_spec(spec)
             except Exception as exc:  # noqa: BLE001

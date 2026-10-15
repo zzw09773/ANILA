@@ -44,10 +44,7 @@ dependencies = [
   # （mypy python_version 3.11）與 anila-agent（3.10）一解析到就中止。
   # 執行期不需要 2.5 API，上限收到最後一版沒有該語法的 2.4.x。
   "numpy>=1.26,<2.5",
-  # ⚠ 刻意不列 opencc:實測 whisper medium 在真實繁中語料的簡體率是 0%,而
-  # OpenCC 對正確繁體的誤傷率 6~10%(s2twp 甚至把「類型」轉成「型別」)。
-  # ASR_OPENCC_MODE 預設 off;
-  # 真的要開再把 opencc-python-reimplemented 加回來。
+  # 文字濾器僅支援 off 原文，不依賴簡繁轉換套件。
 ]
 
 [project.optional-dependencies]

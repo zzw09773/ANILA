@@ -15,7 +15,7 @@ POST returns in < 50 ms with a job_id; clients poll for state transitions.
                   [generate] LLM → DatatableSpec JSON        │
                        │                                     │
                        ▼                                     │
-                  [normalize] s2twp on title/label/cells     │
+                  [normalize] fixed terms on title/label/cells     │
                        │                                     │
                        ▼                                     │
                   [export] HTML + CSV + XLSX on disk ────────┘
@@ -83,7 +83,7 @@ from app.services.retrieval_status import (
     RETRIEVAL_FAILED_PROMPT_NOTE,
     RETRIEVAL_FAILED_WARNING,
 )
-from app.services.studio_text_normalizer import strip_latex
+from app.services.studio_text_normalizer import apply_taiwan_terms, strip_latex
 
 
 logger = logging.getLogger(__name__)
@@ -388,23 +388,12 @@ async def _generate_validated_spec(
 
 
 def _normalize_spec_text(spec: DatatableSpec) -> DatatableSpec:
-    """Apply strip_latex + s2twp normalisation to user-visible string fields.
-
-    Uses the same OpenCC s2twp pipeline as the slides normaliser so output
-    text is consistent across artifact kinds. Numeric / None cell values
-    pass through unchanged — we ONLY touch string cells.
-    """
-    # Lazy import to avoid pulling OpenCC into module import time of API
-    # router (OpenCC has a ~50ms dict load — fine at first call, but
-    # better to pay it during the job, not during app startup).
-    from opencc import OpenCC
-
-    converter = OpenCC("s2twp")
+    """Apply LaTeX cleanup and fixed terms; preserve unlisted characters and cell types."""
 
     def _convert(text: str | None) -> str | None:
         if text is None or text == "":
             return text
-        return converter.convert(strip_latex(text) or text)
+        return apply_taiwan_terms(strip_latex(text) or text)
 
     new_columns = [
         DataColumn(

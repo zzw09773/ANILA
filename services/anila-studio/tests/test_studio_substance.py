@@ -74,12 +74,13 @@ def test_agenda_slide_is_built_from_the_outline():
 
 
 def test_normalizer_and_source_lines_reach_key_message_and_figure_labels():
+    """來源欄位仍清引用；未列字元不作完整簡繁轉換。"""
     from app.services.studio_text_normalizer import normalize_spec
     s = _spec({"title": "x", "bullets": ["b"], "key_message": "登录后查看信息 [2]",
                "layout_kind": "figure", "figure": {"kind": "timeline", "items": [{"label": "软件 [1]", "note": "视频"}, {"label": "b"}]}})
     out = normalize_spec(s)
-    assert out.slides[1].key_message == "登入後查看資訊"
-    assert out.slides[1].figure.items[0].label == "軟體" and out.slides[1].figure.items[0].note == "影片"
+    assert out.slides[1].key_message == "登录后查看資訊"
+    assert out.slides[1].figure.items[0].label == "软件" and out.slides[1].figure.items[0].note == "视频"
 
 
 def test_content_prompt_carries_the_substance_rules():

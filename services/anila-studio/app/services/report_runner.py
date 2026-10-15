@@ -9,7 +9,7 @@
                          expand into content_markdown with [N] markers
                          pointing into references[]
     4. normalize         strip_inline_citations (visible text), strip_latex,
-                         OpenCC s2twp on title / headings / content
+                         existing repository Taiwan terms on title / headings / content
     5. assemble          build ReportSpec(...)
     6. render            HTML + PDF + DOCX → {ARTIFACTS_DIR}/{job_id}.{ext}
 
@@ -82,7 +82,7 @@ from app.schemas.report import (
 from app.services.report_job_service import ReportJobUpdater
 from app.services.report_renderer import render_all_artifacts
 from app.services.studio_text_normalizer import (
-    _get_converter,
+    apply_taiwan_terms,
     strip_inline_citations,
     strip_latex,
 )
@@ -214,7 +214,7 @@ def _convert_zh(text: str | None, keep_citations: bool = False) -> str | None:
       excerpt and never for headings/content because those are also
       visible),
     - strip LaTeX,
-    - OpenCC s2twp.
+    - existing repository Taiwan terms.
 
     We deliberately do NOT use studio_text_normalizer._convert directly
     because that helper is module-private; instead we replicate its
@@ -226,7 +226,7 @@ def _convert_zh(text: str | None, keep_citations: bool = False) -> str | None:
     if not keep_citations:
         text = strip_inline_citations(text) or text
     text = strip_latex(text) or text
-    return _get_converter().convert(text)
+    return apply_taiwan_terms(text)
 
 
 def _build_references(chunks: list[ChunkHit]) -> list[ReportReference]:
@@ -472,7 +472,7 @@ def _select_chunks_for_section(
 
 
 def _normalize_section(section: ReportSection) -> ReportSection:
-    """Apply OpenCC + strip_* recursively."""
+    """Apply fixed terms + strip_* recursively."""
     return section.model_copy(
         update={
             "heading": _convert_zh(section.heading) or section.heading,
@@ -483,7 +483,7 @@ def _normalize_section(section: ReportSection) -> ReportSection:
 
 
 def _normalize_spec(spec: ReportSpec) -> ReportSpec:
-    """Run all visible strings through citation strip + LaTeX strip + OpenCC."""
+    """Run all visible strings through citation strip + LaTeX strip + fixed terms."""
     return spec.model_copy(
         update={
             "title": _convert_zh(spec.title) or spec.title,

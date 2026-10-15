@@ -71,12 +71,7 @@ class Settings(BaseSettings):
     # 去掉 preroll 與收尾靜音後的最短有聲長度(毫秒);短於此視為雜音丟棄。0 = 不檢查。
     ASR_MIN_SPEECH_MS: int = 0
 
-    # ⚠ 預設 off,且不要改成 s2twp。實測:whisper medium 在 1096 句真實繁中
-    # 語料的簡體率 0%,而 OpenCC 對正確繁體的誤傷率 s2t 9.85% / s2tw 6.20% /
-    # s2twp 10.58%(s2twp 會把「類型」轉成「型別」)。
-    # 改用 large-v3 後若實測出現簡體才考慮開,開之前先重跑誤傷量測。
-    # 非 off 時才 import opencc(它不在 runtime 相依裡 → 沒裝就 ImportError,
-    # 這是刻意的 fail-loud,不要加 try/except 吞掉)。
+    # 僅支援 off 保留辨識原文；非 off 會明確拒絕，需遷移部署設定。
     ASR_OPENCC_MODE: str = "off"
 
     # ── 資源上限 ────────────────────────────────────────────────────────

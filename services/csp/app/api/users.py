@@ -969,7 +969,10 @@ def hard_delete_user(
 def get_my_ui_settings(
     current_user: User = Depends(get_current_user),
 ):
-    return {"ui_settings": current_user.ui_settings or {}}
+    from app.services.follow_ups_policy import follow_ups_capability
+
+    return {"ui_settings": current_user.ui_settings or {},
+            "capabilities": {"follow_ups": follow_ups_capability()}}
 
 
 @router.put("/me/ui-settings")
@@ -1001,4 +1004,7 @@ async def put_my_ui_settings(
         raise HTTPException(status_code=400, detail="ui_settings 必須是物件")
     current_user.ui_settings = settings
     db.commit()
-    return {"ui_settings": current_user.ui_settings}
+    from app.services.follow_ups_policy import follow_ups_capability
+
+    return {"ui_settings": current_user.ui_settings,
+            "capabilities": {"follow_ups": follow_ups_capability()}}

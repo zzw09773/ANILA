@@ -33,8 +33,6 @@ dependencies = [
   "redis>=5.0,<8.2",
   # TTL cache for revocation_cache
   "cachetools>=5.3,<7.2",
-  # 簡體 → 繁體轉換 (studio_text_normalizer)
-  "opencc-python-reimplemented>=0.1.7,<0.1.8",
   # matplotlib 的數值依賴；釘下限避免氣隙 wheelhouse 凍進過舊版
   # 2.5 起 stub 用 Python 3.12 `type` 語句。共用 venv 裡 anila-core
   # （mypy python_version 3.11）與 anila-agent（3.10）一解析到就中止。

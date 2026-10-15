@@ -50,12 +50,12 @@ infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 s
 - **品質檢查**：幾何檢查（渲染器 `/qa-geometric`，會拿到每頁版型，封面／章節頁不判留白）＋視覺檢查（每頁一通 VLM）。修正失敗不會丟掉已渲染的簡報，只加 warning。
 - **成品與預覽**：`.pptx` 落在 `ARTIFACTS_DIR/slides/{job_id}.pptx`，每頁 PNG 在 `slides/{job_id}/NN.png`；`GET /api/studio/slides/jobs/{id}/preview`（清單）、`/preview/{n}`（PNG）。studio 重啟後仍可下載。
 - **治理回報**：`POST /v1/artifact-jobs` 用 `requester_user_id`（＋卡片使用者的 `employee_id`）、整數 `task_id`；`POST /v1/artifacts` 仍要求綁 task 或 snapshot，沒有 ALM task 的簡報不會登記成 artifact。
-- **繁體轉換**：OpenCC `s2tw`（只轉字形）＋一張自己維護的技術詞表；「程序」「項目」「文件」這類法規本義詞不動。
+- **文字清理**：引用／LaTeX 清理與倉庫原有固定台灣用語表；未列字元保留原文，不提供完整簡繁轉換。「程序」「項目」「文件」這類法規本義詞不動，不載入 OpenCC 或其詞典。
 
 ## 技術棧
 
 - Python `>=3.11`，runtime image `python:3.11-slim`，port **8100**（compose 內僅 `expose`、不對 host 發佈）。
-- 核心：FastAPI `>=0.110,<1.0`、uvicorn[standard] `>=0.27`、httpx `>=0.27,<1.0`、python-jose[cryptography] `>=3.3`（RS256/JWKS）、pydantic `>=2.6` + pydantic-settings `>=2.2`、redis `>=5.0`、cachetools `>=5.3`、numpy `>=1.26`、opencc-python-reimplemented `>=0.1.7`（簡轉繁）。
+- 核心：FastAPI `>=0.110,<1.0`、uvicorn[standard] `>=0.27`、httpx `>=0.27,<1.0`、python-jose[cryptography] `>=3.3`（RS256/JWKS）、pydantic `>=2.6` + pydantic-settings `>=2.2`、redis `>=5.0`、cachetools `>=5.3`、numpy `>=1.26`。
 - **artifact 渲染堆疊**：jinja2 `>=3.1`、playwright `>=1.43`（headless Chromium → PDF）、pypandoc `>=1.13`（HTML → DOCX）、matplotlib `>=3.8`、openpyxl `>=3.1`（XLSX）、markdown-it-py `>=3.0`、python-docx `>=1.1`。
 - dev：pytest、pytest-asyncio、respx、fakeredis、freezegun。
 - Dockerfile system 套件：`graphviz`、`pandoc`、`curl`、`wget`、`ca-certificates`、`fonts-noto-cjk` + Chromium/Playwright 相依 libs + `fontconfig`；build 階段下載 Noto Sans CJK TC 單面 OTF（Regular + Bold）並 `playwright install chromium` 到 `/opt/playwright-browsers`；跑非 root user `anila`（uid 10001）。

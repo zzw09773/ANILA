@@ -19,8 +19,9 @@ from app.models.message import Message
 from app.services import memory_service
 from tests.conftest import login, make_user
 
-SIMPLIFIED = "机关单位的视频质量"
-EXPECTED_TW = "機關單位的影片質量"
+SIMPLIFIED = "机关单位的视频质量與導彈算法"
+# 固定用語只處理明列項目；未列的原字不作簡繁轉換。
+EXPECTED_TW = "机关单位的视频质量與飛彈演算法"
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +44,7 @@ def _create_conv(client: TestClient, headers: dict) -> int:
     return resp.json()["id"]
 
 
-def test_assistant_append_stores_traditional(
+def test_assistant_append_stores_fixed_terms_and_preserves_unlisted_script(
     client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.delenv("ANILA_ZH_NORMALIZE", raising=False)

@@ -41,11 +41,9 @@ logger = logging.getLogger(__name__)
 def configure_logging(level_name: str | None = None) -> int:
     """Apply ``settings.LOG_LEVEL`` to the root logger once.
 
-    Until 2026-09-02 nothing ever called ``basicConfig``, so every
-    ``logger.info`` in the pipeline (layout audit, rebalance, s2tw diffs,
-    ``[H-DIAG]``) was silently dropped and ``LOG_LEVEL`` did nothing.
-    uvicorn installs its own handlers for its own loggers; we only touch the
-    root so those are not doubled.
+    The root logger handles pipeline layout, rebalance and fixed-term messages.
+    Uvicorn configures its own loggers; configuring only the root avoids
+    duplicating its handlers.
     """
     name = (level_name or settings.LOG_LEVEL or "INFO").upper()
     level = getattr(logging, name, logging.INFO)

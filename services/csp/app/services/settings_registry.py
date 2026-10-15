@@ -276,7 +276,7 @@ SETTINGS: tuple[SettingSpec, ...] = (
         T_BOOL_NE_0,
         _is_bool,
         True,
-        "把模型輸出的簡體字正規化成繁體。",
+        "套用固定台灣用語表，未列入的字元保留原文；不提供完整簡繁轉換。",
     ),
     _spec(
         "intl.query_expansion",
@@ -331,8 +331,8 @@ SETTINGS: tuple[SettingSpec, ...] = (
         "FOLLOW_UPS_ENABLED",
         T_BOOL_NE_0,
         _is_bool,
-        True,
-        "回答完成後是否產生建議的下一個問題。關閉後不再呼叫模型。",
+        False,
+        "追問建議目前未提供；此偏好不能啟用生成或歷史建議回放。",
     ),
     _spec(
         "follow_ups.allow_classified",

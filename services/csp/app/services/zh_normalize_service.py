@@ -1,10 +1,8 @@
-"""聊天落庫前的 zh-TW 靜默正規化。
+"""聊天落庫前的固定台灣用語對照；未列字元保留原文，不提供完整簡繁轉換。
 
 只動 assistant；失敗只記 warning、原文落庫；``intl.zh_normalize`` 關閉時整段跳過。
 
-開關**每一次呼叫都重新解一次**（DB 那一列 → ``ANILA_ZH_NORMALIZE`` → 程式預設）。
-以前只讀 env：值本身是每則訊息重讀沒錯，但管理員從畫面改不到它，要改就得重啟
-容器。讀取點搬到 ``get_setting`` 之後，畫面上那個開關才不是裝飾。
+每次呼叫都透過 ``get_setting`` 解析開關：DB 設定優先，接著採部署值及程式預設。
 """
 from __future__ import annotations
 

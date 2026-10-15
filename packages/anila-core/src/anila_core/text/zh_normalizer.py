@@ -1,21 +1,9 @@
-"""繁體中文（zh-TW）輸出正規化：OpenCC s2twp → 域內用語。
-
-字典載入約 30–50ms，用 lru_cache 做成行程內單例。Never raise 給呼叫端 —
-例外由 CSP hook 攔下；本模組本身只做純轉換。
-"""
+"""原文搭配倉庫原有固定台灣用語表；不提供完整簡繁轉換。"""
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import Optional
 
-from opencc import OpenCC  # type: ignore[import-untyped]  # 套件沒有型別標記
-
 from anila_core.text.domain_terms import apply_domain_terms
-
-
-@lru_cache(maxsize=1)
-def _get_converter() -> OpenCC:
-    return OpenCC("s2twp")
 
 
 def _changed_char_count(before: str, after: str) -> int:
@@ -28,13 +16,12 @@ def _changed_char_count(before: str, after: str) -> int:
 
 
 def normalize_zh_tw(text: Optional[str]) -> Optional[str]:
-    """s2twp 再接域內用語；None／空字串安全。"""
+    """只替換固定域內用語，其他字元保留原文；None／空字串安全。"""
     if text is None:
         return None
     if text == "":
         return ""
-    converted = _get_converter().convert(text)
-    return apply_domain_terms(converted)
+    return apply_domain_terms(text)
 
 
 def normalize_report(text: Optional[str]) -> tuple[Optional[str], int]:

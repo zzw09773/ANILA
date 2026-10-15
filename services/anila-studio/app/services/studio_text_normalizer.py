@@ -1,47 +1,13 @@
-"""繁體中文 + 台灣用語後處理 — 跑在 SlidesSpec validate 之後、render 之前。
+"""第一方文字清理與固定台灣用語表；未列字元保留原文。
 
-## 為什麼要做
-
-Gemma 4 訓練資料以
-簡中為主，繁中輸出時頻繁混入「視頻、軟件、網絡、激光、信息、鼠標、
-分辨率、打印、登錄、文件、程序、內存」等大陸用詞的繁體寫法。Twinkle AI
-台灣社群也報告過同類現象。LLM 端 prompt 雖會列對映表強制台灣用語，但
-單靠 prompt 命中率不會 100%，必須加上確定性的後處理層做兜底。
-
-## 為什麼選 s2twp.json
-
-OpenCC 提供多個 config，常用的有：
-- `s2t.json`     簡 → 繁（純字符轉換、不替換用詞）
-- `s2tw.json`    簡 → 繁（含台灣字形差異，如 為 → 爲，但**不**替換用詞）
-- `s2twp.json`   簡 → 繁（含台灣字形 + 台灣**用詞**轉換）← 我們用這個
-
-s2twp 是最積極的版本，不只把「视频」轉成「視頻」，還會進一步把「視頻」
-轉成「影片」。這正是我們要的：把潛在的簡中污染同時在「字符」與「用詞」
-兩個層面修掉。
-
-## 為什麼純 Python 套件
-
-opencc-python-reimplemented 是純 Python 實作，不依賴系統 libopencc。
-對 air-gapped 容器這代表少一層 native dependency；速度比 C++ 慢但
-用在 Studio 一次處理 ≤30 張 slide × 每張 ≤3 KB 文字總共 ~50ms 內，
-比 LLM call 快好幾個量級，幾乎無感。
-
-## 為什麼跑在 spec validate 之後而非 render 端
-
-兩個理由：
-1. SlidesSpec 是後續所有處理的單一真相來源 — vision QA 也吃 spec、
-   重渲也吃 spec。在這裡正規化一次，下游所有環節都拿到乾淨的繁中。
-2. Renderer 是 Node 服務，引一層 OpenCC JS 等於多一個 vendor。Python
-   端做簡化整體棧。
+不提供完整簡繁轉換，不載入外部詞典。引用及 LaTeX 清理依欄位規則套用。
 """
 from __future__ import annotations
 
 import logging
 import re
-from functools import lru_cache
 from typing import Any
 
-from opencc import OpenCC
 
 from app.schemas.studio import (
     Column,
@@ -51,7 +17,6 @@ from app.schemas.studio import (
     Quote,
     Slide,
     SlidesSpec,
-    SourceItem,
     Stat,
     Step,
     TableSpec,
@@ -213,17 +178,6 @@ def strip_latex(text: str | None) -> str | None:
     return text
 
 
-# OpenCC instances are cheap to create but the dictionary load is ~30-50 ms.
-# Cache so repeated normalize() calls share one warm instance per process.
-@lru_cache(maxsize=1)
-def _get_converter() -> OpenCC:
-    # 2026-09-02：從 s2twp 改成 s2tw。s2twp 的「台灣用詞」替換表把法規／行政
-    # 文本裡的本義詞改壞：「程序保障」→「程式保障」、「共同項目」→「共同專案」、
-    # 「文件」→「檔案」、「質量」→「品質」。字形轉換保留，用詞只換下面這張
-    # 沒有歧義的技術詞表。
-    return OpenCC("s2tw")
-
-
 # 只收「在任何脈絡都不會是本義」的大陸技術用詞。有法律／行政本義的一律不收：
 # 程序、項目、文件、質量、支持、應用、單位、水平、對象。
 _TAIWAN_TERMS: tuple[tuple[str, str], ...] = (
@@ -247,7 +201,8 @@ _TAIWAN_TERMS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _apply_taiwan_terms(text: str) -> str:
+def apply_taiwan_terms(text: str) -> str:
+    """只套用既有固定詞表，其餘字元保持原樣。"""
     for cn, tw in _TAIWAN_TERMS:
         if cn in text:
             text = text.replace(cn, tw)
@@ -255,36 +210,21 @@ def _apply_taiwan_terms(text: str) -> str:
 
 
 def _convert(text: str | None, keep_citations: bool = False) -> str | None:
-    """Run a single string through citation strip + LaTeX strip + OpenCC s2twp.
+    """Apply citation/LaTeX cleanup and the existing repository Taiwan term table.
 
-    Order matters:
-      1. ``strip_inline_citations`` runs first (Round 4 Patch Q) so we
-         remove RAG bracket markers like ``(參 [5])`` from end of slide
-         text. Citation is end-anchored and doesn't interfere with LaTeX
-         anywhere — order between (1) and (2) is logically interchangeable
-         but we keep it deterministic.
-      2. ``strip_latex`` runs next so downstream OpenCC and any future
-         regex transforms see plain Unicode rather than ``$\\rightarrow$``.
-
-    ``keep_citations=True`` is used for ``speaker_notes`` only — the audit
-    trail (which chunk a bullet came from) MUST be preserved in notes
-    even though it's stripped from visible slide text.
-
-    Empty strings stay empty (the converter would return "" too, but we
-    short-circuit to skip the dict lookup).
+    Speaker notes keep citation markers; visible text drops trailing markers.
+    None and empty input remain unchanged. Unlisted characters keep their script.
     """
     if text is None or text == "":
         return text
     if not keep_citations:
-        text = strip_inline_citations(text)  # Round 4 Patch Q: (參 [5]) → ""
-    text = strip_latex(text)  # Round 3 Patch I: $\rightarrow$ → →
-    converter = _get_converter()
-    converted = converter.convert(text)
-    return _apply_taiwan_terms(converted)
+        text = strip_inline_citations(text) or ""
+    text = strip_latex(text) or ""
+    return apply_taiwan_terms(text)
 
 
 def _normalize_slide(slide: Slide) -> Slide:
-    """Return a NEW Slide with every string field s2twp-normalised.
+    """Return a NEW Slide with each configured string field cleaned with fixed terms.
 
     Pydantic models are immutable in spirit — we use `model_copy(update=...)`
     so callers can't accidentally observe a half-mutated state. Layout-
@@ -294,7 +234,7 @@ def _normalize_slide(slide: Slide) -> Slide:
     patch: dict[str, Any] = {
         "title": _convert(slide.title),
         "bullets": [_convert(b) or "" for b in slide.bullets],
-        # Round 4 Patch Q: speaker_notes keeps RAG citations for audit trail
+        # Speaker notes keep RAG citations for the audit trail
         # (the LLM populates these with chunk references); only visible slide
         # text gets citations stripped.
         "speaker_notes": _convert(slide.speaker_notes, keep_citations=True),
@@ -395,7 +335,7 @@ def normalize_spec(spec: SlidesSpec) -> SlidesSpec:
     converted_title = _convert(spec.title) or spec.title
     if converted_title != spec.title:
         logger.info(
-            "Studio s2twp normalised top-level title: %r → %r",
+            "Studio fixed-term normalised top-level title: %r → %r",
             spec.title, converted_title,
         )
 

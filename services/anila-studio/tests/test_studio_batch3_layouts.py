@@ -34,16 +34,17 @@ def test_process_needs_at_least_two_steps_and_table_two_columns():
 
 
 def test_normalizer_reaches_the_new_payloads():
+    """欄位清理保留未列原字，只處理固定用語及引用。"""
     s = _spec(title="流程", layout_kind="process", bullets=["x"],
               steps=[{"heading": "登录系统 [3]", "description": "查看信息"}, {"heading": "b", "description": "c"}])
     out = normalize_spec(s)
-    assert out.slides[1].steps[0].heading == "登入系統"
+    assert out.slides[1].steps[0].heading == "登录系统"
     assert out.slides[1].steps[0].description == "查看資訊"
     t = _spec(title="表", layout_kind="table", bullets=["x"],
               table={"columns": ["身份", "软件"], "rows": [["军官", "视频 [2]"]]})
     out = normalize_spec(t)
-    assert out.slides[1].table.columns == ["身份", "軟體"]
-    assert out.slides[1].table.rows[0] == ["軍官", "影片"]
+    assert out.slides[1].table.columns == ["身份", "软件"]
+    assert out.slides[1].table.rows[0] == ["军官", "视频"]
 
 
 def test_rebalance_payload_fields_know_the_new_layouts():

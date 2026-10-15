@@ -1,4 +1,4 @@
-"""anila_core.text.zh_normalizer — s2twp + 域內用語固定點驗收。"""
+"""第一方用語表契約：明列詞彙替換，其餘原文保留。"""
 from __future__ import annotations
 
 import pytest
@@ -8,12 +8,11 @@ from anila_core.text import normalize_report, normalize_zh_tw
 @pytest.mark.parametrize(
     "normalize_zh_tw_arg, expected",
     [
-        pytest.param("机关单位的视频质量", "機關單位的影片質量", id='simplified_to_tw_lexicon'),
-        pytest.param("本系統採用先進的導彈與激光技術", "本系統採用先進的飛彈與雷射技術", id='defense_domain_terms_after_s2twp'),
+        pytest.param("机关单位的视频质量", "机关单位的视频质量", id='unlisted_simplified_preserved'),
+        pytest.param("本系統採用先進的導彈與激光技術", "本系統採用先進的飛彈與雷射技術", id='fixed_domain_terms'),
     ],
 )
-def test_simplified_to_tw_lexicon_cases(normalize_zh_tw_arg, expected):
-    # 质量→質量 via s2twp only（字形）；不得再被域內詞替換成「品質」
+def test_fixed_terms_and_original_text_contract(normalize_zh_tw_arg, expected):
     assert normalize_zh_tw(normalize_zh_tw_arg) == expected
 
 
@@ -42,9 +41,17 @@ def test_empty_and_none():
 
 
 def test_normalize_report_counts_changes():
-    out, n = normalize_report("导弹")
+    out, n = normalize_report("導彈")
     assert out == "飛彈"
     assert n > 0
     out2, n2 = normalize_report("飛彈")
     assert out2 == "飛彈"
     assert n2 == 0
+
+
+def test_unlisted_original_is_not_a_full_script_conversion():
+    text = "导弹 软件 原始引文 王小明 程序 质量"
+    assert normalize_report(text) == (text, 0)
+    normalized = normalize_zh_tw("人工智能與算法、導彈及激光")
+    assert normalized == "人工智慧與演算法、飛彈及雷射"
+    assert normalize_zh_tw(normalized) == normalized

@@ -23,7 +23,7 @@ Pipeline phases (run on an asyncio.Task spawned by the POST handler):
                   [3] LLM (gemma4) emits MindmapSpec JSON          │
                        │                                           │
                        ▼                                           │
-                  [4] schema validate + s2twp normalise labels     │
+                  [4] schema validate + clean labels     │
                        │                                           │
                        ▼                                           │
                   [5] spec_to_dot(spec) → DOT source               │
@@ -217,9 +217,9 @@ def _build_prompt(
             "   force a manual line break when truly necessary.",
             "5. Use Taiwan Traditional Chinese (台灣繁體中文) — not just",
             "   character forms but Taiwan idioms (資料 not 數據,",
-            "   軟體 not 軟件, 預設 not 默認, etc.). The backend runs",
-            "   OpenCC s2twp as a safety net but you writing it right",
-            "   produces better output.",
+            "   軟體 not 軟件, 預設 not 默認, etc.). Write the intended",
+            "   characters directly; backend cleanup does not provide",
+            "   full script conversion.",
             "6. NO placeholders (lorem ipsum, TBD, TODO, <insert ...>).",
             "7. The root label should be the central topic (a noun phrase,",
             "   not a sentence).",
@@ -321,8 +321,8 @@ def _truncate_depth(node: MindmapNode, *, remaining_depth: int) -> MindmapNode:
 
 # Pattern that recognises the prefix the diagram renderer also strips
 # (per-chunk citation markers like ``(參 [5])``). We re-use the existing
-# strip helpers from studio_text_normalizer so we get the OpenCC-safe
-# behaviour without re-implementing.
+# strip helpers from studio_text_normalizer so citation and LaTeX
+# cleanup stay consistent without duplicating the rules.
 
 
 _ALLOWED_ID_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
@@ -344,12 +344,7 @@ def _normalise_id(node_id: str, *, fallback: str) -> str:
 def _normalise_label(label: str) -> str:
     """Mirror diagram_renderer's pre-render normalisation.
 
-    Runs strip_inline_citations then strip_latex. We deliberately do
-    NOT run the OpenCC s2twp pass here because (a) the LLM is told to
-    use Taiwan TC already, and (b) OpenCC is heavyweight and we run on
-    every node — adding it to a 100-node tree is noticeable. If a
-    follow-up rolls out s2twp on mindmap labels, it should land in
-    this function so the renderer keeps a single source of truth.
+    Runs citation/LaTeX cleanup only; unlisted source characters remain unchanged.
     """
     cleaned = strip_inline_citations(label) or ""
     cleaned = strip_latex(cleaned) or ""
@@ -385,8 +380,7 @@ def _normalise_spec(spec: MindmapSpec, *, max_depth: int) -> MindmapSpec:
     normalised_root = _normalise_node(
         truncated_root, path_prefix="n", index=0,
     )
-    # title also goes through the cheap citation/latex strip; OpenCC
-    # remains opt-in for slides.
+    # Title follows the same citation/LaTeX cleanup as node labels.
     safe_title = _normalise_label(spec.title)
     return spec.model_copy(update={
         "title": safe_title,
