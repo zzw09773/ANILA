@@ -27,6 +27,22 @@
 
 倉庫現有 requirements 包含 `opencc-python-reimplemented==0.1.7`；其他現有套件也可能有待核對的維護者或來源背景。本文件不對其國別、控制關係或合規作推定。NF-11 必須對完整清單逐項提供可查證來源並由院方審認；有疑義者列為未決，不能僅憑名稱、網站網域、上傳平台或某位貢獻者認定產地。
 
+## 有限路徑盤點與合規阻礙
+
+快製路徑的有限盤點核對 12 份已知 npm／Python manifest 與 lock，對固定基準沒有依賴差異；另讀取本機已安裝 distribution metadata 及靜態 import／呼叫位置，區分直接使用、共用啟動匯入、條件執行與只在宣告中存在的元件。這份範圍不含完整傳遞依賴閉包、遠端 Docling 映像／模型／語料、所有 OS 套件、字型或實際出貨映像，不能當作完整 SBOM。既有元件來源背景仍有未決事項，NF-11 尚未通過。
+
+OpenCC 在快製流程有實際依賴，不能因不是新增套件就排除：
+
+- 串流模型步驟由 `quick_execution` 進 `quick_model_stream`，再匯入 `reasoning_gate` 的 `anila_core.text.leaked_thought`；Python 會先執行文字子套件 `__init__.py`，其 `zh_normalizer` 匯入 `opencc.OpenCC`。
+- ANILA 儲存助手回覆經 `conversation_service.append_message`、`zh_normalize_service.prepare_message_content`，當正規化設定啟用時，實際呼叫 `normalize_report`、`normalize_zh_tw` 與 `OpenCC('s2twp').convert`。此設定程式預設開啟，部署當下狀態另核對，不能以關閉設定當成套件已從映像移除。
+- Studio 固定文件排版本身直接走 `quick_document_render → report_renderer`，沒有 OpenCC 轉換呼叫；但既有 `app.main → api.reports → report_runner → studio_text_normalizer` 的共用啟動匯入仍帶入 OpenCC。
+
+OpenCC Python 的[官方套件定義](https://github.com/yichen0831/opencc-python/blob/master/setup.py)列版本 0.1.7、開發者與 Apache 授權；[官方 NOTICE](https://github.com/yichen0831/opencc-python/blob/master/NOTICE.txt)明列使用 BYVoid/OpenCC 詞典及設定，不能只審 Python 包裝而漏掉資料來源。這些第一手資料可核對專案與授權自述，尚不足以認定國別／控制關係或通過院內來源審查。
+
+限定本機快製、CSP、worker、core 與 Studio 程式搜尋未發現 jieba／Paddle 的 import 或呼叫。中文關鍵字採標準函式庫的字元組合；院內遠端 Docling 所使用的 OCR 引擎仍需另附 SBOM，不能由本機沒有這些 import 推定遠端也沒有。
+
+不新增 Python 套件的替代方案仍須設計與品質驗證：可評估解除文字子套件的非必要啟動匯入、保留原文並使用院方自行核定的固定詞彙對照。這不等價於完整簡繁轉換，且只改 import 不會移除映像裡的套件及詞典。ICU／uconv 也僅屬候選：本機沒有 uconv CLI，只有 libicu70；引入 CLI 或新的系統執行依賴前，須先核定來源、授權、離線封裝及與 s2twp 的台灣用語差異，不能直接宣稱可替代或已符合 NF-11。
+
 ## 系統工具與語料的狀態
 
 開發主機的 LibreOffice 已有 DOC／PPT／RTF 工程樣本實轉證據，不能當作 ingestion-worker 容器內的能力或版本。Tesseract 及 `chi_tra` 的缺失測試或替身測試，只能證明錯誤處理；沒有真實繁中 OCR 品質通過證據。正式映像尚未製作；未提供工具、語料與映像清單前，不能宣稱獨立 OCR 已可離線交付。
