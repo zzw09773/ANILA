@@ -49,11 +49,11 @@ QuickRun 的 `execution_context` 是私有執行脈絡，不回傳一般結果�
 | DOC、RTF、PPT | `ingestion/office_conversion.py`；本機 LibreOffice 將 DOC／RTF 轉 DOCX、PPT 轉 PPTX，再解析 | 使用獨立暫存設定及 60 秒轉檔上限。缺工具回 `office_converter_missing`；逾時／轉檔失敗回具體類型。轉檔不保證原頁碼或複雜版面完全一致，須抽查原檔 |
 | PPTX | `ingestion/presentation.py` | 原生擷取投影片、表格與圖片；需核對投影片順序、群組物件及來源編號，不能視同完整視覺版面還原 |
 | 掃描 PDF、圖片 | `ingestion/local_ocr.py`；本機 Tesseract `chi_tra+eng`；圖片介接另見 `ingestion/image_ocr.py` | 獨立於 Docling 的本機 OCR。工具或語料缺失就明確失敗，不把空文字當成功；OCR 只保留文字與來源頁碼，複雜版面與表格須核對原檔 |
-| Python、C、C++ | `ingestion/source_code.py` 及 `ingestion/chunking_plugins/structure.py` | Python 使用 AST 保留函式、方法及 decorator 範圍；C／C++ 使用詞法邊界，對建構子初始化等不明確邊界採整檔保留並標記 `source_boundary_quality=conservative`。不是完整 C++ AST 或編譯結果 |
+| Python、C、C++ | `ingestion/source_code.py` 及 `ingestion/chunking_plugins/structure.py` | Python 使用 AST 保留函式、方法及 decorator 範圍；C／C++ 以詞法處理建構子初始化、運算子、樣板及 lambda 等邊界。巨集、無法判定語法或掃描超限採保守整檔與明確原因；不是完整 C++ AST 或編譯結果 |
 
 表中 `ingestion/` 路徑均相對 `packages/anila-core/src/anila_core/`。文件處理成功後，還須核對檢索、引用與權限，不能只以解析器單元測試判定 DS-01–09 完成。
 
-大型函式、表格與投影片維持整塊，可能超出 chunk 預算，仍受平台嵌入模型輸入上限限制。遠端 Docling 若只回整篇 Markdown 與 `page_count`、沒有逐頁標記，無法可靠還原每段實體頁碼，應在來源品質標記與引用核對中呈現限制。
+函式、表格與投影片維持完整結構；超過策略估算預算時有品質提示，超過 16 KiB UTF-8 硬限則明確拒絕，模型實際輸入限制須另行核對。遠端 Docling 若只回整篇 Markdown 與 `page_count`、沒有逐頁標記，無法可靠還原每段實體頁碼，應在來源品質標記與引用核對中呈現限制。
 
 本機 OCR 需要 `tesseract` 可執行檔及 `chi_tra`、`eng` 語料；本機舊 Office 轉檔需要 `libreoffice` 或 `soffice`。可在目標執行環境只讀檢查：
 
@@ -68,6 +68,17 @@ tesseract --list-langs
 缺少其中一項時，依來源審核與離線出貨程序補齊，或恢復院內 Docling 後重試。開發主機存在工具不代表 ingestion-worker 映像已有工具；主機的版本也不能當成映像 SBOM 的版本。繁體中文 OCR 的真實語料品質、舊 Office 的實際轉檔與完整 fallback 串接都須另附測試紀錄。
 
 本機 PDF OCR 程式目前設定最多 500 頁、整份 180 秒及單頁辨識最多 45 秒；這些是程式防護上限，並非 NF-10 的承諾容量或效能結果。大文件先分檔，記錄錯誤類型再評估資源。OCR 使用 CPU、記憶體及暫存空間；不部署本機語言模型或嵌入模型，正式資源建議須以試辦語料量測。
+
+## 離線工具預檢
+
+1. 以平台管理員身分開啟「助手快製」，展開「離線文件工具檢查」。一般建立者與單位主管沒有此診斷權限。
+2. 按「檢查離線工具」。檢查期間可繼續編輯草稿；結果不會變更助手或文件權限。
+3. 分別核對解析套件、LibreOffice，以及 Tesseract 與 `chi_tra`／`eng` 語料。缺少執行檔與缺少語料是不同原因；逾時或回覆異常也會保留錯誤類型。
+4. 在「文件格式預檢」查看各格式的必要工具。模組資料存在或工具能回覆預檢，仍須用代表文件確認解析品質。
+
+`GET /api/quick-builder/readiness` 僅接受平台管理員身分，不接受路徑、指令、網址或其他參數。工具探測每項最多 2 秒、輸出最多 16 KiB，同一 CSP 程序共享 5 秒快取。結果只描述回應請求的 CSP 程序；背景 ingestion worker、遠端 Docling 與正式映像須各自核對，不能由此推定已就緒。此功能不安裝工具、不下載語料，也不調整系統權限。
+
+函式、表格、投影片或程式區塊的單一完整結構超過 16 KiB UTF-8 時，會以 `E_CHUNK_TOO_LARGE` 停止處理，不截斷內容。請拆小單一結構或分檔上傳。策略估算預算被超過但仍在硬限內時，片段保留品質提示；16 KiB 是平台保護，不能視為嵌入模型 token 容量的保證。C/C++ 以靜態詞法辨識；巨集、無法確認的語法與掃描上限會標示保守品質及原因，需核對原檔行號。
 
 ## 安裝與更新
 
