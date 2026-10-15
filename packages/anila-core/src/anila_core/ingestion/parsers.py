@@ -76,15 +76,9 @@ def extract_text(
       which replaces the text wholesale with backend output having no
       page structure of its own — see ``ocr_used``.
 
-      ⚠ Nothing in this tree reads this flag today: it is an honest
-      signal published for future consumers (a chunker-picker, an
-      inspector badge), **not** a control. Turning it off does not stop
-      anything — a document whose markers disagree with ``page_count``
-      is still chunked by ``pdf-page`` if that strategy is selected, and
-      the page numbers it derives still reach the user through
-      ``chunk.metadata["page"]`` / ``["total_pages"]``. The one place
-      that is loud about the disagreement at runtime is
-      ``PdfPageChunker.chunk``, which logs a warning.
+      ``PdfPageChunker`` compares the declared count with the actual
+      fields. A mismatch retains searchable text, marks the page location
+      unknown, and omits page numbers rather than inventing citations.
 
     ``images`` is the parser's per-image map: ``{image_id: ImageRef}``
     where each ``ImageRef`` carries ``image_bytes``, ``mime``, ``page``

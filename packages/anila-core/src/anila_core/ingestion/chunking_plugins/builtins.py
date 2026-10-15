@@ -213,16 +213,20 @@ class MarkdownAwareChunker(ChunkerStrategy):
 
         chunks: list[ChunkResult] = []
         idx = 0
+        context = list(metadata.get("_heading_context", []))
         for start, end in zip(boundaries, boundaries[1:]):
             section = document_text[start:end]
             if not section.strip():
                 continue
 
             heading_match = _HEADING_RE.match(section)
-            heading_title = (
-                heading_match.group(2).strip() if heading_match else "preface"
-            )
-            heading_level = len(heading_match.group(1)) if heading_match else 0
+            if heading_match:
+                level = len(heading_match.group(1))
+                context = [(depth, title) for depth, title in context if depth < level] + [
+                    (level, heading_match.group(2).strip())
+                ]
+            heading_title = context[-1][1] if context else "preface"
+            heading_level = context[-1][0] if context else 0
 
             # If the section fits the budget, emit one chunk per heading.
             # We *don't* merge short sections into the previous chunk:
@@ -237,6 +241,8 @@ class MarkdownAwareChunker(ChunkerStrategy):
                         metadata={
                             "heading": heading_title,
                             "heading_level": heading_level,
+                            "heading_path": [title for _, title in context],
+                            "offset_chars": start,
                             "strategy": self.name,
                         },
                     )
@@ -261,6 +267,8 @@ class MarkdownAwareChunker(ChunkerStrategy):
                             "heading": heading_title,
                             "heading_level": heading_level,
                             "sub_index": sub_idx,
+                            "heading_path": [title for _, title in context],
+                            "offset_chars": start + sub.metadata.get("offset_chars", 0),
                             "strategy": self.name,
                         },
                     )
@@ -334,7 +342,9 @@ class HierarchicalChunker(ChunkerStrategy):
         # Walk the heading regex once, building a list of section
         # records: (heading_title, heading_level, body_start,
         # body_end, heading_path_at_this_section).
-        sections = self._extract_sections(document_text, masked)
+        sections = self._extract_sections(
+            document_text, masked, metadata.get("_heading_context", [])
+        )
 
         chunks: list[ChunkResult] = []
         # Track which heading (chunk_key) is the current parent for
@@ -382,12 +392,19 @@ class HierarchicalChunker(ChunkerStrategy):
             # itself exceeds the leaf budget, recurse into fixed-size
             # windows inside that paragraph with overlap.
             leaves = self._split_into_leaves(body, max_leaf, overlap_tok)
+            search_from = 0
             for leaf_text in leaves:
                 if not leaf_text.strip():
                     continue
                 leaf_key = (
                     f"leaf-{leaf_idx:05d}-{_slug(title) or 'preface'}"
                 )
+                found = body.find(leaf_text, search_from)
+                location = (
+                    {"offset_chars": section["body_start"] + found} if found >= 0 else {}
+                )
+                if found >= 0:
+                    search_from = found + 1
                 chunks.append(
                     ChunkResult(
                         content=leaf_text,
@@ -400,6 +417,7 @@ class HierarchicalChunker(ChunkerStrategy):
                             "heading_depth": len(heading_path),
                             "parent_chunk_key": parent_chunk_key,
                             "strategy": self.name,
+                            **location,
                         },
                     )
                 )
@@ -416,7 +434,7 @@ class HierarchicalChunker(ChunkerStrategy):
 
     @staticmethod
     def _extract_sections(
-        document_text: str, masked: str
+        document_text: str, masked: str, context: list[tuple[int, str]] | None = None
     ) -> list[dict[str, Any]]:
         """Walk heading regex; return one record per section.
 
@@ -427,6 +445,8 @@ class HierarchicalChunker(ChunkerStrategy):
         """
         records: list[dict[str, Any]] = []
         heading_stack: list[str | None] = [None] * 7
+        for level, title in context or []:
+            heading_stack[level] = title
 
         # Snapshot before any heading: an implicit preface section.
         preface_end = len(document_text)
@@ -436,10 +456,11 @@ class HierarchicalChunker(ChunkerStrategy):
         if preface_end > 0:
             records.append(
                 {
-                    "title": "",
-                    "level": 0,
+                    "title": context[-1][1] if context else "",
+                    "level": context[-1][0] if context else 0,
                     "body": document_text[:preface_end],
-                    "path": [],
+                    "body_start": 0,
+                    "path": [title for _, title in context or []],
                 }
             )
 
@@ -465,6 +486,7 @@ class HierarchicalChunker(ChunkerStrategy):
                     "title": title,
                     "level": level,
                     "body": document_text[body_start:body_end],
+                    "body_start": body_start,
                     "path": [h for h in heading_stack if h is not None],
                 }
             )
@@ -483,20 +505,30 @@ class HierarchicalChunker(ChunkerStrategy):
         section-overflow behaviour).
         """
         # Greedy merge of consecutive paragraphs up to max_leaf.
-        paragraphs = [p for p in re.split(r"\n\s*\n", body) if p.strip()]
+        boundaries = [
+            (0, 0),
+            *((m.start(), m.end()) for m in re.finditer(r"\n\s*\n", body)),
+            (len(body), len(body)),
+        ]
+        paragraphs = [
+            (left[1], right[0])
+            for left, right in zip(boundaries, boundaries[1:])
+            if body[left[1] : right[0]].strip()
+        ]
         if not paragraphs:
             return []
 
         merged: list[str] = []
-        buf: list[str] = []
+        buf: list[tuple[int, int]] = []
         buf_tok = 0
-        for p in paragraphs:
+        for start, end in paragraphs:
+            p = body[start:end]
             p_tok = _tokens(p)
             if p_tok > max_leaf_tokens:
                 # Flush buffer first, then recurse on the oversized
                 # paragraph via fixed-size windowing.
                 if buf:
-                    merged.append("\n\n".join(buf))
+                    merged.append(body[buf[0][0] : buf[-1][1]])
                     buf, buf_tok = [], 0
                 fixed = FixedChunker().chunk(
                     p, {}, {"size": max_leaf_tokens, "overlap": overlap_tokens}
@@ -504,12 +536,12 @@ class HierarchicalChunker(ChunkerStrategy):
                 merged.extend(c.content for c in fixed)
                 continue
             if buf_tok + p_tok > max_leaf_tokens and buf:
-                merged.append("\n\n".join(buf))
+                merged.append(body[buf[0][0] : buf[-1][1]])
                 buf, buf_tok = [], 0
-            buf.append(p)
+            buf.append((start, end))
             buf_tok += p_tok
         if buf:
-            merged.append("\n\n".join(buf))
+            merged.append(body[buf[0][0] : buf[-1][1]])
         return merged
 
 
@@ -569,10 +601,9 @@ class PdfPageChunker(ChunkerStrategy):
         # numbers below are fiction — the PDF parser's OCR fallback replaces
         # the text wholesale and keeps ``page_count`` from the native pass,
         # which is exactly how a 4-page document gets cited as "第 1 頁／共
-        # 1 頁". Warn rather than raise: refusing would turn a degraded
-        # citation into a failed ingestion, and the chunks themselves are
-        # still worth retrieving.
-        declared = metadata.get("page_count")
+        # 1 頁". Retain searchable text while omitting untrustworthy page
+        # locations; the declared count remains separate from citations.
+        declared = metadata.get("page_count") or metadata.get("pages")
         if isinstance(declared, int) and not isinstance(declared, bool):
             if declared != total_pages:
                 logger.warning(
@@ -582,6 +613,23 @@ class PdfPageChunker(ChunkerStrategy):
                     total_pages, declared,
                     metadata.get("ocr_used"), metadata.get("format"),
                 )
+                return [
+                    ChunkResult(
+                        content=chunk.content,
+                        chunk_key="unknown-" + chunk.chunk_key,
+                        token_count=chunk.token_count,
+                        metadata={
+                            **chunk.metadata,
+                            "strategy": self.name,
+                            "page_location_quality": "unknown",
+                            "declared_total_pages": declared,
+                            "quality_notice": "解析文字沒有可靠的逐頁對應，頁碼未知；請核對原檔。",
+                        },
+                    )
+                    for chunk in FixedChunker().chunk(
+                        document_text, {}, {"size": max_tok, "overlap": max_tok // 16}
+                    )
+                ]
 
         chunks: list[ChunkResult] = []
         for page_idx, page_text in enumerate(pages, start=1):

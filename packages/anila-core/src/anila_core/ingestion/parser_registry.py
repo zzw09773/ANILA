@@ -1641,8 +1641,10 @@ class ParserRegistry:
         try:
             selected = cls.get(file_path)
             parsed = selected.parse(file_path)
-            if not has_recovered_text(parsed.content) and not (
-                parsed.images and parsed.format in {"docx", "pptx"}
+            if (
+                not has_recovered_text(parsed.content)
+                and not (parsed.images and parsed.format in {"docx", "pptx"})
+                and not parsed.metadata.get("unsupported_objects")
             ):
                 raise ParseError.corrupt("文件解析後沒有可用文字。", details={"reason": "empty_parser_output"})
         except Exception as exc:
@@ -1656,11 +1658,48 @@ class ParserRegistry:
                 parsed.images and parsed.format in {"docx", "pptx"}
             ):
                 raise ParseError.corrupt("文件解析後沒有可用文字。", details={"reason": "empty_fallback_output"})
+        if parsed.metadata.get("unsupported_objects"):
+            # Keep the independent native result. Only the configured, approved
+            # parser may supplement unsupported presentation objects; never turn
+            # an unpaged remote blob into invented slide citations.
+            parsed.metadata["presentation_recovery"] = "not_configured"
+            try:
+                docling = cls._get_docling_parser()
+                if docling is not None:
+                    recovered = docling.parse(file_path)
+                    if not has_recovered_text(recovered.content):
+                        raise ParseError.corrupt("簡報物件復原後沒有可用文字。")
+                    native_slides = parsed.content.split("\f")
+                    remote_slides = recovered.content.split("\f")
+                    if len(native_slides) == len(remote_slides):
+                        parsed.content = "\f".join(
+                            native if remote.strip() in native else native + "\n\n" + remote
+                            for native, remote in zip(native_slides, remote_slides)
+                        )
+                        parsed.metadata["actual_parser"] = "pptx-native+docling"
+                        parsed.metadata["presentation_recovery"] = "docling_supplement"
+                    else:
+                        parsed.metadata["presentation_recovery"] = "remote_slide_locations_unknown"
+            except Exception as exc:
+                parsed.metadata["presentation_recovery"] = "unavailable"
+                parsed.metadata["presentation_recovery_error"] = getattr(
+                    exc, "code", type(exc).__name__
+                )
+            # Successful remote extraction alone cannot prove every chart or
+            # diagram is complete. Retain the native parser's partial notice.
+            if not has_recovered_text(parsed.content) and not parsed.images:
+                raise ParseError.bad_config(
+                    "簡報只有尚未復原的圖表或 SmartArt，目前沒有可索引文字；請管理員確認核准的 Docling，或另存包含可讀文字的版本。",
+                    details={
+                        "reason": "presentation_objects_unavailable",
+                        "unsupported_objects": parsed.metadata["unsupported_objects"],
+                    },
+                )
         parsed.metadata.setdefault("actual_parser", parsed.metadata.get("parser") or type(cls._PARSERS.get(ext)).__name__)
         if fallback_reason:
             parsed.metadata.update({"parser_fallback": True, "fallback_reason": fallback_reason,
                                     "quality": parsed.metadata.get("quality", "native_layout"),
-                                    "quality_notice": "文件解析服務無法處理，已使用院內離線解析；複雜版面請核對原檔。"})
+                                    "quality_notice": parsed.metadata.get("quality_notice") or "文件解析服務無法處理，已使用院內離線解析；複雜版面請核對原檔。"})
         if parsed.images and parsed.format in {"docx", "pptx"}:
             try:
                 docling = cls._get_docling_parser()

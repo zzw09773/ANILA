@@ -376,7 +376,9 @@ def test_chunker_warns_when_text_contradicts_the_declared_page_count(caplog) -> 
             {},
         )
     assert len(chunks) == 1
-    assert chunks[0].metadata["total_pages"] == 1
+    assert "page" not in chunks[0].metadata
+    assert "total_pages" not in chunks[0].metadata
+    assert chunks[0].metadata["page_location_quality"] == "unknown"
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 1
     message = warnings[0].getMessage()

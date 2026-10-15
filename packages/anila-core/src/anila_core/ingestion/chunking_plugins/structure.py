@@ -123,18 +123,63 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
                 "image_ocr_error",
                 "conversion",
                 "converted_from",
+                "unsupported_objects",
+                "presentation_recovery",
+                "page_location_quality",
             )
             if key in metadata
         }
 
-        def run(content: str) -> list[ChunkResult]:
+        source_offset = metadata.get("_source_offset_chars", 0)
+        declared_pages = metadata.get("page_count") or metadata.get("pages")
+        if (
+            metadata.get("format") == "pdf"
+            and declared_pages
+            and len(text.split("\f")) != declared_pages
+        ):
+            source_meta.pop("page", None)
+            source_meta.pop("total_pages", None)
+            source_meta.update(
+                {
+                    "page_location_quality": "unknown",
+                    "declared_total_pages": declared_pages,
+                    "quality_notice": "解析文字沒有可靠的逐頁對應，頁碼未知；請核對原檔。",
+                }
+            )
+
+        def run(content: str, offset: int, context: list[tuple[int, str]]) -> list[ChunkResult]:
             if self.name == "semantic":
                 return (
-                    [atomic(content, "structural", {"structure": "block"})]
+                    [
+                        atomic(
+                            content,
+                            "structural",
+                            {
+                                "structure": "block",
+                                "heading_path": [title for _, title in context],
+                                "offset_chars": source_offset + offset,
+                            },
+                        )
+                    ]
                     if content.strip()
                     else []
                 )
-            return method(self, content, metadata, params)
+            chunks = method(self, content, {**metadata, "_heading_context": context}, params)
+            return [
+                replace(
+                    c,
+                    metadata={
+                        **({"heading_path": [title for _, title in context]} if context else {}),
+                        **c.metadata,
+                        **(
+                            {"offset_chars": source_offset + offset + c.metadata["offset_chars"]}
+                            if "offset_chars" in c.metadata
+                            else {}
+                        ),
+                    },
+                )
+                for c in chunks
+            ]
 
         def atomic(content: str, key: str, extra: dict[str, Any]) -> ChunkResult:
             return ChunkResult(
@@ -165,16 +210,27 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
         count = metadata.get("page_count") or metadata.get("pages")
         if count and len(pages) == count and metadata.get("format") in {"pdf", "ppt", "pptx"}:
             out: list[ChunkResult] = []
+            offset = 0
             for page, content in enumerate(pages, 1):
+                page_offset = offset
+                offset += len(content) + 1
                 if not content.strip():
                     continue
-                extra = {"page": page, "total_pages": count}
+                extra = {
+                    "page": page,
+                    "total_pages": count,
+                    "offset_chars": source_offset + page_offset,
+                }
                 if metadata.get("slide_count") or self.name == "semantic":
                     if metadata.get("slide_count"):
                         extra["slide"] = page
                     out.append(atomic(content, f"slide-{page:04d}", extra))
                 else:
-                    inner = {**metadata, **extra}
+                    inner = {
+                        **metadata,
+                        **extra,
+                        "_source_offset_chars": source_offset + page_offset,
+                    }
                     for key in ("page_count", "pages"):
                         inner.pop(key, None)
                     out.extend(_prefix(chunk(self, content, inner, params), f"page-{page:04d}-"))
@@ -185,7 +241,7 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
         ):
             return [
                 replace(c, metadata={**c.metadata, **source_meta})
-                for c in method(self, text, metadata, params)
+                for c in run(text, 0, list(metadata.get("_heading_context", [])))
             ]
         blocks = _structural_blocks(text)
         for table in metadata.get("table_blocks", []):
@@ -203,28 +259,45 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
         if blocks:
             out = []
             cursor = 0
-            heading: list[str] = []
+            heading: list[tuple[int, str]] = list(metadata.get("_heading_context", []))
             for i, block in enumerate(blocks):
                 before = text[cursor : block.start()]
                 if before.strip():
-                    out.extend(_prefix(run(before), f"part-{i:04d}-"))
+                    out.extend(_prefix(run(before, cursor, heading), f"part-{i:04d}-"))
                 for match in re.finditer(r"^(#{1,6})\s+(.+)$", before, re.MULTILINE):
                     level = len(match.group(1))
-                    heading = heading[: level - 1] + [match.group(2)]
+                    heading = [(depth, title) for depth, title in heading if depth < level] + [
+                        (level, match.group(2).strip())
+                    ]
                 out.append(
                     atomic(
                         block.group(),
                         f"block-{i:04d}",
-                        {"structure": "block", "heading_path": heading.copy()},
+                        {
+                            "structure": "block",
+                            "heading_path": [title for _, title in heading],
+                            "offset_chars": source_offset + block.start(),
+                        },
                     )
                 )
                 cursor = block.end()
             if text[cursor:].strip():
-                out.extend(_prefix(run(text[cursor:]), "tail-"))
+                out.extend(_prefix(run(text[cursor:], cursor, heading), "tail-"))
             return [replace(c, metadata={**c.metadata, **source_meta}) for c in out]
 
         return [
-            replace(c, metadata={**c.metadata, **source_meta})
+            replace(
+                c,
+                metadata={
+                    **c.metadata,
+                    **source_meta,
+                    **(
+                        {"offset_chars": source_offset + c.metadata["offset_chars"]}
+                        if "offset_chars" in c.metadata
+                        else {}
+                    ),
+                },
+            )
             for c in method(self, text, metadata, params)
         ]
 

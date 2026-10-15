@@ -13,6 +13,8 @@ from .parser_registry import ImageRef, ParsedDocument, _new_image_id
 _P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 _A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_CHART = "{http://schemas.openxmlformats.org/drawingml/2006/chart}chart"
+_SMART_ART = "{http://schemas.openxmlformats.org/drawingml/2006/diagram}relIds"
 
 
 def _xml(archive: zipfile.ZipFile, name: str) -> ET.Element:
@@ -44,6 +46,7 @@ class PptxParser:
     def parse(self, file_path: str) -> ParsedDocument:
         slides: list[str] = []
         images: dict[str, ImageRef] = {}
+        unsupported: list[dict[str, object]] = []
         with zipfile.ZipFile(file_path) as archive:
             if sum(item.file_size for item in archive.infolist()) > 100 * 1024 * 1024:
                 raise ParseError.too_large("簡報解壓後超過 100 MB，請分成較小的簡報上傳。")
@@ -67,6 +70,13 @@ class PptxParser:
                 tree = slide.find(".//" + _P + "spTree")
                 if tree is not None:
                     for shape in tree.iter():
+                        if shape.tag in {_CHART, _SMART_ART}:
+                            unsupported.append(
+                                {
+                                    "slide": number,
+                                    "kind": "chart" if shape.tag == _CHART else "smartart",
+                                }
+                            )
                         if shape.tag == _P + "sp":
                             text = _text(shape)
                             if text:
@@ -114,6 +124,15 @@ class PptxParser:
                 "slide_count": len(slides),
                 "parser": "pptx-native",
                 "embedded_images": len(images),
+                **(
+                    {
+                        "unsupported_objects": unsupported,
+                        "quality": "partial",
+                        "quality_notice": "簡報包含圖表或 SmartArt，原生解析只保留可讀文字、表格與圖片；這些物件的內容與版面可能缺漏，請核對原檔。",
+                    }
+                    if unsupported
+                    else {}
+                ),
             },
             source_path=file_path,
             format="pptx",
