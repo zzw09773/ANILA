@@ -34,7 +34,9 @@ function captureFetch() {
       ok: true,
       status: 200,
       headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ id: 1 }),
+      json: async () => String(url).includes("/chat/completions")
+        ? { choices: [{ message: { content: "" }, finish_reason: "stop" }] }
+        : { id: 1 },
       // sse.js 讀 body reader;直接給一個立刻結束的串流。
       body: {
         getReader: () => ({

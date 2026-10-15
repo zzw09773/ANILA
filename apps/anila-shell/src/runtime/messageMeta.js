@@ -1,3 +1,4 @@
+import { normalizeFinishReason, normalizeResponseStreamState, sanitizeCompletionMeta, sanitizeTransportMeta } from './completion.js';
 import { appliedSkillMeta } from "./skills.js";
 // Persistence helpers for assistant-message metadata.
 //
@@ -70,7 +71,7 @@ const ACCUMULATED_FALLBACKS = [
  * @returns {object | null} merged meta, or null when nothing worth persisting
  */
 export function buildPersistMeta(finalMeta, messageState) {
-  const base = finalMeta && typeof finalMeta === "object" ? { ...finalMeta } : {};
+  const base = sanitizeTransportMeta(finalMeta);
   const state = messageState && typeof messageState === "object" ? messageState : {};
 
   // trace: prefer the streaming-accumulated list when final meta's trace is
@@ -158,8 +159,14 @@ export function buildPersistMeta(finalMeta, messageState) {
     base.thinking_elapsed_ms = state.thinkingElapsedMs;
   }
   // 截斷才有「繼續」。後一輪若正常結束，要用 stop 蓋掉先前的 length，重整才不會再畫按鈕。
-  if (state.finishReason === "length" || state.finishReason === "stop") {
+  if (normalizeFinishReason(state.finishReason)) {
     base.finish_reason = state.finishReason;
+  }
+  if (Object.prototype.hasOwnProperty.call(state, 'completion')) {
+    Object.assign(base, sanitizeCompletionMeta({ completion: state.completion, finish_reason: base.finish_reason }));
+  }
+  if (Object.hasOwn(state, 'responseStreamState')) {
+    base.response_stream_state = normalizeResponseStreamState(state.responseStreamState, base.anila_stream?.state);
   }
   // 疊加後是一份清單；applied_skill 留第一個給舊畫面與舊對話。
   const skillMeta = appliedSkillMeta(state.appliedSkill);

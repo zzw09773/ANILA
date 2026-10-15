@@ -99,6 +99,7 @@ export function applyServerPath(prevList, serverMapped, convId) {
       clientOnly.set(m.dbId, {
         explicitAgents: m.explicitAgents,
         finishReason: m.finishReason,
+        ...(Object.hasOwn(m, "completion") ? { completion: m.completion } : {}),
         routedAgentId: m.routedAgentId,
         attachments: m.attachments,
         reasoning: m.reasoning,
@@ -126,9 +127,10 @@ export function applyServerPath(prevList, serverMapped, convId) {
     if (preserved.explicitAgents !== undefined) {
       next.explicitAgents = preserved.explicitAgents;
     }
-    if (preserved.finishReason !== undefined) {
+    if (preserved.finishReason !== undefined && next.completion === undefined && next.responseStreamState === undefined) {
       next.finishReason = preserved.finishReason;
     }
+    if (preserved.completion !== undefined && next.completion === undefined) next.completion = preserved.completion;
     if (preserved.routedAgentId !== undefined) {
       next.routedAgentId = preserved.routedAgentId;
     }

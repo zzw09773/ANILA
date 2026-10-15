@@ -305,6 +305,7 @@ function CodeBlock({ node, children, ...props }) {
       streaming: Boolean(messageCtx?.streaming),
       streamState: messageCtx?.streamState,
       finishReason: messageCtx?.finishReason,
+      answerComplete: messageCtx?.answerComplete,
       artifactKind,
       source,
       current: cur,
@@ -829,6 +830,7 @@ export function MarkdownView({
   streaming = false,
   streamState = null,
   finishReason = null,
+  answerComplete,
 }) {
   const preview = useArtifactPreview();
   const shownFiguresRef = useRef(new Map());
@@ -850,8 +852,9 @@ export function MarkdownView({
       streaming: Boolean(streaming),
       streamState: streamState ?? null,
       finishReason: finishReason ?? null,
+      answerComplete,
     }),
-    [messageId, conversationId, streaming, streamState, finishReason],
+    [messageId, conversationId, streaming, streamState, finishReason, answerComplete],
   );
   useEffect(() => {
     const ticket = preview?.pendingRevision;
@@ -865,7 +868,7 @@ export function MarkdownView({
       return;
     }
     if (streaming) return;
-    if (!canConsumeRevisionTurn({ streaming: false, streamState, finishReason })) {
+    if (!canConsumeRevisionTurn({ streaming: false, streamState, finishReason, answerComplete })) {
       preview.settleRevision?.(messageId);
       return;
     }
@@ -883,7 +886,7 @@ export function MarkdownView({
       });
     }
     preview.settleRevision?.(messageId);
-  }, [text, messageId, conversationId, streaming, streamState, finishReason, preview]);
+  }, [text, messageId, conversationId, streaming, streamState, finishReason, answerComplete, preview]);
   return (
     <MarkdownMessageContext.Provider value={messageValue}>
       <CitationContext.Provider value={citationValue}>

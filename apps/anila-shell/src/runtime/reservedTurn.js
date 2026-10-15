@@ -1,3 +1,4 @@
+import { completionAllowsContinue, normalizeResponseStreamState } from './completion.js';
 // 先落庫再串流(reserve-then-stream)—— 送出路徑的持久化順序。
 //
 // 為什麼存在:使用者送出 Q1,A1 還在串流時按 Enter 送出 Q2。舊流程要等串流
@@ -82,6 +83,7 @@ export function isHarnessEmptyNotice(text) {
 
 /** Continue is for a half-written answer, not a blank that we already explained. */
 export function canContinueLengthReply(msg) {
+  if (!completionAllowsContinue(msg)) return false;
   const doc = msg?.document;
   if (doc && (doc.referenceId || doc.reference_id)) return false;
   if (msg?.finishReason !== "length") return false;
@@ -126,6 +128,7 @@ export function streamStateNotice(state, hasContent = true) {
 
 /** 從一則訊息的 metadata 取出串流狀態;沒有 = null(舊資料、一般訊息)。 */
 export function readStreamState(metadata) {
+  if (Object.hasOwn(metadata || {}, 'response_stream_state')) return normalizeResponseStreamState(metadata.response_stream_state, metadata?.anila_stream?.state);
   const envelope = metadata && metadata.anila_stream;
   if (!envelope || typeof envelope !== "object") return null;
   const state = envelope.state;

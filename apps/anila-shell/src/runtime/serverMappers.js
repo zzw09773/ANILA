@@ -1,3 +1,4 @@
+import { completionFields, sanitizeCompletionMeta } from './completion.js';
 // Map CSP conversation / message rows into the shape ChatRuntime keeps in state.
 // Pure functions: everything they need comes in as arguments.
 
@@ -86,7 +87,7 @@ export function mapServerConversation(serverRow, agentNameLookup, agentRequiresE
 }
 
 export function mapServerMessage(msg, { followUpsEnabled = false } = {}) {
-  const meta = msg.metadata || {};
+  const meta = sanitizeCompletionMeta(msg.metadata);
   return {
     id: `srv-${msg.id}`,
     dbId: msg.id,
@@ -130,6 +131,7 @@ export function mapServerMessage(msg, { followUpsEnabled = false } = {}) {
       meta.finish_reason === "length" || meta.finish_reason === "stop"
         ? meta.finish_reason
         : null,
+    ...completionFields(meta),
     interrupt: normalizeInterrupt(meta.interrupt),
     settledInterrupts: Array.isArray(meta.settled_interrupts)
       ? meta.settled_interrupts.map((item) => normalizeInterrupt(item)).filter(Boolean)

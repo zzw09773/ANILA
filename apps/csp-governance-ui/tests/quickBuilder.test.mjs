@@ -7,6 +7,7 @@ import vue from '@vitejs/plugin-vue'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolve, dirname } from 'node:path'
+import { setTestResult } from './helpers/quickBuilderMock.mjs'
 import { calls, reset, setFailure, setPending, setManageTemplates, changeActor, mutationRequests, holdDetail, releaseDetail, setRetrieval, setReadiness, failReadiness, holdReadiness, releaseReadiness, setTestSteps, setGraph } from './helpers/quickBuilderMock.mjs'
 import { connect, removeNode, maskTrace, modules } from '../src/quickBuilder/graph.js'
 import { RAG_DEFAULTS, RAG_MODES } from '../src/quickBuilder/ragSettings.js'
@@ -209,4 +210,75 @@ test('新流程連按模組庫三次各自放在空位，不覆蓋既有步驟',
     const point = nodes[index].position, target = other.position
     assert.ok(point.x + 200 <= target.x || target.x + 200 <= point.x || point.y + 152 <= target.y || target.y + 152 <= point.y)
   }
+})
+
+
+const modelCompletion = (reason='length', extra={}) => ({schema_version:1,finish_reason:reason,terminal_source:'finish_reason',answer_complete:reason==='stop',usage_complete:true,can_continue:false,usage:{prompt_tokens:3,completion_tokens:4,total_tokens:7},...extra})
+async function runCompletionFixture(result) {
+  await open()
+  setTestResult(result)
+  await click('測試對話')
+  await change(field('測試問題'),'檢查回覆完整性')
+  await click('傳送測試')
+}
+test('length執行completed仍明確未完成，step重複model_completions/error只顯一次固定警告',async()=>{
+  const completion=modelCompletion('length',{message:'PROVIDER_COMPLETION_CANARY',type:'PROVIDER_COMPLETION_CANARY'})
+  await runCompletionFixture({status:'completed',answer_complete:false,completion,output:'部分回答',steps:[{node_id:'condition',status:'incomplete',elapsed_ms:3,input:'問題',output:'部分回答',completion,model_completions:[completion,completion],error:{type:'MODEL_OUTPUT_LIMIT',message:'PROVIDER_COMPLETION_CANARY'}}]})
+  assert.match(document.body.textContent,/執行狀態：執行已結束；回答尚未完成/)
+  assert.match(document.body.textContent,/回答未完成/)
+  assert.equal((document.body.textContent.match(/回答已達輸出長度上限/g)||[]).length,2)
+  assert.doesNotMatch(document.body.textContent,/PROVIDER_COMPLETION_CANARY/)
+})
+test('content_filter沒有正文仍有固定繁中，原始provider訊息不顯示',async()=>{
+  const completion=modelCompletion('content_filter',{message:'PROVIDER_COMPLETION_CANARY'})
+  await runCompletionFixture({status:'completed',answer_complete:false,completion,output:'',steps:[{node_id:'condition',elapsed_ms:2,input:'問題',output:'',completion}]})
+  assert.match(document.body.textContent,/回覆因內容限制未完整提供/)
+  assert.match(document.body.textContent,/MODEL_CONTENT_FILTER/)
+  assert.doesNotMatch(document.body.textContent,/PROVIDER_COMPLETION_CANARY/)
+})
+test('中途modelcall不完整且最後stop時保留早先原因，step不重複同error',async()=>{
+  const partial=modelCompletion('tool_calls'), last=modelCompletion('stop')
+  await runCompletionFixture({status:'failed',answer_complete:false,completion:partial,output:'',steps:[{node_id:'condition',elapsed_ms:2,input:'問題',output:'',completion:last,model_completions:[partial,last],error:{type:'MODEL_ACTION_REQUIRED',message:'PROVIDER_COMPLETION_CANARY'}}]})
+  assert.equal((document.body.textContent.match(/模型要求工具處理/g)||[]).length,2)
+  assert.doesNotMatch(document.body.textContent,/PROVIDER_COMPLETION_CANARY/)
+})
+test('偽completion enum一律固定INVALID，不顯示任意message或秘密欄位',async()=>{
+  const completion=modelCompletion('PROVIDER_COMPLETION_CANARY',{message:'PROVIDER_COMPLETION_CANARY',debug:'PROVIDER_COMPLETION_CANARY'})
+  await runCompletionFixture({status:'completed',completion,output:'部分回答',steps:[{node_id:'condition',elapsed_ms:2,input:'問題',output:'部分',completion}]})
+  assert.match(document.body.textContent,/MODEL_COMPLETION_INVALID/)
+  assert.doesNotMatch(document.body.textContent,/PROVIDER_COMPLETION_CANARY/)
+})
+test('正常stop完成沒有新非完整警告，舊無completion回覆仍相容',async()=>{
+  for(const extra of [{completion:modelCompletion('stop'),answer_complete:true},{}]) {
+    await runCompletionFixture({status:'completed',output:'完整回答',steps:[{node_id:'condition',elapsed_ms:1,input:'問題',output:'完整回答'}],...extra})
+    assert.match(document.body.textContent,/執行狀態：完成/)
+    assert.doesNotMatch(document.body.textContent,/MODEL_OUTPUT_LIMIT|MODEL_CONTENT_FILTER|MODEL_ACTION_REQUIRED|MODEL_COMPLETION_INVALID/)
+  }
+})
+
+
+test('模型完成資訊優先列出每次modelcall，不重複最後completion且只顯示四種安全用量', async () => {
+  const usage={prompt_tokens:17,completion_tokens:9,total_tokens:26,reasoning_tokens:2,provider_secret:'COMPLETION_USAGE_CANARY'}
+  const partial=modelCompletion('length',{usage,message:'COMPLETION_USAGE_CANARY'})
+  const last=modelCompletion('stop',{usage,usage_complete:false})
+  await runCompletionFixture({status:'completed',completion:partial,output:'部分',steps:[{node_id:'condition',elapsed_ms:1,input:'問題',output:'部分',completion:last,model_completions:[partial,last]}]})
+  const panel=document.querySelector('.qb-model-completions')
+  assert.equal((panel.textContent.match(/次模型呼叫/g)||[]).length,2)
+  assert.match(panel.textContent,/結束原因：達輸出長度上限（length）/)
+  assert.match(panel.textContent,/結束原因：正常結束（stop）/)
+  for(const text of ['輸入 token：17','輸出 token：9','合計 token：26','思考 token：2']) assert.equal(panel.textContent.split(text).length-1,2)
+  assert.match(panel.textContent,/用量資料已完整提供/)
+  assert.match(panel.textContent,/用量資料尚未完整提供/)
+  assert.doesNotMatch(document.body.textContent,/COMPLETION_USAGE_CANARY|provider_secret/)
+})
+test('空filter回覆仍顯示completion fallback，缺漏或非法用量明示未提供且不輸出任意欄位', async () => {
+  const completion=modelCompletion('content_filter',{usage_complete:false,usage:{prompt_tokens:true,completion_tokens:1.5,total_tokens:2**54,reasoning_tokens:'COMPLETION_USAGE_CANARY'},message:'COMPLETION_USAGE_CANARY'})
+  await runCompletionFixture({status:'completed',completion,output:'',steps:[{node_id:'condition',elapsed_ms:1,input:'問題',output:'',completion,model_completions:[]},{node_id:'no',elapsed_ms:1,input:'',output:''}]})
+  const panels=[...document.querySelectorAll('.qb-model-completions')]
+  assert.match(panels[0].textContent,/結束原因：內容限制（content_filter）/)
+  assert.equal((panels[0].textContent.match(/token：未提供/g)||[]).length,4)
+  assert.match(panels[0].textContent,/用量資料尚未完整提供/)
+  assert.match(panels[1].textContent,/此步驟未提供模型完成資訊/)
+  assert.match(document.body.textContent,/MODEL_CONTENT_FILTER/)
+  assert.doesNotMatch(document.body.textContent,/COMPLETION_USAGE_CANARY|9007199254740992/)
 })

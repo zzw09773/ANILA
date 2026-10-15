@@ -22,7 +22,7 @@ function conversationMatches(ticket, conversationId) {
  */
 export function canConsumeRevisionTurn(input = {}) {
   if (input.streaming) return false;
-  if (input.finishReason === "length") return false;
+  if (input.answerComplete === false || ["length", "content_filter", "tool_calls", "function_call"].includes(input.finishReason)) return false;
   if (input.streamState == null || input.streamState === "") return true;
   return input.streamState === STREAM_STATE.COMPLETE;
 }
@@ -72,6 +72,7 @@ export function shouldApplyArtifactFence(input) {
     streaming: input?.streaming,
     streamState: input?.streamState,
     finishReason: input?.finishReason,
+    answerComplete: input?.answerComplete,
   })) {
     return { apply: false, consume: false };
   }

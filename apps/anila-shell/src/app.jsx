@@ -1,3 +1,5 @@
+import { canContinueLengthReply } from './runtime/reservedTurn.js';
+import { completionFields, normalizeCompletion, normalizeFinishReason, sanitizeCompletionMeta, sanitizeTransportMeta } from './runtime/completion.js';
 // App root — ChatRuntime wired to real CSP + Router backends.
 // - Classification is backend-driven:
 //     * agent.requires_encryption=true → new conversations start classified
@@ -2049,7 +2051,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           streamError = error;
           streamState = userStoppedRef.current.has(convId)
             ? STREAM_STATE.STOPPED
-            : STREAM_STATE.FAILED;
+            : streamError?.isUnexpectedEof ? STREAM_STATE.INTERRUPTED : STREAM_STATE.FAILED;
         } finally {
           userStoppedRef.current.delete(convId);
           inFlightStreamsRef.current.delete(assistantId);
@@ -2110,6 +2112,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interrupt: persistedInterrupt,
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
+          ...(Object.hasOwn(drafted || {}, "completion") ? { completion: drafted.completion } : {}),
           document: drafted?.document,
           appliedSkill: drafted?.appliedSkill || appliedSkillByMsgRef.current.get(assistantId),
           ...thinkingSnap,
@@ -2385,7 +2388,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       if (typeof convId !== "number" || typeof msg.dbId !== "number") return;
       const row = (messagesRef.current[convId] || []).find((m) => m.id === msg.id) || msg;
       const metadata = {
-        ...(row.metadata || {}),
+        ...sanitizeCompletionMeta({ ...(row.metadata || {}), ...(Object.hasOwn(row, "completion") ? { completion: row.completion } : {}) }),
+        ...(row.responseStreamState ? { response_stream_state: row.responseStreamState } : {}),
         interrupt: row.interrupt,
         settled_interrupts: Array.isArray(row.settledInterrupts) ? row.settledInterrupts : [],
         resume_preface: row.prefaceText ?? null,
@@ -2533,6 +2537,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         interruptPendingAnswer: null,
         interruptRestore: null,
         streaming: false,
+        streamState: STREAM_STATE.COMPLETE,
+        responseStreamState: STREAM_STATE.COMPLETE,
         thinkingStages: settleThinkingStages(stageRow?.thinkingStages, "done", Date.now()),
         reasoning: reasoningText || null,
         ...((accumulatedTrace.length > 0 || metaTrace.length > 0)
@@ -2577,6 +2583,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const row = (messagesRef.current[convId] || []).find((m) => m.id === msg.id);
       const movedOn = Boolean(row?.interrupt?.interrupt_id && row.interrupt.interrupt_id !== interrupt.interrupt_id);
       // 中止、失敗、以及中途又接到新 ASK 的兩種結束，都要收斂階段再寫快照。
+      const resumeState = stopped ? STREAM_STATE.STOPPED : err?.isUnexpectedEof ? STREAM_STATE.INTERRUPTED : STREAM_STATE.FAILED;
       const stageStatus = stopped ? "stopped" : "error";
       const settledStages = settleThinkingStages(row?.thinkingStages, stageStatus, Date.now());
       if (!movedOn) {
@@ -2589,6 +2596,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interruptPendingAnswer: null,
           streaming: false,
           thinkingStages: settledStages,
+          streamState: resumeState,
+          responseStreamState: resumeState,
+          incompleteNotice: streamStateNotice(resumeState, Boolean(priorText)),
           error: stopped ? null : (err?.message || "續答失敗"),
           prefaceText: keepSplit ? preface : null,
           resumeText: keepSplit ? baseResume : null,
@@ -2610,6 +2620,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           streaming: false,
           interruptSubmitting: false,
           thinkingStages: settledStages,
+          streamState: resumeState,
+          responseStreamState: resumeState,
+          incompleteNotice: streamStateNotice(resumeState, Boolean(row?.text)),
           ...(stopped ? {} : { error: err?.message || "續答失敗" }),
         });
         try {
@@ -2628,6 +2641,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   function applyMeta(convId, msgId, agentId, meta) {
+    meta = sanitizeTransportMeta(meta);
     const current = (messagesRef.current[convId] || []).find((m) => m.id === msgId);
     const document = messageDocument(meta);
     const adopted = meta.interrupt
@@ -2674,9 +2688,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ? { thinkingStages: mergeThinkingStages(current?.thinkingStages, meta.thinking_stages) }
         : {}),
       thinkingLocked: meta.thinking_locked === true,
-      ...(meta.finish_reason === "length" || meta.finish_reason === "stop"
-        ? { finishReason: meta.finish_reason }
-        : {}),
+      ...completionFields(meta),
       ...(document
         ? { document, ...(document.preview ? { text: document.preview } : {}) }
         : {}),
@@ -3271,7 +3283,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         // 按停止 vs 真的出錯 —— 使用者看到的說明不同,落庫的狀態也不同。
         streamState = (userStoppedRef.current.has(convId) || queueRecord.cancelled)
           ? STREAM_STATE.STOPPED
-          : STREAM_STATE.FAILED;
+          : streamError?.isUnexpectedEof ? STREAM_STATE.INTERRUPTED : STREAM_STATE.FAILED;
       } finally {
         queuedTurnsRef.current.delete(assistantId);
         userStoppedRef.current.delete(convId);
@@ -3339,6 +3351,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           interrupt: persistedInterrupt,
           thinkingStages: drafted?.thinkingStages,
           finishReason: lengthBudget && finalText ? "length" : drafted?.finishReason,
+          ...(Object.hasOwn(drafted || {}, "completion") ? { completion: drafted.completion } : {}),
           document: drafted?.document,
           appliedSkill: drafted?.appliedSkill || appliedSkillByMsgRef.current.get(assistantId),
           ...thinkingSnap,
@@ -3558,6 +3571,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   // 一律走 Router：模型解析、身分、日期與不得外洩都跟一般回合一樣。
   // 續寫開頭若剛好是 DISPATCH／ASK／RECALL，由 anila_continue 告訴 Router 那是正文。
   async function continueMessage(assistantMsg) {
+    if (!canContinueLengthReply(assistantMsg)) return;
     if (!isAuthenticated) { setRuntimeError("尚未登入，請重新登入後再試。"); return; }
     const convId = assistantMsg.conversationId;
     const msgs = messagesByConv[convId] || [];
@@ -3601,6 +3615,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     });
     let appended = "";
     let combined = existing;
+    let continueError = null;
+    let continueMeta = null;
     try {
       await streamWithAbort(convId, {
         url: `${config.routerBaseUrl}/v1/chat/completions`,
@@ -3622,6 +3638,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           applyLiveTraceStep(convId, assistantMsg.id, step);
         },
         onMeta: (metaFrame) => {
+          continueMeta = metaFrame;
           applyMeta(convId, assistantMsg.id, ROUTER_AGENT.id, metaFrame);
         },
         onReasoning: (delta) => {
@@ -3630,7 +3647,8 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         },
       });
     } catch (err) {
-      setRuntimeError(err?.message || "續寫失敗");
+      continueError = err;
+      if (!err?.isUnexpectedEof) setRuntimeError(err?.message || "續寫失敗");
     } finally {
       thinkingPump.close();
     }
@@ -3642,7 +3660,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const gainedText = Boolean(appended)
       && combined !== existing
       && !isHarnessEmptyNotice(appended);
+    const continueState = stopped ? STREAM_STATE.STOPPED : continueError?.isUnexpectedEof ? STREAM_STATE.INTERRUPTED : continueError ? STREAM_STATE.FAILED : STREAM_STATE.COMPLETE;
     const nextReason = gainedText ? (row?.finishReason || "length") : "length";
+    const previousCompletion = assistantMsg.completion ?? assistantMsg.metadata?.completion;
+    const completionPatch = previousCompletion && gainedText && !Object.hasOwn(continueMeta || {}, 'completion') && normalizeFinishReason(nextReason)
+      ? { completion: normalizeCompletion({ ...previousCompletion, finish_reason: nextReason, terminal_source: 'finish_reason', answer_complete: nextReason === 'stop', usage_complete: false, usage: {} }) }
+      : {};
     const snap = thinkingPump.snapshot({
       hadReasoning: visibleReasoningText(accumulatedReasoning).length > 0,
       finishReason: nextReason,
@@ -3661,11 +3684,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       streaming: false,
       text: savedText,
       finishReason: nextReason,
+      ...completionPatch,
+      streamState: continueState,
+      responseStreamState: continueState,
+      incompleteNotice: streamStateNotice(continueState, Boolean(savedText)),
       ...thinkingPatch,
     });
 
     if (typeof convId !== "number" || typeof assistantMsg.dbId !== "number") return;
-    if (!appended && nextReason === "length" && !stopped) return;
+    if (!appended && nextReason === "length" && !stopped && !continueError) return;
     const current = (messagesRef.current[convId] || []).find((m) => m.id === assistantMsg.id) || row;
     const persistMeta = buildPersistMeta(current?.metadata, {
       ...(current || {}),
@@ -4102,6 +4129,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 ),
               }));
             },
+            onFinishReason: reason => setCompareMsgs(prev => ({ ...prev, [col.id]: (prev[col.id] || []).map(m => m.id === aId ? { ...m, finishReason: normalizeFinishReason(reason) } : m) })),
             onTrace: (step) => {
               setCompareMsgs((prev) => ({
                 ...prev,
@@ -4124,6 +4152,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   msg.id === aId
                     ? {
                         ...msg,
+                        ...completionFields(m),
                         traceId: m.trace_id,
                         trace: m.trace || [],
                         citations: m.citations || [],
@@ -4140,13 +4169,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
               }));
             },
           });
+          const compareState = userStoppedRef.current.has(col.id) ? STREAM_STATE.STOPPED : STREAM_STATE.COMPLETE;
+          userStoppedRef.current.delete(col.id);
           setCompareMsgs((prev) => ({
             ...prev,
             [col.id]: (prev[col.id] || []).map((m) =>
-              m.id === aId ? { ...m, streaming: false } : m,
+              m.id === aId ? { ...m, streaming: false, streamState: compareState, incompleteNotice: streamStateNotice(compareState, Boolean(m.text)) } : m,
             ),
           }));
         } catch (error) {
+          const state = userStoppedRef.current.has(col.id) ? STREAM_STATE.STOPPED : error?.isUnexpectedEof ? STREAM_STATE.INTERRUPTED : STREAM_STATE.FAILED;
+          userStoppedRef.current.delete(col.id);
           setCompareMsgs((prev) => ({
             ...prev,
             [col.id]: (prev[col.id] || []).map((m) =>
@@ -4154,7 +4187,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 ? {
                     ...m,
                     streaming: false,
-                    error: error.message || "產生回應時發生錯誤，請稍後再試。",
+                    streamState: state,
+                    incompleteNotice: streamStateNotice(state, Boolean(m.text)),
+                    error: state === STREAM_STATE.FAILED ? error.message || "產生回應時發生錯誤，請稍後再試。" : null,
                   }
                 : m,
             ),

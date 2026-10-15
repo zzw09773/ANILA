@@ -1,3 +1,4 @@
+import { finishedSseReader } from './helpers/finishedSseReader.js';
 // `streamSessionAnswer`(runtime/sse.js)的 transport 層。
 //
 // 為什麼要單獨一個檔:這個函式**自己抄了一份 CSRF 邏輯**(sse.js 裡第二
@@ -25,10 +26,7 @@ function captureFetch() {
       headers: { get: () => null },
       text: async () => "",
       body: {
-        getReader: () => ({
-          read: async () => ({ done: true, value: undefined }),
-          cancel: async () => {},
-        }),
+        getReader: finishedSseReader,
       },
     };
   });

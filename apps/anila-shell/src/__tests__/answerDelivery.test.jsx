@@ -1,3 +1,4 @@
+import { finishedSseReader } from './helpers/finishedSseReader.js';
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
@@ -25,10 +26,7 @@ function emptyStream() {
       status: 200,
       headers: new Headers(),
       body: {
-        getReader: () => ({
-          read: async () => ({ done: true, value: undefined }),
-          cancel: async () => {},
-        }),
+        getReader: finishedSseReader,
       },
     };
   });

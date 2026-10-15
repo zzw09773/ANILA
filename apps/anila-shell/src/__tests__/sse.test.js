@@ -1,3 +1,4 @@
+import { finishedSseReader } from './helpers/finishedSseReader.js';
 import { describe, it, expect, vi } from "vitest";
 import {
   dispatchSseEvent,
@@ -503,7 +504,7 @@ describe("streamChatCompletion mid-stream anila.error", () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       headers: { get: () => null },
-      body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+      body: { getReader: finishedSseReader },
     }));
     vi.stubGlobal("fetch", fetchMock);
     await streamChatCompletion({

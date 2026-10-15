@@ -983,6 +983,25 @@ describe("ask_user interrupt — 主聊天流程", () => {
     expect(await screen.findByText(title)).toBeTruthy();
   }
 
+  it.each(["stopped", "interrupted", "failed", "complete"])("ASK最新%s可重載，保留原reserve complete與階段快照", async (state) => {
+    const { backend, mounted } = await startResume(`sess-latest-${state}`);
+    await act(async () => {
+      backend.stream.push(namedEventFrame("anila.thinking_stage", { index: 0, title: "本次續答", status: "running" }));
+      backend.stream.push(deltaFrame("本次續答內容"));
+      if (state === "failed") backend.stream.push(errorFrame({ message: "受控服務失敗" }));
+      if (state === "complete") backend.stream.push(doneFrame());
+      if (state !== "stopped") backend.stream.close();
+    });
+    if (state === "stopped") await act(async () => { fireEvent.click(screen.getByLabelText("停止產生")); });
+    await waitForIdle();
+    await waitFor(() => expect(assistantRow(backend)?.metadata?.response_stream_state).toBe(state));
+    expect(assistantRow(backend).metadata.anila_stream.state).toBe("complete");
+    mounted.backend = backend;
+    await reloadStages(mounted, "本次續答");
+    if (state === "complete") expect(screen.queryByTestId("message-incomplete-notice")).toBeNull();
+    else expect(await screen.findByTestId("message-incomplete-notice")).toBeTruthy();
+  });
+
   it("續答中止時，階段收成停止並寫進快照，重整後還在", async () => {
     const { backend, mounted } = await startResume("sess-stage-stop");
     await act(async () => {

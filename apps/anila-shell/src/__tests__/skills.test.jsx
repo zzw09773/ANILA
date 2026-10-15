@@ -176,7 +176,7 @@ describe("skill 選擇與套用標示", () => {
           read: async () => {
             if (pulled) return { done: true, value: undefined };
             pulled = true;
-            return { done: false, value: encoder.encode(frame) };
+            return { done: false, value: encoder.encode(frame + "data: [DONE]\n\n") };
           },
         }),
       },

@@ -332,7 +332,8 @@
       <template v-if="testResult">
         <h3>助手回覆</h3>
         <pre>{{ pretty(testResult.output) }}</pre>
-        <p>執行狀態：{{ testResult.status === 'completed' ? '完成' : testResult.status === 'failed' ? '失敗' : testResult.status }}</p>
+        <p>執行狀態：{{ testRunStatus(testResult) }}</p>
+        <p v-for="item in completionNotices(testResult)" :key="item.type" role="status">{{ item.message }}</p>
         <ul v-if="testResult.artifacts?.length">
           <li v-for="artifact in testResult.artifacts" :key="artifact.download_url">
             <a v-if="safeArtifactUrl(artifact.download_url)" :href="artifact.download_url" download>{{ artifact.filename }}（下載文件草稿）</a>
@@ -340,7 +341,17 @@
         </ul>
         <h3>逐步紀錄（敏感資料已遮罩）</h3>
         <details v-for="(step, i) in testResult.steps" :key="i">
-          <summary>{{ i + 1 }}. {{ nodeLabel(step.node_id) }} · {{ step.elapsed_ms }} 毫秒{{ step.error ? ' · 執行失敗' : '' }}</summary>
+          <summary>{{ i + 1 }}. {{ nodeLabel(step.node_id) }} · {{ step.elapsed_ms }} 毫秒{{ step.status === 'incomplete' ? ' · 回答未完成' : step.error ? ' · 執行失敗' : '' }}</summary>
+          <p v-for="item in completionNotices(step)" :key="item.type" role="status">{{ item.message }}</p>
+          <section class="qb-model-completions" aria-label="模型完成資訊">
+            <h4>模型完成資訊</h4>
+            <p v-if="!modelCompletionDetails(step).length">此步驟未提供模型完成資訊。</p>
+            <div v-for="(item, index) in modelCompletionDetails(step)" :key="index">
+              <p>第 {{ index + 1 }} 次模型呼叫 · 結束原因：{{ item.reason }}</p>
+              <ul><li v-for="usage in item.usage" :key="usage.label">{{ usage.label }}：{{ usage.value }}</li></ul>
+              <p>{{ item.usageStatus }}</p>
+            </div>
+          </section>
           <h4>輸入</h4>
           <pre>{{ pretty(step.input) }}</pre>
           <h4>輸出</h4>
@@ -358,7 +369,7 @@
             <h4>模型內容調整</h4>
             <ul><li v-for="(event, index) in modelContextNotices(step.context_replacements)" :key="index">{{ contextSourceLabel(event.sourceId) }}：{{ event.message }}</li></ul>
           </template>
-          <p v-if="step.error" role="alert">{{ pretty(step.error) }}；請檢查這個步驟的設定後重試。</p>
+          <p v-if="step.error && !completionErrorIsShown(step)" role="alert">{{ pretty(step.error) }}；請檢查這個步驟的設定後重試。</p>
         </details>
       </template>
     </section>
@@ -375,6 +386,7 @@ import NodeSettings from '../quickBuilder/NodeSettings.vue';
 import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
+import { completionNotices, completionTestResult, completionErrorIsShown, testRunStatus, modelCompletionDetails } from '../quickBuilder/completion';
 import { retrievalNotices, modelContextNotices } from '../quickBuilder/retrievalNotices';
 import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel, GRAPH_GEOMETRY, layoutGraph, edgeGeometry, graphBounds, canvasPoint, canvasDelta } from '../quickBuilder/graph';
 const assistants = ref([]),
@@ -740,10 +752,11 @@ async function test() {
   error.value = '';
   testResult.value = null;
   try {
-    testResult.value = maskTrace((await api.assistantAction(detail.value.id, 'test', {
+    const raw = (await api.assistantAction(detail.value.id, 'test', {
       version_id: version.value.id,
       message: message.value
-    }, actor.mutationOptions())).data);
+    }, actor.mutationOptions())).data;
+    testResult.value = completionTestResult(raw, maskTrace(raw));
   } catch (e) {
     fail(e);
   } finally {

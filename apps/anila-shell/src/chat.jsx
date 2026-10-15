@@ -1,3 +1,4 @@
+import { messageCompletionNotice } from './runtime/completion.js';
 // Chat view — main ANILA runtime UI (trust + multi-agent + collab)
 // ESM port of ANILA_templete/anila-ui/src/chat.jsx, with backend-driven classification:
 // no user-controlled "lock/unlock" icons here.
@@ -1584,6 +1585,7 @@ export const MessageBubble = ({
                 streaming={Boolean(streaming)}
                 streamState={msg.streamState ?? null}
                 finishReason={msg.finishReason ?? null}
+                answerComplete={msg.completion?.answer_complete}
               />
             ) : null}
             {streaming && text ? (
@@ -1643,6 +1645,7 @@ export const MessageBubble = ({
           lineHeight: 1.55,
         };
         const quotaExceeded = Boolean(msg.error) && isQuotaExceededMessage(msg.error);
+        const incompleteNotice = messageCompletionNotice(msg) || msg.incompleteNotice;
         const messageNotices = (
           <>
             {!msg.streaming && msg.error && quotaExceeded ? (
@@ -1679,7 +1682,7 @@ export const MessageBubble = ({
             {/* 半截的答案。停止/出錯/連線中斷都會留下部分內容 —— 把它當成
                 完整答案呈現,就是本專案第四條教訓(靜默成功比報錯危險)的
                 翻版:使用者會以為這就是模型的完整回答。 */}
-            {!msg.streaming && msg.incompleteNotice && (
+            {!msg.streaming && incompleteNotice && (
               <div
                 role="status"
                 data-testid="message-incomplete-notice"
@@ -1693,7 +1696,7 @@ export const MessageBubble = ({
                   lineHeight: 1.55,
                 }}
               >
-                {msg.incompleteNotice}
+                {incompleteNotice}
               </div>
             )}
             {!msg.streaming && showSourceMismatch && (

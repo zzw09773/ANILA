@@ -1,3 +1,4 @@
+import { normalizeFinishReason, sanitizeTransportMeta, completionCopyForType } from './completion.js';
 import { modelUnavailableFromPayload } from "./modelUnavailable.js";
 import { skillHeaders } from "./skills.js";
 import { applyOverloadCopy } from "./pendingReply.js";
@@ -78,6 +79,20 @@ function errorFromHttpBody(body, status, fallback) {
   return applyOverloadCopy(error);
 }
 
+function unexpectedEof(text) {
+  return Object.assign(new Error('回覆連線在結束前中斷，已保留收到的內容（STREAM_INTERRUPTED）'), {
+    code: 'STREAM_INTERRUPTED', isUnexpectedEof: true, partialText: text,
+  });
+}
+function isTerminalEvent(event) {
+  if (event.data === '[DONE]') return !event.event || event.event === 'message';
+  if (event.event === 'anila.meta') {
+    try { const meta = sanitizeTransportMeta(JSON.parse(event.data)); return Boolean(normalizeFinishReason(meta.finish_reason)); } catch { return false; }
+  }
+  if (event.event && event.event !== 'message') return false;
+  try { return Boolean(normalizeFinishReason(getFirstChoice(JSON.parse(event.data))?.finish_reason)); }
+  catch { return false; }
+}
 async function readHttpError(response, label) {
   const fallback = statusFallback(label, response.status);
   const body = await response.text();
@@ -96,8 +111,9 @@ function errorFromTerminal(terminalError, accumulatedText) {
     err.partialText = accumulatedText;
     return err;
   }
-  const raw =
-    typeof terminalError?.message === "string" ? terminalError.message.trim() : "";
+  const fixed = completionCopyForType(terminalError?.code) || completionCopyForType(terminalError?.type);
+  const raw = fixed?.message || (
+    typeof terminalError?.message === "string" ? terminalError.message.trim() : "");
   const err = new Error(raw || "產生回應時發生錯誤，請稍後再試。");
   err.isStreamError = true;
   err.partialText = accumulatedText;
@@ -251,6 +267,20 @@ export async function streamChatCompletion({
     throw await readHttpError(response, "串流失敗");
   }
 
+  // A conforming JSON reply can be returned by a non-streaming gateway.
+  if (response.headers.get('Content-Type')?.includes('application/json')) {
+    const data = await response.json();
+    const choice = getFirstChoice(data);
+    if (!choice || typeof choice !== 'object') throw Object.assign(new Error('無法確認這則回答是否完整，請重新提問（MODEL_COMPLETION_INVALID）'), { code: 'MODEL_COMPLETION_INVALID' });
+    const text = extractChoiceText(choice);
+    if (text) onText?.(text);
+    if (data.anila_meta && typeof data.anila_meta === 'object') onMeta?.(sanitizeTransportMeta(data.anila_meta));
+    const reason = normalizeFinishReason(getFirstChoice(data)?.finish_reason);
+    if (reason) onFinishReason?.(reason);
+    else if (choice.finish_reason != null) onMeta?.(sanitizeTransportMeta({ completion: null }));
+    return text;
+  }
+
   // Surface the session id the Router echoes in X-Anila-Session-Id so
   // the caller can pin subsequent turns (resume, follow-up) without
   // relying on the chat history endpoint.
@@ -268,16 +298,20 @@ export async function streamChatCompletion({
   let buffer = "";
   let accumulatedText = "";
   let terminalError = null;
+  let terminalSeen = false;
+  let aborted = false;
 
   while (true) {
+    if (signal?.aborted) { aborted = true; break; }
     let chunk;
     try {
       chunk = await reader.read();
     } catch (err) {
       // 使用者按 Stop → reader.read() 拋 AbortError;吞掉並保留已累積文字。
-      if (err?.name === "AbortError" || signal?.aborted) break;
+      if (err?.name === "AbortError" || signal?.aborted) { aborted = true; break; }
       throw err;
     }
+    if (signal?.aborted) { aborted = true; break; }
     const { done, value } = chunk;
     if (done) {
       break;
@@ -287,6 +321,7 @@ export async function streamChatCompletion({
     buffer = parsed.remainder;
 
     for (const event of parsed.events) {
+      terminalSeen ||= isTerminalEvent(event);
       dispatchSseEvent(event, {
         onText,
         onTrace,
@@ -329,6 +364,7 @@ export async function streamChatCompletion({
     throw errorFromTerminal(terminalError, accumulatedText);
   }
 
+  if (!terminalSeen && !aborted && !signal?.aborted) throw unexpectedEof(accumulatedText);
   return accumulatedText;
 }
 
@@ -391,7 +427,7 @@ export function dispatchSseEvent(event, callbacks) {
     return;
   }
   if (event.event === "anila.meta") {
-    safeJsonInvoke(event.data, callbacks.onMeta, "anila.meta");
+    safeJsonInvoke(event.data, payload => callbacks.onMeta?.(sanitizeTransportMeta(payload)), "anila.meta");
     return;
   }
   if (event.event === "anila.skill") {
@@ -499,7 +535,7 @@ export function dispatchSseEvent(event, callbacks) {
   }
   // Continue Response:回應被 max_tokens 截斷時 finish_reason==='length'。
   // 回報給呼叫端,讓 UI 決定要不要顯示「繼續」鈕(僅純文字回合)。
-  const finishReason = choice?.finish_reason;
+  const finishReason = normalizeFinishReason(choice?.finish_reason);
   if (finishReason) {
     callbacks.onFinishReason?.(finishReason);
   }
@@ -617,6 +653,8 @@ export async function streamSessionAnswer({
   let buffer = "";
   let accumulatedText = "";
   let terminalError = null;
+  let terminalSeen = false;
+  let aborted = false;
   const accumulator = {
     get: () => accumulatedText,
     add: (delta) => {
@@ -625,19 +663,22 @@ export async function streamSessionAnswer({
   };
 
   while (true) {
+    if (signal?.aborted) { aborted = true; break; }
     let chunk;
     try {
       chunk = await reader.read();
     } catch (err) {
-      if (err?.name === "AbortError" || signal?.aborted) break;
+      if (err?.name === "AbortError" || signal?.aborted) { aborted = true; break; }
       throw err;
     }
+    if (signal?.aborted) { aborted = true; break; }
     const { done, value } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const parsed = parseSseBlocks(buffer);
     buffer = parsed.remainder;
     for (const event of parsed.events) {
+      terminalSeen ||= isTerminalEvent(event);
       dispatchSseEvent(event, {
         ...callbacks,
         accumulator,
@@ -658,5 +699,6 @@ export async function streamSessionAnswer({
     throw errorFromTerminal(terminalError, accumulatedText);
   }
 
+  if (!terminalSeen && !aborted && !signal?.aborted) throw unexpectedEof(accumulatedText);
   return accumulatedText;
 }
