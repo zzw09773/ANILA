@@ -93,6 +93,7 @@ def catalog(user: User = Depends(get_current_user), db: Session = Depends(get_db
         ],
         "document_formats": ["html", "pdf", "docx"],
         "can_manage_templates": is_admin_tier(user),
+        "can_manage_readiness": is_admin_tier(user),
     }
 
 

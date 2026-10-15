@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from app.api.quick_builder import router as quick_builder_router
 from app.api.quick_mcp import router as quick_mcp_router
+from app.api.quick_readiness import router as quick_readiness_router
 from app.api.agents import router as agents_router
 from app.api.banners import router as banners_router
 from app.api.auth import router as auth_router
@@ -64,6 +65,7 @@ from app.modules.tasks import router as tasks_router
 
 api_router = APIRouter()
 api_router.include_router(quick_mcp_router)
+api_router.include_router(quick_readiness_router)
 api_router.include_router(quick_builder_router)
 
 api_router.include_router(auth_router)
