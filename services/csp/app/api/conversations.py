@@ -35,7 +35,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 class ConversationCreate(BaseModel):
     title: str = Field("新對話", max_length=255)
-    agent_id: Optional[int] = None
+    agent_id: Optional[int] = Field(default=None, gt=0, strict=True)
     router_model_id: Optional[int] = None
     # Free-form tag for the calling frontend. None / '' is treated as
     # "unspecified". ANILALM sends 'anilalm', ANILA UI sends 'anila-ui'.
@@ -49,13 +49,16 @@ class ConversationCreate(BaseModel):
 
 
 class ConversationUpdate(BaseModel):
-    """Partial update: title (owner) and/or the caller's personal meta.
+    """Partial update: title, owner-only Agent target, or personal meta.
 
     ``tags`` are user-authored only — the derived ``classified`` tag is
     stripped server-side and reattached from ``conversation.classified``.
     """
 
     title: Optional[str] = Field(None, max_length=255)
+    # Omitted keeps the target; explicit null clears it. Target changes are
+    # restricted to the conversation owner, independently of personal meta.
+    agent_id: Optional[int] = Field(default=None, gt=0, strict=True)
     starred: Optional[bool] = None
     folder: Optional[str] = Field(None, max_length=64)
     tags: Optional[list[Annotated[str, Field(max_length=40)]]] = Field(
@@ -941,6 +944,7 @@ def update_conversation(
     expected_user_id: ExpectedUserId = None,
 ):
     reject_if_expected_user_mismatch(current_user, expected_user_id)
+    target_patch = {"agent_id": body.agent_id} if "agent_id" in body.model_fields_set else {}
     conv = svc.update_conversation(
         db,
         conv_id,
@@ -949,6 +953,7 @@ def update_conversation(
         starred=body.starred,
         folder=body.folder,
         tags=body.tags,
+        **target_patch,
     )
     return _conversation_out(db, current_user, conv)
 

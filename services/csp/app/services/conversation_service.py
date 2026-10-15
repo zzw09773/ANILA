@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy import or_, update as sa_update
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,7 @@ from app.services.message_metadata import prepare_message_metadata
 # 同一瞬間推進了同一個對話的 leaf；連續撞這麼多次已經不是「兩個分頁」，
 # 停下來報 409 比無限重試安全。
 _START_TURN_MAX_ATTEMPTS = 5
+_AGENT_UNSET = object()
 
 
 # ── 串流前預留助理訊息（reserve-then-stream） ─────────────────────────────────
@@ -291,6 +292,53 @@ def _all_messages_ordered(db: Session, conversation_id: int) -> list[Message]:
 
 # ── Conversation CRUD ─────────────────────────────────────────────────────────
 
+def _require_conversation_agent(db: Session, user: User, agent_id: int, *, conv=None):
+    """Resolve an available authorized target without exposing denied Agents.
+
+    Creation and owner-only retargeting use the same permission/quick-version
+    gate. Existing classification is a floor; selecting a lower-policy Agent
+    never downgrades the conversation to fit its ceiling.
+    """
+    from app.models.agent import Agent
+    from app.models.model_registry import ModelRegistry
+    from app.services.api_key_service import check_agent_permission
+    from app.services.agent_policy_level import effective_agent_policy_level
+    from app.schemas.contracts.classification import ClassificationLevel
+
+    if type(agent_id) is not int or agent_id <= 0:
+        raise HTTPException(status_code=422, detail="助手編號必須是正整數")
+    agent = (
+        db.query(Agent)
+        .filter(Agent.id == agent_id, Agent.approval_status == "approved",
+                Agent.unavailable_reason.is_(None))
+        .populate_existing()
+        .first()
+    )
+    if agent is None or not check_agent_permission(db, user=user, api_key_id=None, agent_id=agent_id):
+        raise HTTPException(status_code=404, detail="找不到可使用的助手")
+    model = None
+    if agent.base_model_id is not None:
+        model = db.query(ModelRegistry).filter_by(id=agent.base_model_id, is_active=True).first()
+        if model is None:
+            raise HTTPException(status_code=404, detail="找不到可使用的助手")
+    try:
+        current = ClassificationLevel.UNCLASSIFIED
+        if conv is not None:
+            current = ClassificationLevel.from_storage(conv.classification_level or "無機密")
+            if conv.classified:
+                current = max(current, ClassificationLevel.RESTRICTED)
+        effective = max(current, effective_agent_policy_level(agent))
+        ceilings = [(agent.classification_ceiling or "").strip()]
+        if model is not None:
+            ceilings.append((model.classification_ceiling or "").strip())
+        denied = any(ceiling and effective > ClassificationLevel.from_storage(ceiling) for ceiling in ceilings)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="無法確認助手或對話的密等設定，請聯絡管理員") from None
+    if denied:
+        raise HTTPException(status_code=403, detail="此助手無法處理目前對話的密等，請選擇支援的助手")
+    return agent
+
+
 def create_conversation(
     db: Session,
     user_id: int,
@@ -306,9 +354,15 @@ def create_conversation(
     `collection_id` is only meaningful for `origin='anilalm'` (knowledge-
     base scoping). The API layer enforces the contract that anilalm
     conversations MUST set collection_id; other origins MUST leave it
-    None. This function trusts whatever the caller passed and just
-    persists it.
+    None. The API owns that collection-scope contract. Agent authorization,
+    availability, and classification policy are checked here before persistence.
     """
+    agent = None
+    if agent_id is not None:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None or not user.is_active or not user.is_approved:
+            raise HTTPException(status_code=404, detail="找不到可使用的助手")
+        agent = _require_conversation_agent(db, user, agent_id)
     conv = Conversation(
         user_id=user_id,
         title=title,
@@ -319,6 +373,9 @@ def create_conversation(
         router_selection_version=router_selection_version,
     )
     db.add(conv)
+    if agent is not None:
+        db.flush()
+        _latch_agent_policy_on_conversation(db, conv.id, agent, commit=False)
     db.commit()
     db.refresh(conv)
     return conv
@@ -363,7 +420,7 @@ def _resolve_agent_for_adopt(
     return agent
 
 
-def _latch_agent_policy_on_conversation(db: Session, conv_id: int, agent) -> None:
+def _latch_agent_policy_on_conversation(db: Session, conv_id: int, agent, *, commit: bool = True) -> None:
     """Mirror chat-proxy agent-policy latch (reason=agent_policy).
 
     Uses ``effective_agent_policy_level`` (same rule as proxy). No-op when
@@ -385,6 +442,7 @@ def _latch_agent_policy_on_conversation(db: Session, conv_id: int, agent) -> Non
         actor_id="agent-policy",
         reason="agent_policy",
         source="agent_policy",
+        commit=commit,
     )
 
 
@@ -681,24 +739,44 @@ def update_conversation(
     starred: bool | None = None,
     folder: str | None = None,
     tags: list | None = None,
+    agent_id=_AGENT_UNSET,
 ) -> Conversation:
-    """Patch title (owner/admin) and/or the caller's personal meta.
+    """Patch title (owner/admin), target (owner only), and/or personal meta.
 
     Meta updates only need read access so a named-share recipient can
     star / file / tag their own view without write rights on the thread.
+    Omitted agent_id preserves routing; explicit None clears it without
+    changing the conversation's latched classification.
     """
     meta_touch = starred is not None or folder is not None or tags is not None
-    if title is None and not meta_touch:
+    agent_touch = agent_id is not _AGENT_UNSET
+    if title is None and not meta_touch and not agent_touch:
         raise HTTPException(status_code=400, detail="沒有可更新的欄位")
+    cleaned = None
     if title is not None:
-        conv = get_conversation(db, conv_id, user, for_write=True)
         cleaned = title.strip()
         if not cleaned:
             raise HTTPException(status_code=400, detail="標題不可為空")
-        conv.title = cleaned
+    if agent_touch:
+        # Owner-only, including explicit clear. Do not allow an administrator
+        # or a named-share recipient to change another user's routing target.
+        # Serialize against classification latches and other target updates.
+        conv = (db.query(Conversation).filter_by(id=conv_id, user_id=user.id)
+                .populate_existing().with_for_update().first())
+        if conv is None:
+            raise HTTPException(status_code=404, detail="找不到此對話")
+        agent = _require_conversation_agent(db, user, agent_id, conv=conv) if agent_id is not None else None
+        if agent is not None:
+            # The policy function reloads the row: run it before changing other
+            # fields, and commit all target/title/meta changes together below.
+            _latch_agent_policy_on_conversation(db, conv.id, agent, commit=False)
+        conv.agent_id = agent_id
         conv.updated_at = datetime.now(timezone.utc)
     else:
-        conv = get_conversation(db, conv_id, user, for_write=False)
+        conv = get_conversation(db, conv_id, user, for_write=title is not None)
+    if title is not None:
+        conv.title = cleaned
+        conv.updated_at = datetime.now(timezone.utc)
     if meta_touch:
         upsert_user_meta(
             db, user, conv, starred=starred, folder=folder, tags=tags,

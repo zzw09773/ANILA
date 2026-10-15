@@ -2028,6 +2028,7 @@ def list_available_agents(
     data = [
         {
             "id": a.name,
+            "db_id": a.id,
             "object": "agent",
             "name": a.name,
             "description_for_router": a.description_for_router,
