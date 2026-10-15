@@ -1208,12 +1208,13 @@ class SourceCodeParser:
     """Decode source as data and annotate intact source boundaries."""
 
     def parse(self, file_path: str) -> ParsedDocument:
-        from .source_code import source_units
+        from .source_code import source_units, summarize_boundary_quality
         parsed = PlainTextParser().parse(file_path)
         language = "python" if Path(file_path).suffix.lower() == ".py" else "cpp"
         parsed.format = language
-        parsed.metadata.update({"source_language": language,
-                                "source_units": source_units(parsed.content, language)})
+        units = source_units(parsed.content, language)
+        parsed.metadata.update({"source_language": language, "source_units": units,
+                                **summarize_boundary_quality(units)})
         return parsed
 
 

@@ -305,12 +305,16 @@ def test_python_methods_keep_decorators_and_uploaded_source_is_never_executed():
     assert "@staticmethod" in methods[0].content and "return value" in methods[0].content
 
 
-def test_cpp_initializer_braces_use_conservative_intact_source():
+def test_cpp_initializer_braces_keep_constructor_body_and_line_ranges():
     body = "class Policy {\nPolicy() : value{1}, other{2}\n{\n  ready();\n}\n};\n"
     text, metadata, _ = extract_text("policy.cpp", body.encode())
     chunks = get_chunker("fixed").chunk(text, metadata, {"size": 1, "overlap": 0})
-    assert len(chunks) == 1 and chunks[0].content == body
-    assert chunks[0].metadata["source_boundary_quality"] == "conservative"
+    assert "".join(chunk.content for chunk in chunks) == body
+    constructors = [chunk for chunk in chunks if chunk.metadata["symbol"] == "Policy"]
+    assert len(constructors) == 1
+    assert "value{1}, other{2}" in constructors[0].content
+    assert "ready();" in constructors[0].content
+    assert constructors[0].metadata["source_boundary_quality"] == "lexical"
 
 
 def test_encrypted_pdf_has_specific_plain_language_error(tmp_path):
@@ -546,12 +550,14 @@ def test_unclosed_fence_scans_each_line_once(monkeypatch):
     blocks = structure._structural_blocks(body)
     assert len(blocks) == 1 and blocks[0].group() == body
     assert calls == len(body.splitlines())
-    chunks = get_chunker("fixed").chunk(body, {}, {"size": 1, "overlap": 0})
-    assert len(chunks) == 1 and chunks[0].content == body
+    from anila_core.ingestion.errors import ChunkError
+    with pytest.raises(ChunkError) as error:
+        get_chunker("fixed").chunk(body, {}, {"size": 1, "overlap": 0})
+    assert error.value.code == "E_CHUNK_TOO_LARGE"
     masked = structure.mask_fenced_code(body)
     assert masked == "".join(char if char in "\r\n" else " " for char in body)
-    chunks = get_chunker("markdown-aware").chunk(body, {}, {"max_leaf_tokens": 100_000})
-    assert len(chunks) == 1 and chunks[0].content == body
+    with pytest.raises(ChunkError):
+        get_chunker("markdown-aware").chunk(body, {}, {"max_leaf_tokens": 100_000})
 
 
 @pytest.mark.skipif(

@@ -1262,6 +1262,9 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         text, parse_meta, images = extract_text(
             meta["filename"], blob, meta["mime_type"],
         )
+        from anila_core.ingestion.chunking_plugins.structure import validate_structure_limits
+
+        validate_structure_limits(text, parse_meta)
 
         # 1a. Caption embedded images via VLM (when configured).
         # Replaces ``[[IMAGE:<id>]]`` placeholders with VLM-generated
@@ -1309,6 +1312,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                         tables = [table.replace(f"[[IMAGE:{image_id}]]", f"[圖片描述：{ref.caption}]")
                                   for table in tables]
                 parse_meta["table_blocks"] = tables
+            validate_structure_limits(text, parse_meta)
             # 1b. Persist captioned images to disk + DB so Studio can
             # vector-search over them (Phase 5). Best-effort: a failure
             # here doesn't fail ingest — the captions are already inlined
@@ -1346,6 +1350,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         if getattr(chunker, "requires_embedder", False):
             from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
 
+            validate_structure_limits(text, parse_meta, preserve_pages=True)
             min_tok = int(params.get("min_segment_tokens", 128))
             segments = SemanticChunker.split_segments(text, min_tokens=min_tok)
             params["_segments"] = segments

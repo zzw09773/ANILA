@@ -9,6 +9,61 @@ from typing import Any, Callable
 
 from .base import ChunkResult
 
+MAX_ATOMIC_BYTES = 16 * 1024
+
+
+def _check_atomic_limit(content: str, metadata: dict[str, Any]) -> int:
+    from ..errors import ChunkError
+
+    size = len(content.encode("utf-8"))
+    if size > MAX_ATOMIC_BYTES:
+        raise ChunkError(
+            code="E_CHUNK_TOO_LARGE",
+            retryable=False,
+            severity="warning",
+            user_message="函式、表格或程式區塊超過平台完整結構處理上限（16 KiB）；請縮小單一結構或分檔後重新上傳，內容未截斷。",
+            details={
+                "actual_bytes": size,
+                "atomic_byte_limit": MAX_ATOMIC_BYTES,
+                "limit_policy": "platform_atomic_utf8",
+                **{
+                    key: metadata[key]
+                    for key in ("source_filename", "line_start", "line_end", "structure")
+                    if key in metadata
+                },
+            },
+        )
+    return size
+
+
+def validate_structure_limits(
+    text: str, metadata: dict[str, Any], *, preserve_pages: bool = False
+) -> None:
+    """Preflight before embedding; 16 KiB is platform policy, not model tokens."""
+    units = metadata.get("source_units")
+    if isinstance(units, list):
+        lines = text.splitlines(keepends=True)
+        for unit in units:
+            _check_atomic_limit(
+                "".join(lines[unit["line_start"] - 1 : unit["line_end"]]),
+                {**metadata, **unit, "structure": "source"},
+            )
+        return
+    for block in _structural_blocks(text):
+        _check_atomic_limit(block.content, {**metadata, "structure": block.kind})
+    for table in metadata.get("table_blocks", []):
+        if table.strip():
+            _check_atomic_limit(table, {**metadata, "structure": "table"})
+    if metadata.get("slide_count"):
+        for page in text.split("\f"):
+            _check_atomic_limit(page, {**metadata, "structure": "slide"})
+    elif preserve_pages and metadata.get("format") == "pdf":
+        pages = text.split("\f")
+        count = metadata.get("page_count") or metadata.get("pages")
+        if count and len(pages) == count:
+            for index, page in enumerate(pages, 1):
+                _check_atomic_limit(page, {**metadata, "structure": "page", "page": index})
+
 
 @dataclass(frozen=True)
 class _BlockSpan:
@@ -110,6 +165,8 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
     ) -> list[ChunkResult]:
         from .builtins import _tokens
 
+        validate_structure_limits(text, metadata, preserve_pages=self.name == "semantic")
+
         source_meta = {
             key: metadata[key]
             for key in (
@@ -131,6 +188,8 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
                 "unsupported_objects",
                 "presentation_recovery",
                 "page_location_quality",
+                "source_boundary_quality",
+                "source_boundary_reasons",
             )
             if key in metadata
         }
@@ -187,11 +246,36 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
             ]
 
         def atomic(content: str, key: str, extra: dict[str, Any]) -> ChunkResult:
+            size = _check_atomic_limit(content, {**source_meta, **extra})
+            token_count = _tokens(content)
+            budget_key = {
+                "fixed": "size",
+                "hierarchical": "max_leaf_tokens",
+                "markdown-aware": "max_leaf_tokens",
+                "pdf-page": "max_page_tokens",
+                "cjk-sentence": "max_tokens",
+                "semantic": "min_segment_tokens",
+            }[self.name]
+            budget = int(params.get(budget_key, self.default_params.get(budget_key, 1024)))
+            limits = {
+                "oversize": token_count > budget,
+                "chunk_budget_tokens": budget,
+                "token_count_is_estimate": True,
+                "atomic_bytes": size,
+                "atomic_byte_limit": MAX_ATOMIC_BYTES,
+                "limit_policy": "platform_atomic_utf8",
+                "embedding_input_validation": "provider_required",
+            }
+            if limits["oversize"]:
+                limits["quality_notice"] = (
+                    source_meta.get("quality_notice", "")
+                    + " 為保留結構，此片段超過策略估算預算；16 KiB 僅為平台保護，模型仍須驗證實際輸入限制。尚未截斷內容。"
+                ).strip()
             return ChunkResult(
                 content,
                 key,
-                _tokens(content),
-                {**source_meta, "chunk_type": "leaf", "strategy": self.name, **extra},
+                token_count,
+                {**source_meta, "chunk_type": "leaf", "strategy": self.name, **extra, **limits},
             )
 
         units = metadata.get("source_units")
@@ -288,7 +372,21 @@ def protect_structure(method: Callable[..., list[ChunkResult]]) -> Callable[...,
                 cursor = block.end()
             if text[cursor:].strip():
                 out.extend(_prefix(run(text[cursor:], cursor, heading), "tail-"))
-            return [replace(c, metadata={**c.metadata, **source_meta}) for c in out]
+            return [
+                replace(
+                    c,
+                    metadata={
+                        **c.metadata,
+                        **source_meta,
+                        **(
+                            {"quality_notice": c.metadata["quality_notice"]}
+                            if c.metadata.get("oversize")
+                            else {}
+                        ),
+                    },
+                )
+                for c in out
+            ]
 
         return [
             replace(

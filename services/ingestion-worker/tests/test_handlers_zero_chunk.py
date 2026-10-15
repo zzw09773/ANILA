@@ -237,3 +237,70 @@ async def test_zero_chunk_document_is_not_counted_into_the_collection(wired):
     sql, args = statements[0]
     assert "embedding_model IS NULL" in sql
     assert args[1] == "nvidia/nv-embed-v2"
+
+
+@pytest.mark.parametrize("strategy", ["semantic", "hierarchical"])
+@pytest.mark.parametrize("structure", ["source", "table", "fence", "slide"])
+async def test_atomic_limit_fails_before_caption_or_embedding(
+    wired, monkeypatch, strategy, structure
+):
+    ctx, pool = wired
+    original_meta = handlers._load_document_meta
+
+    async def load(pool, document_id):
+        meta = await original_meta(pool, document_id)
+        meta["chunking_config"] = {"strategy": strategy}
+        return meta
+
+    text = "界" * 6000
+    metadata = {"source_filename": "synthetic.cpp"}
+    if structure == "source":
+        metadata["source_units"] = [{"line_start": 1, "line_end": 1, "symbol": "large"}]
+    elif structure == "table":
+        metadata["table_blocks"] = [text]
+    elif structure == "fence":
+        text = "```cpp\n" + text + "\n```\n"
+    else:
+        metadata["slide_count"] = 1
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("超過平台原子結構上限時，不得呼叫模型或嵌入服務")
+
+    monkeypatch.setattr(handlers, "_load_document_meta", load)
+    monkeypatch.setattr(handlers, "extract_text", lambda *args: (text, metadata, {}))
+    monkeypatch.setattr(handlers, "_resolve_caption_intent", forbidden)
+    ctx["embedder"].embed = forbidden
+    from anila_core.ingestion.errors import ChunkError
+
+    with pytest.raises(ChunkError) as blocked:
+        await handlers.ingest_document(ctx, 41)
+    assert blocked.value.code == "E_CHUNK_TOO_LARGE"
+    updates = _statements(pool, "ingestion_documents")
+    assert any(args[1] == "failed" for _, args in updates)
+
+
+async def test_semantic_pdf_page_limit_precedes_segment_embedding(wired, monkeypatch):
+    from anila_core.ingestion.errors import ChunkError
+
+    ctx, _ = wired
+    original_meta = handlers._load_document_meta
+
+    async def load(pool, document_id):
+        meta = await original_meta(pool, document_id)
+        meta["chunking_config"] = {"strategy": "semantic"}
+        return meta
+
+    async def caption_intent(*args):
+        return False, None
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("整頁超限時不得先送出 semantic 預嵌入")
+
+    monkeypatch.setattr(handlers, "_load_document_meta", load)
+    monkeypatch.setattr(handlers, "extract_text", lambda *args: ("界" * 6000, {"format": "pdf", "pages": 1}, {}))
+    monkeypatch.setattr(handlers, "get_chunker", lambda *args: SimpleNamespace(requires_embedder=True))
+    monkeypatch.setattr(handlers, "_resolve_caption_intent", caption_intent)
+    ctx["embedder"].embed = forbidden
+    with pytest.raises(ChunkError) as blocked:
+        await handlers.ingest_document(ctx, 41)
+    assert blocked.value.code == "E_CHUNK_TOO_LARGE"
