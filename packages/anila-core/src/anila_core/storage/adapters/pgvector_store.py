@@ -33,6 +33,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any, AsyncIterator
 
 import asyncpg  # type: ignore[import-untyped]  # 沒有 py.typed 或 stubs
@@ -838,6 +839,48 @@ class CollectionScopedPgVectorStore:
             await self._attach_parent_content(conn, hits)
         return hits
 
+    async def bounded_fulltext_search(
+        self, *, document_ids: list[int] | None = None,
+    ) -> list[SearchHit]:
+        """Return every stored text chunk, including structural parent rows.
+
+        Bounds: 20 documents, 100000 Unicode characters, 500 chunks.
+        One statement checks and reads the same snapshot; oversized content
+        never crosses the DB connection. Collection RLS still applies.
+        """
+        sql = """
+            WITH corpus AS MATERIALIZED (
+                SELECT id, collection_id, document_id, chunk_key,
+                       content, metadata, token_count, created_at,
+                       parent_chunk_id, chunk_type, chunk_level
+                  FROM document_chunks
+                 WHERE collection_id = $1
+                   AND ($2::bigint[] IS NULL OR document_id = ANY($2::bigint[]))
+            ), bounds AS (
+                SELECT count(*) AS chunk_total,
+                       count(DISTINCT document_id) AS document_total,
+                       COALESCE(sum(char_length(content)), 0) AS character_total
+                  FROM corpus
+            )
+            SELECT b.chunk_total, b.document_total, b.character_total, c.*, 1.0 AS score
+              FROM bounds b
+              LEFT JOIN LATERAL (
+                  SELECT * FROM corpus
+                   WHERE b.chunk_total <= 500 AND b.document_total <= 20
+                     AND b.character_total <= 100000
+                   ORDER BY document_id, id
+              ) c ON true
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, self.collection_id, document_ids or None)
+        if not rows:
+            return []
+        bounds = rows[0]
+        if (bounds["chunk_total"] > 500 or bounds["document_total"] > 20
+                or bounds["character_total"] > 100000):
+            raise ValueError("全文模式上限為 20 份文件、100000 字及 500 個片段；請縮小文件範圍或改用 hybrid 檢索")
+        return [self._row_to_search_hit(r) for r in rows if r["id"] is not None]
+
     async def keyword_fallback_search(
         self,
         query: str,
@@ -853,7 +896,17 @@ class CollectionScopedPgVectorStore:
 
         if top_k <= 0:
             return []
-        units = cjk_search_units(query)
+        # Keep literal identifiers before CJK n-grams: 「第2條」 must
+        # outrank 「第3條」 even though both share 第/條, and part numbers
+        # such as AB-001 should not collapse to independent AB/001 tokens.
+        raw = (query or "").strip()
+        literal_units = [raw] if raw else []
+        literal_units.extend(re.findall(
+            r"第\s*[0-9０-９一二三四五六七八九十百千零〇壹貳參肆伍陸柒捌玖拾佰仟]+\s*[條項款]",
+            raw,
+        ))
+        literal_units.extend(re.findall(r"[A-Za-z0-9]+(?:[-_./][A-Za-z0-9]+)+", raw))
+        units = list(dict.fromkeys([*literal_units, *cjk_search_units(query)]))[:24]
         if not units:
             return []
         patterns = [ilike_pattern(unit) for unit in units]

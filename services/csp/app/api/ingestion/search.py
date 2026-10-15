@@ -1,4 +1,4 @@
-"""Semantic search over a collection (`POST /api/ingestion/collections/{id}/search`).
+"""Semantic, hybrid, keyword and bounded fulltext retrieval over a collection (`POST /api/ingestion/collections/{id}/search`).
 
 Sprint 5 follow-up: ANILA LM (and any other consumer — AgenticRAG agents,
 n8n nodes, future CLI) needs a single endpoint that:
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 from dataclasses import dataclass
 
@@ -171,19 +171,23 @@ def _enforce_agent_collection_scope(principal: SearchPrincipal, collection_id: i
 
 
 class SearchRequest(BaseModel):
+    search_mode: Literal["semantic", "hybrid", "keyword", "fulltext"] = Field(
+        default="semantic",
+        description="semantic：向量與既有備援；hybrid：向量及全文排名融合；keyword：僅關鍵字；fulltext：最多20份文件／100000字／500片段全文，不呼叫模型",
+    )
     query: str = Field(..., min_length=1, max_length=4000, description="自然語言查詢")
     top_k: int = Field(
         default=5,
         ge=1,
         le=50,
-        description="回傳前 N 個最相似的段落",
+        description="回傳前 N 個相關片段；fulltext 模式回傳上限內的全部片段，不依此數值截斷",
     )
     min_score: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "cosine 相似度最低門檻 (0=不過濾)。"
+            "向量 cosine 相似度最低門檻 (0=不過濾；不套用於關鍵字與全文結果)。"
             "⚠ 不要把它讀成「相似百分比」,也不要沿用 0.7 之類看起來合理的預設值:"
             "本平台的 embedder 是非對稱的 —— 查詢側與文件側對「同一句話」的編碼,"
             "實測餘弦值約在 0.60–0.83 之間,不會是 1.0。"
@@ -234,7 +238,7 @@ class SearchHitOut(BaseModel):
     filename: str
     chunk_key: str
     content: str
-    score: float = Field(..., description="cosine similarity in [0, 1]; higher = closer")
+    score: float = Field(..., description="依搜尋模式為 cosine 或正規化 RRF 排名分數；越高越相關")
     metadata: dict[str, Any] = Field(default_factory=dict)
     # Sprint 9 X / parent-child RAG. ``parent_content`` is JOIN-fetched
     # at retrieval time when the matched leaf carries a
@@ -490,7 +494,7 @@ async def search_collection(
     db: Session = Depends(get_db),
     principal: SearchPrincipal = Depends(resolve_search_principal),
 ) -> SearchResponse:
-    """Semantic top-K retrieval over one collection's chunks.
+    """Retrieve ranked chunks or bounded fulltext from one authorized collection.
 
     Auth: ``_require_collection_access`` — admin or owner. An agent
     dispatch JWT authenticates as its owner but is additionally
@@ -512,23 +516,31 @@ async def search_collection(
     embed_model = None
     source_filter = None
     model_id = None
-    try:
-        from app.services.embedding_swap import search_model as active_embedding
+    model_error = None
+    if payload.search_mode not in {"keyword", "fulltext"}:
+        try:
+            try:
+                from app.services.embedding_swap import search_model as active_embedding
 
-        active = active_embedding(db)
-    except Exception:
-        active = None
-    if active is not None and isinstance(getattr(active, "id", None), int):
-        embed_model = active.name
-        source_filter = active.name
-        model_id = active.id
-    else:
-        # 沒有作用中指標時只認治理中心指定的角色；沒指定就 409，不猜模型。
-        designated = _require_platform_embedding(db)
-        embed_model = designated.name
-        source_filter = designated.name
-        raw_id = getattr(getattr(designated, "model", None), "id", None)
-        model_id = raw_id if isinstance(raw_id, int) else None
+                active = active_embedding(db)
+            except Exception:
+                active = None
+            if active is not None and isinstance(getattr(active, "id", None), int):
+                embed_model = active.name
+                source_filter = active.name
+                model_id = active.id
+            else:
+                # 沒有作用中指標時只認治理中心指定的角色；沒指定就 409，不猜模型。
+                designated = _require_platform_embedding(db)
+                embed_model = designated.name
+                source_filter = designated.name
+                raw_id = getattr(getattr(designated, "model", None), "id", None)
+                model_id = raw_id if isinstance(raw_id, int) else None
+
+        except HTTPException as exc:
+            if payload.search_mode == "semantic":
+                raise
+            model_error = exc
 
     # 民國紀年／域內同義擴展後再 embedding（擴展詞會拉近向量空間，屬預期行為）。
     search_query = expand_query(db, payload.query)
@@ -549,18 +561,15 @@ async def search_collection(
         ) from exc
 
     store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
-    embed_error = None
+    embed_error = model_error
     query_vec = None
-    try:
-        query_vec = await _embed_query(
-            db,
-            current_user,
-            embed_model,
-            coll.embedding_dim,
-            search_query,
-        )
-    except Exception as exc:
-        embed_error = exc
+    if payload.search_mode not in {"keyword", "fulltext"} and embed_error is None:
+        try:
+            query_vec = await _embed_query(
+                db, current_user, embed_model, coll.embedding_dim, search_query,
+            )
+        except Exception as exc:
+            embed_error = exc
 
     from anila_core.embeddings.keyword import KEYWORD_FALLBACK_NOTICE
     from app.services.embedding_keyword import maybe_rerank
@@ -568,24 +577,34 @@ async def search_collection(
     async def _rerank(hits):
         return await maybe_rerank(db, current_user, search_query, hits)
 
-    batch = await collect_chunk_hits(
-        store,
-        query=search_query,
-        query_vec=query_vec,
-        embed_error=embed_error,
-        model_id=model_id,
-        top_k=payload.top_k,
-        min_score=payload.min_score,
-        source_model=source_filter,
-        rerank=_rerank,
-    )
-    hits = batch.hits
-    keyword_fallback = batch.keyword_fallback
+    if payload.search_mode == "fulltext":
+        try:
+            hits = await store.bounded_fulltext_search(document_ids=payload.document_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        keyword_fallback = False
+        batch = None
+    else:
+        batch = await collect_chunk_hits(
+            store,
+            query=search_query,
+            query_vec=query_vec,
+            embed_error=embed_error,
+            model_id=model_id,
+            top_k=payload.top_k,
+            min_score=payload.min_score,
+            source_model=source_filter,
+            rerank=_rerank,
+            search_mode=payload.search_mode,
+        )
+        hits = batch.hits
+        keyword_fallback = batch.keyword_fallback
 
     # Zero hits under a designation filter is ambiguous on the legacy
     # column. Side-table search and keyword fallback already know why
-    # they are empty, so they do not raise the stranded-index 409.
-    if not keyword_fallback and not batch.used_model_slots:
+    # they are empty. Explicit lexical/fulltext modes also do not depend on
+    # embedding provenance, so only the legacy semantic mode uses this guard.
+    if payload.search_mode == "semantic" and not keyword_fallback and not batch.used_model_slots:
         await _assert_index_matches_designation(
             store, hits=hits, designated=source_filter, collection_id=coll.id
         )
@@ -613,7 +632,10 @@ async def search_collection(
     doc_ids = {h.chunk.document_id for h in hits}
     rows = (
         db.query(IngestionDocument.id, IngestionDocument.filename)
-        .filter(IngestionDocument.id.in_(doc_ids))
+        .filter(
+            IngestionDocument.collection_id == coll.id,
+            IngestionDocument.id.in_(doc_ids),
+        )
         .all()
     )
     filenames = {r.id: r.filename for r in rows}

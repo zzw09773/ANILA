@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from copy import copy
 from dataclasses import dataclass
 
 from fastapi import HTTPException, status
@@ -318,14 +319,27 @@ async def collect_chunk_hits(
     min_score: float,
     source_model: str | None,
     rerank=None,
+    search_mode: str = "semantic",
 ) -> ChunkHitBatch:
-    """Vector search on the active model, or keyword search when that cannot run.
+    """Collect semantic, lexical, or equally weighted hybrid ranked chunks.
 
-    Stubs that only implement ``similarity_search`` stay on that path.
-    Keyword fallback is used only when the embed failed, or the corpus
-    has text but no vectors for the active model, and the store actually
-    implements it. A similarity_search failure is not turned into keywords.
+    Default semantic mode keeps its existing keyword fallback and supports
+    stores implementing only ``similarity_search``. Hybrid always searches
+    the complete lexical corpus, and keyword does not need a query vector.
+    A similarity_search failure is never silently turned into keywords.
     """
+    if search_mode not in {"semantic", "hybrid", "keyword"}:
+        raise ValueError(f"Unknown search mode: {search_mode}")
+    if search_mode == "keyword":
+        return ChunkHitBatch(hits=(await _collect_keyword_hits(store, query, top_k))[:top_k])
+    requested_top_k = top_k
+    keyword_hits = None
+    if search_mode == "hybrid":
+        # Bounded candidate windows from both channels. The lexical pass
+        # covers every leaf, including chunks with perfectly good vectors.
+        top_k = max(30, top_k * 3)
+        keyword_hits = await _collect_keyword_hits(store, query, top_k)
+
     coverage = "legacy"
     if isinstance(model_id, int) and hasattr(store, "embedding_coverage"):
         try:
@@ -337,9 +351,9 @@ async def collect_chunk_hits(
     if coverage == "empty":
         return ChunkHitBatch(hits=[])
 
-    keyword_ok = hasattr(store, "keyword_fallback_search")
+    keyword_ok = keyword_hits is not None or hasattr(store, "keyword_fallback_search")
     if coverage == "legacy":
-        want_keyword = bool(embed_error)
+        want_keyword = bool(embed_error) or (keyword_hits is not None and query_vec is None)
     else:
         want_keyword = (
             search_path(
@@ -350,6 +364,8 @@ async def collect_chunk_hits(
             == "keyword"
         )
     if want_keyword and keyword_ok:
+        if keyword_hits is not None:
+            return ChunkHitBatch(hits=keyword_hits[:requested_top_k], keyword_fallback=True)
         limit = 30 if top_k < 30 else top_k
         hits = await store.keyword_fallback_search(query, top_k=limit)
         if rerank is not None and len(hits) > 1:
@@ -357,6 +373,7 @@ async def collect_chunk_hits(
         return ChunkHitBatch(hits=list(hits)[:top_k], keyword_fallback=True)
     if embed_error is not None:
         raise embed_error
+    used_model_slots = False
     if (
         coverage == "ready"
         and query_vec is not None
@@ -369,22 +386,21 @@ async def collect_chunk_hits(
             top_k=top_k,
             min_score=min_score,
         )
-        hits = await _merge_unembedded_keyword_hits(
-            store, query, model_id, hits,
+        used_model_slots = True
+    else:
+        if query_vec is None:
+            return ChunkHitBatch(hits=[])
+        hits = await store.similarity_search(
+            query_embedding=query_vec,
+            top_k=top_k,
+            min_score=min_score,
+            source_model=source_model,
         )
-        return ChunkHitBatch(hits=hits, used_model_slots=True)
-    if query_vec is None:
-        if embed_error is not None:
-            raise embed_error
-        return ChunkHitBatch(hits=[])
-    hits = await store.similarity_search(
-        query_embedding=query_vec,
-        top_k=top_k,
-        min_score=min_score,
-        source_model=source_model,
-    )
-    hits = await _merge_unembedded_keyword_hits(store, query, model_id, hits)
-    return ChunkHitBatch(hits=hits)
+    if keyword_hits is not None:
+        hits = _reciprocal_rank_fusion(hits, keyword_hits)[:requested_top_k]
+    else:
+        hits = await _merge_unembedded_keyword_hits(store, query, model_id, hits)
+    return ChunkHitBatch(hits=hits, used_model_slots=used_model_slots)
 
 
 async def _merge_unembedded_keyword_hits(store, query: str, model_id, hits: list) -> list:
@@ -407,3 +423,49 @@ async def _merge_unembedded_keyword_hits(store, query: str, model_id, hits: list
             seen.add(ident)
         merged.append(hit)
     return merged
+
+
+def _reciprocal_rank_fusion(*rankings: list) -> list:
+    """Equal channel weights, stable ties, one result per collection chunk.
+
+    Scores are normalized RRF (k=60), not cosine similarity. Keep the
+    original chunk and parent context intact for citation rendering.
+    """
+    scores: dict[tuple, float] = {}
+    originals: dict[tuple, object] = {}
+    for ranking in rankings:
+        seen: set[tuple] = set()
+        for rank, hit in enumerate(ranking, start=1):
+            chunk = hit.chunk
+            ident = (getattr(chunk, "collection_id", None), getattr(chunk, "id", None))
+            if ident[1] is None:
+                ident = (getattr(chunk, "document_id", None), chunk.chunk_key)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            originals.setdefault(ident, hit)
+            scores[ident] = scores.get(ident, 0.0) + 1.0 / (60 + rank)
+    merged = []
+    for ident in sorted(scores, key=lambda key: -scores[key]):
+        hit = copy(originals[ident])
+        hit.score = scores[ident] * 61 / max(1, len(rankings))
+        merged.append(hit)
+    return merged
+
+
+async def _collect_keyword_hits(store, query: str, top_k: int) -> list:
+    """Fuse full-text index and CJK literal search over the scoped corpus.
+
+    Both methods use the store's collection RLS. Do not restrict this pass
+    to unembedded chunks: identifiers and article numbers need lexical
+    recall even when the semantic index is healthy. A storage error must
+    propagate rather than silently presenting semantic-only as hybrid.
+    """
+    rankings = []
+    for name in ("keyword_search", "keyword_fallback_search"):
+        search = getattr(store, name, None)
+        if search is not None:
+            rankings.append(list(await search(query, top_k=top_k)))
+    if not rankings:
+        raise HTTPException(status_code=503, detail="此文件儲存庫不支援關鍵字檢索")
+    return _reciprocal_rank_fusion(*rankings)
