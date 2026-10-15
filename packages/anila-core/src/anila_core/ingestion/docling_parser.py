@@ -19,7 +19,8 @@ EasyOCR、Granite picture description)都以 HTTP 端點抵達,像 ASR 一樣。
 
 下面的 :class:`DoclingParser` 是本機(in-process)實作,留作參考。它
 刻意把 ``docling`` import 延後,所以沒裝 ``[docling]`` extra 也能 import
-本模組。遠端版非 2xx 一律大聲錯,絕不降級到 native parser。
+本模組。遠端客戶端將非 2xx 回應保留為結構化錯誤；共用解析入口
+會記錄原因並使用獨立的原生解析或離線 OCR 備援。
 """
 from __future__ import annotations
 

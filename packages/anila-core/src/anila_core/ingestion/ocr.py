@@ -1,8 +1,7 @@
 """Detect scanned or font-subsetted PDFs on the native parser.
 
-Text recognition for those files is Docling's job (EasyOCR on the remote
-document parser). This module only decides that the native extraction is
-not usable. It does not call a vision model.
+The registry uses configured Docling recognition or the independent local OCR
+adapter. This module measures whether the native text layer is usable.
 """
 from __future__ import annotations
 

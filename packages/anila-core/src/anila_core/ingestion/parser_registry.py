@@ -1,6 +1,6 @@
 """Document parsers for the AgenticRAG pipeline.
 
-Supports: .txt, .md, .pdf, .docx, .doc, .odt, .rtf, plus standalone
+Supports text, source code, PDF, DOCX/DOC, PPTX/PPT, ODT, RTF, plus standalone
 image files (.png, .jpg, .jpeg, .webp, .gif, .bmp).
 
 Each parser implements the DocumentParser Protocol:
@@ -19,15 +19,16 @@ ParserRegistry selects the correct parser by file extension.
 from __future__ import annotations
 
 import logging
-import mimetypes
 import re
 import unicodedata
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
+
+from .text_quality import has_recovered_text
 
 logger = logging.getLogger(__name__)
 
@@ -816,28 +817,12 @@ class HtmlParser:
 
 
 class RtfParser:
-    """Parser for .rtf files using striprtf (pure Python, no system deps)."""
+    """Convert RTF locally to preserve tables and headings."""
 
     def parse(self, file_path: str) -> ParsedDocument:
-        try:
-            from striprtf.striprtf import rtf_to_text
-        except ImportError as exc:
-            raise ImportError(
-                "striprtf is required for RTF parsing. "
-                "Install with: pip install 'agentic-rag[rag]'"
-            ) from exc
-
-        path = Path(file_path)
-        raw = _decode_text_bytes(path.read_bytes())
-        # striprtf is py.typed but rtf_to_text itself has no annotations.
-        content = cast(Callable[..., str], rtf_to_text)(raw, errors="ignore")
-
-        return ParsedDocument(
-            content=content,
-            metadata={"title": path.stem},
-            source_path=file_path,
-            format="rtf",
-        )
+        _decode_text_bytes(Path(file_path).read_bytes())
+        from .office_conversion import convert_legacy
+        return cast(ParsedDocument, convert_legacy(file_path))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -873,6 +858,14 @@ class PdfParser:
             ) from exc
 
         path = Path(file_path)
+
+        with fitz.open(file_path) as preflight:
+            if preflight.needs_pass:
+                from .errors import ParseError
+                raise ParseError.corrupt(
+                    "此 PDF 受到密碼保護，請先解除密碼後再上傳。",
+                    details={"reason": "encrypted_pdf"},
+                )
 
         # Per-page markdown lets us interleave image placeholders with text.
         page_chunks = pymupdf4llm.to_markdown(file_path, page_chunks=True)
@@ -970,24 +963,17 @@ class PdfParser:
         #     feed carried by the PDF's own text stream is indistinguishable
         #     from one we inserted, and splits a real page in two.
         #
-        # A scan does not return from here: Docling is required, and this
-        # parser does not invent text. ``ocr_used`` on a successful return
-        # is therefore always false. Docling's own parser reports its OCR
-        # separately. Nothing downstream may infer page structure from
+        # Scans use the independent local OCR adapter below. The native
+        # text-layer return keeps ``ocr_used=False``. Nothing downstream may
+        # infer page structure from
         # ``metadata["pages"]`` alone: ``extract_text`` re-derives
         # ``has_page_boundaries`` by counting the fields.
         content = "\f\n".join(parts)
-        from .errors import ParseError
-        from .ocr import SCANNED_PDF_NEEDS_DOCLING, needs_ocr_fallback
+        from .ocr import needs_ocr_fallback
 
         if needs_ocr_fallback(content, page_texts=page_texts):
-            raise ParseError.corrupt(
-                SCANNED_PDF_NEEDS_DOCLING,
-                details={
-                    "reason": "scanned_pdf_needs_docling",
-                    "filename": path.name,
-                },
-            )
+            from .local_ocr import pdf_document
+            return cast(ParsedDocument, pdf_document(file_path))
 
         metadata: dict[str, Any] = {
             "title": path.stem,
@@ -1060,15 +1046,24 @@ class DocxParser:
         images: dict[str, ImageRef] = {}
         title = path.stem
 
+        table_blocks: list[str] = []
         skipped_with_content: Counter[str] = Counter()
         for kind, block in self._iter_body_blocks(doc, skipped_with_content):
             if kind == "table":
                 rows = []
                 for row in block.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
+                    cells = []
+                    for cell in row.cells:
+                        text = cell.text.strip()
+                        for paragraph in cell.paragraphs:
+                            for image_id in self._collect_para_images(paragraph, doc, images):
+                                text += f"\n[[IMAGE:{image_id}]]"
+                        cells.append(text.strip())
                     rows.append(" | ".join(cells))
                 if rows:
-                    parts.append("\n".join(rows))
+                    table_text = "\n".join(rows)
+                    parts.append(table_text)
+                    table_blocks.append(table_text)
                 continue
 
             para = block
@@ -1095,7 +1090,7 @@ class DocxParser:
             for img_id in para_images:
                 parts.append(f"[[IMAGE:{img_id}]]")
 
-        metadata = {"title": title, "embedded_images": len(images)}
+        metadata = {"title": title, "embedded_images": len(images), "table_blocks": table_blocks}
         skipped_n = int(sum(skipped_with_content.values()))
         if skipped_n:
             metadata["docx_wrapped_skipped"] = skipped_n
@@ -1198,40 +1193,36 @@ class DocxParser:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Legacy .doc (antiword)
+# Legacy Office conversion
 # ──────────────────────────────────────────────────────────────────────
 
 class DocParser:
-    """Parser for legacy .doc files using antiword CLI."""
+    """Convert a legacy Office document with the local converter."""
 
     def parse(self, file_path: str) -> ParsedDocument:
-        import subprocess
+        from .office_conversion import convert_legacy
+        return cast(ParsedDocument, convert_legacy(file_path))
 
-        path = Path(file_path)
-        try:
-            # L7: 用 ``--`` 分隔 option 與 positional arg，避免 file_path
-            # 開頭為 ``-`` 時被 antiword 解析成 flag（argument injection）。
-            result = subprocess.run(
-                ["antiword", "--", file_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            content = result.stdout
-            if not content and result.returncode != 0:
-                raise RuntimeError(f"antiword failed: {result.stderr}")
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "antiword is required for .doc parsing. Install with: apt install antiword"
-            ) from exc
 
-        return ParsedDocument(
-            content=content,
-            metadata={"title": path.stem},
-            source_path=file_path,
-            format="doc",
-        )
+class SourceCodeParser:
+    """Decode source as data and annotate intact source boundaries."""
+
+    def parse(self, file_path: str) -> ParsedDocument:
+        from .source_code import source_units
+        parsed = PlainTextParser().parse(file_path)
+        language = "python" if Path(file_path).suffix.lower() == ".py" else "cpp"
+        parsed.format = language
+        parsed.metadata.update({"source_language": language,
+                                "source_units": source_units(parsed.content, language)})
+        return parsed
+
+
+class PptxParser:
+    """Lazy import avoids a registry/presentation import cycle."""
+
+    def parse(self, file_path: str) -> ParsedDocument:
+        from .presentation import PptxParser as Reader
+        return Reader().parse(file_path)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1446,38 +1437,25 @@ _IMAGE_MIME = {
 
 
 class ImageParser:
-    """Parser for standalone image files.
-
-    The parsed document contains a single ``[[IMAGE:<id>]]`` placeholder
-    which the IngestionService turns into a VLM caption.
-    """
+    """Recognize standalone image text through the configured Docling service."""
 
     def parse(self, file_path: str) -> ParsedDocument:
+        from .image_ocr import recognize_image, require_image_ocr
         path = Path(file_path)
-        ext = path.suffix.lower()
-        mime = (
-            _IMAGE_MIME.get(ext)
-            or mimetypes.guess_type(file_path)[0]
-            or "application/octet-stream"
-        )
-        image_bytes = path.read_bytes()
-
-        img_id = _new_image_id()
-        images = {
-            img_id: ImageRef(
-                image_id=img_id,
-                image_bytes=image_bytes,
-                mime=mime,
-            )
-        }
-
-        return ParsedDocument(
-            content=f"# {path.stem}\n\n[[IMAGE:{img_id}]]",
-            metadata={"title": path.stem, "embedded_images": 1},
-            source_path=file_path,
-            format="image",
-            images=images,
-        )
+        metadata: dict[str, Any] = {"title": path.stem, "ocr_used": True, "pages": 1}
+        content = recognize_image(path.read_bytes(), require_image_ocr(), metadata)
+        metadata["parser"] = metadata["actual_parser"]
+        metadata["quality"] = "ocr_text_only"
+        if not has_recovered_text(content):
+            from .errors import ParseError
+            raise ParseError.corrupt("圖片辨識後沒有可用文字，請確認圖片清晰且包含文字。",
+                                     details={"reason": "empty_image_ocr_output"})
+        image_id = _new_image_id()
+        images = {image_id: ImageRef(image_id, path.read_bytes(),
+                                     _IMAGE_MIME.get(path.suffix.lower(), "image/png"), page=1)}
+        return ParsedDocument(content=content + f"\n\n[[IMAGE:{image_id}]]",
+                              metadata=metadata,
+                              source_path=file_path, format="image", images=images)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1492,7 +1470,7 @@ class ParserRegistry:
     through the remote Docling parser instead.
     """
 
-    _NATIVE_PREFERRED: frozenset[str] = frozenset({".xlsx"})
+    _NATIVE_PREFERRED: frozenset[str] = frozenset({".xlsx", ".pptx"})
 
     _PARSERS: dict[str, DocumentParser] = {
         ".txt": PlainTextParser(),
@@ -1508,13 +1486,15 @@ class ParserRegistry:
         ".pdf": PdfParser(),
         ".docx": DocxParser(),
         ".doc": DocParser(),
+        ".ppt": DocParser(),
+        ".pptx": PptxParser(),
         ".odt": OdtParser(),
         ".xlsx": XlsxParser(),
         # text-class / source formats — decoded by ``_decode_text_bytes``
         # (strict UTF-8, or BOM'd ASCII-dominant UTF-16; anything else is
         # refused). NOT errors="replace": that was the base-version bug
         # this package exists to close.
-        ".py": PlainTextParser(),
+        ".py": SourceCodeParser(),
         ".csv": PlainTextParser(),
         ".tsv": PlainTextParser(),
         ".log": PlainTextParser(),
@@ -1534,10 +1514,13 @@ class ParserRegistry:
         ".java": PlainTextParser(),
         ".go": PlainTextParser(),
         ".rs": PlainTextParser(),
-        ".c": PlainTextParser(),
-        ".cpp": PlainTextParser(),
-        ".h": PlainTextParser(),
-        ".hpp": PlainTextParser(),
+        ".c": SourceCodeParser(),
+        ".cpp": SourceCodeParser(),
+        ".cc": SourceCodeParser(),
+        ".cxx": SourceCodeParser(),
+        ".c++": SourceCodeParser(),
+        ".h": SourceCodeParser(),
+        ".hpp": SourceCodeParser(),
         ".rb": PlainTextParser(),
         ".php": PlainTextParser(),
         ".r": PlainTextParser(),
@@ -1566,8 +1549,8 @@ class ParserRegistry:
         """已註冊治理中心來源時，只聽那個來源。
 
         沒註冊就回 ``None``（原生解析器），不讀 ``DOC_PARSER``。
-        治理中心說沒設定才回 ``None``。已設定卻讀不到、
-        或啟用了但沒有位址，都不會改走原生解析器。
+        治理中心說沒設定才回 ``None``。設定不可讀或不完整會在此回報；
+        共用 parse 入口會記下原因並採用獨立的原生解析器。
         """
         from anila_core.ingestion.docling_source import (
             DoclingMisconfigured,
@@ -1584,12 +1567,12 @@ class ParserRegistry:
                 raise ParseError.bad_config(
                     "文件解析服務已啟用，但位址不完整。"
                     "請到治理中心的外部服務補上。"
-                    "這份文件不會改用內建解析器。",
+                    "此份文件會嘗試院內離線解析。",
                     details={"reason": "misconfigured"},
                 ) from exc
             except DoclingSourceUnavailable as exc:
                 raise RemoteParseError.endpoint_unavailable(
-                    "目前讀不到文件解析設定，這份文件沒有送去解析。請稍後重試。",
+                    "目前讀不到文件解析設定，此份文件會嘗試院內離線解析。",
                     details={"reason": "source_unavailable"},
                 ) from exc
             if endpoint is None:
@@ -1650,7 +1633,65 @@ class ParserRegistry:
     @classmethod
     def parse(cls, file_path: str) -> ParsedDocument:
         """Parse a document using the appropriate parser."""
-        return cls.get(file_path).parse(file_path)
+        from .docling_parser import DOCLING_SUPPORTED_EXTS
+        from .errors import ParseError
+        ext = Path(file_path).suffix.lower()
+        selected = None
+        fallback_reason = None
+        try:
+            selected = cls.get(file_path)
+            parsed = selected.parse(file_path)
+            if not has_recovered_text(parsed.content) and not (
+                parsed.images and parsed.format in {"docx", "pptx"}
+            ):
+                raise ParseError.corrupt("文件解析後沒有可用文字。", details={"reason": "empty_parser_output"})
+        except Exception as exc:
+            native = cls._PARSERS.get(ext)
+            if ext not in DOCLING_SUPPORTED_EXTS or native is None or selected is native:
+                raise
+            fallback_reason = getattr(exc, "code", type(exc).__name__)
+            logger.warning("Document parser fallback: format=%s reason=%s", ext, fallback_reason)
+            parsed = native.parse(file_path)
+            if not has_recovered_text(parsed.content) and not (
+                parsed.images and parsed.format in {"docx", "pptx"}
+            ):
+                raise ParseError.corrupt("文件解析後沒有可用文字。", details={"reason": "empty_fallback_output"})
+        parsed.metadata.setdefault("actual_parser", parsed.metadata.get("parser") or type(cls._PARSERS.get(ext)).__name__)
+        if fallback_reason:
+            parsed.metadata.update({"parser_fallback": True, "fallback_reason": fallback_reason,
+                                    "quality": parsed.metadata.get("quality", "native_layout"),
+                                    "quality_notice": "文件解析服務無法處理，已使用院內離線解析；複雜版面請核對原檔。"})
+        if parsed.images and parsed.format in {"docx", "pptx"}:
+            try:
+                docling = cls._get_docling_parser()
+            except Exception:
+                docling = None
+            from .image_ocr import recognize_image
+            recognized_count = 0
+            for image_id, ref in parsed.images.items():
+                try:
+                    recognized = recognize_image(ref.image_bytes, docling)
+                except Exception as exc:
+                    parsed.metadata["ocr_notice"] = "部分圖片文字尚未辨識；請核對原檔或通知管理員確認離線 OCR 與 Docling 服務。"
+                    parsed.metadata["image_ocr_error"] = getattr(exc, "code", type(exc).__name__)
+                    continue
+                if recognized:
+                    marker = f"[[IMAGE:{image_id}]]"
+                    replacement = recognized + "\n\n" + marker
+                    parsed.content = parsed.content.replace(marker, replacement)
+                    if "table_blocks" in parsed.metadata:
+                        parsed.metadata["table_blocks"] = [
+                            table.replace(marker, replacement)
+                            for table in parsed.metadata["table_blocks"]
+                        ]
+                    recognized_count += 1
+            parsed.metadata["embedded_image_ocr_count"] = recognized_count
+            if not has_recovered_text(parsed.content):
+                raise ParseError.bad_config(
+                    "此文件僅含圖片，目前無法辨識圖片文字。請管理員恢復 Docling，或提供已審核的離線 Tesseract 與 chi_tra 語料。",
+                    details={"reason": "image_ocr_unavailable"},
+                )
+        return parsed
 
     @classmethod
     def supported_extensions(cls) -> list[str]:

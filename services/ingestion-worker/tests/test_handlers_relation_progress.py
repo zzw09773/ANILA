@@ -118,6 +118,21 @@ def wired_success(monkeypatch, tmp_path):
     monkeypatch.setattr(pe, "resolve_from_pool", fake_resolve)
     monkeypatch.setattr(handlers, "CollectionScopedPgVectorStore", _FakeStore)
 
+    async def parser_refresh(*args):
+        return None
+
+    async def captions(*args):
+        return False, None
+
+    async def no_relations(*args, **kwargs):
+        return {"extracted": 0, "edges": 0}
+
+    monkeypatch.setattr(handlers, "refresh_document_parser", parser_refresh)
+    monkeypatch.setattr(handlers, "_resolve_caption_intent", captions)
+    monkeypatch.setattr("ingestion_worker.relations.extract_and_resolve", no_relations)
+    monkeypatch.setattr("ingestion_worker.llm_relations.extract_and_resolve_llm", no_relations)
+    monkeypatch.setattr("ingestion_worker.similarity_relations.recompute_similarity_edges", no_relations)
+
     pool = _FakePool()
     ctx = {
         "pool": pool,
@@ -150,3 +165,47 @@ async def test_relation_extractor_failures_are_folded_into_job_message(
     messages = _progress_messages(pool)
     assert any("3 條關聯抽取失敗" in m for m in messages), messages
     assert any("1 leaves + 0 parents indexed" in m for m in messages), messages
+
+
+async def test_parser_fallback_quality_is_visible_in_job_message(wired_success, monkeypatch):
+    ctx, pool = wired_success
+
+    async def refresh(*args):
+        return None
+
+    monkeypatch.setattr(handlers, "refresh_document_parser", refresh)
+    monkeypatch.setattr(
+        handlers, "extract_text", lambda *args: (
+            "hello", {"actual_parser": "DocxParser", "parser_fallback": True,
+                      "quality_notice": "已使用院內離線解析；複雜版面請核對原檔。"}, {},
+        ),
+    )
+    result = await handlers.ingest_document(ctx, 42)
+    assert result["actual_parser"] == "DocxParser"
+    assert result["parser_fallback"] is True
+    assert any("解析器：DocxParser" in message and "核對原檔" in message
+               for message in _progress_messages(pool))
+
+
+async def test_one_failed_file_does_not_prevent_the_next_job(wired_success, monkeypatch):
+    from anila_core.ingestion.errors import ParseError
+    ctx, pool = wired_success
+    calls = 0
+
+    async def refresh(*args):
+        return None
+
+    def extract(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ParseError.corrupt("此檔案已損毀。", details={"reason": "corrupt_fixture"})
+        return "hello", {"actual_parser": "PlainTextParser"}, {}
+
+    monkeypatch.setattr(handlers, "refresh_document_parser", refresh)
+    monkeypatch.setattr(handlers, "extract_text", extract)
+    with pytest.raises(ParseError):
+        await handlers.ingest_document(ctx, 43)
+    result = await handlers.ingest_document(ctx, 44)
+    assert result["chunk_count"] == 1
+    assert result["actual_parser"] == "PlainTextParser"

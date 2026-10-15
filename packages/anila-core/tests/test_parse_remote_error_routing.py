@@ -79,40 +79,25 @@ def test_genuine_corrupt_file_still_maps_to_corrupt_not_retryable(
     assert "檔案無法解析" in excinfo.value.user_message
 
 
-def test_bad_config_setting_maps_to_bad_config_not_format_unsupported(
-    monkeypatch,
-) -> None:
-    """F2 接縫:設定手誤要點名變數,不能掉進「不支援副檔名」分支。
-
-    這條採 factory 的結果「穿過 extract_text」——不是只釘建構時會拋——斷言
-    到達使用者手上的是 E_PARSE_BAD_CONFIG、訊息指變數,而非「不支援 .pdf」。
-    """
+def test_bad_docling_config_uses_native_before_rejecting_invalid_pdf(monkeypatch) -> None:
     from anila_core.ingestion.docling_source import (
-        DoclingEndpoint,
-        register_docling_source,
-        reset_docling_source,
+        DoclingEndpoint, register_docling_source, reset_docling_source,
     )
     import anila_core.ingestion.parser_registry as reg
 
     reset_docling_source()
-    register_docling_source(
-        lambda: DoclingEndpoint("http://docling:9100", "tok")
-    )
+    register_docling_source(lambda: DoclingEndpoint("http://docling:9100", "tok"))
     monkeypatch.setenv("DOCLING_TIMEOUT_SECONDS", "abc")
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "docling")
     monkeypatch.setattr(reg.ParserRegistry, "_docling_parser", None)
     monkeypatch.setattr(reg.ParserRegistry, "_docling_initialised", False)
-
-    with pytest.raises(ParseError) as excinfo:
-        extract_text("x.pdf", b"%PDF-1.4 fake", "application/pdf")
-
-    assert excinfo.value.code == "E_PARSE_BAD_CONFIG"
-    # 不歸錯因:不是「不支援格式」。
-    assert excinfo.value.code != "E_PARSE_FORMAT_UNSUPPORTED"
-    # MEDIUM-A:設定名進 details(維運看得到),不進 body(使用者看不到)。
-    assert "DOCLING_TIMEOUT_SECONDS" in str(excinfo.value.details)
-    assert "DOCLING_TIMEOUT_SECONDS" not in excinfo.value.user_message
-    reset_docling_source()
-    ParserRegistry = reg.ParserRegistry
-    ParserRegistry._reset_docling_cache()
+    try:
+        with pytest.raises(ParseError) as excinfo:
+            extract_text("x.pdf", b"%PDF-1.4 fake", "application/pdf")
+        # The independent native parser also rejects this invalid fixture.
+        assert excinfo.value.code == "E_PARSE_CORRUPT"
+        assert "DOCLING_TIMEOUT_SECONDS" not in excinfo.value.user_message
+    finally:
+        reset_docling_source()
+        reg.ParserRegistry._reset_docling_cache()

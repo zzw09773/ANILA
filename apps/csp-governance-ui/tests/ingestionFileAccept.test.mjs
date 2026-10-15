@@ -80,7 +80,7 @@ function parseParserExtensions(pySource) {
   const end = pySource.indexOf('}', brace)
   if (brace < 0 || end < 0) throw new Error('_PARSERS dict incomplete')
   const exts = new Set()
-  for (const m of pySource.slice(brace, end + 1).matchAll(/"(\.[A-Za-z0-9]+)"/g)) {
+  for (const m of pySource.slice(brace, end + 1).matchAll(/"(\.[A-Za-z0-9+]+)"/g)) {
     exts.add(m[1].toLowerCase())
   }
   if (exts.size === 0) throw new Error('_PARSERS parsed empty')
@@ -101,7 +101,7 @@ function parseConstantExtensions(source, file) {
   if (open < 0 || close < 0) throw new Error(`array literal incomplete in ${file}`)
   const exts = source
     .slice(open, close)
-    .match(/'(\.[A-Za-z0-9]+)'/g)
+    .match(/'(\.[A-Za-z0-9+]+)'/g)
     ?.map((s) => s.slice(1, -1).toLowerCase())
   if (!exts || exts.length === 0) throw new Error(`array parsed empty in ${file}`)
   return exts
@@ -195,6 +195,13 @@ for (const picker of PICKERS) {
   test(`${picker.name}: offers DATCOM / owner file types .dcm .dat .inp .out`, () => {
     const offered = toSet(effectiveAccept(picker))
     for (const ext of ['.dcm', '.dat', '.inp', '.out']) {
+      assert.ok(offered.has(ext), `${picker.name} must offer ${ext}`)
+    }
+  })
+
+  test(`${picker.name}: offers every required quick-builder document format`, () => {
+    const offered = toSet(effectiveAccept(picker))
+    for (const ext of ['.pdf', '.txt', '.doc', '.docx', '.rtf', '.md', '.ppt', '.pptx', '.py', '.c', '.cpp', '.cc', '.cxx', '.c++']) {
       assert.ok(offered.has(ext), `${picker.name} must offer ${ext}`)
     }
   })

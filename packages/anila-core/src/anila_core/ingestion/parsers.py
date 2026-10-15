@@ -20,11 +20,14 @@ clear ``ParseError(code='E_INTERNAL')`` rather than a cryptic
 Supported inputs (delegated to ParserRegistry):
 
     * ``.txt`` / ``.md``                — pure-stdlib readers.
-    * ``.rtf``                          — striprtf (pure Python).
+    * ``.doc`` / ``.rtf`` / ``.ppt``   — local LibreOffice conversion.
     * ``.pdf``                          — pymupdf4llm (markdown-shaped)
                                           or Docling (layout-aware) when
-                                          ``DOC_PARSER=docling`` is set.
-    * ``.docx`` / ``.doc`` / ``.odt``   — python-docx / Word XML / odfpy.
+                                          registered in the governance console;
+                                          independent native / local OCR fallback.
+    * ``.docx`` / ``.odt``             — python-docx / odfpy.
+    * ``.pptx``                          — standard-library ZIP / XML reader.
+    * ``.py`` / ``.c`` / ``.cpp``       — source boundary and line annotations.
     * ``.png`` / ``.jpg`` / ``.jpeg`` /
       ``.webp`` / ``.gif`` / ``.bmp``    — OCR via configured backend.
 
@@ -187,6 +190,9 @@ def extract_text(
     # Augment metadata with the chunker-relevant fields. The registry
     # already filled per-parser fields (title / page_count / etc.).
     metadata = dict(parsed.metadata)
+    metadata["source_filename"] = filename
+    if metadata.get("title") == os.path.splitext(os.path.basename(tmp_path))[0]:
+        metadata["title"] = os.path.splitext(os.path.basename(filename))[0]
     metadata.setdefault("format", parsed.format)
 
     # AgenticRAG's PdfParser reports ``pages``; some other parsers might

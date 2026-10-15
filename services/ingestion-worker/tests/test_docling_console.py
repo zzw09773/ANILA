@@ -106,7 +106,7 @@ def test_enabled_without_url_does_not_fall_back_to_native():
     assert caught.value.retryable is False
 
 
-def test_configured_but_down_fails_instead_of_native_text(monkeypatch):
+def test_configured_but_down_rejects_invalid_native_file(monkeypatch):
     register_docling_source(lambda: DoclingEndpoint(PARSER_URL, "tok"))
 
     class _Down:
@@ -122,8 +122,9 @@ def test_configured_but_down_fails_instead_of_native_text(monkeypatch):
     monkeypatch.setattr(
         "anila_core.ingestion.docling_parser.httpx.Client", _Down
     )
-    with pytest.raises(RemoteParseError):
+    with pytest.raises(ParseError) as caught:
         extract_text("notes.pdf", b"%PDF-1.4\n", "application/pdf")
+    assert caught.value.code == "E_PARSE_CORRUPT"
 
 
 def _arm(monkeypatch, tmp_path, body, status_code=200):

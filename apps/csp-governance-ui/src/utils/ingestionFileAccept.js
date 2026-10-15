@@ -12,11 +12,11 @@
 export const INGESTION_FILE_EXTENSIONS = [
   // 文件
   '.txt', '.md', '.markdown', '.json', '.html', '.htm', '.rtf',
-  '.pdf', '.docx', '.doc', '.odt',
+  '.pdf', '.docx', '.doc', '.odt', '.ppt', '.pptx',
   // 純文字 / 設定 / 原始碼
   '.py', '.csv', '.tsv', '.xlsx', '.log', '.yaml', '.yml', '.toml', '.ini', '.xml',
   '.sh', '.bash', '.sql', '.js', '.ts', '.tsx', '.jsx',
-  '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
+  '.java', '.go', '.rs', '.c', '.cpp', '.cc', '.cxx', '.c++', '.h', '.hpp',
   '.rb', '.php', '.r', '.m', '.tex',
   // USAF Digital DATCOM / 工程純文字
   '.dcm', '.dat', '.inp', '.out',

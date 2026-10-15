@@ -337,10 +337,10 @@ def test_a_forced_scan_refuses_instead_of_returning_unmarked_text(
 ) -> None:
     """A scan must not come back as one unmarked blob still labelled with N pages."""
     from anila_core.ingestion.errors import ParseError
-    from anila_core.ingestion.ocr import SCANNED_PDF_NEEDS_DOCLING
     from anila_core.ingestion.parsers import extract_text
     import anila_core.ingestion.ocr as ocr_mod
 
+    monkeypatch.setattr("anila_core.ingestion.local_ocr.shutil.which", lambda name: None)
     stub_extractor(_page_texts(4))
     monkeypatch.setattr(ocr_mod, "needs_ocr_fallback", lambda _text, **_kw: True)
     path = _build_pdf(tmp_path / "scan.pdf", 4, 0)
@@ -348,7 +348,8 @@ def test_a_forced_scan_refuses_instead_of_returning_unmarked_text(
     with pytest.raises(ParseError) as exc:
         extract_text("scan.pdf", open(path, "rb").read(), None)
 
-    assert exc.value.user_message == SCANNED_PDF_NEEDS_DOCLING
+    assert exc.value.details["reason"] == "offline_ocr_missing"
+    assert "chi_tra" in exc.value.user_message
 
 
 def test_page_boundary_flag_stays_on_for_a_normal_pdf(

@@ -40,7 +40,7 @@ import re
 import pytest
 
 from anila_core.ingestion.errors import ParseError
-from anila_core.ingestion.ocr import SCANNED_PDF_NEEDS_DOCLING, needs_ocr_fallback
+from anila_core.ingestion.ocr import needs_ocr_fallback
 from anila_core.ingestion.parser_registry import PdfParser
 
 fitz = pytest.importorskip("fitz", reason="pymupdf is part of the [rag] extra")
@@ -342,10 +342,12 @@ def test_the_no_tesseract_fixture_still_models_the_image(tmp_path, _no_tesseract
     )
 
 
-def test_scanned_pdf_says_docling_is_required(tmp_path, _no_tesseract):
+def test_scanned_pdf_reports_missing_independent_offline_ocr(tmp_path, _no_tesseract, monkeypatch):
+    monkeypatch.setattr("anila_core.ingestion.local_ocr.shutil.which", lambda name: None)
     with pytest.raises(ParseError) as exc:
         PdfParser().parse(_scanned_pdf(tmp_path, pages=2))
-    assert exc.value.user_message == SCANNED_PDF_NEEDS_DOCLING
+    assert exc.value.details["reason"] == "offline_ocr_missing"
+    assert "chi_tra" in exc.value.user_message
     assert "Docling" in exc.value.user_message
 
 

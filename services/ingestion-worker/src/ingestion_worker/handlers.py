@@ -1302,6 +1302,13 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 enabled=want_captions,
                 reused_captions=reused_captions,
             )
+            if parse_meta.get("table_blocks"):
+                tables = list(parse_meta["table_blocks"])
+                for image_id, ref in images.items():
+                    if ref.caption:
+                        tables = [table.replace(f"[[IMAGE:{image_id}]]", f"[圖片描述：{ref.caption}]")
+                                  for table in tables]
+                parse_meta["table_blocks"] = tables
             # 1b. Persist captioned images to disk + DB so Studio can
             # vector-search over them (Phase 5). Best-effort: a failure
             # here doesn't fail ingest — the captions are already inlined
@@ -1604,6 +1611,11 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             f"{len(leaves)} leaves + {len(parents)} parents indexed · "
             f"{format_caption_progress(caption_stats)}"
         )
+        if parse_meta.get("actual_parser"):
+            progress_message += f" · 解析器：{parse_meta['actual_parser']}"
+        for notice_key in ("quality_notice", "ocr_notice"):
+            if parse_meta.get(notice_key):
+                progress_message += f" · {parse_meta[notice_key]}"
         if relation_failures:
             progress_message += f" · {relation_failures} 條關聯抽取失敗"
             await _update_job(
@@ -1627,6 +1639,9 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             "caption_succeeded": caption_stats["succeeded"],
             "caption_attempted": caption_stats["attempted"],
             "caption_summary": format_caption_progress(caption_stats),
+            "actual_parser": parse_meta.get("actual_parser"),
+            "parser_fallback": bool(parse_meta.get("parser_fallback")),
+            "quality_notice": parse_meta.get("quality_notice"),
         }
 
     except IngestionError as err:

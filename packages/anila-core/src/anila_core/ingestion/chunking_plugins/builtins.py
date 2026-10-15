@@ -33,6 +33,8 @@ from typing import Any, ClassVar
 from anila_core.ingestion.chunking_plugins.base import ChunkResult, ChunkerStrategy
 from anila_core.ingestion.chunking_plugins.registry import register_chunker
 
+from anila_core.ingestion.chunking_plugins.structure import mask_fenced_code, protect_structure
+
 logger = logging.getLogger(__name__)
 
 # Latin-script token density. OpenAI's CL100K BPE averages ~4 chars per
@@ -43,10 +45,6 @@ _CHARS_PER_TOKEN = 4
 # Markdown ATX heading pattern: 1-6 leading hashes, then space, then title.
 # Captured groups: (1) hash count = level, (2) title text. Multiline-anchored.
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", flags=re.MULTILINE)
-
-# Fenced code block pattern (``` or ~~~). DOTALL so ``.+?`` spans newlines.
-_CODE_FENCE_RE = re.compile(r"^(```|~~~).*?^\1\s*$", flags=re.MULTILINE | re.DOTALL)
-
 
 def _is_cjk(c: str) -> bool:
     """Return True for CJK ideograph / kana / hangul characters.
@@ -130,6 +128,7 @@ class FixedChunker(ChunkerStrategy):
         "additionalProperties": False,
     }
 
+    @protect_structure
     def chunk(
         self,
         document_text: str,
@@ -192,6 +191,7 @@ class MarkdownAwareChunker(ChunkerStrategy):
         "additionalProperties": False,
     }
 
+    @protect_structure
     def chunk(
         self,
         document_text: str,
@@ -204,7 +204,7 @@ class MarkdownAwareChunker(ChunkerStrategy):
         # Mask code fences so heading regex inside fences is ignored.
         # We replace fence content with same-length spaces — preserves
         # absolute offsets for header detection.
-        masked = _CODE_FENCE_RE.sub(lambda m: " " * len(m.group(0)), document_text)
+        masked = mask_fenced_code(document_text)
 
         # Find heading boundaries (start position of each heading).
         heading_starts = [m.start() for m in _HEADING_RE.finditer(masked)]
@@ -317,6 +317,7 @@ class HierarchicalChunker(ChunkerStrategy):
         "additionalProperties": False,
     }
 
+    @protect_structure
     def chunk(
         self,
         document_text: str,
@@ -328,7 +329,7 @@ class HierarchicalChunker(ChunkerStrategy):
         max_parent = int(merged["max_parent_tokens"])
         overlap_tok = int(merged["overlap_tokens"])
 
-        masked = _CODE_FENCE_RE.sub(lambda m: " " * len(m.group(0)), document_text)
+        masked = mask_fenced_code(document_text)
 
         # Walk the heading regex once, building a list of section
         # records: (heading_title, heading_level, body_start,
@@ -542,6 +543,7 @@ class PdfPageChunker(ChunkerStrategy):
         "additionalProperties": False,
     }
 
+    @protect_structure
     def chunk(
         self,
         document_text: str,
@@ -656,6 +658,7 @@ class CjkSentenceChunker(ChunkerStrategy):
         "additionalProperties": False,
     }
 
+    @protect_structure
     def chunk(
         self,
         document_text: str,
@@ -797,6 +800,7 @@ class SemanticChunker(ChunkerStrategy):
              out.__setitem__(-1, out[-1] + "".join(buffer)))
         return out
 
+    @protect_structure
     def chunk(
         self,
         document_text: str,
