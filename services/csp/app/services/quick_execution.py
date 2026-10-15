@@ -11,7 +11,7 @@ import time
 import uuid
 
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
@@ -37,6 +37,34 @@ _SENSITIVE_KEYS = re.compile(
     re.I,
 )
 _IDENTITY = re.compile(r"\b[A-Z][12]\d{8}\b")
+_QUOTED_FIELD = re.compile(
+    r"(?P<label>(?P<quote>[\"'])(?P<key>(?:\\.|(?!(?P=quote))[^\\])+)(?P=quote)\s*[:=：]\s*)"
+)
+
+
+def _mask_quoted_fields(text):
+    parts, cursor = [], 0
+    for match in _QUOTED_FIELD.finditer(text):
+        if match.start() < cursor:
+            continue
+        key = re.sub(
+            r"\\u([0-9a-fA-F]{4})",
+            lambda item: chr(int(item.group(1), 16)),
+            match["key"],
+        )
+        if not _SENSITIVE_KEYS.search(key):
+            continue
+        tail = text[match.end() :]
+        try:
+            decoded, end = json.JSONDecoder().raw_decode(tail)
+            if not isinstance(decoded, (str, dict, list)):
+                end = len(re.match(r"[^\s,;，；}\]]*", tail)[0])
+        except (ValueError, TypeError, RecursionError):
+            # An unfinished value cannot safely disclose a suffix.
+            end = len(tail)
+        parts.append(text[cursor : match.end()] + "[已遮罩]")
+        cursor = match.end() + end
+    return "".join(parts) + text[cursor:]
 
 
 def mask(value, *, depth=0):
@@ -52,21 +80,43 @@ def mask(value, *, depth=0):
     if isinstance(value, list):
         return [mask(item, depth=depth + 1) for item in value[:100]]
     if isinstance(value, str):
-        if len(value) < 200000 and value.lstrip().startswith(("{", "[")):
-            try:
-                return json.dumps(
-                    mask(json.loads(value), depth=depth + 1), ensure_ascii=False
-                )
-            except (ValueError, TypeError):
-                pass
-        text = re.sub(r"(?i)bearer\s+[A-Za-z0-9_.-]+", "Bearer [已遮罩]", value)
+        if len(value) < 200000:
+            stripped = value.lstrip()
+            position = len(value) - len(stripped)
+            if not stripped.startswith(("{", "[", '"')):
+                position = value.find("{")
+            structured = value[position:] if position >= 0 else ""
+            if structured:
+                try:
+                    decoded, end = json.JSONDecoder().raw_decode(structured)
+                except (ValueError, TypeError, RecursionError):
+                    looks_json = structured.startswith('"') or re.match(
+                        r'(?:\{\s*(?:["}]|$)|\[\s*(?:[\[{"\d-]|true|false|null|$))',
+                        structured,
+                    )
+                    if looks_json:
+                        return (
+                            mask(value[:position], depth=depth + 1)
+                            + "[結構化內容不完整或過深，已遮罩]"
+                        )[:20000]
+                else:
+                    if isinstance(decoded, (dict, list, str)):
+                        return (
+                            mask(value[:position], depth=depth + 1)
+                            + json.dumps(
+                                mask(decoded, depth=depth + 1), ensure_ascii=False
+                            )
+                            + mask(structured[end:], depth=depth + 1)
+                        )[:20000]
+        text = _mask_quoted_fields(value)
+        text = re.sub(r"(?i)bearer\s+[A-Za-z0-9_.-]+", "Bearer [已遮罩]", text)
         text = re.sub(
             r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
             "[權杖已遮罩]",
             text,
         )
         text = re.sub(
-            r"(?i)((?:password|secret|token|api[_-]?key|apikey|credential|cookie|authorization|employee[_-]?id|員工編號|密碼|憑證)\s*[:=：]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;，；]+)",
+            r"(?i)([\"']?(?:password|passwd|secret|token|api[_-]?key|apikey|credential|cookie|authorization|employee[_-]?id|員工編號|密碼|憑證)[\"']?\s*[:=：]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;，；}\]]+)",
             r"\1[已遮罩]",
             text,
         )
@@ -258,6 +308,7 @@ async def run(
     conversation_id=None,
     dispatch_claims=None,
     history=None,
+    on_delta=None,
 ):
     from app.services.quick_flow import execute_graph
 
@@ -383,6 +434,11 @@ async def run(
                 fail(403, "API_KEY_REVOKED", "API 金鑰已停用或到期，執行已中止")
         if not current_assistant or current_assistant.disabled:
             fail(403, "ASSISTANT_DISABLED", "助手已停用，執行已中止")
+        if testing and not (
+            can_edit(db, current, current_assistant)
+            or can_review(db, current, current_assistant)
+        ):
+            fail(403, "TEST_PERMISSION_REVOKED", "流程測試權限已撤銷，執行已中止")
         if not testing:
             from app.services.api_key_service import check_agent_permission
 
@@ -438,11 +494,13 @@ async def run(
         validate_sources(
             db, current, payload, complete=True, check_model_access=testing
         )
+        if artifacts and not outbound_action_allowed(
+            ClassificationLevel.from_storage(payload["classification_level"])
+        ):
+            fail(403, "EXPORT_CLASSIFICATION", "任務或來源密等已提高，文件回答已中止")
         return current
 
-    async def model_call(messages, temperature=0.2):
-        from app.services.internal_llm import complete_chat
-
+    def model_context(messages):
         current = reauthorize()
         model = (
             db.query(ModelRegistry)
@@ -489,6 +547,12 @@ async def run(
                 task_ctx=task_ctx,
                 conv_id_int=conversation_id,
             )
+        return current, model, messages
+
+    async def model_call(messages, temperature=0.2):
+        from app.services.internal_llm import complete_chat
+
+        current, model, messages = model_context(messages)
         return await complete_chat(
             db,
             model,
@@ -503,6 +567,29 @@ async def run(
             on_behalf_of_user=True,
             caller_agent_id=captured_agent_id,
             api_key_id=api_key_id,
+        )
+
+    async def stream_model_call(messages, temperature=0.2):
+        from app.services.quick_model_stream import stream_chat
+
+        current, model, messages = model_context(messages)
+        if model.supports_streaming is False:
+            return await model_call(messages, temperature)
+        return await stream_chat(
+            db,
+            model,
+            {
+                "model": model.name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": 4096,
+            },
+            user_id=current.id,
+            department_id=current.department_id,
+            caller_agent_id=captured_agent_id,
+            api_key_id=api_key_id,
+            on_delta=lambda text: on_delta(text, before_send=lambda: model_context([])),
+            before_chunk=lambda: model_context([]),
         )
 
     async def rag_call(collection_ids, query, top_k=5, *, mode="hybrid"):
@@ -645,6 +732,8 @@ async def run(
         }
 
     try:
+        if on_delta is not None:
+            await on_delta("", before_send=reauthorize)
         result = await asyncio.wait_for(
             execute_graph(
                 payload["graph"],
@@ -654,6 +743,7 @@ async def run(
                 tool_call=tool_call,
                 document_call=document_call,
                 history=history,
+                stream_model_call=stream_model_call if on_delta is not None else None,
             ),
             timeout=120,
         )
@@ -662,7 +752,7 @@ async def run(
             ClassificationLevel.from_storage(payload["classification_level"])
         ):
             fail(403, "EXPORT_CLASSIFICATION", "任務或對話的密等已提高，這次文件不能匯出")
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, GeneratorExit):
         result = {
             "output": "",
             "status": "cancelled",
@@ -830,25 +920,48 @@ async def agent_response(
         history.append({"role": item["role"], "content": content})
         remaining -= len(content)
     history.reverse()
-    result = await run(
-        db,
-        user,
-        version.assistant_id,
-        version.id,
-        message,
-        api_key_id=api_key_id,
-        task_ctx=task_ctx,
-        conversation_id=conversation_id,
-        dispatch_claims=dispatch_claims,
-        history=history,
-    )
-    if task_ctx:
-        from app.services.proxy.task_link import finalize_task_run
+    assistant_id, version_id, agent_name = version.assistant_id, version.id, agent.name
 
-        finalize_task_run(
-            task_ctx.task_run_id,
-            "completed" if result["status"] == "completed" else "failed",
+    async def execute(execution_db, execution_user, on_delta=None):
+        return await run(
+            execution_db,
+            execution_user,
+            assistant_id,
+            version_id,
+            message,
+            api_key_id=api_key_id,
+            task_ctx=task_ctx,
+            conversation_id=conversation_id,
+            dispatch_claims=dispatch_claims,
+            history=history,
+            on_delta=on_delta,
         )
+
+    def finalize(status):
+        if task_ctx:
+            from app.services.proxy.task_link import finalize_task_run
+
+            finalize_task_run(task_ctx.task_run_id, status)
+
+    if body.get("stream"):
+        from app.services.quick_stream_response import flow_stream_response
+
+        return flow_stream_response(
+            bind=db.get_bind(),
+            user_id=user.id,
+            token_version=user.token_version,
+            department_id=user.department_id,
+            assistant_id=assistant_id,
+            model_name=agent_name,
+            execute=execute,
+            finalize=finalize,
+        )
+    try:
+        result = await execute(db, user)
+    except BaseException:
+        finalize("failed")
+        raise
+    finalize("completed" if result["status"] == "completed" else "failed")
     if result["status"] != "completed":
         fail(
             502,
@@ -861,41 +974,6 @@ async def agent_response(
             f"[{a['filename']}]({a['download_url']})" for a in result["artifacts"]
         )
     completion_id, created = "chatcmpl-quick-" + uuid.uuid4().hex, int(time.time())
-    if body.get("stream"):
-
-        async def stream():
-            for i in range(0, len(text), 16):
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": agent.name,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": text[i : i + 16]},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                yield "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
-                await asyncio.sleep(0)
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": agent.name,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                    }
-                )
-                + "\n\n"
-            )
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(stream(), media_type="text/event-stream")
     return JSONResponse(
         {
             "id": completion_id,

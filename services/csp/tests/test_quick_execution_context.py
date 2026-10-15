@@ -217,8 +217,9 @@ def test_chat_history_window_is_bounded(db, review_rows, monkeypatch):
     assert "[較早內容已省略]" in json.dumps(calls, ensure_ascii=False)
 
 
+@pytest.mark.parametrize("stream", [False, True])
 def test_public_chat_http_preserves_history_and_conversation_scope(
-    db, people, http, monkeypatch
+    db, people, http, monkeypatch, stream
 ):
     users, model, department, _ = people
     rows = (
@@ -241,13 +242,22 @@ def test_public_chat_http_preserves_history_and_conversation_scope(
         return "合成表格"
 
     monkeypatch.setattr(internal_llm, "complete_chat", model_response)
+    from app.services import quick_model_stream
+
+    async def stream_response(db, model, body, *, on_delta, before_chunk, **kwargs):
+        output = await model_response(db, model, body, **kwargs)
+        before_chunk()
+        await on_delta(output)
+        return output
+
+    monkeypatch.setattr(quick_model_stream, "stream_chat", stream_response)
     headers = {
         **login(http, "colleague"),
         "X-ANILA-Conversation-Id": str(conversation.id),
     }
     body = {
         "model": agent.name,
-        "stream": False,
+        "stream": stream,
         "messages": [
             {"role": "user", "content": "合成行政工作清單"},
             {"role": "assistant", "content": "合成工作甲、乙"},
@@ -256,7 +266,20 @@ def test_public_chat_http_preserves_history_and_conversation_scope(
     }
     response = http.post("/v1/chat/completions", headers=headers, json=body)
     assert response.status_code == 200, response.text
-    assert response.json()["choices"][0]["message"]["content"] == "合成表格"
+    if stream:
+        chunks = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        assert (
+            "".join(chunk["choices"][0]["delta"].get("content", "") for chunk in chunks)
+            == "合成表格"
+        )
+        assert "data: [DONE]" in response.text
+        assert response.headers["X-Accel-Buffering"] == "no"
+    else:
+        assert response.json()["choices"][0]["message"]["content"] == "合成表格"
     assert "合成工作甲、乙" in json.dumps(calls, ensure_ascii=False)
     foreign = Conversation(user_id=users["outsider"].id)
     db.add(foreign)

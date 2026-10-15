@@ -76,7 +76,9 @@ def review_rows(db):
     return owner, colleague, admin, model, department
 
 
-def _assistant(db, rows, *, published=True, graph=None, tool_fingerprints=None):
+def _assistant(
+    db, rows, *, published=True, graph=None, tool_fingerprints=None, collection_ids=None
+):
     owner, colleague, _, model, department = rows
     assistant = QuickAssistant(
         owner_user_id=owner.id,
@@ -100,7 +102,7 @@ def _assistant(db, rows, *, published=True, graph=None, tool_fingerprints=None):
         "description": "合成資料",
         "model_id": model.id,
         "classification_level": "無機密",
-        "collection_ids": [],
+        "collection_ids": collection_ids or [],
         "scope": "unit",
         "target_department_ids": [],
         "tool_fingerprints": tool_fingerprints or {},
@@ -452,9 +454,7 @@ def test_review_api_key_attribution_and_zero_quota_reach_real_internal_model_gat
     )
     db.commit()
     blocked = asyncio.run(
-        run(
-            db, colleague, assistant.id, version.id, "不應送出的提問", api_key_id=key.id
-        )
+        run(db, colleague, assistant.id, version.id, "不應送出的提問", api_key_id=key.id)
     )
     assert blocked["status"] == "failed"
     assert len(calls) == 1, "API 金鑰額度為零時不得再進模型傳輸"

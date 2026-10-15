@@ -28,13 +28,34 @@ MAX_AGENT_RETRIES = 2
 MAX_EXECUTION_STEPS = 240
 EXECUTION_TIMEOUT_SECONDS = 120
 
-NODE_KINDS = frozenset({
-    "input", "output", "model", "prompt", "rag", "mcp", "condition",
-    "extract", "format", "document", "agent",
-})
-CONDITION_OPERATORS = frozenset({
-    "equals", "not_equals", "contains", "starts_with", "gt", "gte", "lt", "lte", "is_empty",
-})
+NODE_KINDS = frozenset(
+    {
+        "input",
+        "output",
+        "model",
+        "prompt",
+        "rag",
+        "mcp",
+        "condition",
+        "extract",
+        "format",
+        "document",
+        "agent",
+    }
+)
+CONDITION_OPERATORS = frozenset(
+    {
+        "equals",
+        "not_equals",
+        "contains",
+        "starts_with",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "is_empty",
+    }
+)
 _DEFAULTS = {
     "input": {"placeholder": "請輸入問題"},
     "output": {"include_sources": True},
@@ -45,8 +66,14 @@ _DEFAULTS = {
     "condition": {"field": "text", "operator": "contains", "value": ""},
     "extract": {"fields": ["主旨", "承辦人"]},
     "format": {"style": "paragraph"},
-    "document": {"template": "主旨：{{text}}", "template_id": None,
-                 "mode": "text", "title": "助手草稿", "preset": "key_summary", "format": "rtf"},
+    "document": {
+        "template": "主旨：{{text}}",
+        "template_id": None,
+        "mode": "text",
+        "title": "助手草稿",
+        "preset": "key_summary",
+        "format": "rtf",
+    },
     "agent": {"tool_ids": [], "max_steps": 5, "max_retries": 1},
 }
 _SYSTEM_MESSAGE = (
@@ -63,7 +90,9 @@ DocumentCall = Callable[..., Awaitable[dict]]
 
 
 class QuickFlowValidationError(ValueError):
-    def __init__(self, message: str, *, code: str = "INVALID_GRAPH", path: str = "graph"):
+    def __init__(
+        self, message: str, *, code: str = "INVALID_GRAPH", path: str = "graph"
+    ):
         self.code = code
         self.path = path
         super().__init__(f"{message}（{code}；{path}）")
@@ -87,8 +116,14 @@ def _object(value: Any, allowed: set | frozenset, path: str) -> dict:
     return value
 
 
-def _string(value: Any, path: str, *, maximum: int = MAX_TEXT_CHARS, empty: bool = True) -> str:
-    if type(value) is not str or len(value) > maximum or (not empty and not value.strip()):
+def _string(
+    value: Any, path: str, *, maximum: int = MAX_TEXT_CHARS, empty: bool = True
+) -> str:
+    if (
+        type(value) is not str
+        or len(value) > maximum
+        or (not empty and not value.strip())
+    ):
         _invalid("文字未填寫或長度超過限制", path)
     return value
 
@@ -101,6 +136,7 @@ def _integer(value: Any, path: str, minimum: int, maximum: int) -> int:
 
 def _json_data(value: Any, path: str, *, maximum: int = MAX_DATA_BYTES) -> Any:
     """只接受有界限的 JSON 資料，不呼叫物件的自訂序列化方法。"""
+
     def visit(item: Any, depth: int) -> None:
         if depth > 10:
             _invalid("資料巢狀層數超過限制", path, "DATA_LIMIT")
@@ -125,7 +161,10 @@ def _json_data(value: Any, path: str, *, maximum: int = MAX_DATA_BYTES) -> Any:
         _invalid("只接受有限大小的 JSON 資料", path, "INVALID_DATA")
 
     visit(value, 0)
-    if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")) > maximum:
+    if (
+        len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        > maximum
+    ):
         _invalid("資料大小超過限制", path, "DATA_LIMIT")
     return value
 
@@ -154,7 +193,11 @@ def _config(kind: str, value: Any, path: str) -> dict:
             _invalid("請設定是否顯示來源", path)
     elif kind == "model":
         temperature = config["temperature"]
-        if type(temperature) not in (int, float) or not math.isfinite(temperature) or not 0 <= temperature <= 2:
+        if (
+            type(temperature) not in (int, float)
+            or not math.isfinite(temperature)
+            or not 0 <= temperature <= 2
+        ):
             _invalid("溫度須介於 0 到 2", path + ".temperature")
     elif kind == "prompt":
         _string(config["instruction"], path + ".instruction")
@@ -173,9 +216,17 @@ def _config(kind: str, value: Any, path: str) -> dict:
         _json_data(config["arguments"], path + ".arguments")
     elif kind == "condition":
         _string(config["field"], path + ".field", maximum=100, empty=False)
-        if type(config["operator"]) is not str or config["operator"] not in CONDITION_OPERATORS:
+        if (
+            type(config["operator"]) is not str
+            or config["operator"] not in CONDITION_OPERATORS
+        ):
             _invalid("僅能使用清單中的條件判斷", path + ".operator", "UNKNOWN_OPERATOR")
-        if config["value"] is not None and type(config["value"]) not in (str, int, float, bool):
+        if config["value"] is not None and type(config["value"]) not in (
+            str,
+            int,
+            float,
+            bool,
+        ):
             _invalid("條件值必須是文字、數字或布林值", path + ".value")
     elif kind == "extract":
         fields = config["fields"]
@@ -192,13 +243,20 @@ def _config(kind: str, value: Any, path: str) -> dict:
         template = _string(config["template"], path + ".template")
         literal = template.replace("{{text}}", "")
         if any(mark in literal for mark in ("{{", "}}", "{%", "%}", "{#", "#}")):
-            _invalid("範本僅支援 {{text}}，不可使用運算式", path + ".template", "UNSUPPORTED_TEMPLATE")
+            _invalid(
+                "範本僅支援 {{text}}，不可使用運算式", path + ".template", "UNSUPPORTED_TEMPLATE"
+            )
         template_id = config["template_id"]
         if template_id is not None:
             _integer(template_id, path + ".template_id", 1, 2**63 - 1)
         if config["mode"] not in ("text", "studio"):
             _invalid("請選擇文字範本或 Studio 範本", path + ".mode")
-        if config["preset"] not in ("deep_tech_review", "key_summary", "teaching_handout", "external_comms"):
+        if config["preset"] not in (
+            "deep_tech_review",
+            "key_summary",
+            "teaching_handout",
+            "external_comms",
+        ):
             _invalid("請選擇既有的 Studio 文件範本", path + ".preset")
         _string(config["title"], path + ".title", maximum=200, empty=False)
         formats = ("rtf",) if config["mode"] == "text" else ("html", "pdf", "docx")
@@ -234,13 +292,20 @@ def validate_graph(graph: Any) -> dict:
         kind = raw.get("kind")
         if type(kind) is not str or kind not in NODE_KINDS:
             _invalid("不支援此模組類型", path + ".kind", "UNKNOWN_KIND")
-        position = _object(raw.get("position", {"x": 0, "y": 0}), {"x", "y"}, path + ".position")
+        position = _object(
+            raw.get("position", {"x": 0, "y": 0}), {"x", "y"}, path + ".position"
+        )
         for axis in ("x", "y"):
             coordinate = position.get(axis)
-            if type(coordinate) not in (int, float) or not math.isfinite(coordinate) or abs(coordinate) > 1_000_000:
+            if (
+                type(coordinate) not in (int, float)
+                or not math.isfinite(coordinate)
+                or abs(coordinate) > 1_000_000
+            ):
                 _invalid("畫布位置無效", path + ".position")
         node = {
-            "id": node_id, "kind": kind,
+            "id": node_id,
+            "kind": kind,
             "label": _string(raw.get("label", kind), path + ".label", maximum=200),
             "position": copy.deepcopy(position),
             "config": _config(kind, raw.get("config", {}), path + ".config"),
@@ -257,11 +322,20 @@ def validate_graph(graph: Any) -> dict:
         path = f"edges[{index}]"
         _object(raw, {"source", "target", "branch"}, path)
         source, target = raw.get("source"), raw.get("target")
-        if type(source) is not str or type(target) is not str or source not in by_id or target not in by_id or source == target:
+        if (
+            type(source) is not str
+            or type(target) is not str
+            or source not in by_id
+            or target not in by_id
+            or source == target
+        ):
             _invalid("連線的起點或終點無效", path)
         edge = {"source": source, "target": target}
         if by_id[source]["kind"] == "condition":
-            if type(raw.get("branch")) is not str or raw["branch"] not in ("true", "false"):
+            if type(raw.get("branch")) is not str or raw["branch"] not in (
+                "true",
+                "false",
+            ):
                 _invalid("條件連線須設定 true 或 false 分支", path, "MISSING_BRANCH")
             edge["branch"] = raw["branch"]
         elif "branch" in raw:
@@ -283,7 +357,9 @@ def validate_graph(graph: Any) -> dict:
             _invalid("輸出模組不可有下游", node_id)
         if kind != "output" and not outgoing[node_id]:
             _invalid("有模組未連接至輸出", node_id, "DISCONNECTED_NODE")
-        if kind == "condition" and sorted(edge["branch"] for edge in outgoing[node_id]) != ["false", "true"]:
+        if kind == "condition" and sorted(
+            edge["branch"] for edge in outgoing[node_id]
+        ) != ["false", "true"]:
             _invalid("條件模組須各有一條成立及不成立分支", node_id, "MISSING_BRANCH")
     ordered = _topological(nodes, edges)
     reachable = {inputs[0]}
@@ -358,9 +434,18 @@ class _State:
     instructions: list[str] = field(default_factory=list)
     artifacts: list = field(default_factory=list)
     temperature: float = 0.2
+    # Server-created provenance, copied with branch state; never accepted from a graph.
+    retrievals: list = field(default_factory=list)
 
     def public(self) -> dict:
-        return copy.deepcopy({"text": self.text, "fields": self.fields, "sources": self.sources, "artifacts": self.artifacts})
+        return copy.deepcopy(
+            {
+                "text": self.text,
+                "fields": self.fields,
+                "sources": self.sources,
+                "artifacts": self.artifacts,
+            }
+        )
 
 
 def _merge(states: list[_State]) -> _State:
@@ -375,11 +460,38 @@ def _merge(states: list[_State]) -> _State:
             if key in merged.fields and merged.fields[key] != value:
                 raise QuickFlowExecutionError("MERGE_CONFLICT", "合流的擷取欄位內容衝突，請調整連線")
             merged.fields[key] = value
-        for attr in ("sources", "external", "instructions", "artifacts"):
+        for attr in ("sources", "instructions", "artifacts"):
             destination = getattr(merged, attr)
             for value in getattr(state, attr):
                 if value not in destination:
                     destination.append(copy.deepcopy(value))
+        # Keep separate RAG origins even when two branches fetched equal data;
+        # shared ancestors keep their existing private request identity.
+        positions = {}
+        by_position = {
+            request["external_index"]: request for request in state.retrievals
+        }
+        for index, entry in enumerate(state.external):
+            request = by_position.get(index)
+            existing = next(
+                (
+                    item
+                    for item in merged.retrievals
+                    if request and item["request_id"] == request["request_id"]
+                ),
+                None,
+            )
+            if existing is not None:
+                positions[index] = existing["external_index"]
+            elif request is None and entry in merged.external:
+                positions[index] = merged.external.index(entry)
+            else:
+                positions[index] = len(merged.external)
+                merged.external.append(copy.deepcopy(entry))
+            if request is not None and existing is None:
+                copied = copy.deepcopy(request)
+                copied["external_index"] = positions[index]
+                merged.retrievals.append(copied)
         merged.temperature = state.temperature
     merged.text = "\n\n".join(texts)
     if len(merged.text) > MAX_DATA_BYTES:
@@ -388,7 +500,9 @@ def _merge(states: list[_State]) -> _State:
 
 
 def _condition(config: dict, state: _State) -> bool:
-    actual = state.text if config["field"] == "text" else state.fields.get(config["field"])
+    actual = (
+        state.text if config["field"] == "text" else state.fields.get(config["field"])
+    )
     expected, operator = config["value"], config["operator"]
     if operator == "is_empty":
         return actual is None or actual == ""
@@ -410,18 +524,34 @@ def _condition(config: dict, state: _State) -> bool:
             raise ValueError
     except (ValueError, TypeError, OverflowError):
         raise QuickFlowExecutionError("CONDITION_VALUE", "數值條件的欄位或比較值不是有效數字") from None
-    return {"gt": left > right, "gte": left >= right, "lt": left < right, "lte": left <= right}[operator]
+    return {
+        "gt": left > right,
+        "gte": left >= right,
+        "lt": left < right,
+        "lte": left <= right,
+    }[operator]
 
 
 class _Runtime:
-    def __init__(self, message: str, model_call: ModelCall, rag_call: RagCall, tool_call: ToolCall, document_call: DocumentCall):
+    def __init__(
+        self,
+        message: str,
+        model_call: ModelCall,
+        rag_call: RagCall,
+        tool_call: ToolCall,
+        document_call: DocumentCall,
+        stream_model_call: ModelCall | None = None,
+    ):
         self.message = message
         self.history: list[dict[str, str]] = []
         self.model_call, self.rag_call = model_call, rag_call
         self.tool_call, self.document_call = tool_call, document_call
         self.operations = 0
+        self.stream_model_call = stream_model_call
+        self.stream_node_id: str | None = None
         self.steps: list[dict] = []
         self.current: dict | None = None
+        self.trace_states: dict[str, tuple[_State, _State | None]] = {}
 
     def tick(self) -> None:
         self.operations += 1
@@ -449,14 +579,178 @@ class _Runtime:
                 messages.append({"role": "assistant", "content": text})
         if instruction:
             messages.append({"role": "assistant", "content": instruction})
-        messages.append({"role": "user", "content": _dump({
-            "question": self.message, "text": state.text,
-            "fields": state.fields, "external_data": state.external,
-        })})
+        messages.append(
+            {
+                "role": "user",
+                "content": _dump(
+                    {
+                        "question": self.message,
+                        "text": state.text,
+                        "fields": state.fields,
+                        "external_data": state.external,
+                    }
+                ),
+            }
+        )
         return messages
 
-    async def model(self, state: _State, instruction: str = "") -> str:
-        result = await self.call(self.model_call, self.messages(state, instruction), state.temperature)
+    def _model_arguments(self, state: _State, instruction: str) -> list[dict]:
+        messages = self.messages(state, instruction)
+        # Exactly the envelope used by call(), including JSON escaping, history,
+        # late instructions, current text, tools and temperature.
+        _json_data(
+            [[messages, state.temperature], {}],
+            "callback_arguments",
+            maximum=MAX_GRAPH_BYTES,
+        )
+        return messages
+
+    @staticmethod
+    def _state_retrieval(state: _State, request: dict, result: list) -> None:
+        state.external[request["external_index"]] = {"retrieval": copy.deepcopy(result)}
+        # Only RAG creates sources; private positions preserve branch provenance.
+        state.sources = []
+        for entry in state.external:
+            if type(entry) is dict and set(entry) == {"retrieval"}:
+                state.sources.extend(copy.deepcopy(entry["retrieval"]))
+
+    def _replace_retrieval(self, state: _State, request: dict, result: list) -> None:
+        self._state_retrieval(state, request, result)
+        # Trace snapshots carry the same private origin IDs. Update only states
+        # which actually included this retrieval, including merged descendants.
+        for trace in self.steps:
+            if trace["node_id"] == request["node_id"]:
+                trace["retrieval"] = copy.deepcopy(result)
+                if request["fallback"]:
+                    trace["retrieval_context"] = {
+                        "requested_mode": "fulltext",
+                        "retrieval_mode": "hybrid",
+                        "fulltext_fallback": True,
+                        "fallback_reason": "fulltext_model_context_limit",
+                    }
+            snapshots = self.trace_states.get(trace["node_id"], ())
+            for name, snapshot in zip(("input", "output"), snapshots):
+                if snapshot is None:
+                    continue
+                for prior in snapshot.retrievals:
+                    if prior["request_id"] == request["request_id"]:
+                        self._state_retrieval(snapshot, prior, result)
+                        trace[name] = snapshot.public()
+                        break
+        if self.current is not None:
+            self.current["input"] = state.public()
+
+    @staticmethod
+    def _context_hits(result: list, *, fallback: bool, limited: bool = False) -> list:
+        rows = copy.deepcopy(result)
+        for row in rows:
+            if type(row) is not dict:
+                raise QuickFlowExecutionError("RAG_RESPONSE", "檢索結果必須包含完整片段資料")
+            metadata = row.get("metadata")
+            if type(metadata) is not dict:
+                metadata = {}
+            if fallback:
+                metadata.update(
+                    requested_mode="fulltext",
+                    retrieval_mode="hybrid",
+                    fulltext_fallback=True,
+                    fallback_reason="fulltext_model_context_limit",
+                )
+            if limited:
+                metadata["context_limited"] = True
+            row["metadata"] = metadata
+        return rows
+
+    async def _fit_model_context(self, state: _State, instruction: str) -> list[dict]:
+        try:
+            return self._model_arguments(state, instruction)
+        except QuickFlowValidationError as exc:
+            if exc.code != "DATA_LIMIT" or not state.retrievals:
+                raise
+        # Use the original authorized callback and query for every fulltext
+        # request in this branch. Never relabel previously fetched fulltext.
+        for request in state.retrievals:
+            if not request["fulltext"]:
+                continue
+            result = await self.call(
+                self.rag_call,
+                request["collection_ids"],
+                request["query"],
+                request["top_k"],
+            )
+            if type(result) is not list or len(result) > request["top_k"]:
+                raise QuickFlowExecutionError(
+                    "RAG_CONTEXT_LIMIT", "全文超過模型內容上限，混合搜尋沒有可用的完整片段，請縮小來源或問題"
+                )
+            request["fulltext"] = False
+            request["fallback"] = True
+            self._replace_retrieval(
+                state, request, self._context_hits(result, fallback=True)
+            )
+        # Retain whole ranked chunks, including omission of an entire request
+        # when another source fits. Never silently run with no candidate at all.
+        # A late prompt/tool can consume more space than was available at RAG.
+        limited = False
+        while True:
+            total = sum(
+                len(state.external[item["external_index"]]["retrieval"])
+                for item in state.retrievals
+            )
+            if total == 0:
+                raise QuickFlowExecutionError(
+                    "RAG_CONTEXT_LIMIT", "全文超過模型內容上限，混合搜尋沒有可用的完整片段，請縮小來源或問題"
+                )
+            try:
+                messages = self._model_arguments(state, instruction)
+            except QuickFlowValidationError as exc:
+                if exc.code != "DATA_LIMIT":
+                    raise
+            else:
+                if limited:
+                    for request in state.retrievals:
+                        rows = state.external[request["external_index"]]["retrieval"]
+                        self._replace_retrieval(
+                            state,
+                            request,
+                            self._context_hits(
+                                rows, fallback=request["fallback"], limited=True
+                            ),
+                        )
+                    return self._model_arguments(state, instruction)
+                return messages
+            candidates = [
+                request
+                for request in state.retrievals
+                if total > 1 and state.external[request["external_index"]]["retrieval"]
+            ]
+            if not candidates:
+                raise QuickFlowExecutionError(
+                    "RAG_CONTEXT_LIMIT", "問題、提示詞與來源合計超過模型內容上限，請縮小來源或問題"
+                )
+            request = max(
+                candidates,
+                key=lambda item: len(
+                    _dump(state.external[item["external_index"]]).encode("utf-8")
+                ),
+            )
+            result = state.external[request["external_index"]]["retrieval"][:-1]
+            limited = True
+            self._replace_retrieval(
+                state,
+                request,
+                self._context_hits(result, fallback=request["fallback"], limited=True),
+            )
+
+    async def model(
+        self, state: _State, instruction: str = "", *, stream: bool = False
+    ) -> str:
+        callback = (
+            self.stream_model_call
+            if stream and self.stream_model_call
+            else self.model_call
+        )
+        messages = await self._fit_model_context(state, instruction)
+        result = await self.call(callback, messages, state.temperature)
         if type(result) is not str:
             raise QuickFlowExecutionError("MODEL_RESPONSE", "模型未回傳文字")
         return result
@@ -477,26 +771,50 @@ class _Runtime:
                 plan = json.loads(raw)
                 if type(plan) is not dict:
                     raise ValueError
-                if plan.get("action") == "final" and set(plan) == {"action", "output"} and type(plan["output"]) is str:
+                if (
+                    plan.get("action") == "final"
+                    and set(plan) == {"action", "output"}
+                    and type(plan["output"]) is str
+                ):
                     state.text = plan["output"]
                     return state
-                if plan.get("action") != "tool" or set(plan) != {"action", "tool_id", "arguments"}:
+                if plan.get("action") != "tool" or set(plan) != {
+                    "action",
+                    "tool_id",
+                    "arguments",
+                }:
                     raise ValueError
-                if type(plan["tool_id"]) is not int or plan["tool_id"] not in config["tool_ids"]:
-                    raise QuickFlowExecutionError("TOOL_NOT_ALLOWED", "代理選擇了未勾選的工具，已停止執行")
+                if (
+                    type(plan["tool_id"]) is not int
+                    or plan["tool_id"] not in config["tool_ids"]
+                ):
+                    raise QuickFlowExecutionError(
+                        "TOOL_NOT_ALLOWED", "代理選擇了未勾選的工具，已停止執行"
+                    )
                 if type(plan["arguments"]) is not dict:
                     raise ValueError
                 _json_data(plan["arguments"], "agent.arguments")
             except (ValueError, QuickFlowValidationError) as exc:
                 if isinstance(exc, QuickFlowExecutionError):
                     raise
-                raise QuickFlowExecutionError("AGENT_PLAN", "代理規劃未符合工具選擇格式，已停止執行") from None
+                raise QuickFlowExecutionError(
+                    "AGENT_PLAN", "代理規劃未符合工具選擇格式，已停止執行"
+                ) from None
             for attempt in range(config["max_retries"] + 1):
-                record = {"step": index + 1, "attempt": attempt + 1, "tool_id": plan["tool_id"], "arguments": copy.deepcopy(plan["arguments"]), "result": None, "error": None}
+                record = {
+                    "step": index + 1,
+                    "attempt": attempt + 1,
+                    "tool_id": plan["tool_id"],
+                    "arguments": copy.deepcopy(plan["arguments"]),
+                    "result": None,
+                    "error": None,
+                }
                 trace["tool"].append(record)
                 started = time.monotonic()
                 try:
-                    result = await self.call(self.tool_call, plan["tool_id"], plan["arguments"])
+                    result = await self.call(
+                        self.tool_call, plan["tool_id"], plan["arguments"]
+                    )
                     if type(result) is not dict:
                         raise QuickFlowExecutionError("TOOL_RESPONSE", "工具未回傳物件")
                     record["result"] = copy.deepcopy(result)
@@ -505,17 +823,24 @@ class _Runtime:
                 except Exception as exc:
                     record["error"] = _error(exc)
                     # 身分、授權、逾時與大小限制失敗不能靠代理重試繞過。
-                    retryable = isinstance(exc, QuickFlowExecutionError) and exc.code == "TOOL_FAILED"
+                    retryable = (
+                        isinstance(exc, QuickFlowExecutionError)
+                        and exc.code == "TOOL_FAILED"
+                    )
                     if not retryable or attempt >= config["max_retries"]:
                         raise
                 else:
-                    state.external.append({"tool_id": plan["tool_id"], "result": result})
+                    state.external.append(
+                        {"tool_id": plan["tool_id"], "result": result}
+                    )
                     break
                 finally:
                     record["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
         raise QuickFlowExecutionError("STEP_LIMIT", "代理已達最多步數，仍未產生最終回答")
 
-    async def node(self, node: dict, state: _State, trace: dict) -> tuple[_State, bool | None]:
+    async def node(
+        self, node: dict, state: _State, trace: dict
+    ) -> tuple[_State, bool | None]:
         config, kind = node["config"], node["kind"]
         if kind == "input":
             state.text = self.message
@@ -523,23 +848,55 @@ class _Runtime:
             state.instructions.append(config["instruction"])
         elif kind == "model":
             state.temperature = config["temperature"]
-            state.text = await self.model(state)
+            state.text = await self.model(
+                state, stream=node["id"] == self.stream_node_id
+            )
         elif kind == "rag":
             if not config["collection_ids"]:
                 raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇有權限使用的文件集")
             kwargs = {"mode": "fulltext"} if config["mode"] == "fulltext" else {}
-            result = await self.call(self.rag_call, config["collection_ids"], state.text, config["top_k"], **kwargs)
-            maximum = MAX_FULLTEXT_CHUNKS if config["mode"] == "fulltext" else config["top_k"]
+            result = await self.call(
+                self.rag_call,
+                config["collection_ids"],
+                state.text,
+                config["top_k"],
+                **kwargs,
+            )
+            maximum = (
+                MAX_FULLTEXT_CHUNKS if config["mode"] == "fulltext" else config["top_k"]
+            )
             if type(result) is not list or len(result) > maximum:
                 raise QuickFlowExecutionError("RAG_RESPONSE", "檢索結果格式或筆數不正確")
             trace["retrieval"] = copy.deepcopy(result)
             state.sources.extend(result)
+            state.retrievals.append(
+                {
+                    "request_id": self.operations,
+                    "node_id": node["id"],
+                    "collection_ids": copy.deepcopy(config["collection_ids"]),
+                    "query": state.text,
+                    "top_k": config["top_k"],
+                    "external_index": len(state.external),
+                    "fallback": False,
+                    "fulltext": config["mode"] == "fulltext"
+                    and bool(result)
+                    and any(
+                        type(row) is not dict
+                        or (row.get("metadata") or {}).get("retrieval_mode") != "hybrid"
+                        for row in result
+                    ),
+                }
+            )
             state.external.append({"retrieval": result})
         elif kind == "mcp":
             if config["tool_id"] is None:
                 raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇已核准的查詢工具")
             arguments = _substitute_arguments(config["arguments"], state)
-            record = {"tool_id": config["tool_id"], "arguments": copy.deepcopy(arguments), "result": None}
+            record = {
+                "tool_id": config["tool_id"],
+                "arguments": copy.deepcopy(arguments),
+                "result": None,
+            }
             trace["tool"].append(record)
             result = await self.call(self.tool_call, config["tool_id"], arguments)
             if type(result) is not dict:
@@ -552,28 +909,47 @@ class _Runtime:
         elif kind == "condition":
             return state, _condition(config, state)
         elif kind == "extract":
-            raw = await self.model(state, "僅回傳 JSON 物件，擷取下列欄位；缺資料填 null，不要推測：" + _dump(config["fields"]))
+            raw = await self.model(
+                state, "僅回傳 JSON 物件，擷取下列欄位；缺資料填 null，不要推測：" + _dump(config["fields"])
+            )
             try:
                 result = json.loads(raw)
                 if type(result) is not dict or set(result) != set(config["fields"]):
                     raise ValueError
-                if any(value is not None and type(value) not in (str, int, float, bool) for value in result.values()):
+                if any(
+                    value is not None and type(value) not in (str, int, float, bool)
+                    for value in result.values()
+                ):
                     raise ValueError
                 _json_data(result, "extract_result")
             except (ValueError, QuickFlowValidationError):
-                raise QuickFlowExecutionError("EXTRACT_RESPONSE", "模型回傳的擷取欄位不符合設定") from None
+                raise QuickFlowExecutionError(
+                    "EXTRACT_RESPONSE", "模型回傳的擷取欄位不符合設定"
+                ) from None
             state.fields.update(result)
             state.text = _dump(result)
         elif kind == "format":
-            styles = {"paragraph": "清楚的繁體中文段落", "bullets": "繁體中文條列", "table": "Markdown 表格"}
-            state.text = await self.model(state, "將提供的內容整理成" + styles[config["style"]] + "，保留事實，不新增資料。")
+            styles = {
+                "paragraph": "清楚的繁體中文段落",
+                "bullets": "繁體中文條列",
+                "table": "Markdown 表格",
+            }
+            state.text = await self.model(
+                state,
+                "將提供的內容整理成" + styles[config["style"]] + "，保留事實，不新增資料。",
+                stream=node["id"] == self.stream_node_id,
+            )
         elif kind == "document":
             if config["mode"] == "text" and not config["template"].strip():
                 raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇或填寫文件範本")
             if config["mode"] == "studio":
-                result = await self.call(self.document_call, config["template"], state.text, config=config)
+                result = await self.call(
+                    self.document_call, config["template"], state.text, config=config
+                )
             else:
-                result = await self.call(self.document_call, config["template"], state.text)
+                result = await self.call(
+                    self.document_call, config["template"], state.text
+                )
             if type(result) is not dict:
                 raise QuickFlowExecutionError("DOCUMENT_RESPONSE", "文件服務未回傳產物資料")
             if result.get("error"):
@@ -587,9 +963,22 @@ class _Runtime:
             labels = []
             for source in state.sources:
                 if type(source) is dict:
-                    name = source.get("filename") or source.get("file_name") or source.get("title") or source.get("source") or "文件"
-                    location = source.get("page") or source.get("page_number") or source.get("slide") or source.get("line")
-                    label = str(name) + (f"（位置：{location}）" if location is not None else "")
+                    name = (
+                        source.get("filename")
+                        or source.get("file_name")
+                        or source.get("title")
+                        or source.get("source")
+                        or "文件"
+                    )
+                    location = (
+                        source.get("page")
+                        or source.get("page_number")
+                        or source.get("slide")
+                        or source.get("line")
+                    )
+                    label = str(name) + (
+                        f"（位置：{location}）" if location is not None else ""
+                    )
                 else:
                     label = str(source)
                 if label not in labels:
@@ -602,16 +991,39 @@ class _Runtime:
         incoming = {node["id"]: [] for node in graph["nodes"]}
         for edge in graph["edges"]:
             incoming[edge["target"]].append(edge)
+        outputs_by_id = [node for node in graph["nodes"] if node["kind"] == "output"]
+        if len(outputs_by_id) == 1:
+            final_edges = incoming[outputs_by_id[0]["id"]]
+            if len(final_edges) == 1:
+                predecessor = next(
+                    node
+                    for node in graph["nodes"]
+                    if node["id"] == final_edges[0]["source"]
+                )
+                if predecessor["kind"] in {"model", "format"}:
+                    self.stream_node_id = predecessor["id"]
         for node in _topological(graph["nodes"], graph["edges"]):
             active = []
             for edge in incoming[node["id"]]:
                 source = edge["source"]
-                if source in values and ("branch" not in edge or edge["branch"] == str(decisions[source]).lower()):
+                if source in values and (
+                    "branch" not in edge
+                    or edge["branch"] == str(decisions[source]).lower()
+                ):
                     active.append(values[source])
             if node["kind"] != "input" and not active:
                 continue
-            trace = {"node_id": node["id"], "kind": node["kind"], "input": None, "output": None,
-                     "elapsed_ms": 0, "retrieval": [], "tool": [], "error": None, "status": "running"}
+            trace = {
+                "node_id": node["id"],
+                "kind": node["kind"],
+                "input": None,
+                "output": None,
+                "elapsed_ms": 0,
+                "retrieval": [],
+                "tool": [],
+                "error": None,
+                "status": "running",
+            }
             self.steps.append(trace)
             self.current = trace
             started = time.monotonic()
@@ -619,9 +1031,14 @@ class _Runtime:
                 self.tick()
                 state = _merge(active) if active else _State(text=self.message)
                 trace["input"] = state.public()
+                self.trace_states[node["id"]] = (copy.deepcopy(state), None)
                 state, decision = await self.node(node, state, trace)
                 _json_data(state.public(), "node_output", maximum=MAX_GRAPH_BYTES)
                 trace["output"] = state.public()
+                self.trace_states[node["id"]] = (
+                    self.trace_states[node["id"]][0],
+                    copy.deepcopy(state),
+                )
                 if decision is not None:
                     decisions[node["id"]] = decision
                     trace["branch"] = str(decision).lower()
@@ -631,7 +1048,12 @@ class _Runtime:
                     outputs.append(state)
             except Exception as exc:
                 trace["error"], trace["status"] = _error(exc), "failed"
-                return {"output": "", "steps": self.steps, "status": "failed", "error": trace["error"]}
+                return {
+                    "output": "",
+                    "steps": self.steps,
+                    "status": "failed",
+                    "error": trace["error"],
+                }
             finally:
                 trace["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
         if not outputs:
@@ -641,8 +1063,12 @@ class _Runtime:
             for artifact in state.artifacts:
                 if artifact not in artifacts:
                     artifacts.append(artifact)
-        return {"output": "\n\n".join(state.text for state in outputs), "steps": self.steps,
-                "status": "completed", "artifacts": artifacts}
+        return {
+            "output": "\n\n".join(state.text for state in outputs),
+            "steps": self.steps,
+            "status": "completed",
+            "artifacts": artifacts,
+        }
 
 
 def _substitute_arguments(value: Any, state: _State) -> Any:
@@ -666,8 +1092,15 @@ def _error(exc: Exception) -> dict:
 
 
 async def execute_graph(
-    graph: dict, message: str, *, model_call: ModelCall, rag_call: RagCall,
-    tool_call: ToolCall, document_call: DocumentCall, history: list[dict[str, str]] | None = None,
+    graph: dict,
+    message: str,
+    *,
+    model_call: ModelCall,
+    rag_call: RagCall,
+    tool_call: ToolCall,
+    document_call: DocumentCall,
+    history: list[dict[str, str]] | None = None,
+    stream_model_call: ModelCall | None = None,
 ) -> dict:
     """執行一個有界限的流程，回傳 output、steps、status 與產物／錯誤。
 
@@ -677,16 +1110,30 @@ async def execute_graph(
     history 為目前訊息之前的 user/assistant 對話，由呼叫端綁定原對話身分、
     資料權限及密等；其他角色與超量歷史會在任何模組執行前明確失敗。
     """
-    runtime = _Runtime(message, model_call, rag_call, tool_call, document_call)
+    runtime = _Runtime(
+        message, model_call, rag_call, tool_call, document_call, stream_model_call
+    )
     try:
         normalized = validate_graph(graph)
         _string(message, "message", empty=False)
         runtime.history = validate_history(history)
-        return await asyncio.wait_for(runtime.run(normalized), timeout=EXECUTION_TIMEOUT_SECONDS)
+        return await asyncio.wait_for(
+            runtime.run(normalized), timeout=EXECUTION_TIMEOUT_SECONDS
+        )
     except asyncio.TimeoutError:
         error = {"type": "TIMEOUT", "message": "流程執行超過時間上限，請縮短流程或稍後重試（TIMEOUT）"}
         if runtime.current:
             runtime.current.update(error=error, status="failed")
-        return {"output": "", "steps": runtime.steps, "status": "failed", "error": error}
+        return {
+            "output": "",
+            "steps": runtime.steps,
+            "status": "failed",
+            "error": error,
+        }
     except Exception as exc:
-        return {"output": "", "steps": runtime.steps, "status": "failed", "error": _error(exc)}
+        return {
+            "output": "",
+            "steps": runtime.steps,
+            "status": "failed",
+            "error": _error(exc),
+        }
