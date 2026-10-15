@@ -41,7 +41,7 @@ def flow_stream_response(
 ):
     completion_id, created = "chatcmpl-quick-" + uuid.uuid4().hex, int(time.time())
 
-    def frame(content=None, *, finish=False):
+    def frame(content=None, *, finish=False, finish_reason="stop", usage=None):
         return (
             "data: "
             + json.dumps(
@@ -54,9 +54,10 @@ def flow_stream_response(
                         {
                             "index": 0,
                             "delta": {} if finish else {"content": content},
-                            "finish_reason": "stop" if finish else None,
+                            "finish_reason": finish_reason if finish else None,
                         }
                     ],
+                    **({"usage": usage} if finish and usage is not None else {}),
                 },
                 ensure_ascii=False,
             )
@@ -149,9 +150,18 @@ def flow_stream_response(
                 ):
                     raise ValueError("identity_changed")
                 result = await execute(db, user, on_delta)
+                from app.services.quick_execution import completion_envelope
+
+                terminal_meta = (
+                    completion_envelope(result["completion"])
+                    if result.get("completion") else None
+                )
                 if result.get("status") != "completed":
                     finalize("failed")
-                    await queue.put(("error", result.get("error"), None, None))
+                    detail = dict(result.get("error") or {})
+                    if terminal_meta is not None:
+                        detail["completion"] = terminal_meta["completion"]
+                    await queue.put(("error", detail, None, None))
                     return
                 text = _content(result)
                 if raw_parts:
@@ -171,7 +181,7 @@ def flow_stream_response(
                     for index in range(0, len(text), 64):
                         await deliver(text[index : index + 64])
                 finalize("completed")
-                await queue.put(("finish", None, None, None))
+                await queue.put(("finish", terminal_meta, None, None))
             except asyncio.CancelledError:
                 recover("cancelled")
                 raise
@@ -233,6 +243,13 @@ def flow_stream_response(
 
                     code = "FLOW_STREAM_FAILED"
                     message = "助手回答未能完成，請重新提問或通知管理員（FLOW_STREAM_FAILED）"
+                    if isinstance(text, dict) and text.get("completion") is not None:
+                        from app.services.quick_execution import completion_envelope
+
+                        yield "event: anila.meta\ndata: " + json.dumps(
+                            completion_envelope(text["completion"]),
+                            ensure_ascii=False, separators=(",", ":"),
+                        ) + "\n\n"
                     if (
                         isinstance(text, dict)
                         and isinstance(text.get("type"), str)
@@ -244,7 +261,16 @@ def flow_stream_response(
                     yield "data: [DONE]\n\n"
                     break
                 if kind == "finish":
-                    yield frame(finish=True)
+                    if text is not None:
+                        yield "event: anila.meta\ndata: " + json.dumps(
+                            text, ensure_ascii=False, separators=(",", ":")
+                        ) + "\n\n"
+                    yield frame(
+                        finish=True,
+                        finish_reason=(text["finish_reason"] or "stop")
+                        if text is not None else "stop",
+                        usage=text["usage"] if text is not None else None,
+                    )
                     yield "data: [DONE]\n\n"
                     break
                 try:

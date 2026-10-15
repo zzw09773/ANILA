@@ -330,6 +330,13 @@ async def test_refresh_uses_summary_role_and_skips_when_unset(db, monkeypatch, c
 
     import httpx
 
+    import socket
+
+    def resolve_summary(host, port, *args, **kwargs):
+        assert host == "summary.test"
+        raise socket.gaierror(socket.EAI_NONAME, "Synthetic summary host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_summary)
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "summary.test")
     monkeypatch.setattr(httpx, "AsyncClient", _Client)

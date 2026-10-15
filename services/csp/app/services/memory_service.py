@@ -91,6 +91,7 @@ from app.models.user_memory import (
 )
 from app.services.memory_purge import purge_conversation_memory
 from app.services import zh_normalize_service
+from app.services.completion_metadata import CompletionMetadataError, normalize_completion
 from app.services.platform_embedding import resolve_platform_embedding
 
 logger = logging.getLogger(__name__)
@@ -1462,8 +1463,24 @@ def turn_is_extractable(
     if not (user_text or "").strip() or not (assistant_text or "").strip():
         return False
     meta = assistant_metadata if isinstance(assistant_metadata, dict) else {}
-    state = (meta.get("anila_stream") or {}).get("state")
+    envelope = meta.get("anila_stream")
+    state = envelope.get("state") if isinstance(envelope, dict) else None
+    if "response_stream_state" in meta:
+        state = meta["response_stream_state"]
+        if state != "complete":
+            return False
     if state in _SKIP_STREAM_STATES:
+        return False
+    if "completion" in meta:
+        try:
+            completion = normalize_completion({"text": "", "completion": meta["completion"]})
+        except CompletionMetadataError:
+            return False
+        if not completion["completion"]["answer_complete"]:
+            return False
+    elif meta.get("finish_reason") not in (None, "stop"):
+        return False
+    if meta.get("answer_complete") is False:
         return False
     if meta.get("rescue"):
         return False

@@ -104,6 +104,41 @@ def _assistant_text(result: dict) -> str:
     return content if isinstance(content, str) else ""
 
 
+def _completion_result(result: dict, *, return_metadata: bool) -> str | dict:
+    from app.services.completion_metadata import (
+        CompletionMetadataError, completion_metadata,
+    )
+
+    text = _assistant_text(result).strip()
+    if not return_metadata:
+        if not text:
+            raise InternalCompletionError(None)
+        return text
+    choices = result.get("choices")
+    if (
+        type(choices) is not list
+        or not choices
+        or type(choices[0]) is not dict
+        or choices[0].get("index", 0) != 0
+    ):
+        raise InternalCompletionError(502)
+    meta = result.get("anila_meta")
+    usage = meta.get("usage") if type(meta) is dict else None
+    if usage is None:
+        usage = result.get("usage")
+    try:
+        completion = completion_metadata(
+            finish_reason=choices[0].get("finish_reason"),
+            terminal_source="response",
+            usage=usage,
+        )
+    except CompletionMetadataError as exc:
+        raise InternalCompletionError(502) from exc
+    if not text and completion["answer_complete"]:
+        raise InternalCompletionError(None)
+    return {"text": text, "completion": completion}
+
+
 async def complete_chat(
     db: Session,
     model,
@@ -118,7 +153,8 @@ async def complete_chat(
     conversation_id: str | None = None,
     caller_agent_id: int | None = None,
     api_key_id: int | None = None,
-) -> str:
+    return_metadata: bool = False,
+) -> str | dict:
     """對一列模型做一次非串流 chat completion，回傳助理內文。
 
     呼叫端要在進這裡之前讀完資料庫。這個函式會 ``commit`` 把連線還回池子，
@@ -134,6 +170,8 @@ async def complete_chat(
         sync_model_deadline,
     )
 
+    if type(return_metadata) is not bool:
+        raise InternalCompletionError(400)
     snapshot = _snapshot(model)
     tuning = resolve_proxy_tuning(db)
     # 逾時在還握著連線時解析；commit 之後不再查 platform_settings。
@@ -189,10 +227,7 @@ async def complete_chat(
     except HTTPException as exc:
         code, message = _quota_fields(exc)
         raise InternalCompletionError(exc.status_code, code=code, message=message) from exc
-    text = _assistant_text(result).strip()
-    if not text:
-        raise InternalCompletionError(None)
-    return text
+    return _completion_result(result, return_metadata=return_metadata)
 
 
 async def complete_chat_prepared(

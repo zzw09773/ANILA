@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +35,12 @@ def _allow_summary_host(monkeypatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "", raising=False)
+
+    def resolve_summary(host, port, *args, **kwargs):
+        assert host == "summary.test"
+        raise socket.gaierror(socket.EAI_NONAME, "Synthetic summary host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_summary)
 
 
 def _summary_model(db) -> ModelRegistry:

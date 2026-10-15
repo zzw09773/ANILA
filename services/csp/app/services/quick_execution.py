@@ -31,6 +31,7 @@ from app.services.quick_builder import (
     validate_sources,
     version_for,
 )
+from app.services.completion_metadata import normalize_completion
 
 _SENSITIVE_KEYS = re.compile(
     r"password|passwd|secret|token|authorization|credential|cookie|api[_-]?key|密碼|憑證|身分證|身份證|員工編號|employee[_-]?id",
@@ -567,6 +568,7 @@ async def run(
             on_behalf_of_user=True,
             caller_agent_id=captured_agent_id,
             api_key_id=api_key_id,
+            return_metadata=True,
         )
 
     async def stream_model_call(messages, temperature=0.2):
@@ -595,6 +597,7 @@ async def run(
             api_key_id=api_key_id,
             on_delta=lambda text: on_delta(text, before_send=authorize_delivery),
             before_chunk=authorize_delivery,
+            return_metadata=True,
         )
 
     async def rag_call(collection_ids, query, top_k=5, *, mode="hybrid"):
@@ -853,7 +856,7 @@ def _finish(db, user, assistant_id, run_id, result, artifacts, execution_context
             )
     stored.status = result["status"]
     stored.result = {
-        **mask(result),
+        **_mask_flow_result(result),
         "artifacts": artifacts,
         "execution_context": execution_context,
     }
@@ -863,10 +866,42 @@ def _finish(db, user, assistant_id, run_id, result, artifacts, execution_context
     db.commit()
 
 
+def _mask_flow_result(result):
+    safe = mask(result)
+
+    def project(original, destination):
+        if "completion" in original:
+            destination["completion"] = normalize_completion(
+                {"text": "", "completion": original["completion"]}
+            )["completion"]
+        if "model_completions" in original:
+            destination["model_completions"] = [
+                normalize_completion({"text": "", "completion": item})["completion"]
+                for item in original["model_completions"]
+            ]
+
+    # Only validated server completion records bypass the generic token-key mask.
+    # Arbitrary tool, retrieval and model content retain the existing mask.
+    project(result, safe)
+    for original, destination in zip(result.get("steps", []), safe.get("steps", [])):
+        project(original, destination)
+    return safe
+
+
+def completion_envelope(completion):
+    metadata = normalize_completion({"text": "", "completion": completion})["completion"]
+    return {
+        "completion": metadata,
+        "finish_reason": metadata["finish_reason"],
+        "usage": metadata["usage"],
+        "usage_complete": metadata["usage_complete"],
+    }
+
+
 def public_result(run_id, result, artifacts):
     return {
         "id": run_id,
-        **mask(
+        **_mask_flow_result(
             {key: value for key, value in result.items() if key != "execution_context"}
         ),
         "artifacts": [
@@ -975,6 +1010,17 @@ async def agent_response(
         raise
     finalize("completed" if result["status"] == "completed" else "failed")
     if result["status"] != "completed":
+        if result.get("completion"):
+            detail = result.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "type": detail.get("type", "FLOW_FAILED"),
+                    "message": detail.get("message", "助手流程未能完成（FLOW_FAILED）"),
+                    "answer_complete": False,
+                    "completion": completion_envelope(result["completion"])["completion"],
+                },
+            )
         fail(
             502,
             "FLOW_FAILED",
@@ -986,6 +1032,9 @@ async def agent_response(
             f"[{a['filename']}]({a['download_url']})" for a in result["artifacts"]
         )
     completion_id, created = "chatcmpl-quick-" + uuid.uuid4().hex, int(time.time())
+    terminal_meta = (
+        completion_envelope(result["completion"]) if result.get("completion") else None
+    )
     return JSONResponse(
         {
             "id": completion_id,
@@ -996,8 +1045,11 @@ async def agent_response(
                 {
                     "index": 0,
                     "message": {"role": "assistant", "content": text},
-                    "finish_reason": "stop",
+                    "finish_reason": (terminal_meta["finish_reason"] or "stop")
+                    if terminal_meta else "stop",
                 }
             ],
+            **({"anila_meta": terminal_meta, "usage": terminal_meta["usage"]}
+               if terminal_meta else {}),
         }
     )

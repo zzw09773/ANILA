@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.services.completion_metadata import (
+    CompletionMetadataError, completion_metadata,
+)
 from app.services.internal_llm import InternalCompletionError, _quota_fields, _snapshot
 from app.services.proxy.sse import _parse_sse_block
 from app.services.quick_flow import MAX_TEXT_CHARS
@@ -27,14 +30,18 @@ async def stream_chat(
     api_key_id: int | None = None,
     on_delta: Callable[[str], Awaitable[None]],
     before_chunk: Callable[[], object],
-) -> str:
+    return_metadata: bool = False,
+) -> str | dict:
     """僅供已確認直接通往輸出的模型；回呼須同步重驗當下執行授權。"""
     from app.services.proxy.headers import resolve_model_gateway_key
     from app.services.proxy.service import STREAM_FINISH_REASONS, proxy_stream, resolve_proxy_tuning
     from app.services.proxy.urls import join_upstream_path
     from app.services.quota_service import enforce_call_quota
 
-    if type(user_id) is not int or user_id <= 0 or not callable(before_chunk):
+    if (
+        type(user_id) is not int or user_id <= 0 or not callable(before_chunk)
+        or type(return_metadata) is not bool
+    ):
         raise InternalCompletionError(403)
     before_chunk()
     snapshot = _snapshot(model)
@@ -90,7 +97,17 @@ async def stream_chat(
     content_chars = 0
     done = False
     finish_seen = False
+    finish_reason = None
+    usage = {}
     buf = ""
+
+    def collect_usage(value):
+        if not return_metadata or value is None:
+            return
+        try:
+            usage.update(completion_metadata(usage=value)["usage"])
+        except CompletionMetadataError as exc:
+            raise InternalCompletionError(502) from exc
 
     async def emit(text: str):
         if text:
@@ -99,16 +116,25 @@ async def stream_chat(
             parts.append(text)
 
     async def process(block: str):
-        nonlocal content_chars, done, finish_seen
+        nonlocal content_chars, done, finish_seen, finish_reason
         event, data = _parse_sse_block(block)
         if event in ("anila.error", "error"):
             raise InternalCompletionError(502)
+        if event == "anila.meta" and return_metadata and data:
+            try:
+                meta = json.loads(data)
+            except (ValueError, RecursionError) as exc:
+                raise InternalCompletionError(502) from exc
+            if type(meta) is not dict:
+                raise InternalCompletionError(502)
+            collect_usage(meta.get("usage"))
+            return
         if not data or event not in (None, "message"):
             return
         if data == "[DONE]":
             done = True
             return
-        if done:
+        if done and not return_metadata:
             return
         try:
             item = json.loads(data)
@@ -116,6 +142,7 @@ async def stream_chat(
             raise InternalCompletionError(502) from exc
         if not isinstance(item, dict) or "error" in item:
             raise InternalCompletionError(502)
+        collect_usage(item.get("usage"))
         choices = item.get("choices", [])
         if not choices:
             return
@@ -128,7 +155,12 @@ async def stream_chat(
         if reason is not None:
             if not isinstance(reason, str) or reason not in STREAM_FINISH_REASONS:
                 raise InternalCompletionError(502)
+            if finish_reason is not None and reason != finish_reason:
+                raise InternalCompletionError(502)
+            finish_reason = reason
             finish_seen = True
+        if done:
+            return
         delta = choice.get("delta", {})
         if not isinstance(delta, dict):
             raise InternalCompletionError(502)
@@ -180,6 +212,14 @@ async def stream_chat(
             if not failed:
                 raise InternalCompletionError(502) from exc
     text = "".join(parts)
+    if return_metadata:
+        completion = completion_metadata(
+            finish_reason=finish_reason,
+            terminal_source="finish_reason" if finish_seen else "done",
+            usage=usage,
+        )
+        if text.strip() or not completion["answer_complete"]:
+            return {"text": text, "completion": completion}
     if not text.strip():
         raise InternalCompletionError(None)
     return text
