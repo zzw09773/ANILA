@@ -588,7 +588,11 @@ def create_conversation(
     from app.services.memory_service import flush_other_conversations
 
     background_tasks.add_task(flush_other_conversations, current_user.id, conv.id)
-    return _conversation_out(db, current_user, conv)
+    result = _conversation_out(db, current_user, conv)
+    # 背景摘要使用獨立 Session；請求依賴的清理可能晚於背景工作。
+    # DTO 已完整載入，先結束序列化讀取的交易，讓背景工作能取得連線。
+    db.commit()
+    return result
 
 
 class RouterModelChoiceIn(BaseModel):
@@ -934,9 +938,11 @@ def get_conversation(
         and conv.user_id != current_user.id
     ):
         effective_view = "active"
-    return _conversation_detail(
+    result = _conversation_detail(
         db, conv, view=effective_view, user=current_user,
     )
+    db.commit()
+    return result
 
 
 @router.put("/{conv_id}", response_model=ConversationOut)
@@ -1028,7 +1034,7 @@ def start_turn(
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return TurnHeadOut(
+    result = TurnHeadOut(
         user=_message_out(
             user_msg, groups.get(user_msg.parent_id, [user_msg.id]), user=current_user,
         ),
@@ -1046,6 +1052,8 @@ def start_turn(
             )
         ),
     )
+    db.commit()
+    return result
 
 
 @router.post(
@@ -1216,7 +1224,9 @@ def update_message(
     )
     edges = mtree.load_edges(db, conv_id)
     groups = mtree.sibling_groups(edges)
-    return _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
+    result = _message_out(msg, groups.get(msg.parent_id, [msg.id]), user=current_user)
+    db.commit()
+    return result
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────

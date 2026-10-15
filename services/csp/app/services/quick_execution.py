@@ -572,6 +572,11 @@ async def run(
     async def stream_model_call(messages, temperature=0.2):
         from app.services.quick_model_stream import stream_chat
 
+        def authorize_delivery():
+            model_context([])
+            # 串流背壓等待期間，其他請求仍須能取得連線。
+            db.commit()
+
         current, model, messages = model_context(messages)
         if model.supports_streaming is False:
             return await model_call(messages, temperature)
@@ -588,8 +593,8 @@ async def run(
             department_id=current.department_id,
             caller_agent_id=captured_agent_id,
             api_key_id=api_key_id,
-            on_delta=lambda text: on_delta(text, before_send=lambda: model_context([])),
-            before_chunk=lambda: model_context([]),
+            on_delta=lambda text: on_delta(text, before_send=authorize_delivery),
+            before_chunk=authorize_delivery,
         )
 
     async def rag_call(collection_ids, query, top_k=5, *, mode="hybrid"):
@@ -731,9 +736,13 @@ async def run(
             "download_url": f"/api/quick-builder/runs/{run_id}/artifacts/{len(artifacts) - 1}",
         }
 
+    def authorize_final_delivery():
+        reauthorize()
+        db.commit()
+
     try:
         if on_delta is not None:
-            await on_delta("", before_send=reauthorize)
+            await on_delta("", before_send=authorize_final_delivery)
         result = await asyncio.wait_for(
             execute_graph(
                 payload["graph"],
@@ -946,7 +955,7 @@ async def agent_response(
     if body.get("stream"):
         from app.services.quick_stream_response import flow_stream_response
 
-        return flow_stream_response(
+        response = flow_stream_response(
             bind=db.get_bind(),
             user_id=user.id,
             token_version=user.token_version,
@@ -956,6 +965,9 @@ async def agent_response(
             execute=execute,
             finalize=finalize,
         )
+        # 身分與版本已捕成值；串流 Session 接手前先歸還請求連線。
+        db.commit()
+        return response
     try:
         result = await execute(db, user)
     except BaseException:
@@ -979,7 +991,7 @@ async def agent_response(
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": agent.name,
+            "model": agent_name,
             "choices": [
                 {
                     "index": 0,

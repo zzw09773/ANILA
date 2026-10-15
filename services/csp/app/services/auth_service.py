@@ -166,7 +166,12 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="未登入或權杖已過期",
         )
-    return resolve_presented_user(token, db)
+    user = resolve_presented_user(token, db)
+    # 同步驗證依賴先歸還連線，事件迴圈才能派發後續端點。
+    # Session 使用 expire_on_commit=False，已驗證身分的欄位仍可直接讀取。
+    if db.in_transaction():
+        db.commit()
+    return user
 
 
 def resolve_presented_user(token: str, db: Session) -> User:

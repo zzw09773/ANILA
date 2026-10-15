@@ -39,6 +39,7 @@ backends serve different tenancy models — see
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -2485,20 +2486,26 @@ async def flush_idle_conversations() -> None:
         await refresh_conversation(conversation_id)
 
 
+def _other_conversations_due(user_id: int, exclude_conversation_id: int) -> list[int]:
+    """在工作執行緒內完成 Session 生命週期，只回傳識別碼。"""
+    db = SessionLocal()
+    try:
+        return conversations_due(
+            db,
+            now=datetime.now(timezone.utc),
+            user_id=user_id,
+            exclude_conversation_id=exclude_conversation_id,
+            force=True,
+        )
+    finally:
+        db.close()
+
+
 async def flush_other_conversations(user_id: int, exclude_conversation_id: int) -> None:
     """使用者另開對話時，把其餘還沒整理的對話補上摘要。"""
     try:
-        db = SessionLocal()
-        try:
-            ids = conversations_due(
-                db,
-                now=datetime.now(timezone.utc),
-                user_id=user_id,
-                exclude_conversation_id=exclude_conversation_id,
-                force=True,
-            )
-        finally:
-            db.close()
+        # 同步連線池等待不可占住事件迴圈，請求處理才能繼續歸還連線。
+        ids = await asyncio.to_thread(_other_conversations_due, user_id, exclude_conversation_id)
         for conversation_id in ids:
             await refresh_conversation(conversation_id)
     except Exception:
