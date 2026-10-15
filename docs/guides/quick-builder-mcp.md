@@ -36,7 +36,7 @@
 
 核准內容：`{"approved_tool_ids":[21,22]}`。至少選一個工具；清空服務的可用工具請使用停用。所有請求拒絕未定義欄位，不能提供 `user_id` 指定操作者。
 
-服務回傳 `id/name/description/endpoint_url/department_id/is_public/status/registered_by_user_id/approved_by_user_id/approved_at/created_at/updated_at/tools`。狀態為 `pending/approved/disabled`。首次擷取失敗另帶 `discovery_error`，其中包含 `error_type/message`。
+服務回傳 `id/name/description/endpoint_url/department_id/is_public/status/governance_revision/registered_by_user_id/approved_by_user_id/approved_at/created_at/updated_at/tools`。狀態為 `pending/approved/disabled`。治理操作以服務版本號與資料庫原子比較更新排序；擷取或核准期間若另有人停用、重新擷取或核准，較舊的結果回覆 `409 mcp_governance_changed`，不會覆蓋較新操作。首次擷取失敗另帶 `discovery_error`，其中包含 `error_type/message`。
 
 每個工具包含 `id/service_id/name/description/input_schema/annotations/schema_fingerprint/fingerprint/approved_fingerprint/is_read_only/is_approved`。目錄另附 `service_name`；`fingerprint` 等同 `schema_fingerprint`。端點只在管理員服務清單提供。
 
