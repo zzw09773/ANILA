@@ -1,6 +1,6 @@
 // Agent picker plus, when the router is selected, its model and thinking pickers.
-// Rendered in the top bar or above the composer depending on the
-// `agentSwitcherPosition` tweak; both places render this one component.
+// Rendered above the composer; thinking here sets the conversation tier,
+// separate from the one-shot deep-thinking button beside the input.
 
 import React from "react";
 import { AgentSelector } from "../chat.jsx";
@@ -35,7 +35,7 @@ export function AgentModelControls({
             />
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>思考</span>
+            <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>對話思考</span>
             <ThinkingPicker
               value={thinkingTier}
               model={selectedThinkingModel}

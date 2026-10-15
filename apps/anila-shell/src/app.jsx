@@ -2779,11 +2779,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     setDeepThinkNext(next);
   }
 
-  function consumeOneShotDeep() {
+  useEffect(() => {
+    if (selectedAgentId !== ROUTER_AGENT.id) setDeepThinkNextFlag(false);
+  }, [selectedAgentId]);
+
+  function consumeOneShotDeep(target) {
     if (!deepThinkNextRef.current) return false;
     deepThinkNextRef.current = false;
     setDeepThinkNext(false);
-    return true;
+    return target === ROUTER_AGENT.id;
   }
 
   // ---- send single ----
@@ -2902,7 +2906,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         return failSend();
       }
     }
-    const oneShotDeep = consumeOneShotDeep();
+    const oneShotDeep = consumeOneShotDeep(effectiveTarget);
     const userMsg = {
       id: makeId("u"),
       role: "user",
@@ -3667,7 +3671,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     const steeredUserText = steer
       ? `${prevUser.text}\n\n（重新回答時請依此調整：${steer}）`
       : prevUser.text;
-    const oneShotDeep = consumeOneShotDeep() || shouldReplayOneShotDeep(assistantMsg.thinkingApplied);
+    const oneShotDeep = consumeOneShotDeep(effectiveTarget) || (effectiveTarget === ROUTER_AGENT.id && shouldReplayOneShotDeep(assistantMsg.thinkingApplied));
     const payload = {
       model: effectiveTarget,
       ...(effectiveTarget === ROUTER_AGENT.id && selectedRouterModelName ? { router_model: selectedRouterModelName } : {}),
@@ -3953,7 +3957,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return false;
     }
     if (meta?.answerDelivery === "background") {
-      setRuntimeError("比較模式請改用快速短回答。");
+      setRuntimeError("比較模式不能在背景完成。請改回一般送出。");
       return false;
     }
     const skillIds = cleanSkillIds(Array.isArray(meta.skillIds) ? meta.skillIds : [meta.skillId]);
@@ -4274,7 +4278,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const showForensicWatermark = Boolean(pageWatermarkLevel && pageWatermarkReader);
 
   // ---- render: classified watermark + top bar + messages + composer ----
-  // Same element in the top bar or above the composer (agentSwitcherPosition).
+  // Conversation controls stay above the composer, separate from one-shot actions.
   const agentModelControls = (
     <AgentModelControls
       agents={agents}
@@ -4395,10 +4399,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           borderBottom: "1px solid var(--border)",
           background: "var(--bg)",
         }}>
-          {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
-            agentModelControls
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
               {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
               <span
                 style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
@@ -4409,7 +4410,6 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                   : selectedConv?.title || "新對話"}
               </span>
             </div>
-          )}
 
           <div style={{ flex: 1 }} />
 
@@ -4615,7 +4615,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                 />
 
                 <ComposerDock
-                  agentControls={tweaks.agentSwitcherPosition === "bottom" ? agentModelControls : null}
+                  agentControls={agentModelControls}
                   encryptionRequired={activeEncryptionRequired}
                   modelNotice={modelNotice}
                   isRouter={selectedAgentId === ROUTER_AGENT.id}

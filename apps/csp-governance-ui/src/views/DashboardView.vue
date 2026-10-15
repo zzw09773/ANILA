@@ -34,10 +34,13 @@
         <p class="feedback is-err">! {{ backupError }}</p>
         <TermButton size="xs" variant="ghost" label="重試" @click="fetchBackupStatus" />
       </div>
-      <div v-else class="cutover__stats">
-        <TermStat label="時間" :value="backupCard.timeLabel" format="raw" />
-        <TermStat label="結果" :value="backupCard.resultLabel" format="raw" :tone="backupCard.tone === 'warn' ? 'warn' : 'default'" />
-        <TermStat label="大小" :value="backupCard.sizeLabel" format="raw" />
+      <div v-else class="backup-line">
+        <span class="backup-line__k">時間</span>
+        <span class="backup-line__v tnum">{{ backupCard.timeLabel }}</span>
+        <span class="backup-line__k">結果</span>
+        <span class="backup-line__v" :class="backupCard.tone === 'warn' ? 'is-warn' : ''">{{ backupCard.resultLabel }}</span>
+        <span class="backup-line__k">大小</span>
+        <span class="backup-line__v tnum">{{ backupCard.sizeLabel }}</span>
       </div>
     </TermBox>
 
@@ -88,7 +91,7 @@
     <section class="kpi-grid">
       <TermStat label="24h · 請求數" :value="kpiValue(summary?.total_requests)" :format="kpiFormat" tone="accent" />
       <TermStat label="24h · Token"   :value="kpiValue(summary?.total_tokens)" :format="kpiFormat" />
-      <TermStat label="健康模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="近 24 小時有實際呼叫的模型數，不是健康檢查通過數" />
+      <TermStat label="近 24h 活躍模型" :value="kpiValue(summary?.active_models)" :format="kpiFormat" hint="此區間內有實際呼叫的模型數" />
       <TermStat label="近 24h 有呼叫的金鑰"  :value="kpiValue(summary?.active_api_keys)" :format="kpiFormat" hint="區間內實際發出請求的金鑰" />
     </section>
 
@@ -539,6 +542,22 @@ onMounted(refresh)
 @media (max-width: 700px)  { .links { grid-template-columns: 1fr; } }
 
 /* Sprint 8 X / Phase H — cutover widget */
+.backup-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gap-1) var(--gap-2);
+  font-size: var(--t-sm);
+}
+.backup-line__k {
+  color: var(--c-fg-3);
+  font-size: var(--t-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+}
+.backup-line__k:not(:first-child) { margin-left: var(--gap-3); }
+.backup-line__v { color: var(--c-fg-1); }
+.backup-line__v.is-warn { color: var(--c-warn); }
 .cutover { display: flex; flex-direction: column; gap: 10px; }
 .cutover__stats { display: flex; gap: 12px; flex-wrap: wrap; }
 .cutover__last { margin: 0; font-size: var(--t-2xs); color: var(--c-fg-2); }

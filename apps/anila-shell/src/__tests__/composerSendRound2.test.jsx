@@ -159,7 +159,7 @@ describe("品牌回到首頁", () => {
     fireEvent.change(box, { target: { value: "寫到一半先回首頁" } });
     expect(window.sessionStorage.getItem("anila-draft:55")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
+    fireEvent.click(screen.getByRole("button", { name: "帳號選單" }));
     fireEvent.click(await screen.findByText("用量"));
     await screen.findByRole("dialog", { name: "我的用量" });
 

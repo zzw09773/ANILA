@@ -22,7 +22,11 @@ import {
   formatCheckedAt,
   healthTone,
   probeReasonLabel,
+  registryDetailText,
+  registryEntryReachable,
+  registryHealthEntries,
   registryHealthLine,
+  registryTone,
   summarizeHealthOverview,
   worstStatus,
 } from '../src/utils/healthOverview.js'
@@ -174,6 +178,98 @@ test('沒有登錄模型時跟模型頁同一句話，不把 0/0 說成健康', 
   assert.doesNotMatch(registryHealthLine(null, null), /尚未註冊/)
 })
 
+test('Agent 0/0 也要講尚未註冊，不能說健康(UX-09)', () => {
+  assert.equal(registryHealthLine(undefined, { total: 0, healthy: 0 }), '尚未註冊 Agent')
+  assert.equal(
+    registryHealthLine({ total: 0, healthy: 0 }, { total: 0, healthy: 0 }),
+    '尚未註冊模型 · 尚未註冊 Agent',
+  )
+})
+
+test('registryTone：0/0 是 idle,未確認黃,壞紅,全健康綠;已停用不算待確認', () => {
+  assert.equal(registryTone({ total: 0, healthy: 0 }), 'idle')
+  assert.equal(registryTone(null), 'idle')
+  assert.equal(registryTone({ total: 2, healthy: 2 }), 'ok')
+  assert.equal(registryTone({ total: 4, healthy: 4 }), 'ok')
+  assert.equal(registryTone({ total: 8, healthy: 4 }), 'warn')
+  assert.equal(registryTone({ total: 8, healthy: 4, degraded: 1 }), 'warn')
+  assert.equal(registryTone({ total: 8, healthy: 4, unknown: 1 }), 'warn')
+  assert.equal(registryTone({ total: 8, healthy: 4, unhealthy: 1 }), 'danger')
+  // 已停用是刻意的,不應把健康的平台拖成待確認。
+  assert.equal(registryTone({ total: 4, healthy: 3, disabled: 1 }), 'ok')
+  // 但真的健康數不足(非因停用)仍要黃。
+  assert.equal(registryTone({ total: 4, healthy: 2, disabled: 1 }), 'warn')
+  // 全部停用 → idle,不要整批顯綠。
+  assert.equal(registryTone({ total: 3, healthy: 0, disabled: 3 }), 'idle')
+})
+
+test('registryEntryReachable：deputy 進不去的入口要藏連結', () => {
+  const modelsEntry = { key: 'models', access: 'any', to: '/models' }
+  const agentsEntry = { key: 'agents', access: 'developer', to: '/developer/agents' }
+
+  const admin = { isDeveloper: true, isDeputy: false, isAdmin: true }
+  const dev = { isDeveloper: true, isDeputy: false, isAdmin: false }
+  const deputy = { isDeveloper: false, isDeputy: true, isAdmin: false }
+
+  // admin / developer:兩者皆可達。
+  assert.equal(registryEntryReachable(modelsEntry, admin), true)
+  assert.equal(registryEntryReachable(agentsEntry, admin), true)
+  assert.equal(registryEntryReachable(modelsEntry, dev), true)
+
+  // deputy:/models 不在 deputy 白名單、/developer/agents 也要 developer → 皆不可達。
+  assert.equal(registryEntryReachable(modelsEntry, deputy), false)
+  assert.equal(registryEntryReachable(agentsEntry, deputy), false)
+
+  // 一般使用者:/models 可達、/developer/agents 不可達。
+  assert.equal(registryEntryReachable(modelsEntry, { isDeveloper: false, isDeputy: false }), true)
+  assert.equal(registryEntryReachable(agentsEntry, { isDeveloper: false, isDeputy: false }), false)
+
+  // 未知 entry/缺 access 一律視為可達(不亂藏)。
+  assert.equal(registryEntryReachable({}, {}), true)
+  assert.equal(registryEntryReachable(null, {}), true)
+})
+
+test('registryDetailText 只列非零項,已停用講「已停用」不是待確認', () => {
+  assert.equal(registryDetailText({}), '')
+  assert.equal(registryDetailText(null), '')
+  assert.equal(registryDetailText({ unknown: 2 }), '2 未探測')
+  assert.equal(registryDetailText({ disabled: 1 }), '1 已停用')
+  assert.equal(registryDetailText({ unhealthy: 3 }), '3 異常')
+  assert.equal(registryDetailText({ unknown: 1, disabled: 2, unhealthy: 1 }), '1 未探測 · 2 已停用 · 1 異常')
+})
+
+test('registryHealthEntries 帶著 tone、明細與對應頁連結,0/0 不當健康', () => {
+  const healthy = registryHealthEntries({ total: 4, healthy: 4 }, null)
+  assert.equal(healthy.length, 1)
+  assert.equal(healthy[0].text, '模型 4/4 健康')
+  assert.equal(healthy[0].tone, 'ok')
+  assert.equal(healthy[0].to, '/models')
+
+  const empty = registryHealthEntries({ total: 0, healthy: 0 }, { total: 0, healthy: 0 })
+  assert.deepEqual(empty.map((e) => e.tone), ['idle', 'idle'])
+  assert.deepEqual(empty.map((e) => e.text), ['尚未註冊模型', '尚未註冊 Agent'])
+
+  const partial = registryHealthEntries({ total: 8, healthy: 4 }, null)
+  assert.equal(partial[0].tone, 'warn')
+
+  // Agent 連自己既有的註冊頁,不是模型頁(收尾修正)。
+  const agents = registryHealthEntries(null, { total: 1, healthy: 1 })
+  assert.equal(agents[0].to, '/developer/agents')
+  assert.equal(agents[0].linkLabel, '檢視 Agent')
+  assert.equal(agents[0].access, 'developer')
+  assert.equal(agents[0].detail, '')
+
+  // 模型頁無 tier 限制,標成 any。
+  const models = registryHealthEntries({ total: 1, healthy: 1 }, null)
+  assert.equal(models[0].access, 'any')
+
+  const withDetail = registryHealthEntries(null, { total: 8, healthy: 4, unknown: 1, disabled: 1, unhealthy: 1 })
+  assert.equal(withDetail[0].detail, '1 未探測 · 1 已停用 · 1 異常')
+  assert.equal(withDetail[0].tone, 'danger')
+
+  assert.deepEqual(registryHealthEntries(null, null), [])
+})
+
 // ── 原始碼層護欄:呼叫端真的掛上去了 ──────────────────────────────────────
 
 test('首頁掛了服務健康卡', () => {
@@ -189,6 +285,11 @@ test('健康總覽卡用共用 helper,不自己重寫五態判斷', () => {
   const source = stripComments(readSource('components/dashboard/ServiceHealthCard.vue'))
   assert.ok(source.includes('summarizeHealthOverview'), '卡片應走共用 helper')
   assert.ok(source.includes('registryHealthLine'), '模型計數要走共用那一行')
+  assert.ok(source.includes('registryHealthEntries'), '模型／Agent 要獨立呈現')
+  assert.ok(source.includes('registryEntryReachable'), '不可達的連結要隱藏')
+  assert.ok(source.includes('isDeveloper'), '可達性要沿用既有 auth tier')
+  assert.ok(source.includes('isDeputy'), 'deputy 白名單也要納入可達性')
+  assert.ok(source.includes('registry-link') || source.includes('router-link'), '模型摘要要有檢視入口')
   assert.doesNotMatch(source, /模型 \$\{models\.healthy\}/)
   assert.ok(source.includes('最後檢查'), '卡片必須顯示最後檢查時間')
 })

@@ -9,6 +9,7 @@ import { Composer } from "../chat.jsx";
 
 beforeEach(() => {
   sessionStorage.clear();
+  localStorage.clear();
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => ({}) })));
 });
 
@@ -78,6 +79,7 @@ describe("翻譯雙模式", () => {
     expect(screen.queryByRole("button", { name: "翻譯" })).toBeNull();
     unmount();
     render(<ShellNav user={{ role: "user" }} />);
+    fireEvent.click(screen.getByRole("button", { name: /增益集/ }));
     const entry = screen.getByRole("button", { name: /^翻譯/ });
     expect(entry.textContent).toContain("快速閱讀：給自己看懂");
     expect(entry.textContent).toContain("對外使用：要寄出的譯文");

@@ -21,24 +21,26 @@ export function ComposerDock({
   return (
     <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
       <div style={{ maxWidth: 760, margin: "0 auto" }}>
-        {agentControls && (
-          <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        {agentControls ? (
+          <div role="group" aria-label="對話控制" style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
             {agentControls}
-            {encryptionRequired && (
-              <span title="此 agent 為列管模型（受控存取）" style={{
-                display: "inline-flex", alignItems: "center", gap: 3,
-                padding: "1px 7px",
-                background: "oklch(0.95 0.02 25 / 0.4)",
-                border: "1px solid var(--danger)",
-                borderRadius: 999,
-                fontSize: 11, color: "var(--danger)",
-                fontFamily: "var(--font-mono)",
-              }}>
-                <IconLock size={10} /> 列管模型
-              </span>
-            )}
           </div>
-        )}
+        ) : null}
+        {encryptionRequired ? (
+          <div style={{ marginBottom: 8 }}>
+            <span title="此 agent 為列管模型（受控存取）" style={{
+              display: "inline-flex", alignItems: "center", gap: 3,
+              padding: "1px 7px",
+              background: "oklch(0.95 0.02 25 / 0.4)",
+              border: "1px solid var(--danger)",
+              borderRadius: 999,
+              fontSize: 11, color: "var(--danger)",
+              fontFamily: "var(--font-mono)",
+            }}>
+              <IconLock size={10} /> 列管模型
+            </span>
+          </div>
+        ) : null}
         {modelNotice ? (
           <div
             role="alert"
@@ -68,7 +70,8 @@ export function ComposerDock({
           onChangeRedactionMode={onChangeRedactionMode}
           conversationId={conversationId}
           presetPrompts={presetPrompts}
-          deepThinkNext={deepThinkNext}
+          isRouter={isRouter}
+          deepThinkNext={isRouter && deepThinkNext}
           onDeepThinkNextChange={onDeepThinkNextChange}
           streaming={streaming}
           onStop={onStop}

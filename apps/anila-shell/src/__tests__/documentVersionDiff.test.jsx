@@ -1,5 +1,5 @@
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { ShellNav } from "../shellNav.jsx";
@@ -99,14 +99,15 @@ describe("文件比對面板", () => {
     );
     const before = new File(["a"], "old.docx");
     const after = new File(["b"], "new.docx");
-    fireEvent.change(screen.getByLabelText("上一版"), { target: { files: [before] } });
-    fireEvent.change(screen.getByLabelText("這一版"), { target: { files: [after] } });
-    fireEvent.click(screen.getByRole("button", { name: "比對" }));
+    expect(screen.queryByRole("button", { name: "說明差異" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("舊版"), { target: { files: [before] } });
+    fireEvent.change(screen.getByLabelText("新版"), { target: { files: [after] } });
+    fireEvent.click(screen.getByRole("button", { name: "開始比對" }));
     expect(await screen.findByText(/茶會在週三。/)).toBeTruthy();
     expect(screen.queryByText("茶會從週三改到週四。")).toBeNull();
     expect(compareDocuments).toHaveBeenCalledWith(before, after);
 
-    fireEvent.click(screen.getByRole("button", { name: "請模型說明" }));
+    fireEvent.click(screen.getByRole("button", { name: "說明差異" }));
     expect(explainDocuments).toHaveBeenCalledWith(before, after);
     expect(await screen.findByText("茶會從週三改到週四。")).toBeTruthy();
     expect(screen.queryByText("第九條是模型捏造的。")).toBeNull();
@@ -114,20 +115,28 @@ describe("文件比對面板", () => {
 
   it("拒絕不是 docx 的檔案", () => {
     render(<DocumentVersionCompare compareDocuments={vi.fn()} explainDocuments={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("上一版"), {
+    expect(screen.getByText(/選好舊版與新版/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("舊版"), {
       target: { files: [new File(["a"], "notes.txt")] },
     });
     expect(screen.getByRole("alert").textContent).toContain("Word");
-    expect(screen.getByRole("button", { name: "比對" }).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "開始比對" }).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "說明差異" })).toBeNull();
   });
+});
+
+beforeEach(() => {
+  window.localStorage.clear();
 });
 
 describe("平台入口裡的文件比對", () => {
   it("從導覽打開比對面板", () => {
     render(<ShellNav user={{ role: "user" }} />);
-    // 文件比對在平台入口下方的「增益集」。
+    // 文件比對在平台入口下方的「增益集」，首次預設收合。
+    fireEvent.click(screen.getByRole("button", { name: /增益集/ }));
     fireEvent.click(screen.getByRole("button", { name: /^文件比對/ }));
-    expect(screen.getByLabelText("上一版")).toBeTruthy();
+    expect(screen.getByLabelText("舊版")).toBeTruthy();
+    expect(screen.getByLabelText("新版")).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "文件比對" })).toBeTruthy();
   });
 });

@@ -62,6 +62,7 @@ const FOLLOWUP_SUGGESTIONS = [
 
 interface WSChatProps {
   flex: number
+  compact?: boolean
 }
 
 interface Citation {
@@ -119,7 +120,7 @@ function upsertAssistant(prev: ChatRow[], localKey: string, patch: Partial<ChatR
   ]
 }
 
-export function WSChat({ flex }: WSChatProps) {
+export function WSChat({ flex, compact = false }: WSChatProps) {
   const { t } = useTheme()
   const navigate = useNavigate()
   const collection = useWorkspaceStore((s) => s.collection)
@@ -621,8 +622,10 @@ export function WSChat({ flex }: WSChatProps) {
       {/* Header */}
       <div
         style={{
-          height: 56,
-          padding: '0 24px',
+          minHeight: 56,
+          padding: compact ? '8px 12px' : '0 24px',
+          flexWrap: compact ? 'wrap' : 'nowrap',
+          gap: 8,
           borderBottom: `1px solid ${t.border}`,
           display: 'flex',
           alignItems: 'center',
@@ -654,7 +657,7 @@ export function WSChat({ flex }: WSChatProps) {
               flexShrink: 0,
             }}
           >
-            {docs.filter((d) => d.doc.status === 'indexed').length} sources
+            {docs.filter((d) => d.doc.status === 'indexed').length} 來源
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -683,9 +686,10 @@ export function WSChat({ flex }: WSChatProps) {
               分享
             </button>
           )}
-          <button
+          {!compact && <button
             onClick={toggleStudio}
-            title={studioOpen ? '收起 Studio' : '展開 Studio'}
+            title={studioOpen ? '收起製作台' : '展開製作台'}
+            aria-expanded={studioOpen}
             style={{
               height: 32,
               padding: '0 12px',
@@ -701,8 +705,8 @@ export function WSChat({ flex }: WSChatProps) {
               gap: 6,
             }}
           >
-            <Icon name="layers" size={13} stroke={studioOpen ? '#fff' : t.text} /> Studio
-          </button>
+            <Icon name="layers" size={13} stroke={studioOpen ? '#fff' : t.text} /> 製作台
+          </button>}
         </div>
       </div>
 
@@ -764,7 +768,7 @@ export function WSChat({ flex }: WSChatProps) {
       </div>
 
       {/* Composer */}
-      <div style={{ padding: '0 24px 22px', background: t.bg }}>
+      <div style={{ padding: compact ? '0 12px 16px' : '0 24px 22px', background: t.bg }}>
         <div style={{ maxWidth: 760, margin: '0 auto' }}>
           <div
             style={{
@@ -850,9 +854,11 @@ export function WSChat({ flex }: WSChatProps) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 8,
               }}
             >
-              <div style={{ fontSize: 11, color: t.textSubtle }}>
+              <div style={{ fontSize: 11, color: t.textSubtle, minWidth: 0, overflowWrap: 'anywhere' }}>
                 模型 · {chatModel || '未設定'}
                 {asr.state === 'recording' && ' · 辨識中…'}
                 {asr.state === 'listening' && ' · 聆聽中…'}
@@ -914,6 +920,8 @@ export function WSChat({ flex }: WSChatProps) {
               ) : (
                 <button
                   onClick={() => void send()}
+                  aria-label="送出訊息"
+                  title="送出訊息"
                   disabled={!composer.trim() || !collection}
                   style={{
                     width: 34,

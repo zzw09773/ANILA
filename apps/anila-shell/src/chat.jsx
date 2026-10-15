@@ -2,7 +2,7 @@
 // ESM port of ANILA_templete/anila-ui/src/chat.jsx, with backend-driven classification:
 // no user-controlled "lock/unlock" icons here.
 
-import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback, useId } from "react";
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { appendRemoteHits, moveFolderOptions, positiveUserId } from "./runtime/bulkActions.js";
@@ -24,7 +24,6 @@ import {
 } from "./runtime/audienceDraft.js";
 import { AudiencePrompt, UserDraftText } from "./components/AudiencePrompt.jsx";
 import { classifiedCopyDenial } from "./uxCopy.js";
-import AnswerDeliveryPicker from "./components/AnswerDeliveryPicker.jsx";
 import { filesFromComposerClipboard } from "./runtime/composerPaste.js";
 import {
   resolveActionIcon,
@@ -69,6 +68,7 @@ import {
   IconInbox,
   IconLock,
   IconLogout,
+  IconGauge,
   IconMessage,
   IconMore,
   IconPanelR,
@@ -2528,6 +2528,7 @@ export const Composer = ({
   presetPrompts = [],
   deepThinkNext = false,
   onDeepThinkNextChange,
+  isRouter = false,
   // 模型不能用時，把剛剛送出的原文放回輸入框。
   restoredDraft = null,
   // 這位同仁現在用得到的 skill。只把選中的 id 交給 onSend。
@@ -2548,14 +2549,16 @@ export const Composer = ({
   const toast = useToast();
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const advancedShown = advancedOpen;
+  // 後端契約只有 short（串流標頭）與 background（另一個端點）。沒有 normal。
+  // 一般送出維持 short；背景只影響下一則，不是 localStorage 偏好。
   const [answerDelivery, setAnswerDelivery] = useState("short");
   const answerDeliveryRef = useRef("short");
   answerDeliveryRef.current = answerDelivery;
-  const answerGroup = useId();
-  const sendWrapRef = useRef(null);
-  const longPressTimerRef = useRef(null);
-  const longPressFiredRef = useRef(false);
+  const advancedWrapRef = useRef(null);
+  const advancedButtonRef = useRef(null);
+  const advancedPanelRef = useRef(null);
   useEffect(() => {
     if (!promptsOpen) return;
     const close = () => setPromptsOpen(false);
@@ -2563,14 +2566,18 @@ export const Composer = ({
     return () => { clearTimeout(t); document.removeEventListener("click", close); };
   }, [promptsOpen]);
   useEffect(() => {
-    if (!sendMenuOpen) return undefined;
+    if (!advancedShown) return undefined;
+    advancedPanelRef.current?.focus();
     const onDoc = (event) => {
-      if (sendWrapRef.current && !sendWrapRef.current.contains(event.target)) {
-        setSendMenuOpen(false);
+      if (advancedWrapRef.current && !advancedWrapRef.current.contains(event.target)) {
+        setAdvancedOpen(false);
       }
     };
     const onKey = (event) => {
-      if (event.key === "Escape") setSendMenuOpen(false);
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setAdvancedOpen(false);
+      advancedButtonRef.current?.focus();
     };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
@@ -2578,7 +2585,7 @@ export const Composer = ({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [sendMenuOpen]);
+  }, [advancedShown]);
   const draftKey = conversationId != null ? `anila-draft:${conversationId}` : null;
   const [text, setText] = useState(() => {
     if (draftKey && typeof sessionStorage !== "undefined") {
@@ -3238,11 +3245,19 @@ export const Composer = ({
       }
       retainRecoverable({ text: source, atts: snapshotAtts, skills: snapshotSkillList });
     };
+    const sentDelivery = answerDeliveryRef.current;
+    const finishWithDelivery = (result) => {
+      finish(result);
+      if (composerAlive.current && !rejectedSend(result).failed && sentDelivery === "background") {
+        answerDeliveryRef.current = "short";
+        setAnswerDelivery("short");
+      }
+    };
     if (outcome && typeof outcome.then === "function") {
-      outcome.then(finish, () => finish(false));
+      outcome.then(finishWithDelivery, () => finishWithDelivery(false));
       return;
     }
-    finish(outcome);
+    finishWithDelivery(outcome);
     // 清空後縮回一行由 text 的 layout effect 負責,不需要再補一次。
   };
 
@@ -3919,11 +3934,21 @@ export const Composer = ({
         </div>
       )}
 
-      <AnswerDeliveryPicker
-        value={answerDelivery}
-        groupName={answerGroup}
-        onChange={setAnswerDelivery}
-      />
+      {answerDelivery === "background" ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 10px 4px", fontSize: 12 }}>
+          <span>下一則在背景完成，做好會通知你</span>
+          <button
+            type="button"
+            onClick={() => setAnswerDelivery("short")}
+            style={{
+              border: "none", background: "transparent", color: "var(--fg-muted)",
+              cursor: "pointer", padding: 0, fontSize: 12, textDecoration: "underline",
+            }}
+          >
+            改回一般送出
+          </button>
+        </div>
+      ) : null}
       <div className="composer-toolbar">
         <label>
           <input type="file" multiple hidden onChange={(e) => onFiles(e.target.files)}
@@ -4123,7 +4148,7 @@ export const Composer = ({
           </span>
         )}
 
-        <div className="composer-input-col" style={{ flex: 1, minWidth: 0, padding: "5px 8px 5px 4px" }}>
+        <div className="composer-input-col" style={{ minWidth: 0, padding: "5px 8px 5px 4px" }}>
           <textarea
             ref={taRef}
             className="anila-inset-field"
@@ -4196,7 +4221,7 @@ export const Composer = ({
             {text.length > 0 && <span>{text.length} 字</span>}
             {piiHits.length > 0 && <span style={{ color: "var(--warn)" }}>· 可能含個資 × {piiHits.length}</span>}
             <span className="composer-live-status" data-testid="composer-live-status" aria-live="polite" aria-atomic="true" style={{ display: "inline-flex", gap: 6 }}>
-              {streaming && <span>產生中</span>}
+              {streaming && <span className="sr-only">產生中</span>}
               {pendingHold ? (
                 <span data-testid="duplicate-send-notice">{pendingHold}</span>
               ) : null}
@@ -4232,7 +4257,73 @@ export const Composer = ({
           </button>
         )}
 
-        {typeof onDeepThinkNextChange === "function" && !streaming ? (
+        <span ref={advancedWrapRef} style={{ display: "inline-flex" }}>
+          <button
+            ref={advancedButtonRef}
+            type="button"
+            aria-label="進階選項"
+            aria-expanded={advancedShown}
+            aria-controls="composer-advanced"
+            title="背景送出選項"
+            onClick={() => setAdvancedOpen((open) => !open)}
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 32, height: 32,
+              background: advancedShown ? "var(--accent-soft)" : "var(--bg-subtle)",
+              color: advancedShown ? "var(--accent)" : "var(--fg-subtle)",
+              border: "1px solid " + (advancedShown ? "var(--accent)" : "transparent"),
+              borderRadius: "var(--radius)",
+              cursor: "pointer",
+              marginLeft: 4,
+            }}
+          >
+            <IconSettings size={15} />
+          </button>
+          {advancedShown ? (
+            <div
+              ref={advancedPanelRef}
+              id="composer-advanced"
+              role="region"
+              aria-label="進階選項"
+              tabIndex={-1}
+              style={{
+                position: "absolute",
+                right: 8,
+                bottom: "calc(100% + 6px)",
+                zIndex: 80,
+                width: 280,
+                maxWidth: "calc(100% - 16px)",
+                boxSizing: "border-box",
+                background: "var(--bg-elev)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
+                padding: 8,
+              }}
+            >
+              <button
+                type="button"
+                aria-pressed={answerDelivery === "background"}
+                onClick={() => setAnswerDelivery((current) => (current === "background" ? "short" : "background"))}
+                style={{
+                  display: "block", width: "100%", textAlign: "left",
+                  padding: "8px 10px",
+                  background: answerDelivery === "background" ? "var(--accent-soft)" : "transparent",
+                  border: "1px solid " + (answerDelivery === "background" ? "var(--accent)" : "var(--border)"),
+                  borderRadius: "var(--radius)", cursor: "pointer", color: "var(--fg)", fontSize: 13,
+                }}
+              >
+                {answerDelivery === "background"
+                  ? "下一則在背景完成（已選，再按改回）"
+                  : "下一則在背景完成，做好再通知我"}
+              </button>
+              <p style={{ margin: "6px 2px 0", fontSize: 11, lineHeight: 1.45, color: "var(--fg-muted)" }}>
+                只影響下一則。送出成功後會回到一般送出；失敗則保留。
+              </p>
+            </div>
+          ) : null}
+        </span>
+        {isRouter && typeof onDeepThinkNextChange === "function" && !streaming ? (
           <button
             type="button"
             aria-label="這一題深入想"
@@ -4245,9 +4336,7 @@ export const Composer = ({
               background: deepThinkNext ? "var(--accent-soft)" : "var(--bg-subtle)",
               color: deepThinkNext ? "var(--accent)" : "var(--fg-subtle)",
               border: "1px solid " + (deepThinkNext ? "var(--accent)" : "transparent"),
-              borderRadius: "var(--radius)",
-              cursor: "pointer",
-              marginLeft: 4,
+              borderRadius: "var(--radius)", cursor: "pointer", marginLeft: 4,
             }}
           >
             <IconSpark size={15} />
@@ -4271,37 +4360,11 @@ export const Composer = ({
           </button>
         ) : (
           <span
-            ref={sendWrapRef}
             title={uploadBlocksSend ? UPLOAD_BLOCKED_LABEL : undefined}
             style={{ position: "relative", display: "inline-flex" }}
           >
           <button
-            onClick={(event) => {
-              if (longPressFiredRef.current) {
-                event.preventDefault();
-                longPressFiredRef.current = false;
-                return;
-              }
-              submit();
-            }}
-            onContextMenu={(event) => {
-              if (typeof onDeepThinkNextChange !== "function") return;
-              event.preventDefault();
-              setSendMenuOpen(true);
-            }}
-            onPointerDown={(event) => {
-              if (typeof onDeepThinkNextChange !== "function") return;
-              if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
-              longPressFiredRef.current = false;
-              window.clearTimeout(longPressTimerRef.current);
-              longPressTimerRef.current = window.setTimeout(() => {
-                longPressFiredRef.current = true;
-                setSendMenuOpen(true);
-              }, 500);
-            }}
-            onPointerUp={() => window.clearTimeout(longPressTimerRef.current)}
-            onPointerCancel={() => window.clearTimeout(longPressTimerRef.current)}
-            onPointerLeave={() => window.clearTimeout(longPressTimerRef.current)}
+            onClick={() => submit()}
             aria-label={uploadBlocksSend ? UPLOAD_BLOCKED_LABEL : "送出"}
             title={uploadBlocksSend ? UPLOAD_BLOCKED_LABEL : undefined}
             disabled={disabled || uploadBlocksSend || (!text.trim() && atts.length === 0)}
@@ -4317,32 +4380,6 @@ export const Composer = ({
           >
             <IconSend size={15} />
           </button>
-          {sendMenuOpen && typeof onDeepThinkNextChange === "function" ? (
-            <div
-              role="menu"
-              style={{
-                position: "absolute",
-                right: 0,
-                bottom: "calc(100% + 6px)",
-                zIndex: 80,
-                minWidth: 168,
-                background: "var(--bg-elev)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius)",
-                boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
-                padding: 4,
-              }}
-            >
-              <MenuItem
-                onClick={() => {
-                  onDeepThinkNextChange(true);
-                  setSendMenuOpen(false);
-                }}
-              >
-                這一題深入想
-              </MenuItem>
-            </div>
-          ) : null}
           </span>
         )}
       </div>
@@ -4650,6 +4687,35 @@ export const Sidebar = ({
     }
   }
 
+  const accountMenu = (
+    <Dropdown align="left" width={220} trigger={() => (
+      <button type="button" aria-label="帳號選單" title={user?.username || "帳號選單"} style={{
+        display: "flex", alignItems: "center", gap: 10, width: "100%",
+        minHeight: 36, padding: "6px 8px", background: "transparent", border: "none",
+        borderRadius: "var(--radius)", cursor: "pointer", color: "var(--fg)",
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+          {(user?.username || "?").slice(0, 2).toUpperCase()}
+        </span>
+        {!collapsed && <span style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+          <span style={{ display: "block", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.username}</span>
+          <span style={{ fontSize: 10, color: "var(--fg-subtle)" }}>runtime · {user?.role || "user"}</span>
+        </span>}
+        {!collapsed && <IconChevDown size={13} />}
+      </button>
+    )}>
+      {(close) => (
+        <div>
+          <MenuItem leftIcon={<IconExternal size={14} />} onClick={() => { onOpenServices?.(); close(); }}>專案入口</MenuItem>
+          {typeof onOpenUsage === "function" && <MenuItem leftIcon={<IconGauge size={14} />} onClick={() => { onOpenUsage(); close(); }}>用量</MenuItem>}
+          <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings?.(); close(); }}>設定</MenuItem>
+          <Divider />
+          <MenuItem leftIcon={<IconLogout size={14} />} onClick={onLogout}>登出</MenuItem>
+        </div>
+      )}
+    </Dropdown>
+  );
+
   if (collapsed) {
     const railBtn = { width: 36, height: 36 };
     return (
@@ -4680,7 +4746,7 @@ export const Sidebar = ({
         <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} />
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} onOpenUsage={onOpenUsage} onOpenMemory={onOpenMemory} onOpenSkills={typeof onOpenSettings === "function" ? () => onOpenSettings("skills") : undefined} currentId={currentNavId} />
         <div style={{ flex: 1 }} />
-        <IconButton onClick={() => onOpenSettings?.()} title="設定" style={railBtn}><IconSettings /></IconButton>
+        {accountMenu}
       </div>
     );
   }
@@ -5220,38 +5286,7 @@ export const Sidebar = ({
         </>
 
       <div style={{ borderTop: "1px solid var(--border)", padding: 8 }}>
-        <Dropdown align="left" width={220} trigger={() => (
-          <button style={{
-            display: "flex", alignItems: "center", gap: 10, width: "100%",
-            padding: "6px 8px", background: "transparent", border: "none",
-            borderRadius: "var(--radius)", cursor: "pointer", color: "var(--fg)",
-          }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-elev)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-            <div style={{
-              width: 28, height: 28, borderRadius: 999,
-              background: "var(--bg-elev)", border: "1px solid var(--border)",
-              display: "inline-flex", alignItems: "center", justifyContent: "center",
-              fontSize: 11, fontWeight: 600, color: "var(--fg-muted)",
-              fontFamily: "var(--font-mono)",
-            }}>{(user?.username || "?").slice(0, 2).toUpperCase()}</div>
-            <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
-              <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.username}</div>
-              <div style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>runtime · {user?.role || "user"}</div>
-            </div>
-            <IconChevDown size={13} style={{ color: "var(--fg-muted)" }} />
-          </button>
-        )}>
-          {(close) => (
-            <div>
-              <MenuItem leftIcon={<IconExternal size={14} />} onClick={() => { onOpenServices?.(); close(); }}>專案入口</MenuItem>
-              <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings(); close(); }}>設定</MenuItem>
-              {/* Sprint 7 X follow-up：API Key menu item 已移除（cookie 流程後 dead code）。 */}
-              <Divider />
-              <MenuItem leftIcon={<IconLogout size={14} />} onClick={onLogout}>登出</MenuItem>
-            </div>
-          )}
-        </Dropdown>
+        {accountMenu}
       </div>
     </div>
   );

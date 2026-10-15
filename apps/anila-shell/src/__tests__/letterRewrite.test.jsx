@@ -86,7 +86,9 @@ describe("輸入框可以打開改寫", () => {
     );
     expect(screen.queryByRole("button", { name: "改寫信件與公文" })).toBeNull();
     unmount();
+    window.localStorage.clear();
     render(<ShellNav user={{ role: "user" }} />);
+    fireEvent.click(screen.getByRole("button", { name: /增益集/ }));
     fireEvent.click(screen.getByRole("button", { name: /^改寫信件與公文/ }));
     fireEvent.change(screen.getByLabelText("信件或公文原文"), {
       target: { value: "3月2日前回覆，費用新臺幣1,200元。" },

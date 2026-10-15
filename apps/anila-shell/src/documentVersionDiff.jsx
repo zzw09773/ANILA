@@ -12,6 +12,50 @@ const KIND = {
   modified: "修改",
 };
 
+const fieldButton = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minHeight: 36,
+  padding: "6px 14px",
+  borderRadius: "var(--radius)",
+  border: "1px solid var(--border-strong)",
+  background: "var(--bg-elev)",
+  color: "var(--fg)",
+  fontFamily: "var(--font-sans)",
+  fontSize: 14,
+  cursor: "pointer",
+};
+
+const primaryButton = {
+  ...fieldButton,
+  border: "1px solid transparent",
+  background: "var(--accent)",
+  color: "var(--accent-fg)",
+};
+
+function FileSlot({ which, label, file, onPick }) {
+  const inputId = `doc-diff-${which}`;
+  return (
+    <div className="doc-diff-file" style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <span id={`${inputId}-label`} style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+      <input
+        id={inputId}
+        className="doc-diff-file__input"
+        aria-labelledby={`${inputId}-label`}
+        type="file"
+        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        onChange={(event) => onPick(which, event.target.files?.[0] || null)}
+      />
+      <label htmlFor={inputId} className="doc-diff-file__button" style={{ ...fieldButton, justifyContent: "flex-start", minWidth: 0 }}>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {file ? file.name : "選擇 Word 檔（.docx）"}
+        </span>
+      </label>
+    </div>
+  );
+}
+
 function isDocx(file) {
   return Boolean(file && /\.docx$/i.test(file.name || ""));
 }
@@ -93,7 +137,7 @@ function DiffCard({ change, explanation }) {
       {important ? <OriginalBlocks change={change} /> : null}
       {!important && expanded ? <OriginalBlocks change={change} /> : null}
       {!important ? (
-        <button type="button" style={{ marginTop: 8 }} onClick={() => setExpanded((open) => !open)}>
+        <button type="button" style={{ ...fieldButton, marginTop: 8, minHeight: 32 }} onClick={() => setExpanded((open) => !open)}>
           {expanded ? "收合原文" : "展開原文"}
         </button>
       ) : null}
@@ -145,12 +189,12 @@ export function DocumentVersionCompare({
     else setAfter(file);
     setDiff(null);
     const invalid = [nextBefore, nextAfter].some((item) => item && !isDocx(item));
-    setError(invalid ? "第一版只比對有條號的 Word 檔（.docx）。" : "");
+    setError(invalid ? "目前只比對 Word 檔（.docx）。" : "");
   }
 
   async function run(kind) {
     if (!isDocx(before) || !isDocx(after)) {
-      setError("第一版只比對有條號的 Word 檔（.docx）。");
+      setError("目前只比對 Word 檔（.docx）。");
       return;
     }
     setBusy(kind);
@@ -168,43 +212,38 @@ export function DocumentVersionCompare({
   }
 
   const ready = isDocx(before) && isDocx(after) && busy === "";
+  const canExplain = ready && Boolean(diff?.changes?.length);
 
   return (
     <div data-testid="document-version-compare">
       <p style={{ margin: "0 0 12px", fontSize: 13, lineHeight: 1.55, color: "var(--fg-muted)" }}>
-        選擇兩份有條號的 Word。差異清單由程式產生；模型只能說明已經列出的編號。
+        {ready
+          ? "可以開始比對。清單由程式依條號或大綱產生；模型只說明已經列出的項目。"
+          : "選好舊版與新版的 Word（.docx）後才能開始比對。"}
       </p>
       <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-        <label>
-          上一版
-          <input
-            type="file"
-            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            onChange={(event) => onPick("before", event.target.files?.[0] || null)}
-            style={{ display: "block", marginTop: 6 }}
-          />
-        </label>
-        <label>
-          這一版
-          <input
-            type="file"
-            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            onChange={(event) => onPick("after", event.target.files?.[0] || null)}
-            style={{ display: "block", marginTop: 6 }}
-          />
-        </label>
+        <FileSlot which="before" label="舊版" file={before} onPick={onPick} />
+        <FileSlot which="after" label="新版" file={after} onPick={onPick} />
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button type="button" disabled={!ready} onClick={() => run("compare")}>
-          {busy === "compare" ? "比對中…" : "比對"}
-        </button>
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <button
           type="button"
-          disabled={!ready || !diff?.changes?.length}
-          onClick={() => run("explain")}
+          disabled={!ready}
+          onClick={() => run("compare")}
+          style={{ ...primaryButton, opacity: ready ? 1 : 0.5, cursor: ready ? "pointer" : "not-allowed" }}
         >
-          {busy === "explain" ? "說明中…" : "請模型說明"}
+          {busy === "compare" ? "比對中…" : "開始比對"}
         </button>
+        {diff ? (
+          <button
+            type="button"
+            disabled={!canExplain}
+            onClick={() => run("explain")}
+            style={{ ...fieldButton, opacity: canExplain ? 1 : 0.5, cursor: canExplain ? "pointer" : "not-allowed" }}
+          >
+            {busy === "explain" ? "說明中…" : "說明差異"}
+          </button>
+        ) : null}
       </div>
       {error ? (
         <p role="alert" style={{ color: "var(--danger)", fontSize: 13 }}>{error}</p>

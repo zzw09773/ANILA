@@ -11,7 +11,7 @@
 // / = 治理中心）以 origin 絕對路徑連結，不可相對於 shell 的 /anila/ base；
 // 因同屬單一 SSO origin，於同一分頁開啟即可共用登入 cookie。
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 
 import {
   ANILA_LM_COMING_SOON_LABEL,
@@ -31,9 +31,25 @@ import {
   IconGrid,
   IconHistory,
   IconMessage,
+  IconChevDown,
+  IconChevRight,
   IconShield,
   IconSpark,
 } from "./icons.jsx";
+
+// 首次沒有偏好時收合，長說明不常駐擠側欄。記住的是展開或收合，不是選了哪一項。
+const ADDINS_EXPANDED_KEY = "anila.addinsExpanded";
+
+function readAddinsExpanded() {
+  try {
+    const stored = window.localStorage.getItem(ADDINS_EXPANDED_KEY);
+    if (stored === "1") return true;
+    if (stored === "0") return false;
+  } catch {
+    /* 私人模式或配額不足時用預設：收合。 */
+  }
+  return false;
+}
 
 // 治理中心 = Admin / Developer / Service Admin 控制面，非一般入口。
 // 對應 CSP UserRole：owner / admin / developer 可見；user / system 或未知一律隱藏。
@@ -100,7 +116,6 @@ export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, o
     knowledge,
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },
-    { id: "usage", label: "用量", Icon: IconGauge, current: currentId === "usage", onClick: onOpenUsage },
     { id: "memory", label: "記憶", Icon: IconHistory, current: currentId === "memory", onClick: onOpenMemory },
   ];
 }
@@ -168,20 +183,14 @@ function AddinRow({ item, collapsed, onOpen }) {
       data-addin={item.id}
       onClick={onOpen}
       aria-describedby={descId}
-      style={{ ...rowBase, alignItems: "flex-start", color: "var(--fg)" }}
+      title={description}
+      style={{ ...rowBase, color: "var(--fg)" }}
       onMouseEnter={hoverOn}
       onMouseLeave={hoverOff}
     >
-      <Icon size={15} style={{ color: "var(--fg-muted)", flexShrink: 0, marginTop: 2 }} />
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: "block" }}>{label}</span>
-        <span
-          id={descId}
-          style={{ display: "block", fontSize: 11, fontWeight: 400, lineHeight: 1.45, color: "var(--fg-muted)" }}
-        >
-          {description}
-        </span>
-      </span>
+      <Icon size={15} style={{ color: "var(--fg-muted)", flexShrink: 0 }} />
+      <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
+      <span id={descId} className="sr-only">{description}</span>
     </button>
   );
 }
@@ -326,6 +335,14 @@ function NavRow({ entry, collapsed }) {
  */
 export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices, onOpenUsage, onOpenMemory, onOpenSkills, currentId = "tasks", authRequest }) {
   const [open, setOpen] = useState(false);
+  const [addinsExpanded, setAddinsExpanded] = useState(readAddinsExpanded);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ADDINS_EXPANDED_KEY, addinsExpanded ? "1" : "0");
+    } catch {
+      /* 記不住就維持這次畫面，不影響對話清單。 */
+    }
+  }, [addinsExpanded]);
   const [compareOpen, setCompareOpen] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
   const [translationOpen, setTranslationOpen] = useState(false);
@@ -406,22 +423,38 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
         {collapsed ? (
           <div style={{ width: 20, height: 1, background: "var(--border)", margin: "4px 0" }} aria-hidden="true" />
         ) : (
-          <h2
-            style={{
-              margin: "4px 10px 2px",
-              fontSize: 11,
-              fontWeight: 600,
-              color: "var(--fg-muted)",
-              fontFamily: "var(--font-mono)",
-              letterSpacing: 0.4,
-            }}
-          >
-            增益集
+          <h2 style={{ margin: "4px 0 2px" }}>
+            <button
+              type="button"
+              aria-expanded={addinsExpanded}
+              aria-controls="anila-addins"
+              onClick={() => setAddinsExpanded((current) => !current)}
+              style={{
+                ...rowBase,
+                gap: 6,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--fg-muted)",
+                fontFamily: "var(--font-mono)",
+                letterSpacing: 0.4,
+              }}
+            >
+              {addinsExpanded ? <IconChevDown size={12} /> : <IconChevRight size={12} />}
+              <span style={{ flex: 1, minWidth: 0 }}>增益集</span>
+              <span>{addins.length}</span>
+            </button>
           </h2>
         )}
-        {addins.map((item) => (
-          <AddinRow key={item.id} item={item} collapsed={collapsed} onOpen={openAddin[item.id]} />
-        ))}
+        <div
+          id="anila-addins"
+          hidden={!collapsed && !addinsExpanded}
+          style={{ display: collapsed || addinsExpanded ? "flex" : "none", flexDirection: "column", gap: 2, alignItems: collapsed ? "center" : "stretch" }}
+        >
+          {addins.map((item) => (
+            <AddinRow key={item.id} item={item} collapsed={collapsed} onOpen={openAddin[item.id]} />
+          ))}
+        </div>
       </section>
       <Modal
         open={open}
@@ -440,7 +473,7 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
         open={compareOpen}
         onClose={() => setCompareOpen(false)}
         title="文件比對"
-        subtitle="程式依條號或「一、（一）」大綱編號比對兩份 Word；都沒有時改依標題或段落，並會註明。"
+        subtitle="選舊版與新版的 Word，再開始比對。"
         width={720}
       >
         <DocumentVersionCompare />

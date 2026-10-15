@@ -25,7 +25,6 @@
     "density": 18,
     "sansFamily": "Noto Sans TC",
     "monoFamily": "ui-monospace",
-    "agentSwitcherPosition": "bottom",
     "traceStyle": "collapsible"
   }/*EDITMODE-END*/;
 </script>
@@ -437,8 +436,31 @@
   }
   /* 字數/狀態列在輸入欄內(textarea 底下),不再是 toolbar 的平行欄位,
      所以窄視窗也不用藏它——它不搶按鈕和輸入框的寬度。 */
+  .composer-input-col { flex: 1 1 auto; min-width: 0; }
   @media (max-width: 520px) {
     .composer-toolbar { gap: 2px; }
+    .composer-input-col {
+      flex: 1 0 100%;
+      min-width: 100%;
+      order: -1;
+    }
+  }
+  .doc-diff-file { position: relative; }
+  .doc-diff-file__input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .doc-diff-file__input:focus-visible + .doc-diff-file__button,
+  .doc-diff-file__input:focus + .doc-diff-file__button {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .anila-md-table { max-width: 100%; }
 

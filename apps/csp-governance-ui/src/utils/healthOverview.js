@@ -20,6 +20,7 @@
 // 明寫 `.js`:Vite 兩種寫法都吃,但 governance 的測試 runner 是 `node --test`
 // (純 ESM 解析器),省副檔名會 ERR_MODULE_NOT_FOUND。
 import { normalizeHealth, healthLabel } from './healthStatus.js'
+import { deputyMayOpen } from '../router/deputyPages.js'
 
 export { normalizeHealth, healthLabel }
 
@@ -131,27 +132,105 @@ export function summarizeHealthOverview(payload) {
 }
 
 /**
- * 儀表板模型／Agent 計數那一行。
+ * 模型／Agent 摘要的 tone。
  *
- * 模型總數 0 跟模型頁的空狀態同一句話。null（DB 探測失敗）不補「尚未註冊」，
- * 以免把讀不到跟真的沒有模型說成同一件事。
+ * 0/0 是「還沒註冊」→ idle，不是健康綠。已停用是刻意停用、不算待確認，
+ * 所以從「健康數是否足夠」的分母排除；unknown/degraded 只是「還沒確認」→ 黃，
+ * 明確壞狀態 → 紅。
+ */
+export function registryTone(counts) {
+  if (!counts || counts.total === 0) return 'idle'
+  if (counts.unhealthy > 0) return 'danger'
+  if (counts.degraded > 0 || counts.unknown > 0) return 'warn'
+  const disabled = counts.disabled ?? 0
+  // 全部停用 → idle，不要讓「整批關掉」看起來全綠。
+  if (disabled >= counts.total) return 'idle'
+  const active = counts.total - disabled
+  if (counts.healthy < active) return 'warn'
+  return 'ok'
+}
+
+/**
+ * 摘要列的檢視連結是否可達。
+ *
+ * 沿用 router 自己的兩道規則，不新增契約：
+ *   1. `deputyMayOpen`(router/deputyPages.js) —— 純 deputy 只能開白名單頁,
+ *      `/models` 不在白名單,deputy 會被踢回 `/`。
+ *   2. `access: 'developer'` 對應 `meta.requiresDeveloper`(`/developer/agents`)。
+ *
+ * @param {{access?:string,to?:string}} entry
+ * @param {{isDeveloper?:boolean,isDeputy?:boolean,isAdmin?:boolean}} [caps]
+ */
+export function registryEntryReachable(entry, { isDeveloper, isDeputy, isAdmin } = {}) {
+  if (!entry?.to) return true
+  if (!deputyMayOpen(entry.to, { isDeputy, isAdmin })) return false
+  if (entry.access === 'developer') return Boolean(isDeveloper)
+  return true
+}
+
+/**
+ * 未探測／已停用／異常的文字明細（只列非零項）。讓未知狀態不只是一個黃點。
+ * `已停用` 是有意的停用，不算待確認。
+ *
+ * @param {{unknown?:number,disabled?:number,unhealthy?:number}|null} counts
+ */
+export function registryDetailText(counts) {
+  if (!counts) return ''
+  const parts = []
+  if (counts.unknown > 0) parts.push(`${counts.unknown} 未探測`)
+  if (counts.disabled > 0) parts.push(`${counts.disabled} 已停用`)
+  if (counts.unhealthy > 0) parts.push(`${counts.unhealthy} 異常`)
+  return parts.join(' · ')
+}
+
+/**
+ * 模型／Agent 的結構化摘要，讓首頁能把它們跟「基礎服務」分開、獨立醒目呈現。
+ *
+ * 0/0 講「尚未註冊」而不是「健康」；null（DB 探測失敗）整筆略過，不補
+ * 「尚未註冊」，以免把讀不到跟真的沒有模型說成同一件事。
+ *
+ * @param {{total:number,healthy:number}|null} models
+ * @param {{total:number,healthy:number}|null} agents
+ */
+export function registryHealthEntries(models, agents) {
+  const entries = []
+  if (models) {
+    entries.push({
+      key: 'models',
+      text: models.total === 0 ? '尚未註冊模型' : `模型 ${models.healthy}/${models.total} 健康`,
+      detail: registryDetailText(models),
+      tone: registryTone(models),
+      to: '/models',
+      linkLabel: '檢視模型',
+      // /models 無 meta.requiresDeveloper → 所有登入者(含 deputy)可達。
+      access: 'any',
+    })
+  }
+  if (agents) {
+    entries.push({
+      key: 'agents',
+      text: agents.total === 0 ? '尚未註冊 Agent' : `Agent ${agents.healthy}/${agents.total} 健康`,
+      detail: registryDetailText(agents),
+      tone: registryTone(agents),
+      to: '/developer/agents',
+      linkLabel: '檢視 Agent',
+      // /developer/agents 是 meta.requiresDeveloper → deputy 不可達。
+      access: 'developer',
+    })
+  }
+  return entries
+}
+
+/**
+ * 儀表板模型／Agent 計數那一行（給純文字情境用；首頁改走結構化摘要）。
  *
  * @param {{total:number,healthy:number}|null} models
  * @param {{total:number,healthy:number}|null} agents
  */
 export function registryHealthLine(models, agents) {
-  const parts = []
-  if (models) {
-    parts.push(
-      models.total === 0
-        ? '尚未註冊模型'
-        : `模型 ${models.healthy}/${models.total} 健康`,
-    )
-  }
-  if (agents) {
-    parts.push(`Agent ${agents.healthy}/${agents.total} 健康`)
-  }
-  return parts.join(' · ')
+  return registryHealthEntries(models, agents)
+    .map((entry) => entry.text)
+    .join(' · ')
 }
 
 /** 五態計數（後端 DB 掛掉時回 null，這裡忠實傳遞 null，不補 0）。 */

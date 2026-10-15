@@ -2,7 +2,7 @@
 // 外部同源連結（origin 絕對路徑）、專案入口開啟 ServicesPanel。
 
 import React from "react";
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 
 import {
@@ -19,6 +19,16 @@ import {
 
 // jsdom 預設 origin。
 const ORIGIN = window.location.origin;
+
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
+function expandAddins() {
+  const toggle = screen.getByRole("button", { name: /增益集/ });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+  return toggle;
+}
 
 // ---------------------------------------------------------------------
 // 純函式：治理中心角色閘門
@@ -84,7 +94,6 @@ describe("buildShellEntries", () => {
       "對話",
       "我的知識庫",
       "專案入口",
-      "用量",
       "記憶",
     ]);
   });
@@ -129,9 +138,23 @@ describe("ShellNav", () => {
     expect(screen.queryByText("專案入口")).toBeNull();
     expect(screen.queryByText("用量")).toBeNull();
     expect(screen.queryByText("記憶")).toBeNull();
-    // 工具類放在平台入口下方的「增益集」，不用打開彈窗。
+    // 工具類放在平台入口下方的「增益集」，不用打開彈窗。首次預設收合。
     const addins = screen.getByRole("region", { name: "增益集" });
-    expect(within(addins).getByText("文件比對")).toBeTruthy();
+    const toggle = within(addins).getByRole("button", { name: /增益集/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const target = document.getElementById(toggle.getAttribute("aria-controls"));
+    expect(target).not.toBeNull();
+    expect(target.hidden).toBe(true);
+    expect(within(addins).queryByRole("button", { name: /^文件比對/ })).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(toggle.getAttribute("aria-controls"))).toBe(target);
+    expect(target.hidden).toBe(false);
+    expect(within(addins).getByRole("button", { name: /^文件比對/ })).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(document.getElementById(toggle.getAttribute("aria-controls"))).toBe(target);
+    expect(target.hidden).toBe(true);
+    expect(within(addins).queryByRole("button", { name: /^文件比對/ })).toBeNull();
   });
 
   it("renders the user entries inside the modal", () => {
@@ -139,8 +162,9 @@ describe("ShellNav", () => {
     expect(screen.getByText("對話")).toBeTruthy();
     expect(screen.getByText("我的知識庫")).toBeTruthy();
     expect(screen.getByText("專案入口")).toBeTruthy();
-    expect(screen.getByText("用量")).toBeTruthy();
+    expect(screen.queryByText("用量")).toBeNull();
     expect(screen.getByText("記憶")).toBeTruthy();
+    expandAddins();
     expect(screen.getByText("文件比對")).toBeTruthy();
   });
 
@@ -213,11 +237,11 @@ describe("ShellNav", () => {
     expect(onOpenServices).toHaveBeenCalledTimes(1);
   });
 
-  it("opens 我的用量 via onOpenUsage when 用量 is clicked", () => {
+  it("平台入口不再提供用量，即使傳入原 callback", () => {
     const onOpenUsage = vi.fn();
     openNav({ role: "user" }, { onOpenUsage });
-    fireEvent.click(screen.getByText("用量"));
-    expect(onOpenUsage).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("用量")).toBeNull();
+    expect(onOpenUsage).not.toHaveBeenCalled();
   });
 
   it("opens 記憶 via onOpenMemory when 記憶 is clicked", () => {
@@ -234,6 +258,23 @@ describe("ShellNav", () => {
     expect(tasks.getAttribute("aria-current")).toBe("page");
     fireEvent.click(tasks);
     expect(onTaskCenter).toHaveBeenCalledTimes(1);
+  });
+
+  it("記住增益集的展開偏好，收合時對話清單仍在", () => {
+    const { unmount } = render(<ShellNav user={{ role: "user" }} />);
+    const toggle = screen.getByRole("button", { name: /增益集/ });
+    fireEvent.click(toggle);
+    expect(window.localStorage.getItem("anila.addinsExpanded")).toBe("1");
+    expect(screen.getByRole("button", { name: /^文件比對/ })).toBeTruthy();
+    unmount();
+
+    render(<ShellNav user={{ role: "user" }} />);
+    expect(screen.getByRole("button", { name: /增益集/ }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: /^文件比對/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /增益集/ }));
+    expect(screen.queryByRole("button", { name: /^文件比對/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "平台入口" })).toBeTruthy();
+    expect(window.localStorage.getItem("anila.addinsExpanded")).toBe("0");
   });
 
   it("renders an icon-only collapsed rail that still gates governance", () => {

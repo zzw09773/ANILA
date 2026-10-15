@@ -47,7 +47,14 @@ describe("ChatRuntime router model selection", () => {
   it("renders ChatRuntime after login without TDZ crash", async () => {
     await mountOrchestrator();
     expect(screen.getByLabelText("送出")).toBeTruthy();
-    expect(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選")).toBeTruthy();
+    const controls = screen.getByRole("group", { name: "對話控制" });
+    expect(controls.contains(screen.getByLabelText("此則對話使用的模型，僅由 ANILA 自動派工時可選"))).toBe(true);
+    expect(controls.style.flexWrap).toBe("wrap");
+    expect(screen.queryByRole("region", { name: "進階選項" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "進階選項" }));
+    const advanced = screen.getByRole("region", { name: "進階選項" });
+    expect(advanced.textContent).not.toMatch(/助手|對話思考/);
+    expect(advanced.textContent).toContain("下一則在背景完成");
   });
 
   it("creates a conversation with the non-default picker model", async () => {

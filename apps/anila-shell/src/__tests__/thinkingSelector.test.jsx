@@ -289,6 +289,35 @@ describe("思考程度由管理員鎖定", () => {
 });
 
 describe("ChatRuntime 思考選單", () => {
+  it("控制常駐，切換助手後不送殘留深入覆寫，回 ANILA 保留對話偏好", async () => {
+    const { backend } = await mountOrchestrator({ agents: [
+      { id: "helper", name: "測試助手", short: "helper", description: "一般助手", capabilities: {} },
+    ] });
+    const modelLabel = "此則對話使用的模型，僅由 ANILA 自動派工時可選";
+    expect(screen.getByLabelText(modelLabel)).toBeTruthy();
+    expect(screen.getByLabelText("思考")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "進階選項" })).toBeNull();
+    await chooseThinking("深入");
+    fireEvent.click(screen.getByRole("button", { name: "這一題深入想" }));
+    fireEvent.click(screen.getByRole("button", { name: /ANILA auto/ }));
+    fireEvent.click(screen.getByText("測試助手"));
+    expect(screen.queryByLabelText(modelLabel)).toBeNull();
+    expect(screen.queryByLabelText("思考")).toBeNull();
+    expect(screen.queryByRole("button", { name: "這一題深入想" })).toBeNull();
+    backend.enqueueAnswer("助手回答");
+    await sendComposer("請助手回答");
+    await waitForAnswer("助手回答");
+    await waitForIdle();
+    const payload = backend.requestsFor("/chat/completions", "POST").find((req) => req.body.model === "helper")?.body;
+    expect(payload?.model).toBe("helper");
+    expect(payload).not.toHaveProperty("anila_thinking_tier");
+    expect(payload).not.toHaveProperty("router_model");
+    fireEvent.click(screen.getByRole("button", { name: /測試助手 helper/ }));
+    fireEvent.click([...screen.getByText("可選助手").parentElement.querySelectorAll("button")].find((node) => node.textContent.startsWith("ANILA")));
+    expect(screen.getByLabelText("思考").textContent).toContain("深入");
+    expect(screen.getByRole("button", { name: "這一題深入想" })).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("選深入會 PUT thinking_tier，409 時重拉並顯示後端值", async () => {
     const { backend } = await mountOrchestrator();
     backend.enqueueAnswer("先建");
@@ -369,8 +398,10 @@ describe("ChatRuntime 思考選單", () => {
   it("這一題深入想只影響下一次 completions", async () => {
     const { backend } = await mountOrchestrator();
     backend.enqueueAnswer("第一次").enqueueAnswer("第二次");
-    fireEvent.click(screen.getByLabelText("這一題深入想"));
-    expect(screen.getByLabelText("這一題深入想")).toHaveAttribute("aria-pressed", "true");
+    const deep = await screen.findByRole("button", { name: "這一題深入想" });
+    expect(deep).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(deep);
+    expect(deep).toHaveAttribute("aria-pressed", "true");
     await sendComposer("請深入想");
     await waitForAnswer("第一次");
     await waitForIdle();
@@ -385,7 +416,7 @@ describe("ChatRuntime 思考選單", () => {
   it("重試會重放這一題深入想", async () => {
     const { backend } = await mountOrchestrator();
     backend.enqueueAnswer("第一次").enqueueAnswer("重試回答");
-    fireEvent.click(screen.getByLabelText("這一題深入想"));
+    fireEvent.click(await screen.findByRole("button", { name: "這一題深入想" }));
     await sendComposer("請深入想");
     await waitForAnswer("第一次");
     await waitForIdle();

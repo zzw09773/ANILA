@@ -6,7 +6,6 @@ export const DEFAULT_TWEAKS = {
   density: 18,
   sansFamily: "Noto Sans TC",
   monoFamily: "JetBrains Mono",
-  agentSwitcherPosition: "bottom",
   traceStyle: "collapsible",
 };
 

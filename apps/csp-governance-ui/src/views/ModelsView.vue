@@ -90,18 +90,19 @@
     </div>
 
     <TermBox :title="`已註冊 · ${registeredModels.length}`" hint="每 60 秒健康檢查" pad="none" flush>
-      <table class="term-table">
+      <div class="models-table-scroll" role="region" aria-label="已註冊模型表格，可水平捲動" tabindex="0">
+      <table class="term-table models-table">
         <thead>
           <tr>
             <th style="width: 96px">健康</th>
-            <th>名稱</th>
+            <th class="model-name-cell">名稱</th>
             <th style="width: 148px">支援等級</th>
             <th style="width: 100px">類型</th>
             <th style="width: 92px">分類上限</th>
             <th>端點</th>
             <th style="width: 80px">API</th>
             <th style="width: 80px">啟用</th>
-            <th style="width: 148px">對話選單</th>
+            <th class="chat-menu-cell">對話選單</th>
             <th v-if="authStore.isAdmin || canSetEndpointAddress" style="width: 26%">操作</th>
           </tr>
         </thead>
@@ -111,7 +112,7 @@
               <TermBadge :variant="healthVariant(model.health_status)" dot>{{ healthLabel(model.health_status) }}</TermBadge>
               <div v-if="testResults[model.id]?.latencyLabel" class="cell-meta cell-latency">{{ testResults[model.id].latencyLabel }}</div>
             </td>
-            <td>
+            <td class="model-name-cell">
               <div class="cell-strong">
                 <span
                   v-if="model.is_internal"
@@ -173,31 +174,19 @@
                 {{ model.is_active ? '開' : '關' }}
               </TermBadge>
             </td>
-            <td>
-              <span v-if="model.name === 'anila-router'" class="primary-pill" title="平台聊天入口，不是可選基礎模型">
-                平台入口
-              </span>
-              <span v-if="model.router_enabled && model.name !== 'anila-router'" class="primary-pill" title="可用於 Router 對話模型">
-                Router
-              </span>
-              <span v-if="model.is_router_primary" class="primary-pill" title="全院 Router 預設基礎模型">
-                ★ 全院預設
-              </span>
-              <span
-                v-if="model.is_slides_primary && model.name !== 'anila-router'"
-                class="primary-pill"
-                title="anila-studio 以此模型產生簡報並做視覺檢查"
-              >
-                ★ 主簡報
-              </span>
-              <span
-                v-if="model.is_platform_embedding"
-                class="primary-pill primary-pill--embed"
-                :title="platformEmbedTitle(model)"
-              >
-                ★ 主 embedding
-              </span>
-              <span v-if="!model.is_router_primary && !model.is_slides_primary && !model.is_platform_embedding" class="cell-meta">—</span>
+            <td class="chat-menu-cell">
+              <div class="chat-menu-badges" role="group" aria-label="對話選單標籤">
+                <TermBadge v-if="model.name === 'anila-router'" variant="warn" title="平台聊天入口，不是可選基礎模型">平台入口</TermBadge>
+                <TermBadge v-if="model.router_enabled && model.name !== 'anila-router'" variant="warn" title="可用於 Router 對話模型">Router</TermBadge>
+                <TermBadge v-if="model.is_router_primary" variant="warn" title="全院 Router 預設基礎模型">★ 全院預設</TermBadge>
+                <TermBadge
+                  v-if="model.is_slides_primary && model.name !== 'anila-router'"
+                  variant="warn"
+                  title="anila-studio 以此模型產生簡報並做視覺檢查"
+                >★ 主簡報</TermBadge>
+                <TermBadge v-if="model.is_platform_embedding" :title="platformEmbedTitle(model)">★ 主 embedding</TermBadge>
+                <span v-if="model.name !== 'anila-router' && !model.router_enabled && !model.is_router_primary && !model.is_slides_primary && !model.is_platform_embedding" class="cell-meta">—</span>
+              </div>
               <div v-if="canEditAudience(model)" class="audience-link">
                 <button type="button" class="term-action" @click="openEditModal(model, { focusGrants: true })">可使用對象</button>
               </div>
@@ -296,6 +285,7 @@
           </tr>
         </tbody>
       </table>
+      </div>
     </TermBox>
 
     <TermModal :visible="showModal" :title="editingId ? '編輯 · 模型' : '註冊 · 模型'" width="600px" @close="closeModelForm">
@@ -1642,22 +1632,30 @@ async function handlePurge(model) {
 .cap-key--set { color: var(--c-ok, #2ea043); border-color: var(--c-ok, #2ea043); background: var(--c-ok-soft); }
 .cap-key--global { color: var(--c-fg-3); }
 
-.primary-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--t-2xs);
-  color: var(--c-warn);
-  border: var(--border-w) solid var(--c-warn);
-  padding: 1px 6px;
-  background: var(--c-warn-soft);
-  letter-spacing: 0.04em;
+.models-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
 }
-.primary-pill--embed {
-  margin-left: 4px;
-  color: var(--c-fg-2);
-  border-color: var(--c-border-strong);
-  background: transparent;
+.models-table {
+  min-width: 1400px;
+}
+.model-name-cell {
+  min-width: 16rem;
+  overflow-wrap: anywhere;
+}
+.chat-menu-cell {
+  width: 12rem;
+  min-width: 12rem;
+}
+.chat-menu-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.chat-menu-badges :deep(.term-badge) {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .audience-link {

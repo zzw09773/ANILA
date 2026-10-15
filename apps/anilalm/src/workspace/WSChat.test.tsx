@@ -9,7 +9,7 @@
  *      doesn't launder the answer into a clean one;
  *   2. the bubble alone — given an ungrounded row, the reader sees it.
  */
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -138,6 +138,29 @@ const assistantMetadata = () => {
   )
   return (assistantCall?.[1] as { metadata?: Record<string, unknown> })?.metadata
 }
+
+describe('WSChat accessible composer', () => {
+  it('names disabled and enabled send consistently and exposes a named stop while streaming', async () => {
+    mockedSearch.mockRejectedValue(new Error('Network Error'))
+    let finish: (value: string) => void = () => {}
+    mockedChatStream.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    render(<MemoryRouter><WSChat flex={1} compact /></MemoryRouter>)
+    await waitFor(() => expect(mockedGetConversation).toHaveBeenCalled())
+    const send = screen.getByRole('button', { name: '送出訊息' }) as HTMLButtonElement
+    expect(send.disabled).toBe(true)
+    expect(screen.getByText('1 來源')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '製作台', exact: true })).toBeNull()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '測試問題' } })
+    expect((screen.getByRole('button', { name: '送出訊息' }) as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(send)
+    await waitFor(() => expect(mockedChatStream).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: '停止' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '送出訊息' })).toBeNull()
+    finish('答案內容夠長可以存檔')
+    await waitFor(() => expect(screen.getByRole('button', { name: '送出訊息' })).toBeTruthy())
+    expect((screen.getByRole('button', { name: '送出訊息' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
 
 describe('WSChat send() when retrieval fails', () => {
   beforeEach(() => {

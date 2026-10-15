@@ -163,7 +163,7 @@ const POLL_WARN_AFTER = 5
  *  enough that the user isn't staring at a spinner forever. */
 const POLL_FAIL_AFTER = 30
 
-export function WSStudio({ width = 380 }: { width?: number }) {
+export function WSStudio({ width = 380, fluid = false, onClose }: { width?: number; fluid?: boolean; onClose?: () => void }) {
   const { t } = useTheme()
   const collection = useWorkspaceStore((s) => s.collection)
   const setStudioOpen = useWorkspaceStore((s) => s.setStudioOpen)
@@ -476,7 +476,7 @@ export function WSStudio({ width = 380 }: { width?: number }) {
   return (
     <aside
       style={{
-        width,
+        width: fluid ? '100%' : width,
         minWidth: 0,
         height: '100%',
         background: t.surface,
@@ -527,8 +527,9 @@ export function WSStudio({ width = 380 }: { width?: number }) {
           </span>
         </div>
         <button
-          onClick={() => setStudioOpen(false)}
-          title="收起"
+          onClick={() => onClose ? onClose() : setStudioOpen(false)}
+          title="收起製作台"
+          aria-label="收起製作台"
           style={{
             width: 28,
             height: 28,

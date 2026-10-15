@@ -85,7 +85,8 @@ function mountView() {
   const el = document.createElement('div')
   document.body.appendChild(el)
   const app = createApp(View)
-  app.use(piniaRuntime.createPinia())
+  const pinia = piniaRuntime.createPinia()
+  app.use(pinia)
   app.component('router-link', {
     props: ['to'],
     setup(_, { slots }) {
@@ -94,7 +95,7 @@ function mountView() {
   })
   app.mount(el)
   mounted.push(app)
-  return { el, app }
+  return { el, app, pinia }
 }
 
 async function openCreateForm() {
@@ -115,6 +116,46 @@ test.afterEach(() => {
   mounted = []
   document.body.replaceChildren()
   resetModelFormClient()
+})
+
+test('對話選單渲染共用 badge、保留可及名稱與可使用對象動作', async () => {
+  const { el, pinia } = mountView()
+  await settle()
+  pinia._s.get('models').models = [{
+    id: 71, name: 'test-model', display_name: '測試模型', model_type: 'llm',
+    router_enabled: true, is_router_primary: true, is_slides_primary: true,
+    is_platform_embedding: true, is_active: true, health_status: 'healthy',
+  }]
+  await nextTick()
+  const group = el.querySelector('[role="group"][aria-label="對話選單標籤"]')
+  assert.ok(group)
+  assert.deepEqual([...group.querySelectorAll('.term-badge')].map((badge) => badge.textContent.trim()), [
+    'Router', '★ 全院預設', '★ 主簡報', '★ 主 embedding',
+  ])
+  assert.ok(group.querySelector('.term-badge--warn[title="全院 Router 預設基礎模型"]'))
+  const audience = buttonByLabel('可使用對象')
+  assert.ok(audience)
+  audience.click()
+  await settle()
+  assert.ok(buttonByLabel('更新'))
+  assert.ok(document.getElementById('model-grant-editor'))
+})
+
+test('Router only 與平台入口不混入破折號，無標籤才顯示破折號', async () => {
+  const { el, pinia } = mountView()
+  await settle()
+  pinia._s.get('models').models = [
+    { id: 81, name: 'router-only', router_enabled: true },
+    { id: 82, name: 'anila-router', router_enabled: false },
+    { id: 83, name: 'plain', router_enabled: false },
+  ].map((model) => ({ ...model, display_name: model.name, model_type: 'llm', is_active: true, health_status: 'healthy' }))
+  await nextTick()
+  const groups = [...el.querySelectorAll('.chat-menu-badges')]
+  assert.deepEqual(groups.map((group) => group.textContent.trim()), ['Router', '—'])
+  assert.deepEqual(groups.map((group) => group.querySelectorAll('.term-badge').length), [1, 0])
+  // 平台入口依既有契約獨立於註冊模型表，不因補標籤而放回 CRUD 列。
+  assert.ok(el.querySelector('[data-platform-chat-entry]'))
+  assert.equal(el.querySelector('[data-platform-chat-entry] .chat-menu-badges'), null)
 })
 
 test('註冊送出進行中時，按鈕停用且再按一次不會再送出', async () => {

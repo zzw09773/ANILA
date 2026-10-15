@@ -26,7 +26,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: '失敗',
 }
 
-export function WSSidebar({ width = 300 }: { width?: number }) {
+export function WSSidebar({ width = 300, fluid = false }: { width?: number; fluid?: boolean }) {
   const { t } = useTheme()
   const navigate = useNavigate()
   const collection = useWorkspaceStore((s) => s.collection)
@@ -149,7 +149,7 @@ export function WSSidebar({ width = 300 }: { width?: number }) {
   return (
     <aside
       style={{
-        width,
+        width: fluid ? '100%' : width,
         minWidth: 0,
         height: '100%',
         background: t.surface,
@@ -171,7 +171,8 @@ export function WSSidebar({ width = 300 }: { width?: number }) {
         >
           <button
             onClick={() => navigate('/')}
-            title="回到 Dashboard"
+            title="回到知識庫"
+            aria-label="回到知識庫"
             style={{
               width: 28,
               height: 28,

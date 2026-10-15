@@ -189,7 +189,9 @@ describe("HandoverInterviewDialog", () => {
 describe("ShellNav handover entry", () => {
   it("opens the interview from 增益集 without adding it to the main entries", async () => {
     const { authRequest } = mockApi();
+    window.localStorage.clear();
     render(<ShellNav user={{ role: "user" }} authRequest={authRequest} />);
+    fireEvent.click(screen.getByRole("button", { name: /增益集/ }));
     fireEvent.click(screen.getByRole("button", { name: /^交接訪談/ }));
 
     expect(await screen.findByRole("dialog", { name: "交接訪談" })).toBeTruthy();

@@ -13,6 +13,8 @@ import { WSChat } from '../workspace/WSChat'
 import { WSStudio } from '../workspace/WSStudio'
 import { useJobStream } from '../workspace/useJobStream'
 import { PanelResizeHandle } from '../workspace/PanelResizeHandle'
+import { WorkspacePanel } from '../workspace/WorkspacePanel'
+import { PlatformNav } from '../components/PlatformNav'
 import {
   DESKTOP_DRAG_MIN_PX,
   LEFT_PANEL,
@@ -47,7 +49,10 @@ export function WorkspacePage() {
   const [leftPref, setLeftPref] = useState<number>(LEFT_PANEL.default)
   const [rightPref, setRightPref] = useState<number>(RIGHT_PANEL.default)
   const [changedSide, setChangedSide] = useState<'left' | 'right' | null>(null)
-  const [containerWidth, setContainerWidth] = useState(0)
+  const [containerWidth, setContainerWidth] = useState(() => window.innerWidth)
+  const [mobilePanel, setMobilePanel] = useState<'sources' | 'studio' | null>(null)
+  const compact = containerWidth < DESKTOP_DRAG_MIN_PX
+  const closeMobilePanel = useCallback(() => setMobilePanel(null), [])
   const [dragEnabled, setDragEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
@@ -85,6 +90,7 @@ export function WorkspacePage() {
 
   useEffect(() => {
     setChangedSide(null)
+    setMobilePanel(null)
   }, [studioOpen, containerWidth])
 
   const widthRef = useRef<{ left: number; right: number }>({
@@ -392,6 +398,7 @@ export function WorkspacePage() {
         background: t.bg,
         color: t.text,
         display: 'flex',
+        flexDirection: 'column',
         overflow: 'hidden',
         position: 'relative',
       }}
@@ -399,16 +406,27 @@ export function WorkspacePage() {
       <a className="skip-link" href="#anilalm-workspace">
         跳到主要內容
       </a>
+      <div ref={(node) => node?.toggleAttribute('inert', compact && mobilePanel !== null)} aria-hidden={compact && mobilePanel ? true : undefined} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: `1px solid ${t.border}` }}>
+        <PlatformNav />
+        {compact && (
+          <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
+            {(['sources', 'studio'] as const).map((panel) => (
+              <button key={panel} type="button" aria-controls={`workspace-${panel}`} aria-expanded={mobilePanel === panel}
+                onClick={() => setMobilePanel(panel)}
+                style={{ padding: '8px 12px', whiteSpace: 'nowrap', border: `1px solid ${t.border}`, borderRadius: 8, background: t.surface, color: t.text, cursor: 'pointer' }}>
+                {panel === 'sources' ? '來源' : '製作台'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       {collectionDenied && (
         <div
           role="status"
           style={{
-            position: 'absolute',
-            top: 8,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 20,
-            maxWidth: 520,
+            flexShrink: 0,
+            margin: '8px 16px',
+            maxWidth: '100%',
             padding: '8px 12px',
             borderRadius: 8,
             background: t.surface,
@@ -421,24 +439,22 @@ export function WorkspacePage() {
           {collectionDenied}
         </div>
       )}
-      <WSSidebar width={leftWidth} />
-      {dragEnabled && <PanelResizeHandle {...leftHandle} />}
-      <WSChat flex={studioOpen ? 1.4 : 1} />
-      <Outlet />
-      {/* Separator stays outside the hidden studio wrapper. Closing the
-          studio unmounts the handle so it leaves the accessibility tree,
-          while WSStudio itself stays mounted for in-flight pollers. */}
-      {studioOpen && dragEnabled && <PanelResizeHandle {...rightHandle} />}
-      {/* Keep WSStudio mounted while closed so in-flight job pollers
-          keep running. Unmounting used to freeze pending artifacts at
-          "鑄造中" until the user reopened the panel. */}
-      <div
-        style={{
-          display: studioOpen ? 'contents' : 'none',
-        }}
-        aria-hidden={!studioOpen}
-      >
-        <WSStudio width={rightWidth} />
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0 }}>
+        <WorkspacePanel id="workspace-sources" label="來源" compact={compact}
+          open={!compact || mobilePanel === 'sources'} onClose={closeMobilePanel}>
+          <WSSidebar width={compact ? undefined : leftWidth} fluid={compact} />
+        </WorkspacePanel>
+        {dragEnabled && <PanelResizeHandle {...leftHandle} />}
+        <div ref={(node) => node?.toggleAttribute('inert', compact && mobilePanel !== null)} aria-hidden={compact && mobilePanel ? true : undefined} style={{ display: 'flex', flex: studioOpen ? 1.4 : 1, minWidth: 0 }}>
+          <WSChat flex={1} compact={compact} />
+          <Outlet />
+        </div>
+        {studioOpen && dragEnabled && <PanelResizeHandle {...rightHandle} />}
+        {/* Both panels stay mounted to preserve uploads and in-flight studio pollers. */}
+        <WorkspacePanel id="workspace-studio" label="製作台" compact={compact}
+          open={compact ? mobilePanel === 'studio' : studioOpen} onClose={closeMobilePanel}>
+          <WSStudio width={compact ? undefined : rightWidth} fluid={compact} onClose={compact ? closeMobilePanel : undefined} />
+        </WorkspacePanel>
       </div>
     </div>
   )

@@ -16,6 +16,8 @@ describe("composer 窄視窗", () => {
     expect(chat).toContain("composer-toolbar");
     expect(chat).toContain("composer-status");
     expect(html).toMatch(/@media \(max-width: 520px\)/);
+    expect(html).toMatch(/\.composer-input-col \{[^}]*flex:\s*1 0 100%/);
+    expect(chat).not.toMatch(/composer-input-col" style=\{\{[^}]*flex:/);
     // 狀態列(含「聆聽中…」)不能在窄視窗被藏:螢幕報讀和使用者都需要它。
     expect(html).not.toMatch(/\.composer-(enter-hint|status|live-status) \{ display: none; \}/);
   });

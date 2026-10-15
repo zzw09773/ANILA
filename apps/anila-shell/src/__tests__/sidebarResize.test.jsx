@@ -3,7 +3,7 @@
 import React from "react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { Sidebar } from "../chat.jsx";
@@ -41,6 +41,23 @@ function renderSidebar(extra = {}) {
     </ConfirmProvider>,
   );
 }
+
+it.each([false, true])("用量只從帳號選單開啟，收合=%s", (collapsed) => {
+  const onOpenUsage = vi.fn();
+  renderSidebar({ collapsed, onOpenUsage });
+  expect(screen.queryByText("用量")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "帳號選單" }));
+  expect(screen.getByText("設定")).toBeTruthy();
+  fireEvent.click(screen.getByText("用量"));
+  expect(onOpenUsage).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText("用量")).toBeNull();
+});
+
+it("沒有用量 callback 時不提供無效入口", () => {
+  renderSidebar();
+  fireEvent.click(screen.getByRole("button", { name: "帳號選單" }));
+  expect(screen.queryByText("用量")).toBeNull();
+});
 
 function columnOf(separator) {
   return separator.parentElement;

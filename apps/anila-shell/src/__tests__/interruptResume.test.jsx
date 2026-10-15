@@ -83,9 +83,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// 輸入框的「快速短回答／背景完整回答」也是 radio；這裡只看 ASK 卡片的選項。
-const ANSWER_DELIVERY_VALUES = new Set(["short", "background"]);
-const askRadios = () => screen.queryAllByRole("radio").filter((r) => !ANSWER_DELIVERY_VALUES.has(r.value));
+const askRadios = () => screen.queryAllByRole("radio");
 
 describe("ask_user interrupt — 主聊天流程", () => {
   it("把 object options 畫成 label+description，送出 {selected, other_text}", async () => {

@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
 
 import { Modal } from "./components.jsx";
+import UsageCharts from "./components/UsageCharts.jsx";
 import { getMyUsage } from "./runtime/conversations.js";
 import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
+  USAGE_RANGE_LABELS,
   isUsageEmpty,
   usageBodyTokens,
 } from "./runtime/usageDisplay.js";
@@ -66,80 +68,6 @@ function MetricCard({ id, label, value }) {
   );
 }
 
-function DayBars({ days }) {
-  const rows = Array.isArray(days) ? days : [];
-  if (!rows.length) return null;
-  const totals = rows.map((d) => usageBodyTokens(d));
-  const reasonings = rows.map((d) => d.reasoning_tokens || 0);
-  const max = Math.max(1, ...totals, ...reasonings);
-  return (
-    <div>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>依日</div>
-      <div
-        role="img"
-        aria-label="依日用量"
-        style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 96 }}
-      >
-        {rows.map((d, i) => {
-          const total = totals[i];
-          const reasoning = reasonings[i];
-          const totalH = Math.max(2, Math.round((total / max) * 80));
-          const reasonH = reasoning > 0 ? Math.max(2, Math.round((reasoning / max) * 80)) : 0;
-          return (
-            <div key={d.date || i} style={{ flex: 1, minWidth: 28, textAlign: "center" }}>
-              <div
-                style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 3, height: 80 }}
-                title={`${d.date}：總數 ${total} · 思考 ${reasoning}（另計）`}
-                data-day-total={total}
-                data-day-reasoning={reasoning}
-              >
-                <div
-                  aria-hidden="true"
-                  style={{
-                    width: 8,
-                    height: totalH,
-                    background: "var(--accent)",
-                    borderRadius: 2,
-                    opacity: 0.9,
-                  }}
-                />
-                {reasonH ? (
-                  <div
-                    aria-hidden="true"
-                    style={{
-                      width: 8,
-                      height: reasonH,
-                      background: "var(--fg-muted)",
-                      borderRadius: 2,
-                      opacity: 0.55,
-                    }}
-                  />
-                ) : null}
-              </div>
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 10,
-                  color: "var(--fg-muted)",
-                  fontFamily: "var(--font-mono)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {String(d.date || "").slice(5)}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 8 }}>
-        思考 tokens 另計，不含在總數
-      </div>
-    </div>
-  );
-}
-
 function SimpleTable({ title, headers, rows, empty }) {
   if (empty) return null;
   return (
@@ -174,22 +102,25 @@ function SimpleTable({ title, headers, rows, empty }) {
 
 export function UsagePage({ open, onClose, request }) {
   const [range, setRange] = useState(DEFAULT_USAGE_RANGE);
-  const [data, setData] = useState(null);
+  const [result, setResult] = useState(null);
+  const data = result?.range === range && result?.request === request ? result.data : null;
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return undefined;
     let cancelled = false;
+    const requestedAt = Date.now();
+    setResult(null);
     setLoading(true);
     setError("");
     getMyUsage(request, range)
       .then((row) => {
-        if (!cancelled) setData(row);
+        if (!cancelled) setResult({ range, request, requestedAt, data: row });
       })
       .catch((err) => {
         if (!cancelled) {
-          setData(null);
+          setResult(null);
           setError(err?.message || "無法載入用量");
         }
       })
@@ -228,7 +159,7 @@ export function UsagePage({ open, onClose, request }) {
                 cursor: "pointer",
               }}
             >
-              {r}
+              {USAGE_RANGE_LABELS[r]}
             </button>
           ))}
         </div>
@@ -238,12 +169,18 @@ export function UsagePage({ open, onClose, request }) {
         ) : null}
 
         {loading && !data && !error ? (
-          <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>載入用量中…</div>
+          <div role="status" style={{ fontSize: 13, color: "var(--fg-muted)" }}>載入用量中…</div>
         ) : null}
 
         {data ? (
           <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 12, color: "var(--fg-muted)" }}>
+              {USAGE_RANGE_LABELS[range]} · 台北時間（UTC+8）。首尾日期可能不足一天；每週從週一開始，累計僅限所選期間。
+            </p>
+            <p style={{ margin: 0, fontSize: 11, color: "var(--fg-muted)" }}>
+              日曆日期範圍依本次查詢時間估算，目前最多顯示近30天。
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 120px), 1fr))", gap: 8 }}>
               <MetricCard id="requests" label="請求數" value={data.requests} />
               <MetricCard id="prompt_tokens" label="輸入 tokens" value={data.prompt_tokens} />
               <MetricCard id="completion_tokens" label="輸出 tokens" value={data.completion_tokens} />
@@ -257,6 +194,7 @@ export function UsagePage({ open, onClose, request }) {
               思考 tokens {data.reasoning_tokens ?? 0}（另計，不含在總數）
             </div>
 
+            <UsageCharts key={`${range}-${result.requestedAt}`} rows={data.by_day} range={range} requestedAt={result.requestedAt} />
             {isUsageEmpty(data) ? (
               <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>這段期間沒有用量</div>
             ) : (
@@ -275,7 +213,6 @@ export function UsagePage({ open, onClose, request }) {
                     </tr>
                   ))}
                 />
-                <DayBars days={data.by_day} />
                 <SimpleTable
                   title="依類型"
                   headers={["類型", "請求", "合計 tokens"]}

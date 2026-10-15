@@ -140,21 +140,6 @@ export const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
           </div>
         </Row>
 
-        <Row label="AGENT SWITCHER 位置">
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-            {[
-              { k: "top",    label: "頂部" },
-              { k: "bottom", label: "靠近輸入框" },
-            ].map(o => (
-              <button key={o.k} onClick={() => update({ agentSwitcherPosition: o.k })} style={{
-                padding: "5px 6px", fontSize: 11, fontWeight: 500,
-                background: tweaks.agentSwitcherPosition === o.k ? "var(--accent-soft)" : "var(--bg-subtle)",
-                border: "1px solid " + (tweaks.agentSwitcherPosition === o.k ? "var(--accent)" : "var(--border)"),
-                borderRadius: 4, cursor: "pointer", color: "var(--fg)",
-              }}>{o.label}</button>
-            ))}
-          </div>
-        </Row>
       </div>
     </div>
   );

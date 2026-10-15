@@ -113,6 +113,29 @@ afterEach(() => {
 })
 
 describe('Dashboard shared-with-me list (recipient B)', () => {
+  it('offers a native collection link and independent pin/delete controls plus same-origin platform links', async () => {
+    mockClientGet()
+    render(<MemoryRouter basename="/anilalm" initialEntries={['/anilalm/']}><DashboardPage /></MemoryRouter>)
+    const link = await screen.findByRole('link', { name: '我自己的知識庫' })
+    expect(link.getAttribute('href')).toBe('/anilalm/c/1')
+    expect(link.querySelector('button')).toBeNull()
+    link.focus()
+    expect(document.activeElement).toBe(link)
+    fireEvent.click(screen.getByRole('button', { name: '釘選到頂端' }))
+    expect(screen.getByRole('button', { name: '取消釘選' }).getAttribute('aria-pressed')).toBe('true')
+    expect(navigate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '刪除知識庫', exact: true }))
+    expect(screen.getByRole('dialog', { name: '刪除知識庫確認' })).toBeTruthy()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(screen.getByRole('link', { name: 'ANILA 對話' }).getAttribute('href')).toBe('/anila/app')
+    expect(screen.getByRole('link', { name: '治理中心' }).getAttribute('href')).toBe('/')
+    const create = screen.getAllByRole('button', { name: '新建知識庫', exact: true })[0]
+    expect(create.style.whiteSpace).toBe('nowrap')
+    expect(create.style.flexShrink).toBe('0')
+    expect(create.parentElement?.style.flexWrap).toBe('wrap')
+    localStorage.removeItem('anilalm:pinnedCollectionIds')
+  })
+
   it('shows shared rows from the real load path and routes both kinds; owned-collection rows stay out', async () => {
     mockClientGet()
     useAuthStore.setState({

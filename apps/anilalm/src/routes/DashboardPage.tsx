@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
+import { PlatformNav } from '../components/PlatformNav'
 import { useTheme } from '../theme/ThemeContext'
 import { useAuthStore } from '../store/auth'
 import {
@@ -140,8 +141,10 @@ export function DashboardPage() {
       {/* Topbar */}
       <header
         style={{
-          height: 60,
-          padding: '0 clamp(16px, 6vw, 32px)',
+          minHeight: 60,
+          padding: '10px clamp(16px, 6vw, 32px)',
+          flexWrap: 'wrap',
+          gap: 10,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -230,6 +233,10 @@ export function DashboardPage() {
         </div>
       </header>
 
+      <div style={{ padding: '10px clamp(16px, 6vw, 32px)', borderBottom: `1px solid ${t.border}` }}>
+        <PlatformNav />
+      </div>
+
       {/* Main */}
       <main id="anilalm-main" tabIndex={-1} style={{ flex: 1, padding: '40px clamp(16px, 6vw, 64px)', overflow: 'auto' }}>
         <div
@@ -263,7 +270,7 @@ export function DashboardPage() {
               {collections.reduce((acc, c) => acc + c.document_count, 0)} 份文件
             </p>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', minWidth: 0, maxWidth: '100%' }}>
             <label
               style={{
                 display: 'flex',
@@ -275,7 +282,10 @@ export function DashboardPage() {
                 border: `1px solid ${t.border}`,
                 borderRadius: 10,
                 minWidth: 0,
-                width: 'min(100%, 280px)',
+                width: 280,
+                maxWidth: '100%',
+                boxSizing: 'border-box',
+                flex: '1 1 220px',
               }}
             >
               <span className="visually-hidden">搜尋知識庫</span>
@@ -313,6 +323,8 @@ export function DashboardPage() {
                 alignItems: 'center',
                 gap: 6,
                 boxShadow: `0 6px 20px -8px ${t.accent}`,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
               }}
             >
               <Icon name="plus" size={15} stroke="#fff" /> 新建知識庫
@@ -467,7 +479,6 @@ export function DashboardPage() {
                 key={c.id}
                 c={c}
                 pinned={pinned.has(c.id)}
-                onOpen={() => navigate(`/c/${c.id}`)}
                 onTogglePin={() => togglePin(c.id)}
                 onDelete={() => setPendingDelete(c.id)}
               />
@@ -533,19 +544,17 @@ export function DashboardPage() {
 interface CollectionCardProps {
   c: Collection
   pinned: boolean
-  onOpen: () => void
   onTogglePin: () => void
   onDelete: () => void
 }
 
-function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: CollectionCardProps) {
+function CollectionCard({ c, pinned, onTogglePin, onDelete }: CollectionCardProps) {
   const { theme, t } = useTheme()
   const accent = accentForId(c.id)
   const [hover, setHover] = useState(false)
 
   return (
     <div
-      onClick={onOpen}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -557,7 +566,6 @@ function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: Collection
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
-        cursor: 'pointer',
         position: 'relative',
         boxShadow: theme === 'light' ? '0 1px 2px rgba(0,0,0,0.03)' : 'none',
         transition: 'all 120ms',
@@ -632,16 +640,21 @@ function CollectionCard({ c, pinned, onOpen, onTogglePin, onDelete }: Collection
             </button>
           </div>
         </div>
-        <div
+        <Link
+          to={`/c/${c.id}`}
+          title={c.name}
           style={{
+            display: 'block',
             fontWeight: 500,
             fontSize: 15,
             marginBottom: 6,
             letterSpacing: -0.2,
+            color: t.text,
+            overflowWrap: 'anywhere',
           }}
         >
-          {shortName(c.name, 36)}
-        </div>
+          {c.name}
+        </Link>
         <div
           style={{
             fontSize: 12,

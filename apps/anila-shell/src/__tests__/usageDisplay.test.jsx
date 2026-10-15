@@ -110,7 +110,7 @@ const CONV_B = {
 };
 
 async function openUsagePage() {
-  fireEvent.click(screen.getByRole("button", { name: "平台入口" }));
+  fireEvent.click(screen.getByRole("button", { name: "帳號選單" }));
   fireEvent.click(screen.getByText("用量"));
   return screen.findByRole("dialog", { name: "我的用量" });
 }
@@ -122,6 +122,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -253,6 +254,7 @@ describe("用量 API 包裝", () => {
 
 describe("我的用量頁", () => {
   it("四張卡數字正確，切 range 重打 API", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-15T04:00:00Z"));
     const { backend } = await mountOrchestrator({
       backend: createFakeBackend({
         myUsageByRange: { "7d": SAMPLE_7D, "30d": SAMPLE_30D },
@@ -267,17 +269,22 @@ describe("我的用量頁", () => {
     expect(screen.getByTestId("usage-metric-total_tokens").textContent).toContain("3000");
     expect(screen.getByTestId("usage-metric-total_tokens").textContent).not.toContain("3345");
     expect(screen.getByTestId("usage-metric-reasoning_tokens").textContent).toContain("345");
-    expect(screen.getByText("思考 tokens 另計，不含在總數")).toBeTruthy();
-    const firstDay = document.querySelector("[data-day-total]");
-    expect(firstDay.getAttribute("data-day-total")).toBe("1200");
-    expect(firstDay.getAttribute("data-day-reasoning")).toBe("100");
-    expect(firstDay.getAttribute("title")).toMatch(/總數 1200/);
-    expect(firstDay.getAttribute("title")).not.toMatch(/總數 1300/);
+    expect(screen.getByText(/總數＝輸入＋輸出/)).toBeTruthy();
+    expect(screen.getByRole("img", { name: "每日 Token 折線圖，僅所選期間" })).toBeTruthy();
+    expect(document.querySelectorAll("[data-usage-date]").length).toBeLessThanOrEqual(8);
+    const day = document.querySelector('[data-usage-date="2026-09-14"]');
+    expect(day.dataset.dayTotal).toBe("1200");
+    expect(day.dataset.dayReasoning).toBe("100");
+    expect(day.title).toContain("1,200 tokens · 思考 100（另計）");
+    expect(day.getAttribute("aria-label")).toBe(day.title);
+    fireEvent.click(day);
+    expect(screen.getByRole("status").textContent).toBe(day.title);
+    expect(screen.getByText(/2026-09-14：1,200 tokens · 思考 100（另計）/, { selector: "li" })).toBeTruthy();
     expect(screen.getByText("chat")).toBeTruthy();
     expect(screen.getByText("2700")).toBeTruthy();
     expect(backend.requestsFor("/api/usage/me", "GET").at(-1).query).toContain("range=7d");
 
-    fireEvent.click(screen.getByRole("button", { name: "30d" }));
+    fireEvent.click(screen.getByRole("button", { name: "近30天" }));
     await waitFor(() => {
       expect(screen.getByTestId("usage-metric-requests").textContent).toContain("40");
     });
