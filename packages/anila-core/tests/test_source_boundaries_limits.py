@@ -320,4 +320,3 @@ def test_pdf_atomic_page_limit_depends_on_strategy_and_reliable_markers(
         assert blocked.value.code == "E_CHUNK_TOO_LARGE"
     else:
         validate_structure_limits(text, metadata, preserve_pages=preserve_pages)
-
