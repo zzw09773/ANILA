@@ -549,7 +549,7 @@ def test_unclosed_fence_scans_each_line_once(monkeypatch):
     chunks = get_chunker("fixed").chunk(body, {}, {"size": 1, "overlap": 0})
     assert len(chunks) == 1 and chunks[0].content == body
     masked = structure.mask_fenced_code(body)
-    assert masked == " " * len(body)
+    assert masked == "".join(char if char in "\r\n" else " " for char in body)
     chunks = get_chunker("markdown-aware").chunk(body, {}, {"max_leaf_tokens": 100_000})
     assert len(chunks) == 1 and chunks[0].content == body
 

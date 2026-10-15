@@ -11,6 +11,37 @@ from anila_core.ingestion.parser_registry import ParsedDocument, ParserRegistry
 from anila_core.ingestion.parsers import extract_text
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_short_fence_followed_immediately_by_heading_preserves_lines_and_offsets(newline):
+    from anila_core.ingestion.chunking_plugins.structure import mask_fenced_code
+
+    text = newline.join(
+        [
+            "```python",
+            "# Not a heading",
+            "value = 1",
+            "```",
+            "## Exceptions",
+            "After the code.",
+            "",
+        ]
+    )
+    chunks = get_chunker("markdown-aware").chunk(text, {}, {"max_leaf_tokens": 1024})
+    following = [chunk for chunk in chunks if chunk.metadata["heading"] == "Exceptions"]
+    assert len(following) == 1
+    chunk = following[0]
+    assert chunk.metadata["heading_path"] == ["Exceptions"]
+    assert chunk.metadata["heading_level"] == 2
+    start = text.index("## Exceptions")
+    assert chunk.metadata["offset_chars"] == start
+    assert chunk.content == text[start:]
+    assert all("Not a heading" not in chunk.metadata["heading_path"] for chunk in chunks)
+    masked = mask_fenced_code(text)
+    assert len(masked) == len(text)
+    assert masked[:start] == "".join(char if char in "\r\n" else " " for char in text[:start])
+    assert masked[start:] == text[start:]
+
+
 @pytest.mark.parametrize("strategy", ["hierarchical", "markdown-aware", "fixed"])
 @pytest.mark.parametrize(
     "block",

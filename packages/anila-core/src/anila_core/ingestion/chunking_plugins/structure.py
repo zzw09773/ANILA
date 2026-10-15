@@ -84,13 +84,18 @@ def _structural_blocks(text: str) -> list[_BlockSpan]:
 
 
 def mask_fenced_code(text: str) -> str:
-    """Replace fenced source with equal-length spaces without regex backtracking."""
+    """Mask fenced source, retaining CR/LF and offsets without backtracking."""
     pieces: list[str] = []
     cursor = 0
     for block in _structural_blocks(text):
         if block.kind != "fence":
             continue
-        pieces.extend([text[cursor : block.first], " " * (block.last - block.first)])
+        pieces.extend(
+            [
+                text[cursor : block.first],
+                "".join(char if char in "\r\n" else " " for char in block.content),
+            ]
+        )
         cursor = block.last
     pieces.append(text[cursor:])
     return "".join(pieces)
