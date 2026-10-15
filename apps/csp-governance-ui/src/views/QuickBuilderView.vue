@@ -125,7 +125,7 @@
     </div>
     <template v-if="panel === 'canvas'">
       <p class="hint">從模組庫拖入畫布，或按模組加入。拖曳步驟標題可移動；標題取得焦點後可用方向鍵移動。拖曳出口到另一個步驟的「接到這裡」即可連線，也可在下方表單選起點與終點。</p>
-      <div class="qb-workspace">
+      <div class="qb-workspace" :class="{'qb-workspace--config-closed': !configOpen}">
         <aside class="qb-palette" aria-label="模組庫">
           <h2>模組庫</h2>
           <button v-for="m in modules" :key="m.kind" :disabled="!editable || busy" draggable="true" :title="m.description" @dragstart="paletteDrag($event, m.kind)" @click="addNode(m.kind)">
@@ -139,39 +139,64 @@
           </button>
           <p v-if="!catalog.mcp_tools?.length">尚無可用工具。請聯絡管理員登錄與核准。</p>
         </aside>
-        <div class="qb-canvas-scroll" tabindex="0" aria-label="流程畫布，可捲動查看所有步驟" @dragover.prevent @drop.prevent="dropNode">
-          <div class="qb-canvas" :style="{width: canvasWidth + 'px', height: canvasHeight + 'px'}">
-            <svg :width="canvasWidth" :height="canvasHeight" class="qb-lines" aria-hidden="true">
-              <defs>
-                <marker id="qb-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-                  <path d="M0,0 L0,6 L8,3 z" fill="currentColor"/>
-                </marker>
-              </defs>
-              <g v-for="(edge, i) in form.graph.edges" :key="i">
-                <path :d="edgePath(edge)" marker-end="url(#qb-arrow)"/>
-                <text :x="edgePoint(edge).x" :y="edgePoint(edge).y">{{ edge.branch === 'true' ? '成立' : edge.branch === 'false' ? '不成立' : '' }}</text>
-              </g>
-            </svg>
-            <article v-for="node in form.graph.nodes" :key="node.id" class="qb-node" :aria-label="`流程步驟：${node.label}`" :class="{selected: selectedId === node.id}" :style="{left: node.position.x + 'px', top: node.position.y + 'px'}">
-              <button class="qb-node-title" :aria-label="`選取${node.label}；方向鍵移動`" @click="selectedId = node.id" @pointerdown="startMove($event, node)" @pointermove="moveNode($event, node)" @pointerup="endMove" @pointercancel="endMove" @keydown="moveKey($event, node)">
-                {{ node.label }}
-              </button>
-              <small>{{ modules.find(m => m.kind === node.kind)?.name }}</small>
-              <div class="qb-ports">
-                <template v-if="node.kind === 'condition'">
-                  <button :disabled="!editable || busy" draggable="true" :aria-label="`從${node.label}的成立出口連線`" @dragstart="edgeDrag($event, node.id, 'true')" @click="sourceId = node.id; branch = 'true'">成立 →</button>
-                  <button :disabled="!editable || busy" draggable="true" :aria-label="`從${node.label}的不成立出口連線`" @dragstart="edgeDrag($event, node.id, 'false')" @click="sourceId = node.id; branch = 'false'">不成立 →</button>
-                </template>
-                <button v-else :disabled="!editable || busy || node.kind === 'output'" draggable="true" :aria-label="`從${node.label}連線`" @dragstart="edgeDrag($event, node.id)" @click="sourceId = node.id">從此連線</button>
-                <button :disabled="!editable || busy || node.kind === 'input'" :aria-label="`接到${node.label}`" @dragover.prevent @drop.stop.prevent="edgeDrop($event, node.id)" @click="targetId = node.id; addEdge()">
-                  接到這裡
-                </button>
-              </div>
-            </article>
+        <section class="qb-stage" aria-label="流程編輯區">
+          <div class="qb-canvas-tools" role="group" aria-label="畫布檢視控制">
+            <strong>流程畫布 <small>{{ form.graph.nodes.length }} 個步驟</small></strong>
+            <div class="qb-zoom-tools">
+              <button aria-label="縮小畫布" :disabled="zoom <= 0.4" @click="changeZoom(zoom - 0.1)">縮小</button>
+              <output aria-label="畫布縮放比例" aria-live="polite">{{ Math.round(zoom * 100) }}%</output>
+              <button aria-label="放大畫布" :disabled="zoom >= 1.5" @click="changeZoom(zoom + 0.1)">放大</button>
+              <button @click="changeZoom(1)">100%</button>
+              <button :aria-pressed="fitMode" @click="fitCanvas">適合畫面</button>
+            </div>
+            <div class="qb-view-tools">
+              <button :disabled="!editable || busy" @click="arrangeNodes">整理排列</button>
+              <button :aria-expanded="configOpen" aria-controls="qb-step-settings" @click="configOpen = !configOpen">{{ configOpen ? '收合步驟設定' : '顯示步驟設定' }}</button>
+            </div>
           </div>
-        </div>
-        <aside class="qb-config" aria-label="步驟設定">
-          <h2>步驟設定</h2>
+          <p class="qb-canvas-status">{{ selected ? `已選取：${selected.label}` : '選取步驟後可調整設定' }}<span v-if="!configOpen">；步驟設定已收合</span>。可捲動查看，按「適合畫面」查看完整流程。</p>
+          <p v-if="drawnEdges.some(item => !item.geometry)" class="qb-canvas-status">部分步驟重疊或位置太近，連線暫時無法清楚顯示。可按「整理排列」重新排列步驟（GRAPH_LAYOUT）。</p>
+          <div ref="canvasViewport" class="qb-canvas-scroll" tabindex="0" aria-label="流程畫布，可捲動查看所有步驟" @dragover.prevent @drop.prevent="dropNode">
+            <div class="qb-canvas-size" :style="{width: canvasWidth * zoom + 'px', height: canvasHeight * zoom + 'px'}">
+              <div class="qb-canvas" :style="{width: canvasWidth + 'px', height: canvasHeight + 'px', transform: `scale(${zoom})`}">
+                <div class="qb-world" :style="{left: -canvasBounds.x + 'px', top: -canvasBounds.y + 'px'}">
+                  <svg :width="canvasWidth" :height="canvasHeight" class="qb-lines" aria-hidden="true">
+                    <defs>
+                      <marker id="qb-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                        <path d="M0,0 L0,6 L8,3 z" fill="currentColor"/>
+                      </marker>
+                    </defs>
+                    <g v-for="({edge, geometry}, i) in drawnEdges" :key="i" :class="{'qb-edge--false': edge.branch === 'false'}">
+                      <path :d="geometry?.path || ''" marker-end="url(#qb-arrow)"/>
+                      <g v-if="geometry && edge.branch" class="qb-edge-label" :transform="`translate(${geometry.label.x}, ${geometry.label.y})`">
+                        <rect :x="edge.branch === 'false' ? -32 : -24" y="-13" :width="edge.branch === 'false' ? 64 : 48" height="26" rx="4"/>
+                        <text text-anchor="middle" dominant-baseline="central">{{ edge.branch === 'true' ? '成立' : '不成立' }}</text>
+                      </g>
+                    </g>
+                  </svg>
+                  <article v-for="node in form.graph.nodes" :key="node.id" class="qb-node" :aria-label="`流程步驟：${node.label}`" :class="{selected: selectedId === node.id}" :style="{left: node.position.x + 'px', top: node.position.y + 'px'}">
+                    <button class="qb-node-title" :title="node.label" :aria-label="`選取${node.label}；方向鍵移動`" @click="selectedId = node.id" @pointerdown="startMove($event, node)" @pointermove="moveNode($event, node)" @pointerup="endMove" @pointercancel="endMove" @keydown="moveKey($event, node)">
+                      {{ node.label }}
+                    </button>
+                    <small>{{ modules.find(m => m.kind === node.kind)?.name }}</small>
+                    <div class="qb-ports">
+                      <template v-if="node.kind === 'condition'">
+                        <button :disabled="!editable || busy" draggable="true" :aria-label="`從${node.label}的成立出口連線`" @dragstart="edgeDrag($event, node.id, 'true')" @click="sourceId = node.id; branch = 'true'">成立 →</button>
+                        <button :disabled="!editable || busy" draggable="true" :aria-label="`從${node.label}的不成立出口連線`" @dragstart="edgeDrag($event, node.id, 'false')" @click="sourceId = node.id; branch = 'false'">不成立 →</button>
+                      </template>
+                      <button v-else :disabled="!editable || busy || node.kind === 'output'" draggable="true" :aria-label="`從${node.label}連線`" @dragstart="edgeDrag($event, node.id)" @click="sourceId = node.id">從此連線</button>
+                      <button :disabled="!editable || busy || node.kind === 'input'" :aria-label="`接到${node.label}`" @dragover.prevent @drop.stop.prevent="edgeDrop($event, node.id)" @click="targetId = node.id; addEdge()">
+                        接到這裡
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <aside v-show="configOpen" id="qb-step-settings" class="qb-config" aria-label="步驟設定">
+          <div class="qb-config-head"><h2>步驟設定</h2><button aria-label="收合步驟設定面板" @click="configOpen = false">收合</button></div>
           <p v-if="!selected">選取畫布上的步驟，再調整設定。</p>
           <fieldset v-else :disabled="!editable || busy">
             <NodeSettings :key="selected.id" :node="selected" :catalog="catalog" :fields="extractFields"/>
@@ -341,7 +366,7 @@
   </div>
 </template>
 <script setup>
-import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
 import { PageHead } from '../components/cli';
 import { extractError, errorType } from '../api/errors';
@@ -351,7 +376,7 @@ import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
 import { retrievalNotices, modelContextNotices } from '../quickBuilder/retrievalNotices';
-import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel } from '../quickBuilder/graph';
+import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel, GRAPH_GEOMETRY, layoutGraph, edgeGeometry, graphBounds, canvasPoint, canvasDelta } from '../quickBuilder/graph';
 const assistants = ref([]),
   templates = ref([]),
   catalog = ref({
@@ -405,6 +430,7 @@ const blank = () => ({
   target_department_ids: []
 });
 const form = reactive(blank());
+const configOpen = ref(true), canvasViewport = ref(null), zoom = ref(1), fitMode = ref(false);
 const versions = computed(() => detail.value?.versions || []);
 const version = computed(() => versions.value.find(v => String(v.id) === String(versionId.value)));
 const editable = computed(() => !blocked.value && actorReady.value && (!detail.value || detail.value.can_edit === true && (!version.value || Number(version.value.revision) === Number(detail.value.draft_revision))));
@@ -413,8 +439,56 @@ const selected = computed(() => form.graph.nodes.find(n => n.id === selectedId.v
 const sourceNode = computed(() => form.graph.nodes.find(n => n.id === sourceId.value));
 const chosenTemplate = computed(() => templates.value.find(t => String(t.id) === String(templateId.value)));
 const extractFields = computed(() => [...new Set(form.graph.nodes.filter(n => n.kind === 'extract').flatMap(n => n.config.fields || []))]);
-const canvasWidth = computed(() => Math.max(740, ...form.graph.nodes.map(n => n.position.x + 220)));
-const canvasHeight = computed(() => Math.max(500, ...form.graph.nodes.map(n => n.position.y + 150)));
+const drawnEdges = computed(() => form.graph.edges.map(edge => ({edge, geometry: edgeGeometry(form.graph, edge)})));
+const canvasBounds = computed(() => graphBounds(form.graph, {}, drawnEdges.value.map(item => item.geometry)));
+const contentBounds = computed(() => graphBounds(form.graph, {includeOrigin: false}, drawnEdges.value.map(item => item.geometry)));
+const canvasWidth = computed(() => Math.max(480, canvasBounds.value.width));
+const canvasHeight = computed(() => Math.max(500, canvasBounds.value.height));
+async function changeZoom(value) {
+  const viewport = canvasViewport.value;
+  const previous = zoom.value;
+  const centre = viewport ? {x: (viewport.scrollLeft + viewport.clientWidth / 2) / previous, y: (viewport.scrollTop + viewport.clientHeight / 2) / previous} : null;
+  zoom.value = Math.min(1.5, Math.max(0.4, Math.round(value * 100) / 100));
+  fitMode.value = false;
+  await nextTick();
+  if (viewport && centre) {
+    viewport.scrollLeft = Math.max(0, centre.x * zoom.value - viewport.clientWidth / 2);
+    viewport.scrollTop = Math.max(0, centre.y * zoom.value - viewport.clientHeight / 2);
+  }
+}
+async function fitCanvas() {
+  fitMode.value = true;
+  await nextTick();
+  const viewport = canvasViewport.value;
+  if (!viewport?.clientWidth || !viewport.clientHeight) return;
+  const bounds = contentBounds.value;
+  zoom.value = Math.min(1, Math.max(1, viewport.clientWidth - 48) / bounds.width, Math.max(1, viewport.clientHeight - 48) / bounds.height);
+  await nextTick();
+  viewport.scrollLeft = Math.max(0, (bounds.x - canvasBounds.value.x + bounds.width / 2) * zoom.value - viewport.clientWidth / 2);
+  viewport.scrollTop = Math.max(0, (bounds.y - canvasBounds.value.y + bounds.height / 2) * zoom.value - viewport.clientHeight / 2);
+}
+async function resetCanvasView() {
+  zoom.value = 1;
+  fitMode.value = false;
+  await nextTick();
+  if (canvasViewport.value) {
+    canvasViewport.value.scrollLeft = 0;
+    canvasViewport.value.scrollTop = 0;
+  }
+}
+function arrangeNodes() {
+  if (!editable.value || busy.value) return;
+  form.graph = layoutGraph(form.graph);
+  notice.value = '已整理步驟位置；流程與設定不變。儲存新版本可保留這個排列。';
+  fitCanvas();
+}
+let canvasObserver;
+watch([canvasViewport, configOpen], async () => {
+  await nextTick();
+  canvasObserver?.disconnect();
+  if (canvasViewport.value) canvasObserver?.observe(canvasViewport.value);
+  if (fitMode.value) fitCanvas();
+});
 const fieldLabels = {
   name: '助手名稱',
   description: '用途說明',
@@ -469,6 +543,7 @@ function setForm(data) {
   selectedId.value = form.graph.nodes[0]?.id || '';
   baseline.value = JSON.stringify(form);
   testResult.value = null;
+  resetCanvasView();
 }
 function newAssistant() {
   if (blocked.value || !actorReady.value || !discard()) return;
@@ -543,10 +618,11 @@ function viewVersion(event) {
 }
 function applyTemplate() {
   if (!editable.value || !discard()) return;
-  form.graph = clone(chosenTemplate.value.graph);
+  form.graph = layoutGraph(chosenTemplate.value.graph);
   form.name = chosenTemplate.value.name;
   form.description = chosenTemplate.value.description;
   selectedId.value = form.graph.nodes[0]?.id;
+  resetCanvasView();
   notice.value = '已套用範本，請選擇模型、文件集或查詢工具後儲存。';
 }
 function parseDepartments(value) {
@@ -677,10 +753,22 @@ async function test() {
 }
 function addNode(kind, position, toolId) {
   if (!editable.value || busy.value) return;
-  const n = makeNode(kind, form.graph.nodes.length, position);
+  fitMode.value = false;
+  const nodes = form.graph.nodes;
+  const available = position || {
+    x: nodes.length ? Math.min(...nodes.map(node => node.position.x)) : GRAPH_GEOMETRY.padding,
+    y: nodes.length ? Math.max(...nodes.map(node => node.position.y + GRAPH_GEOMETRY.nodeHeight)) + GRAPH_GEOMETRY.rankGap : GRAPH_GEOMETRY.padding
+  };
+  const n = makeNode(kind, nodes.length, available);
   if (toolId) n.config.tool_id = toolId;
   form.graph.nodes.push(n);
   selectedId.value = n.id;
+  if (!position) nextTick(() => {
+    const viewport = canvasViewport.value;
+    if (!viewport?.clientWidth || !viewport.clientHeight) return;
+    viewport.scrollLeft = Math.max(0, (n.position.x - canvasBounds.value.x) * zoom.value - 24);
+    viewport.scrollTop = Math.max(0, (n.position.y - canvasBounds.value.y) * zoom.value - 24);
+  });
 }
 function edgeDrag(event, source, branch) {
   if (!editable.value || busy.value) {
@@ -719,9 +807,10 @@ function dropNode(event) {
     if (!raw) return;
     const data = JSON.parse(raw);
     const rect = event.currentTarget.getBoundingClientRect();
+    const point = canvasPoint(event, {left: rect.left + event.currentTarget.clientLeft, top: rect.top + event.currentTarget.clientTop, scrollLeft: event.currentTarget.scrollLeft, scrollTop: event.currentTarget.scrollTop, zoom: zoom.value});
     addNode(data.kind, {
-      x: Math.max(0, event.clientX - rect.left + event.currentTarget.scrollLeft - 80),
-      y: Math.max(0, event.clientY - rect.top + event.currentTarget.scrollTop - 20)
+      x: Math.max(0, point.x + canvasBounds.value.x - GRAPH_GEOMETRY.nodeWidth / 2),
+      y: Math.max(0, point.y + canvasBounds.value.y - 20)
     }, data.toolId);
   } catch (e) {
     fail(e);
@@ -736,14 +825,17 @@ function startMove(e, node) {
     x: e.clientX,
     y: e.clientY,
     left: node.position.x,
-    top: node.position.y
+    top: node.position.y,
+    zoom: zoom.value
   };
   e.currentTarget.setPointerCapture?.(e.pointerId);
 }
 function moveNode(e, node) {
   if (moving?.id !== node.id) return;
-  node.position.x = Math.max(0, moving.left + e.clientX - moving.x);
-  node.position.y = Math.max(0, moving.top + e.clientY - moving.y);
+  const delta = canvasDelta({x: e.clientX - moving.x, y: e.clientY - moving.y}, moving.zoom);
+  if (delta.x || delta.y) fitMode.value = false;
+  node.position.x = Math.max(0, moving.left + delta.x);
+  node.position.y = Math.max(0, moving.top + delta.y);
 }
 function endMove() {
   moving = null;
@@ -758,6 +850,7 @@ function moveKey(e, node) {
   };
   if (!deltas[e.key]) return;
   e.preventDefault();
+  fitMode.value = false;
   node.position.x = Math.max(0, node.position.x + deltas[e.key][0]);
   node.position.y = Math.max(0, node.position.y + deltas[e.key][1]);
 }
@@ -777,31 +870,6 @@ function addEdge() {
     fail(e);
   }
 }
-function edgePoint(edge) {
-  const a = form.graph.nodes.find(n => n.id === edge.source)?.position || {
-    x: 0,
-    y: 0
-  };
-  const b = form.graph.nodes.find(n => n.id === edge.target)?.position || {
-    x: 0,
-    y: 0
-  };
-  return {
-    x: (a.x + b.x) / 2 + 90,
-    y: (a.y + b.y) / 2 + 44
-  };
-}
-function edgePath(edge) {
-  const a = form.graph.nodes.find(n => n.id === edge.source)?.position || {
-    x: 0,
-    y: 0
-  };
-  const b = form.graph.nodes.find(n => n.id === edge.target)?.position || {
-    x: 0,
-    y: 0
-  };
-  return `M ${a.x + 180} ${a.y + 54} C ${a.x + 230} ${a.y + 54}, ${b.x - 50} ${b.y + 54}, ${b.x} ${b.y + 54}`;
-}
 function beforeUnload(e) {
   if (dirty.value) {
     e.preventDefault();
@@ -811,9 +879,13 @@ function beforeUnload(e) {
 baseline.value = JSON.stringify(form);
 onMounted(() => {
   load();
+  if (typeof ResizeObserver !== 'undefined') {
+    canvasObserver = new ResizeObserver(() => { if (fitMode.value) fitCanvas(); });
+    if (canvasViewport.value) canvasObserver.observe(canvasViewport.value);
+  }
   window.addEventListener('beforeunload', beforeUnload);
 });
-onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
+onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); canvasObserver?.disconnect(); });
 onBeforeRouteLeave(() => discard());
 </script>
 <style src="../quickBuilder/builder.css"></style>

@@ -7,7 +7,7 @@ import vue from '@vitejs/plugin-vue'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolve, dirname } from 'node:path'
-import { calls, reset, setFailure, setPending, setManageTemplates, changeActor, mutationRequests, holdDetail, releaseDetail, setRetrieval, setReadiness, failReadiness, holdReadiness, releaseReadiness, setTestSteps } from './helpers/quickBuilderMock.mjs'
+import { calls, reset, setFailure, setPending, setManageTemplates, changeActor, mutationRequests, holdDetail, releaseDetail, setRetrieval, setReadiness, failReadiness, holdReadiness, releaseReadiness, setTestSteps, setGraph } from './helpers/quickBuilderMock.mjs'
 import { connect, removeNode, maskTrace, modules } from '../src/quickBuilder/graph.js'
 import { RAG_DEFAULTS, RAG_MODES } from '../src/quickBuilder/ragSettings.js'
 import { DOCUMENT_DEFAULTS, DOCUMENT_PRESETS, availableDocumentPresets } from '../src/quickBuilder/documentSettings.js'
@@ -83,3 +83,130 @@ test('模型調整用獨立白話事件，保留前面RAG全文紀錄且不顯�
 
 test('缺LO保留office_converter_missing類型，格式不能越過blocked必要工具而誤報ready',async()=>{await openReadinessPanel();const fixture=readinessFixture();fixture.checks.find(c=>c.id==='libreoffice').type='office_converter_missing';fixture.formats.find(f=>f.id==='legacy_presentation').status='ready';setReadiness(fixture);await click('檢查離線工具');const panel=document.querySelector('.qb-readiness');assert.match(panel.textContent,/office_converter_missing/);assert.doesNotMatch(panel.textContent,/READINESS_UNKNOWN_STATUS/);const row=[...panel.querySelectorAll('.qb-readiness-formats tbody tr')].find(r=>r.textContent.includes('舊版 PowerPoint'));assert.equal(row.querySelector('td:last-child').textContent,'尚缺必要工具')})
 test('readiness缺項、重複或未知工具id不得以8筆重複ready誤報整體就緒',async()=>{await openReadinessPanel();const original=readinessFixture();for(const checks of [original.checks.slice(1),Array.from({length:8},()=>({id:'pdf',status:'ready',type:'ready'})),original.checks.map((c,i)=>i===0?{...c,id:'/private/REVIEW_CANARY'}:c)]){setReadiness({...original,status:'ready',checks});await click('檢查離線工具');const panel=document.querySelector('.qb-readiness');assert.match(panel.textContent,/READINESS_INVALID_RESPONSE/);assert.equal(panel.querySelector('table'),null);assert.doesNotMatch(panel.textContent,/目前 CSP 程序的工具已就緒|REVIEW_CANARY/)}})
+
+test('縮放及設定收合只改檢視，不產生草稿變更或修改選取步驟', async () => {
+  await open()
+  assert.equal(button('儲存新版本').disabled, true)
+  await click('縮小')
+  assert.equal(document.querySelector('output[aria-label="畫布縮放比例"]').textContent, '90%')
+  await click('收合步驟設定')
+  assert.equal(document.querySelector('.qb-config').style.display, 'none')
+  document.querySelector('[aria-label="選取判斷；方向鍵移動"]').click()
+  await settle()
+  assert.equal(document.querySelector('.qb-config').style.display, 'none')
+  assert.match(document.querySelector('.qb-canvas-status').textContent, /已選取：判斷.*已收合/)
+  await click('顯示步驟設定')
+  assert.equal(field('比較內容').value, '請假')
+  await click('100%')
+  assert.equal(document.querySelector('output').textContent, '100%')
+  assert.equal(button('儲存新版本').disabled, true)
+  assert.equal(mutationRequests.length, 0)
+})
+
+test('適合畫面與恢復100%保留版本資料及鍵盤可操作控制', async () => {
+  await open()
+  const viewport = document.querySelector('.qb-canvas-scroll')
+  Object.defineProperties(viewport, {clientWidth: {configurable: true, value: 520}, clientHeight: {configurable: true, value: 600}})
+  const before = [...document.querySelectorAll('.qb-node')].map(node => node.getAttribute('style'))
+  await click('適合畫面')
+  assert.equal(button('適合畫面').getAttribute('aria-pressed'), 'true')
+  assert.ok(Number.parseInt(document.querySelector('output').textContent) >= 40)
+  assert.deepEqual([...document.querySelectorAll('.qb-node')].map(node => node.getAttribute('style')), before)
+  await click('100%')
+  assert.equal(button('適合畫面').getAttribute('aria-pressed'), 'false')
+  assert.equal(document.querySelector('output').textContent, '100%')
+  assert.equal(button('儲存新版本').disabled, true)
+  assert.equal(viewport.tabIndex, 0)
+})
+
+test('50%下拖移節點按畫布座標保存，鍵盤移動仍為20個畫布單位', async () => {
+  await open()
+  for (let i = 0; i < 5; i++) await click('縮小')
+  const title = document.querySelector('[aria-label="選取輸入；方向鍵移動"]')
+  title.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}))
+  title.dispatchEvent(new PointerEvent('pointermove', {clientX: 150, clientY: 125, bubbles: true}))
+  title.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}))
+  title.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}))
+  await settle()
+  await click('儲存新版本')
+  const node = calls.find(call => call[0] === 'save')[2].graph.nodes.find(node => node.id === 'in')
+  assert.deepEqual(node.position, {x: 140, y: 80})
+})
+
+test('縮放且捲動後拖入模組正確扣除容器原點與邊框', async () => {
+  await open()
+  await click('整理排列')
+  for (let i = 0; i < 5; i++) await click('縮小')
+  const viewport = document.querySelector('.qb-canvas-scroll')
+  viewport.getBoundingClientRect = () => ({left: 40, top: 60})
+  Object.defineProperties(viewport, {clientLeft: {configurable: true, value: 2}, clientTop: {configurable: true, value: 2}})
+  viewport.scrollLeft = 80
+  viewport.scrollTop = 120
+  const event = new Event('drop', {bubbles: true, cancelable: true})
+  Object.defineProperties(event, {clientX: {value: 200}, clientY: {value: 160}, dataTransfer: {value: {getData: () => JSON.stringify({kind: 'format'})}}})
+  viewport.dispatchEvent(event)
+  await settle()
+  await click('儲存新版本')
+  const node = calls.find(call => call[0] === 'save')[2].graph.nodes.at(-1)
+  assert.equal(node.kind, 'format')
+  assert.deepEqual(node.position, {x: 376, y: 416})
+})
+
+test('整理排列明確改變位置，保留分支與設定且標籤有獨立底色元素', async () => {
+  await open()
+  await click('整理排列')
+  assert.equal(button('儲存新版本').disabled, false)
+  assert.match(document.body.textContent, /流程與設定不變/)
+  assert.equal(document.querySelectorAll('.qb-edge-label rect').length, 2)
+  await click('儲存新版本')
+  const graph = calls.find(call => call[0] === 'save')[2].graph
+  assert.deepEqual(graph.edges.map(edge => edge.branch), [undefined, 'true', 'false'])
+  assert.deepEqual(graph.nodes.find(node => node.id === 'condition').config, {field: 'text', operator: 'contains', value: '請假'})
+  assert.ok(graph.nodes.find(node => node.id === 'condition').position.y > graph.nodes.find(node => node.id === 'in').position.y)
+})
+
+
+test('長流程適合畫面可低於40%，完整框入頭尾且不改儲存位置', async () => {
+  const nodes = Array.from({length: 10}, (_, index) => ({id: `n${index}`, kind: index === 0 ? 'input' : index === 9 ? 'output' : 'prompt', label: `步驟${index}`, position: {x: 24, y: 24 + index * 208}, config: {}}))
+  setGraph({nodes, edges: nodes.slice(1).map((node, index) => ({source: nodes[index].id, target: node.id}))})
+  await open()
+  const viewport = document.querySelector('.qb-canvas-scroll')
+  Object.defineProperties(viewport, {clientWidth: {configurable: true, value: 520}, clientHeight: {configurable: true, value: 600}})
+  const before = [...document.querySelectorAll('.qb-node')].map(node => node.getAttribute('style'))
+  await click('適合畫面')
+  const scale = Number(document.querySelector('.qb-canvas').style.transform.match(/scale\(([^)]+)\)/)[1])
+  assert.ok(scale < 0.4)
+  assert.ok(2072 * scale <= 552)
+  assert.equal(viewport.scrollTop, 0)
+  assert.deepEqual([...document.querySelectorAll('.qb-node')].map(node => node.getAttribute('style')), before)
+  assert.equal(button('儲存新版本').disabled, true)
+})
+
+test('遠離原點的既存流程適合畫面聚焦內容，保留100%與原位置', async () => {
+  setGraph({nodes: [{id: 'start', kind: 'input', label: '遠處輸入', position: {x: 10000, y: 10000}, config: {}}, {id: 'end', kind: 'output', label: '遠處輸出', position: {x: 10000, y: 10208}, config: {}}], edges: [{source: 'start', target: 'end'}]})
+  await open()
+  const viewport = document.querySelector('.qb-canvas-scroll')
+  Object.defineProperties(viewport, {clientWidth: {configurable: true, value: 520}, clientHeight: {configurable: true, value: 600}})
+  await click('適合畫面')
+  assert.equal(document.querySelector('output').textContent, '100%')
+  assert.ok(viewport.scrollLeft > 9700 && viewport.scrollLeft < 10000)
+  assert.ok(viewport.scrollTop > 9700 && viewport.scrollTop < 10000)
+  assert.match(document.querySelector('.qb-node').getAttribute('style'), /10000px/)
+  assert.equal(button('儲存新版本').disabled, true)
+})
+
+test('新流程連按模組庫三次各自放在空位，不覆蓋既有步驟', async () => {
+  await click('建立助手')
+  const before = [...document.querySelectorAll('.qb-node')].map(node => node.getAttribute('style'))
+  for (let index = 0; index < 3; index++) await click('多步驟代理')
+  assert.deepEqual([...document.querySelectorAll('.qb-node')].slice(0, 4).map(node => node.getAttribute('style')), before)
+  await change(field('助手名稱'), '新增模組驗證')
+  await change(field('平台模型'), '1')
+  await click('儲存新版本')
+  const nodes = calls.find(call => call[0] === 'create')[1].graph.nodes
+  assert.equal(nodes.length, 7)
+  for (let index = 0; index < nodes.length; index++) for (const other of nodes.slice(index + 1)) {
+    const point = nodes[index].position, target = other.position
+    assert.ok(point.x + 200 <= target.x || target.x + 200 <= point.x || point.y + 152 <= target.y || target.y + 152 <= point.y)
+  }
+})

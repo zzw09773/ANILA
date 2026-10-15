@@ -15,6 +15,7 @@ function recordMutation(kind,options){mutationRequests.push({kind,options:clone(
 export function setManageTemplates(){manageTemplates=true}
 export function setFailure(){failNext=true}
 export function setPending(){detail.versions[0].status='pending'}
+export function setGraph(value){detail.versions[0].graph=clone(value)}
 export const listAssistants=async()=>({data:{assistants:[{id:11,name:detail.name}]}})
 export const getAssistant=async id=>{if(holdRead)await new Promise(resolve=>releaseRead=resolve);calls.push(['get',id]);return {data:clone(detail)}}
 export const listTemplates=async()=>({data:{templates:[{id:'rules',name:'規章問答範本',description:'查詢文件',graph:clone(graph),configuration_notes:'請選擇文件集'}]}})

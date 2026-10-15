@@ -56,6 +56,7 @@ OMITTED_FILES = (
     'apps/csp-governance-ui/tests/helpers/quickBuilderMock.mjs',
     'apps/csp-governance-ui/tests/ingestionFileAccept.test.mjs',
     'apps/csp-governance-ui/tests/quickBuilder.test.mjs',
+    'apps/csp-governance-ui/tests/quickBuilderGraph.test.mjs',
     'apps/csp-governance-ui/tests/quickBuilderMcp.test.mjs',
     'packages/anila-core/tests/test_document_structure_review.py',
     'packages/anila-core/tests/test_ingestion_readiness.py',
