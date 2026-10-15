@@ -6,9 +6,35 @@ from pydantic import BaseModel, ConfigDict, Field
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from fastapi import Depends, HTTPException, Request
+from app.database import get_db
+
+
+def ensure_operation_identity(request: Request, db=Depends(get_db)):
+    expected = request.headers.get("X-ANILA-Actor-Id")
+    if request.method in ("GET", "HEAD", "OPTIONS") or expected is None:
+        return
+    from app.middleware.caller import get_caller
+
+    user = get_caller(request, db).user
+    if not expected.isdecimal() or int(expected) != user.id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "type": "IDENTITY_CHANGED",
+                "message": "登入身分已變更，舊草稿尚未送出；請重新載入並確認身分",
+            },
+        )
 
 
 class QuickBuilderRoute(APIRoute):
+    def __init__(self, *args, **kwargs):
+        kwargs["dependencies"] = [
+            *(kwargs.get("dependencies") or []),
+            Depends(ensure_operation_identity),
+        ]
+        super().__init__(*args, **kwargs)
+
     def get_route_handler(self):
         handler = super().get_route_handler()
 

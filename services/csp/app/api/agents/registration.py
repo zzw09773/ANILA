@@ -870,6 +870,13 @@ def update_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
     _require_agent_editor(agent, current_user)
+    from app.models.quick_builder import QuickVersion
+
+    if db.query(QuickVersion.id).filter_by(agent_id=agent.id).first() is not None:
+        raise HTTPException(status_code=409, detail={
+            "type": "IMMUTABLE_VERSION",
+            "message": "這個 Agent 由助手快製管理，請另存流程版本並重新送審",
+        })
 
     patch = payload.model_dump(exclude_unset=True)
     if not patch:
@@ -1119,6 +1126,13 @@ def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
     agent_name = agent.name
+    from app.models.quick_builder import QuickVersion
+
+    if db.query(QuickVersion.id).filter_by(agent_id=agent.id).first() is not None:
+        raise HTTPException(status_code=409, detail={
+            "type": "MANAGED_AGENT",
+            "message": "這個 Agent 由助手快製管理，請在助手快製停用以保留版本與稽核紀錄",
+        })
     db.delete(agent)
     db.commit()
     log_audit_event(

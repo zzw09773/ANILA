@@ -41,7 +41,8 @@ _DEFAULTS = {
     "condition": {"field": "text", "operator": "contains", "value": ""},
     "extract": {"fields": ["主旨", "承辦人"]},
     "format": {"style": "paragraph"},
-    "document": {"template": "主旨：{{text}}", "template_id": None},
+    "document": {"template": "主旨：{{text}}", "template_id": None,
+                 "mode": "text", "title": "助手草稿", "preset": "key_summary", "format": "rtf"},
     "agent": {"tool_ids": [], "max_steps": 5, "max_retries": 1},
 }
 _SYSTEM_MESSAGE = (
@@ -53,7 +54,7 @@ _SYSTEM_MESSAGE = (
 ModelCall = Callable[[list[dict], float], Awaitable[str]]
 RagCall = Callable[[list, str, int], Awaitable[list]]
 ToolCall = Callable[[int, dict], Awaitable[dict]]
-DocumentCall = Callable[[str, str], Awaitable[dict]]
+DocumentCall = Callable[..., Awaitable[dict]]
 
 
 class QuickFlowValidationError(ValueError):
@@ -188,6 +189,14 @@ def _config(kind: str, value: Any, path: str) -> dict:
         template_id = config["template_id"]
         if template_id is not None:
             _integer(template_id, path + ".template_id", 1, 2**63 - 1)
+        if config["mode"] not in ("text", "studio"):
+            _invalid("請選擇文字範本或 Studio 範本", path + ".mode")
+        if config["preset"] not in ("deep_tech_review", "key_summary", "teaching_handout", "external_comms"):
+            _invalid("請選擇既有的 Studio 文件範本", path + ".preset")
+        _string(config["title"], path + ".title", maximum=200, empty=False)
+        formats = ("rtf",) if config["mode"] == "text" else ("html", "pdf", "docx")
+        if config["format"] not in formats:
+            _invalid("文件格式不符合所選範本模式", path + ".format")
     elif kind == "agent":
         _ids(config["tool_ids"], path + ".tool_ids")
         _integer(config["max_steps"], path + ".max_steps", 1, MAX_AGENT_STEPS)
@@ -381,12 +390,12 @@ class _Runtime:
         if self.operations > MAX_EXECUTION_STEPS:
             raise QuickFlowExecutionError("STEP_LIMIT", "執行步數已達上限，請縮短流程")
 
-    async def call(self, callback: Callable, *args) -> Any:
+    async def call(self, callback: Callable, *args, **kwargs) -> Any:
         self.tick()
         if callback is None:
             raise QuickFlowExecutionError("PROVIDER_UNAVAILABLE", "此模組的授權服務尚未設定")
-        _json_data(list(args), "callback_arguments", maximum=MAX_GRAPH_BYTES)
-        result = await callback(*copy.deepcopy(args))
+        _json_data([list(args), kwargs], "callback_arguments", maximum=MAX_GRAPH_BYTES)
+        result = await callback(*copy.deepcopy(args), **copy.deepcopy(kwargs))
         try:
             _json_data(result, "callback_result")
         except QuickFlowValidationError as exc:
@@ -518,9 +527,12 @@ class _Runtime:
             styles = {"paragraph": "清楚的繁體中文段落", "bullets": "繁體中文條列", "table": "Markdown 表格"}
             state.text = await self.model(state, "將提供的內容整理成" + styles[config["style"]] + "，保留事實，不新增資料。")
         elif kind == "document":
-            if not config["template"].strip():
+            if config["mode"] == "text" and not config["template"].strip():
                 raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇或填寫文件範本")
-            result = await self.call(self.document_call, config["template"], state.text)
+            if config["mode"] == "studio":
+                result = await self.call(self.document_call, config["template"], state.text, config=config)
+            else:
+                result = await self.call(self.document_call, config["template"], state.text)
             if type(result) is not dict:
                 raise QuickFlowExecutionError("DOCUMENT_RESPONSE", "文件服務未回傳產物資料")
             if result.get("error"):

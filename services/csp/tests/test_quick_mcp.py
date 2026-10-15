@@ -23,6 +23,7 @@ from app.api.quick_mcp import router
 from app.database import get_db
 from app.models.department import Department
 from app.models.endpoint_author_grant import EndpointAuthorGrant
+from app.models.quick_mcp import QuickMCPService
 from app.models.unit_admin_assignment import UnitAdminAssignment
 from app.schemas.quick_mcp import MCPServiceCreate
 from app.services import quick_mcp as mcp
@@ -678,3 +679,129 @@ def test_postgresql_template_sets_readonly_and_binds_subject(template, monkeypat
     assert recorded["session"] == {"readonly": True, "autocommit": False}
     assert recorded["params"] == (7, "2026-10-01", "2026-11-01")
     assert "%s" in recorded["sql"] and recorded["closed"] and recorded["rollback"]
+
+
+def test_newer_disable_cannot_be_overwritten_by_approval(db, people, remote):
+    service = register(db, people)
+    disabled_revisions = []
+
+    def disable_during_list():
+        remote["on_list"] = None
+        stopped = mcp.disable_service(db, people["admin"], service["id"])
+        disabled_revisions.append(stopped["governance_revision"])
+
+    remote["on_list"] = disable_during_list
+    with pytest.raises(HTTPException) as exc:
+        approve(db, people, service)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error_type"] == "mcp_governance_changed"
+    persisted = db.get(QuickMCPService, service["id"])
+    assert persisted.status == "disabled"
+    assert persisted.governance_revision == disabled_revisions[0]
+    assert mcp.list_tools(db, people["alice"]) == []
+    assert not remote["queries"]
+
+
+def test_newer_disable_cannot_be_overwritten_by_refresh(db, people, remote):
+    service = approve(db, people, register(db, people))
+    old_fingerprint = service["tools"][0]["fingerprint"]
+    remote["tools"][0]["description"] = "未核准的新說明"
+
+    def disable_during_list():
+        remote["on_list"] = None
+        mcp.disable_service(db, people["admin"], service["id"])
+
+    remote["on_list"] = disable_during_list
+    with pytest.raises(HTTPException) as exc:
+        run(mcp.refresh_service(db, people["admin"], service["id"]))
+    assert exc.value.status_code == 409
+    latest = mcp.list_services(db, people["admin"])[0]
+    assert latest["status"] == "disabled"
+    assert latest["tools"][0]["fingerprint"] == old_fingerprint
+    assert not latest["tools"][0]["is_approved"]
+
+
+def test_older_refresh_cannot_replace_newer_refresh_snapshot(
+    db, people, remote, monkeypatch
+):
+    service = register(db, people)
+    old = deepcopy(RAW_TOOLS)
+    newer = deepcopy(RAW_TOOLS)
+    newer[0]["description"] = "較新的工具快照"
+    entered = 0
+
+    async def discover(db, user, row):
+        nonlocal entered
+        entered += 1
+        if entered == 1:
+            await mcp.refresh_service(db, user, row.id)
+            return old
+        return newer
+
+    monkeypatch.setattr(mcp, "_discover", discover)
+    with pytest.raises(HTTPException) as exc:
+        run(mcp.refresh_service(db, people["admin"], service["id"]))
+    assert exc.value.status_code == 409
+    latest = mcp.list_services(db, people["admin"])[0]
+    assert latest["status"] == "pending"
+    assert latest["tools"][0]["description"] == "較新的工具快照"
+    assert latest["tools"][0]["fingerprint"] == mcp.tool_fingerprint(newer[0])
+
+
+def test_endpoint_dns_guard_does_not_block_event_loop(monkeypatch):
+    monkeypatch.setattr(mcp, "get_cached_hosts", lambda: {"attendance.local"})
+    monkeypatch.setattr(mcp, "_env_trusted_hosts", lambda: set())
+    monkeypatch.setattr(mcp, "validate_outbound_url", lambda *args, **kwargs: None)
+
+    def resolver(host, timeout):
+        time.sleep(0.15)
+        return [(None, None, None, None, ("10.20.30.40", 443))]
+
+    monkeypatch.setattr(mcp, "_resolve_host", resolver)
+
+    async def scenario():
+        heartbeat_delays = []
+
+        async def heartbeat():
+            start = time.monotonic()
+            await asyncio.sleep(0.005)
+            heartbeat_delays.append(time.monotonic() - start)
+
+        ticker = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0)
+        client = mcp._MCPClient(URL, "synthetic")
+        await client.client.aclose()
+        client.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, json={"jsonrpc": "2.0", "id": 1, "result": {}}
+                )
+            )
+        )
+        try:
+            assert await client.rpc("tools/list", {}) == {}
+        finally:
+            await client.client.aclose()
+        await ticker
+        assert heartbeat_delays[0] < 0.1
+
+    run(scenario())
+
+
+def test_registration_rechecks_endpoint_authority_after_dns(
+    db, people, remote, monkeypatch
+):
+    async def revoke_during_guard(url):
+        from datetime import datetime, timezone
+
+        grant = (
+            db.query(EndpointAuthorGrant).filter_by(user_id=people["admin"].id).one()
+        )
+        grant.revoked_at = datetime.now(timezone.utc)
+        db.commit()
+
+    monkeypatch.setattr(mcp, "_guard_endpoint_async", revoke_during_guard)
+    with pytest.raises(HTTPException) as exc:
+        register(db, people)
+    assert exc.value.status_code == 403
+    assert db.query(QuickMCPService).count() == 0

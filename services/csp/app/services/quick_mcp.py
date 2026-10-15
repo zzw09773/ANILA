@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import HTTPException
 from jose import jwt
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,7 @@ MAX_RESPONSE_BYTES = 256 * 1024
 MAX_TOOLS = 100
 MCP_TIMEOUT_SECONDS = 20
 MCP_TOTAL_SECONDS = 30
+MCP_ENDPOINT_TIMEOUT_SECONDS = 8
 MCP_JWT_TTL_SECONDS = 60
 MCP_JWT_ISSUER = "anila-csp"
 MCP_PROTOCOL_VERSION = "2025-03-26"
@@ -349,6 +351,16 @@ def _guard_endpoint(url: str) -> None:
         ) from exc
 
 
+async def _guard_endpoint_async(url: str) -> None:
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(_guard_endpoint, url),
+            timeout=MCP_ENDPOINT_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        raise _error(504, "mcp_endpoint_timeout", "MCP 服務位址的安全驗證逾時") from exc
+
+
 class _MCPClient:
     """限定單一登錄端點，忽略伺服器要求與通知，禁止重導向。"""
 
@@ -407,7 +419,7 @@ class _MCPClient:
     async def rpc(
         self, method: str, params: dict, *, notification: bool = False
     ) -> dict:
-        _guard_endpoint(self.endpoint)
+        await _guard_endpoint_async(self.endpoint)
         self.counter += 1
         body = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notification:
@@ -559,6 +571,7 @@ def serialize_service(db, service, user) -> dict:
         "department_id",
         "is_public",
         "status",
+        "governance_revision",
         "registered_by_user_id",
         "approved_by_user_id",
         "approved_at",
@@ -591,7 +604,9 @@ def list_services(db: Session, user: User) -> list[dict]:
 async def register_service(db: Session, user: User, body: MCPServiceCreate) -> dict:
     user = _admin(db, user)
     require_endpoint_address_author(db, user)
-    _guard_endpoint(body.endpoint_url)
+    await _guard_endpoint_async(body.endpoint_url)
+    user = _admin(db, user)
+    require_endpoint_address_author(db, user)
     if body.department_id is not None:
         dept = (
             db.query(Department)
@@ -634,12 +649,40 @@ def _get_service(db, service_id):
     return service
 
 
+def _claim_governance(db: Session, service_id: int, revision: int, **values) -> int:
+    """先以服務列 CAS 取得交易鎖，再修改工具；舊的網路結果不得寫回。"""
+    next_revision = revision + 1
+    result = db.execute(
+        update(QuickMCPService)
+        .where(
+            QuickMCPService.id == service_id,
+            QuickMCPService.governance_revision == revision,
+        )
+        .values(governance_revision=next_revision, **values)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise _error(
+            409,
+            "mcp_governance_changed",
+            "MCP 服務已有較新的治理操作，請重新整理後再審核",
+        )
+    return next_revision
+
+
 async def refresh_service(db: Session, user: User, service_id: int) -> dict:
     user = _admin(db, user)
     service = _get_service(db, service_id)
     # 在網路擷取之前先撤銷；擷取失敗也不能繼續使用舊核准。
-    service.status = "pending"
-    service.approved_by_user_id = service.approved_at = None
+    revision = _claim_governance(
+        db,
+        service_id,
+        service.governance_revision,
+        status="pending",
+        approved_by_user_id=None,
+        approved_at=None,
+    )
     db.query(QuickMCPTool).filter_by(service_id=service.id).update(
         {"is_approved": False, "is_read_only": False, "approved_fingerprint": None}
     )
@@ -653,6 +696,7 @@ async def refresh_service(db: Session, user: User, service_id: int) -> dict:
     db.commit()
     snapshots = await _discover(db, user, service)
     user = _admin(db, user)
+    _claim_governance(db, service_id, revision)
     service = _get_service(db, service_id)
     known = {
         tool.name: tool
@@ -680,6 +724,7 @@ async def approve_service(
 ) -> dict:
     user = _admin(db, user)
     service = _get_service(db, service_id)
+    revision = _claim_governance(db, service_id, service.governance_revision)
     tools = (
         db.query(QuickMCPTool)
         .filter_by(service_id=service.id)
@@ -692,21 +737,41 @@ async def approve_service(
         or len(selected) != len(approved_tool_ids)
         or not selected <= {t.id for t in tools}
     ):
+        db.rollback()
         raise _error(422, "mcp_allowlist_invalid", "請明確選取此服務的唯讀查詢工具")
+    expected = {
+        tool.id: (tool.name, tool.schema_fingerprint)
+        for tool in tools
+        if tool.id in selected
+    }
+    # 不跨網路請求持有服務／工具鎖。版本號保留為不可變的區域變數。
+    db.commit()
     current = {
         t["name"]: tool_fingerprint(t) for t in await _discover(db, user, service)
     }
-    if any(
-        current.get(t.name) != t.schema_fingerprint for t in tools if t.id in selected
-    ):
-        raise _error(409, "mcp_schema_changed", "MCP 工具已變更，請重新登錄並審核工具內容")
     user = _admin(db, user)
-    service = _get_service(db, service_id)
-    service.status, service.approved_by_user_id, service.approved_at = (
-        "approved",
-        user.id,
-        datetime.now(timezone.utc),
+    _claim_governance(
+        db,
+        service_id,
+        revision,
+        status="approved",
+        approved_by_user_id=user.id,
+        approved_at=datetime.now(timezone.utc),
     )
+    service = _get_service(db, service_id)
+    tools = (
+        db.query(QuickMCPTool)
+        .filter_by(service_id=service_id)
+        .populate_existing()
+        .all()
+    )
+    stored = {tool.id: (tool.name, tool.schema_fingerprint) for tool in tools}
+    if any(
+        stored.get(tool_id) != snapshot or current.get(snapshot[0]) != snapshot[1]
+        for tool_id, snapshot in expected.items()
+    ):
+        db.rollback()
+        raise _error(409, "mcp_schema_changed", "MCP 工具已變更，請重新登錄並審核工具內容")
     for tool in tools:
         tool.is_approved = tool.is_read_only = tool.id in selected
         tool.approved_fingerprint = (
@@ -727,7 +792,7 @@ async def approve_service(
 def disable_service(db: Session, user: User, service_id: int) -> dict:
     user = _admin(db, user)
     service = _get_service(db, service_id)
-    service.status = "disabled"
+    _claim_governance(db, service_id, service.governance_revision, status="disabled")
     db.query(QuickMCPTool).filter_by(service_id=service.id).update(
         {"is_approved": False, "is_read_only": False, "approved_fingerprint": None}
     )
@@ -739,6 +804,7 @@ def disable_service(db: Session, user: User, service_id: int) -> dict:
         actor=user,
     )
     db.commit()
+    service = _get_service(db, service_id)
     return serialize_service(db, service, user)
 
 

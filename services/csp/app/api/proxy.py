@@ -1954,6 +1954,13 @@ def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None
     if agent is None:
         return None
     if agent.approval_status != "approved":
+        from app.models.quick_builder import QuickVersion
+
+        if db.query(QuickVersion.id).filter_by(agent_id=agent.id).first() is not None:
+            raise HTTPException(status_code=404, detail={
+                "type": "ASSISTANT_UNAVAILABLE",
+                "message": "找不到可用的助手，可能尚未發布或已停用",
+            })
         if agent.unavailable_reason:
             raise HTTPException(status_code=403, detail=AGENT_TEMPORARILY_UNAVAILABLE)
         return None
@@ -2015,6 +2022,9 @@ def list_available_agents(
     # Encryption is an agent-level policy only. Base models (LLMs) do NOT carry
     # a requires_encryption flag — classification is decided per-agent so the
     # same LLM can serve both classified and non-classified agents.
+    from app.services.quick_builder import quick_agent_allowed
+
+    agents = [a for a in agents if quick_agent_allowed(db, user, a.id) is not False]
     data = [
         {
             "id": a.name,
@@ -2470,6 +2480,15 @@ async def chat_completions(
             task_ctx=task_ctx,
             conv_id_int=conv_id_int,
         )
+        from app.models.quick_builder import QuickVersion
+
+        if db.query(QuickVersion.id).filter_by(agent_id=agent.id).first() is not None:
+            from app.services.quick_execution import agent_response
+
+            return await agent_response(
+                db, user, agent, body, task_ctx=task_ctx,
+                api_key_id=caller.api_key_id, conversation_id=conv_id_int,
+            )
         # Bind session ownership only after permission + ceiling gates so a
         # refused caller cannot claim anila_session_id (P2.4 H3).
         raw_sid = body.get("anila_session_id") or body.get("session_id")

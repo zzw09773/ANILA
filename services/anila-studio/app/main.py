@@ -29,6 +29,7 @@ from app.api.reports import router as reports_router
 from app.api.mindmaps import router as mindmaps_router
 from app.api.infographics import router as infographics_router
 from app.api.datatables import router as datatables_router
+from app.api.quick_documents import router as quick_documents_router
 from app.config import settings
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
 from app.services.job_store import get_job_store
@@ -108,6 +109,7 @@ app.include_router(reports_router)
 app.include_router(mindmaps_router)
 app.include_router(infographics_router)
 app.include_router(datatables_router)
+app.include_router(quick_documents_router)
 # 最外層：cookie 工作階段的變更請求先過 CSRF，再進路由。
 app.add_middleware(CsrfMiddleware)
 

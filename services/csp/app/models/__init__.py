@@ -61,6 +61,14 @@ from app.models.router_model_grant import RouterModelGrant
 from app.models.platform_link import PlatformLink
 from app.models.platform_setting import PlatformSetting
 from app.models.policy_decision import PolicyDecision
+from app.models.quick_builder import (
+    QuickAssistant,
+    QuickCollectionPublication,
+    QuickRun,
+    QuickTemplate,
+    QuickVersion,
+)
+from app.models.quick_mcp import QuickMCPService, QuickMCPTool
 from app.models.registered_service import (
     RegisteredService,
     ServiceProjectBinding,
@@ -144,6 +152,13 @@ __all__ = [
     "PlatformSetting",
     "PolicyDecision",
     "QuotaEvent",
+    "QuickAssistant",
+    "QuickCollectionPublication",
+    "QuickMCPService",
+    "QuickMCPTool",
+    "QuickRun",
+    "QuickTemplate",
+    "QuickVersion",
     "RegisteredService",
     "RouterModelGrant",
     "ServiceAccessGrant",

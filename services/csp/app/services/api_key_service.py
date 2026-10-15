@@ -180,6 +180,11 @@ def check_agent_permission(
     ``UserAgentPermission`` (preserves existing behavior). JWT / cookie path
     checks ``UserAgentPermission`` directly. admin / owner always pass.
     """
+    from app.services.quick_builder import quick_agent_allowed
+
+    quick_allowed = quick_agent_allowed(db, user, agent_id)
+    if quick_allowed is False:
+        return False
     if is_admin_tier(user):
         return True
 

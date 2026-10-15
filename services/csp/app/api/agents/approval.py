@@ -56,6 +56,9 @@ def approve_agent(
         )
         raise HTTPException(status_code=409, detail=detail)
 
+    from app.services.quick_builder import activate_agent
+
+    activate_agent(db, admin, agent)
     agent.approval_status = ApprovalStatus.APPROVED.value
     agent.approved_by = admin.id
     agent.approved_at = datetime.now(timezone.utc)

@@ -15,7 +15,7 @@
         │      • set_content(html) then page.pdf(...)
         │      → PDF file
         │
-        └─→ (3) pypandoc.convert_text(html, 'docx', ...)
+        └─→ (3) sandboxed pandoc CLI (HTML → DOCX)
                → DOCX file
 
 ## Why Playwright instead of weasyprint?
@@ -27,7 +27,7 @@ already has the playwright chromium browser pre-installed (per the
 anila-studio Dockerfile — Phase 0 added the ``playwright install
 chromium`` step).
 
-## Why pypandoc for DOCX?
+## Why pandoc for DOCX?
 
 pandoc has the best HTML→DOCX converter in the Python ecosystem. The
 input is our own well-formed HTML, so we avoid the well-known pandoc
@@ -36,8 +36,8 @@ quirks around raw HTML strings.
 ## Async + threading
 
 - Playwright exposes async-native APIs; we use them directly.
-- pypandoc is sync. Running it inline would block the event loop while
-  pandoc shells out. We use ``asyncio.to_thread`` to offload.
+- The bounded pandoc subprocess is sync. We use ``asyncio.to_thread``
+  to keep the event loop responsive.
 
 ## Errors
 
@@ -46,13 +46,16 @@ disk full). The runner catches any exception and surfaces it as
 ``state="failed"`` with the truncated message; the renderer itself does
 not swallow errors.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from tempfile import TemporaryDirectory
 
 import jinja2
 from markdown_it import MarkdownIt
@@ -220,7 +223,7 @@ def write_html_file(spec: ReportSpec, dest: Path) -> None:
 # ── PDF render (Playwright) ───────────────────────────────────────────────
 
 
-async def write_pdf_file(html: str, dest: Path) -> None:
+async def write_pdf_file(html: str, dest: Path, *, block_network: bool = False) -> None:
     """Convert an HTML string to a PDF file via headless chromium.
 
     Launches a fresh browser per render. For Phase 1 throughput
@@ -246,6 +249,8 @@ async def write_pdf_file(html: str, dest: Path) -> None:
         browser = await p.chromium.launch(headless=True)
         try:
             page = await browser.new_page()
+            if block_network:
+                await page.route("**/*", lambda route: route.abort())
             await page.set_content(html, wait_until="domcontentloaded")
             await page.pdf(
                 path=str(dest),
@@ -262,7 +267,7 @@ async def write_pdf_file(html: str, dest: Path) -> None:
             await browser.close()
 
 
-# ── DOCX render (pypandoc) ────────────────────────────────────────────────
+# ── DOCX render (bounded pandoc CLI) ─────────────────────────────────────
 
 
 def _convert_docx_sync(html: str, dest: Path) -> None:
@@ -271,26 +276,35 @@ def _convert_docx_sync(html: str, dest: Path) -> None:
     Separated so ``asyncio.to_thread`` can target a plain function (no
     coroutine wrapping). Caller owns directory creation.
     """
-    # Lazy import — pypandoc complains about missing pandoc binary at
-    # import time only on first call, not import. Tests mock this whole
-    # function anyway.
-    import pypandoc
-
-    pypandoc.convert_text(
-        source=html,
-        to="docx",
-        format="html",
-        outputfile=str(dest),
-    )
+    binary = shutil.which("pandoc")
+    if binary is None:
+        raise FileNotFoundError("離線 DOCX 轉檔工具 pandoc 尚未安裝")
+    # No shell, plugins, filters, or request-controlled CLI arguments. Pandoc's
+    # sandbox denies filesystem/network reads from embedded document content.
+    # A private working directory isolates temporary resources. The subprocess
+    # owns its timeout even if the awaiting coroutine is cancelled.
+    with TemporaryDirectory(prefix="anila-pandoc-") as directory:
+        subprocess.run(
+            [
+                binary,
+                "--sandbox",
+                "--from=html",
+                "--to=docx",
+                "--output",
+                str(dest.resolve()),
+            ],
+            input=html,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=True,
+            timeout=45,
+            cwd=directory,
+        )
 
 
 async def write_docx_file(html: str, dest: Path) -> None:
-    """Convert HTML to DOCX via pypandoc, offloaded to a thread.
-
-    pypandoc shells out to the ``pandoc`` binary, which is blocking IO;
-    running inline would stall the event loop for hundreds of ms per
-    call. ``asyncio.to_thread`` keeps the runner cooperative.
-    """
+    """Convert HTML to DOCX with the installed pandoc CLI in a worker thread."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(_convert_docx_sync, html, dest)
 

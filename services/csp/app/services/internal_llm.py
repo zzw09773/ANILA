@@ -116,6 +116,8 @@ async def complete_chat(
     deadline: float | None = None,
     record_usage: bool | None = None,
     conversation_id: str | None = None,
+    caller_agent_id: int | None = None,
+    api_key_id: int | None = None,
 ) -> str:
     """對一列模型做一次非串流 chat completion，回傳助理內文。
 
@@ -146,7 +148,7 @@ async def complete_chat(
                 db,
                 user_id=user_id,
                 department_id=department_id,
-                api_key_id=None,
+                api_key_id=api_key_id,
                 usage_kind="inference",
                 now=started,
             )
@@ -170,7 +172,7 @@ async def complete_chat(
     try:
         result = await proxy_request(
             model=snapshot,
-            api_key_id=None,
+            api_key_id=api_key_id,
             user_id=user_id if user_id is not None else 0,
             department_id=department_id,
             request_body=payload,
@@ -182,6 +184,7 @@ async def complete_chat(
             tuning=tuning,
             deadline=sync_model_deadline() if deadline is None else deadline,
             request_timestamp=started,
+            caller_agent_id=caller_agent_id,
         )
     except HTTPException as exc:
         code, message = _quota_fields(exc)

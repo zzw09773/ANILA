@@ -3,7 +3,9 @@
 沒有 department_id 的庫（含 anilalm 個人庫）只有擁有者能讀、能寫，不回填單位。
 有 department_id 的庫只看使用者現在的單位（含下級）。擁有者調走之後
 立刻不能再讀、也不能寫；列留在原單位，由管理員移交。移交後的新擁有者才能寫。
+快製採管的文件集另依明確開放範圍讀取，寫入限仍在精確所屬單位的建立者。
 """
+
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
@@ -62,6 +64,18 @@ def can_read_collection(db: Session, user: User, coll: IngestionCollection) -> b
         return True
     if coll.department_id is None:
         return coll.created_by == user.id
+    from app.models.quick_builder import QuickCollectionPublication
+
+    publication = db.get(QuickCollectionPublication, coll.id)
+    if publication:
+        return (
+            user.department_id == coll.department_id
+            or publication.scope == "public"
+            or (
+                publication.scope == "departments"
+                and user.department_id in publication.target_department_ids
+            )
+        )
     return department_scope_contains(db, coll.department_id, user.department_id)
 
 
@@ -77,6 +91,10 @@ def can_write_collection(db: Session, user: User, coll: IngestionCollection) -> 
         return False
     if coll.department_id is None:
         return True
+    from app.models.quick_builder import QuickCollectionPublication
+
+    if db.get(QuickCollectionPublication, coll.id) is not None:
+        return coll.department_id == user.department_id
     return department_scope_contains(db, coll.department_id, user.department_id)
 
 
@@ -93,8 +111,32 @@ def select_visible_collections(
         return [], {}, {}
     owners = _owners(db, rows)
     parent_of = load_parent_map(db)
+    from app.models.quick_builder import QuickCollectionPublication
+
+    publications = {
+        p.collection_id: p
+        for p in db.query(QuickCollectionPublication)
+        .filter(QuickCollectionPublication.collection_id.in_([c.id for c in rows]))
+        .all()
+    }
     visible: list[IngestionCollection] = []
     for coll in rows:
+        publication = publications.get(coll.id)
+        if not is_admin_tier(user) and publication:
+            if coll.department_id is None:
+                allowed = coll.created_by == user.id
+            else:
+                allowed = (
+                    coll.department_id == user.department_id
+                    or publication.scope == "public"
+                    or (
+                        publication.scope == "departments"
+                        and user.department_id in publication.target_department_ids
+                    )
+                )
+            if allowed:
+                visible.append(coll)
+            continue
         if is_admin_tier(user):
             if coll.created_by == user.id or owner_left_unit(
                 db, coll, owners.get(coll.created_by), parent_of=parent_of

@@ -33,6 +33,7 @@ class QuickMCPService(Base):
     status = Column(
         String(16), nullable=False, default="pending", server_default="pending"
     )
+    governance_revision = Column(Integer, nullable=False, default=0, server_default="0")
     registered_by_user_id = Column(
         Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )

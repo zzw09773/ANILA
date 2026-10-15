@@ -5,13 +5,15 @@ We exercise:
   - CJK text passes through without mojibake,
   - markdown_it converts inline syntax into HTML,
   - PDF render path delegates to playwright (mocked),
-  - DOCX render path delegates to pypandoc (mocked),
+  - DOCX render path uses the bounded pandoc CLI (mocked),
   - render_all_artifacts wires everything together and reports paths.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,9 +50,7 @@ def _spec(preset: ReportPreset = ReportPreset.DEEP_TECH_REVIEW) -> ReportSpec:
                 subsections=[
                     ReportSection(
                         heading="效率瓶頸",
-                        content_markdown=(
-                            "memory bandwidth 已成為主要瓶頸 [3]。"
-                        ),
+                        content_markdown=("memory bandwidth 已成為主要瓶頸 [3]。"),
                     ),
                 ],
             ),
@@ -106,7 +106,7 @@ def test_render_html_contains_required_blocks(preset: ReportPreset):
 
     # Title
     assert "人工智慧發展概觀：2024-2026" in html
-    assert "<h1 class=\"report-title\"" in html
+    assert '<h1 class="report-title"' in html
 
     # TL;DR block
     assert "TL;DR" in html
@@ -149,7 +149,7 @@ def test_render_html_subsections_use_higher_heading_level():
     spec = _spec()
     html = report_renderer.render_html(spec)
     # The nested "效率瓶頸" should be h3, not h2.
-    assert "<h3 class=\"section-heading\">效率瓶頸</h3>" in html
+    assert '<h3 class="section-heading">效率瓶頸</h3>' in html
 
 
 def test_render_html_footer_carries_preset_label():
@@ -246,9 +246,7 @@ async def test_write_pdf_file_invokes_playwright(tmp_path: Path):
     def _mock_async_playwright_factory():
         return pw_ctx
 
-    with patch(
-        "playwright.async_api.async_playwright", _mock_async_playwright_factory
-    ):
+    with patch("playwright.async_api.async_playwright", _mock_async_playwright_factory):
         await report_renderer.write_pdf_file(html, dest)
 
     pw_ctx.chromium.launch.assert_awaited_once_with(headless=True)
@@ -262,27 +260,51 @@ async def test_write_pdf_file_invokes_playwright(tmp_path: Path):
     mock_browser.close.assert_awaited_once()
 
 
-# ── DOCX render: pypandoc is mocked ──────────────────────────────────────
+# ── DOCX render: subprocess is mocked ────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_write_docx_file_invokes_pypandoc(tmp_path: Path):
-    """write_docx_file should call pypandoc.convert_text via to_thread."""
+async def test_write_docx_file_invokes_bounded_pandoc(tmp_path: Path):
+    """The installed CLI gets only fixed sandboxed conversion arguments."""
     dest = tmp_path / "out.docx"
     html = "<html><body>hi</body></html>"
 
-    fake_convert = MagicMock()
-    fake_pypandoc = MagicMock(convert_text=fake_convert)
-
-    with patch.dict("sys.modules", {"pypandoc": fake_pypandoc}):
+    with (
+        patch.object(report_renderer.shutil, "which", return_value="/local/bin/pandoc"),
+        patch.object(report_renderer.subprocess, "run") as convert,
+    ):
         await report_renderer.write_docx_file(html, dest)
 
-    fake_convert.assert_called_once()
-    kwargs = fake_convert.call_args.kwargs
-    assert kwargs.get("to") == "docx"
-    assert kwargs.get("format") == "html"
-    assert kwargs.get("outputfile") == str(dest)
-    assert kwargs.get("source") == html
+    convert.assert_called_once()
+    assert convert.call_args.args[0] == [
+        "/local/bin/pandoc",
+        "--sandbox",
+        "--from=html",
+        "--to=docx",
+        "--output",
+        str(dest.resolve()),
+    ]
+    kwargs = convert.call_args.kwargs
+    assert kwargs["input"] == html
+    assert kwargs["timeout"] == 45 and kwargs["check"] is True
+    assert "shell" not in kwargs and kwargs["capture_output"] is True
+    assert not Path(kwargs["cwd"]).exists()  # private work directory was removed
+
+
+@pytest.mark.asyncio
+async def test_write_docx_file_preserves_subprocess_timeout(tmp_path: Path):
+    with (
+        patch.object(report_renderer.shutil, "which", return_value="/local/bin/pandoc"),
+        patch.object(
+            report_renderer.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("pandoc", 45),
+        ),
+    ):
+        with pytest.raises(subprocess.TimeoutExpired):
+            await report_renderer.write_docx_file(
+                "<p>合成資料</p>", tmp_path / "out.docx"
+            )
 
 
 # ── render_all_artifacts orchestration ───────────────────────────────────

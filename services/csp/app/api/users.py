@@ -429,12 +429,15 @@ def update_user_allowed_agents(
     db.query(UserAgentPermission).filter(UserAgentPermission.user_id == user_id).delete()
     now = datetime.now(timezone.utc)
     promoted: list[str] = []
-    for aid in new_ids:
+    for aid in sorted(new_ids):
         agent = agents_by_id[aid]
         # register → admin assigns → usable. Assigning a
         # registered agent is the admin enablement step (auto-approve); no
         # connection/trace/review ceremony.
         if agent.approval_status == ApprovalStatus.REGISTERED.value:
+            from app.services.quick_builder import activate_agent
+
+            activate_agent(db, admin, agent)
             agent.approval_status = ApprovalStatus.APPROVED.value
             agent.approved_by = admin.id
             agent.approved_at = now
