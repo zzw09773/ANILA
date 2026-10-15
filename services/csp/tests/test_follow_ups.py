@@ -454,6 +454,7 @@ def test_ui_settings_cannot_forge_server_follow_up_capability(client, db):
     assert reloaded.json()["capabilities"]["follow_ups"] == expected
 
 
+@pytest.mark.asyncio
 async def test_policy_rechecked_before_second_cache_replay(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
@@ -477,6 +478,7 @@ async def test_policy_rechecked_before_second_cache_replay(monkeypatch):
     generate.assert_not_awaited()
 
 
+@pytest.mark.asyncio
 async def test_private_generation_and_persistence_also_fail_closed(monkeypatch):
     from unittest.mock import AsyncMock
     from app.services import follow_ups_service as service
