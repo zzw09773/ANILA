@@ -29,3 +29,15 @@ export function retrievalNotices(retrieval, context) {
   }
   return [...new Set(notices)]
 }
+
+/** Model-bound changes are separate events; never rewrite an earlier RAG trace. */
+export function modelContextNotices(events) {
+  return (Array.isArray(events) ? events : []).filter(item => item?.type === 'retrieval_context_replaced').map(item => {
+    const before = Number.isSafeInteger(item.before?.chunk_count) && item.before.chunk_count >= 0 ? item.before.chunk_count : null
+    const after = Number.isSafeInteger(item.after?.chunk_count) && item.after.chunk_count >= 0 ? item.after.chunk_count : null
+    const mode = item.fulltext_fallback === true ? '全文已改用語意與關鍵字搜尋。' : '已縮減模型使用的文件片段。'
+    const change = after === 0 ? `此來源的片段已省略${before !== null ? `（原 ${before} 段）` : ''}。`
+      : before !== null && after !== null ? `片段由 ${before} 段調整為 ${after} 段。` : '僅提供模型可用長度內的相關片段。'
+    return { sourceId: item.source_node_id, message: `為符合模型可用長度，${mode}${change}` }
+  })
+}

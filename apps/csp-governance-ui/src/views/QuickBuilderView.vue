@@ -70,6 +70,7 @@
         <button :disabled="!collection.publication_scope" @click="saveCollectionPublication(collection)">儲存文件開放範圍</button>
       </fieldset>
     </details>
+    <ReadinessPanel v-if="catalog.can_manage_readiness === true && !identityChanged"/>
     <form class="qb-metadata" @submit.prevent="save">
       <fieldset :disabled="!editable || busy">
         <legend>助手設定</legend>
@@ -328,6 +329,10 @@
             <h4>工具參數與結果</h4>
             <pre>{{ pretty(step.tool) }}</pre>
           </template>
+          <template v-if="modelContextNotices(step.context_replacements).length">
+            <h4>模型內容調整</h4>
+            <ul><li v-for="(event, index) in modelContextNotices(step.context_replacements)" :key="index">{{ contextSourceLabel(event.sourceId) }}：{{ event.message }}</li></ul>
+          </template>
           <p v-if="step.error" role="alert">{{ pretty(step.error) }}；請檢查這個步驟的設定後重試。</p>
         </details>
       </template>
@@ -342,9 +347,10 @@ import { PageHead } from '../components/cli';
 import { extractError, errorType } from '../api/errors';
 import * as api from '../api/quickBuilder';
 import NodeSettings from '../quickBuilder/NodeSettings.vue';
+import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
-import { retrievalNotices } from '../quickBuilder/retrievalNotices';
+import { retrievalNotices, modelContextNotices } from '../quickBuilder/retrievalNotices';
 import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel } from '../quickBuilder/graph';
 const assistants = ref([]),
   templates = ref([]),
@@ -435,6 +441,7 @@ function compareValue(field, value) {
   return pretty(value);
 }
 const nodeLabel = id => form.graph.nodes.find(n => n.id === id)?.label || id;
+const contextSourceLabel = id => form.graph.nodes.find(n => n.id === id)?.label || '未標示的文件步驟';
 const pretty = value => typeof value === 'string' ? maskTrace(value) : JSON.stringify(maskTrace(value), null, 2) ?? '未提供';
 function safeArtifactUrl(value) {
   return typeof value === 'string' && value.startsWith('/api/') && !value.includes('\\');
