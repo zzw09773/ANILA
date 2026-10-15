@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { normalizeAgents } from "../app.jsx";
+import { findCatalogAgent } from "../runtime/chatHelpers.js";
 
 describe("normalizeAgents", () => {
   it("prepends the anila-router pseudo-agent when input is empty", () => {
@@ -78,5 +79,21 @@ describe("normalizeAgents", () => {
     expect(out[0].id).toBe("anila-router");
     expect(out[1].id).toBe("zz-agent");
     expect(out[2].id).toBe("aa-agent");
+  });
+
+  it("keeps database identity separate from catalog names without coercion", () => {
+    const agents = normalizeAgents([
+      { id: "quick-33-v1", db_id: 733 },
+      { id: "734", db_id: "734" },
+      { id: "negative", db_id: -1 },
+      { id: "legacy" },
+    ]);
+    expect(findCatalogAgent(agents, 733)?.id).toBe("quick-33-v1");
+    expect(findCatalogAgent(agents, "quick-33-v1")?.dbId).toBe(733);
+    expect(findCatalogAgent(agents, 734)).toBeNull();
+    expect(findCatalogAgent(agents, "734")?.dbId).toBeNull();
+    expect(findCatalogAgent(agents, "negative")?.dbId).toBeNull();
+    expect(findCatalogAgent(agents, "legacy")?.dbId).toBeNull();
+    expect(findCatalogAgent(agents, null)).toBeNull();
   });
 });

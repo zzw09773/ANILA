@@ -1,11 +1,12 @@
 import { DOCUMENT_DEFAULTS } from './documentSettings.js'
+import { RAG_DEFAULTS } from './ragSettings.js'
 // 設定只作為資料使用；不執行運算式、程式碼或自訂元件。
 export const modules = [
   { kind: 'input', name: '對話輸入', description: '接收同仁這次傳入的問題。', defaults: { placeholder: '請輸入問題' } },
   { kind: 'output', name: '對話輸出', description: '將結果回傳對話，保留可追查的來源。', defaults: { include_sources: true } },
   { kind: 'model', name: '模型', description: '透過平台模型代理產生回答；模型在助手設定選擇。', defaults: { temperature: 0.2 } },
   { kind: 'prompt', name: '提示詞與角色', description: '用白話告訴助手要完成的工作與回答方式。', defaults: { role: 'assistant', instruction: '請以台灣繁體中文清楚回答，資料不足時請明說。' } },
-  { kind: 'rag', name: '文件檢索', description: '搜尋有權限的文件集，回答時附來源。', defaults: { collection_ids: [], top_k: 5 } },
+  { kind: 'rag', name: '文件檢索', description: '搜尋有權限的文件集，回答時附來源。', defaults: RAG_DEFAULTS },
   { kind: 'mcp', name: '工具查詢', description: '以提問者身分呼叫已核准的唯讀工具。', defaults: { tool_id: null, arguments: {} } },
   { kind: 'condition', name: '條件判斷', description: '比較欄位內容，依成立或不成立選擇下一步。', defaults: { field: 'text', operator: 'contains', value: '' } },
   { kind: 'extract', name: '擷取欄位', description: '從對話整理需要的欄位，缺少的資料標示未提供。', defaults: { fields: ['主旨', '承辦人'] } },

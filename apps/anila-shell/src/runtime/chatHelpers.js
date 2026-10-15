@@ -115,6 +115,9 @@ export function normalizeAgents(data) {
     ROUTER_AGENT,
     ...(data || []).map((item) => ({
       id: item.id,
+      // Data-plane model names and control-plane database ids are distinct.
+      // Never coerce a model name into the integer conversation.agent_id.
+      dbId: Number.isSafeInteger(item.db_id) && item.db_id > 0 ? item.db_id : null,
       name: item.name || item.id,
       short: (item.short || item.id || "").slice(0, 12),
       description: item.description_for_router || item.description || "",
@@ -123,6 +126,12 @@ export function normalizeAgents(data) {
       requiresEncryption: Boolean(item.requires_encryption),
     })),
   ];
+}
+
+export function findCatalogAgent(agents, reference) {
+  if (reference == null) return null;
+  return agents.find((agent) => agent.id === reference
+    || (typeof reference === "number" && agent.dbId === reference)) || null;
 }
 
 /**

@@ -92,11 +92,14 @@ export function updateConversationTitle(authRequest, convId, title) {
 }
 
 /**
- * Partial update: title and/or the caller's personal meta (starred / folder / tags).
+ * Partial update: title, explicit assistant target, or personal meta (starred / folder / tags).
  * User tags must not include the derived ``classified`` tag — the server strips it.
  */
 export function updateConversation(authRequest, convId, patch = {}) {
   const body = {};
+  if (patch.agentId === null || (Number.isSafeInteger(patch.agentId) && patch.agentId > 0)) {
+    body.agent_id = patch.agentId;
+  }
   if (typeof patch.title === "string") body.title = patch.title;
   if (typeof patch.starred === "boolean") body.starred = patch.starred;
   if (typeof patch.folder === "string") body.folder = patch.folder;

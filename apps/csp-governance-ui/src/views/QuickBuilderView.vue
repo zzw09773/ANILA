@@ -321,6 +321,7 @@
           <pre>{{ pretty(step.output) }}</pre>
           <template v-if="step.retrieval">
             <h4>檢索文件片段與來源</h4>
+            <p v-for="text in retrievalNotices(step.retrieval)" :key="text" role="status">{{ text }}</p>
             <pre>{{ pretty(step.retrieval) }}</pre>
           </template>
           <template v-if="step.tool">
@@ -343,6 +344,7 @@ import * as api from '../api/quickBuilder';
 import NodeSettings from '../quickBuilder/NodeSettings.vue';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
+import { retrievalNotices } from '../quickBuilder/retrievalNotices';
 import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel } from '../quickBuilder/graph';
 const assistants = ref([]),
   templates = ref([]),

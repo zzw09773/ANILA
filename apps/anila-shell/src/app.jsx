@@ -214,6 +214,7 @@ import {
   nowIso,
   liveThinkingPumpMaps,
   normalizeAgents,
+  findCatalogAgent,
   kbMetaFields,
   injectionMetaFields,
   sourceCheckFields,
@@ -908,6 +909,21 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     () => conversations.find((c) => c.id === selectedConvId) || null,
     [conversations, selectedConvId],
   );
+  const restoredAgentConversationRef = useRef(null);
+  useEffect(() => {
+    if (!selectedConv) {
+      restoredAgentConversationRef.current = null;
+      return;
+    }
+    if (restoredAgentConversationRef.current === selectedConv.id) return;
+    const reference = selectedConv.agentId ?? selectedConv.agentDbId;
+    const agent = findCatalogAgent(agents, reference);
+    // Conversations and catalog load in parallel. Wait for the actual catalog
+    // entry instead of turning an unresolved database id into auto routing.
+    if (reference != null && !agent) return;
+    setSelectedAgentId(agent?.id ?? ROUTER_AGENT.id);
+    restoredAgentConversationRef.current = selectedConv.id;
+  }, [selectedConv, agents]);
   const modelNotice = useMemo(() => {
     if (modelUnavailable && modelUnavailable.convId === selectedConvId && modelUnavailable.message) {
       return modelUnavailable.message;
@@ -1053,15 +1069,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       const normalized = normalizeAgents(data.data || []);
       startTransition(() => {
         setAgents(normalized);
-        if (!normalized.some((a) => a.id === selectedAgentId)) {
-          setSelectedAgentId(ROUTER_AGENT.id);
-        }
+        setSelectedAgentId((current) => {
+          if (normalized.some((a) => a.id === current)) return current;
+          const bound = conversationsRef.current.find((row) => row.id === selectedConvIdRef.current);
+          if (bound && bound.agentId === current && current !== ROUTER_AGENT.id) {
+            restoredAgentConversationRef.current = null;
+            return current;
+          }
+          return ROUTER_AGENT.id;
+        });
       });
     } catch (error) {
       startTransition(() => {
         setRuntimeError(error.message || "無法載入 agent 清單");
         setAgents([ROUTER_AGENT]);
-        setSelectedAgentId(ROUTER_AGENT.id);
+        const bound = conversationsRef.current.find((row) => row.id === selectedConvIdRef.current);
+        if (bound?.agentId != null && bound.agentId !== ROUTER_AGENT.id) {
+          restoredAgentConversationRef.current = null;
+        } else setSelectedAgentId(ROUTER_AGENT.id);
       });
     } finally {
       setLoadingAgents(false);
@@ -1069,7 +1094,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   }
 
   function agentRequiresEncryption(agentId) {
-    return Boolean(agents.find((a) => a.id === agentId)?.requiresEncryption);
+    return Boolean(findCatalogAgent(agents, agentId)?.requiresEncryption);
   }
 
   /** Reload the server active path into local state (preserves client-only fields). */
@@ -1141,12 +1166,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       try {
         const rows = await apiListConversations(authRequest);
         if (!active) return;
-        const lookupName = (id) => agents.find((a) => a.id === id)?.name || null;
+        const lookupName = (id) => findCatalogAgent(agents, id)?.name || null;
         const lookupRequiresEncryption = (id) =>
-          Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
+          Boolean(findCatalogAgent(agents, id)?.requiresEncryption);
         setConversations(
           rows.map((r) =>
-            mapServerConversation(r, lookupName, lookupRequiresEncryption),
+            mapServerConversation(r, lookupName, lookupRequiresEncryption,
+              (id) => findCatalogAgent(agents, id)?.id),
           ),
         );
       } catch (error) {
@@ -1173,15 +1199,17 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (agents.length <= 1) return; // only ROUTER_AGENT loaded — nothing to upgrade against
     setConversations((prev) =>
       prev.map((c) => {
+        const agent = findCatalogAgent(agents, c.agentId ?? c.agentDbId);
         const requires = agentRequiresEncryption(c.agentId);
         const next = computeConversationClassified(c, {
           agentRequiresEncryption: requires,
         });
-        if (next === Boolean(c.classified)) return c;
+        if (next === Boolean(c.classified) && (!agent || agent.id === c.agentId)) return c;
         return {
           ...c,
+          ...(agent ? { agentId: agent.id, agentName: agent.name, agent: agent.id } : {}),
           classified: next,
-          tags: appendClassifiedTag(c.tags),
+          tags: next ? appendClassifiedTag(c.tags) : c.tags,
         };
       }),
     );
@@ -1290,9 +1318,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         let convId;
         let serverRow = null;
         try {
-          serverRow = await apiCreateConversation(authRequest, {
+          serverRow = await apiCreateConversation(bindExpectedUser(authRequest, user?.id), {
             title: makeConversationTitle(text),
-            agentId: typeof effectiveAgentId === "number" ? effectiveAgentId : null,
+            agentId: findCatalogAgent(agents, effectiveAgentId)?.dbId ?? null,
             routerModelId: typeof selectedRouterModelId === "number" ? selectedRouterModelId : null,
           });
           convId = serverRow.id;
@@ -1309,6 +1337,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             }
           }
         } catch (error) {
+          // An authorization/identity rejection cannot fall through to the
+          // offline send path under a different cookie identity.
+          if (error.status >= 400 && error.status < 500) throw error;
           convId = makeId("cv-local");
           setRuntimeError(error.message || "對話儲存失敗（離線模式）");
         }
@@ -1320,6 +1351,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
             updatedLabel: relativeLabel(),
             agent: effectiveAgentId,
             agentId: effectiveAgentId,
+            agentDbId: findCatalogAgent(agents, effectiveAgentId)?.dbId ?? null,
             agentName,
             folder: "all",
             tags: encryption ? ["classified"] : [],
@@ -1345,6 +1377,24 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       }
     }
 
+    const prior = conversationsRef.current.find((c) => c.id === selectedConvId);
+    const priorAgent = findCatalogAgent(agents, prior?.agentId ?? prior?.agentDbId);
+    const priorTarget = priorAgent?.id ?? prior?.agentId ?? ROUTER_AGENT.id;
+    if (typeof selectedConvId === "number" && priorTarget !== effectiveAgentId) {
+      const dbId = findCatalogAgent(agents, effectiveAgentId)?.dbId ?? null;
+      if (effectiveAgentId !== ROUTER_AGENT.id && dbId == null) {
+        throw new Error("無法保存所選助手，請重新整理助手清單後再試。");
+      }
+      const saved = await apiUpdateConversation(bindExpectedUser(authRequest, user?.id), selectedConvId, { agentId: dbId });
+      if ((saved?.agent_id ?? null) !== dbId) {
+        throw new Error("對話的助手選擇尚未保存，請重新整理後再試。");
+      }
+      updateConv(selectedConvId, {
+        agentDbId: saved.agent_id ?? null,
+        classified: Boolean(prior?.classified) || Boolean(saved.classified) || encryption,
+        classificationLevel: saved.classification_level ?? prior?.classificationLevel,
+      });
+    }
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== selectedConvId) return c;
@@ -1359,6 +1409,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           updatedLabel: relativeLabel(),
           agent: effectiveAgentId,
           agentId: effectiveAgentId,
+          agentDbId: findCatalogAgent(agents, effectiveAgentId)?.dbId ?? null,
           classified: nextClassified,
           tags,
           updatedAt: nowIso(),
@@ -2797,6 +2848,12 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       return false;
     }
     const { explicitAgents = [] } = meta;
+    if (selectedConv && restoredAgentConversationRef.current !== selectedConv.id && !explicitAgents.length) {
+      setRuntimeError(loadingAgents
+        ? "正在讀取這份對話使用的助手，請稍後再送出。"
+        : "這份對話使用的助手目前無法取得，請先選擇可用助手再送出。");
+      return false;
+    }
     const skillIds = cleanSkillIds(Array.isArray(meta.skillIds) ? meta.skillIds : [meta.skillId]);
     const skillId = skillIds[0] ?? null;
     cancelFollowUps();
@@ -2815,7 +2872,13 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (!passesRedactionGate(text)) return false;
 
     const effectiveTarget = explicitAgents[0] || selectedAgentId;
-    const convId = await ensureConversation(text, effectiveTarget);
+    let convId;
+    try {
+      convId = await ensureConversation(text, effectiveTarget);
+    } catch (error) {
+      setRuntimeError(error.message || "無法保存這份對話使用的助手，請稍後再試。");
+      return false;
+    }
     const failSend = () => ({ ok: false, conversationId: convId });
     updateConversationAgent(convId, effectiveTarget);
 
@@ -4141,14 +4204,15 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         throw new Error("採用回答失敗：沒有取得更新後的對話");
       }
       const lookupName = (id) =>
-        agents.find((a) => a.id === id)?.name || agentName || null;
+        findCatalogAgent(agents, id)?.name || agentName || null;
       const lookupRequiresEncryption = (id) =>
-        Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
+        Boolean(findCatalogAgent(agents, id)?.requiresEncryption);
       // Reflect server latch — do not invent classified client-side.
       const mapped = mapServerConversation(
         detail,
         lookupName,
         lookupRequiresEncryption,
+        (id) => findCatalogAgent(agents, id)?.id,
       );
       const tags = Array.isArray(mapped.tags) ? [...mapped.tags] : [];
       if (!tags.includes("compared")) tags.push("compared");
@@ -4283,7 +4347,10 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     <AgentModelControls
       agents={agents}
       selectedAgentId={selectedAgentId}
-      onSelectAgent={setSelectedAgentId}
+      onSelectAgent={(id) => {
+        restoredAgentConversationRef.current = selectedConvId;
+        setSelectedAgentId(id);
+      }}
       isRouter={selectedAgentId === ROUTER_AGENT.id}
       routerModels={routerModels}
       selectedRouterModelId={selectedRouterModelId}

@@ -27,7 +27,7 @@ import {
 // wins. Without this OR, a hard refresh that races the agents fetch ahead
 // of the conversations fetch would silently drop encryption mode for
 // conversations whose classified=true wasn't (yet) persisted on the row.
-export function mapServerConversation(serverRow, agentNameLookup, agentRequiresEncryptionLookup) {
+export function mapServerConversation(serverRow, agentNameLookup, agentRequiresEncryptionLookup, agentIdLookup) {
   const agentName =
     serverRow.agent_id != null ? agentNameLookup(serverRow.agent_id) : null;
   const agentRequiresEncryption =
@@ -44,7 +44,8 @@ export function mapServerConversation(serverRow, agentNameLookup, agentRequiresE
     ts: relativeLabel(),
     updatedLabel: relativeLabel(),
     agent: agentName || null,
-    agentId: serverRow.agent_id || null,
+    agentId: agentIdLookup?.(serverRow.agent_id) ?? serverRow.agent_id ?? null,
+    agentDbId: typeof serverRow.agent_id === "number" ? serverRow.agent_id : null,
     agentName: agentName || null,
     folder: typeof serverRow.folder === "string" && serverRow.folder
       ? serverRow.folder

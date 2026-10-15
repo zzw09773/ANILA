@@ -7,8 +7,9 @@ import vue from '@vitejs/plugin-vue'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolve, dirname } from 'node:path'
-import { calls, reset, setFailure, setPending, setManageTemplates, changeActor, mutationRequests, holdDetail, releaseDetail } from './helpers/quickBuilderMock.mjs'
+import { calls, reset, setFailure, setPending, setManageTemplates, changeActor, mutationRequests, holdDetail, releaseDetail, setRetrieval } from './helpers/quickBuilderMock.mjs'
 import { connect, removeNode, maskTrace, modules } from '../src/quickBuilder/graph.js'
+import { RAG_DEFAULTS, RAG_MODES } from '../src/quickBuilder/ragSettings.js'
 import { DOCUMENT_DEFAULTS, DOCUMENT_PRESETS, availableDocumentPresets } from '../src/quickBuilder/documentSettings.js'
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..')
 let View, mounted
@@ -54,3 +55,16 @@ test('文件節點預設保留RTF純文字契約、標題與固定範本預設',
 test('Studio文件節點僅四種preset與HTML/PDF/DOCX，可留空範本文字並保留型別契約',async()=>{await addConnectedDocument();await change(field('文件產出方式'),'studio');assert.equal(field('文件輸出格式').value,'docx');assert.deepEqual([...field('Studio 文件範本').options].map(o=>o.value),DOCUMENT_PRESETS.map(p=>p.id));assert.deepEqual([...field('文件輸出格式').options].map(o=>o.value),['html','pdf','docx']);assert.equal(field('文件標題').maxLength,200);assert.equal(field('文件標題').required,true);await change(field('文件標題'),'教學驗證文件');await change(field('文件文字範本'),'');for(const [format,preset] of [['html','deep_tech_review'],['pdf','teaching_handout'],['docx','external_comms']]){await change(field('Studio 文件範本'),preset);await change(field('文件輸出格式'),format);await click('儲存新版本');const config=calls.filter(c=>c[0]==='save').at(-1)[2].graph.nodes.find(n=>n.kind==='document').config;assert.deepEqual(config,{template:'',template_id:null,mode:'studio',title:'教學驗證文件',preset,format});await selectDocument()}})
 test('文件模式切回純文字必定改回RTF，不會把Studio格式送入text模式',async()=>{await addConnectedDocument();await change(field('文件產出方式'),'studio');await change(field('文件輸出格式'),'pdf');await change(field('文件產出方式'),'text');assert.equal(field('文件輸出格式'),undefined);await click('儲存新版本');const config=calls.filter(c=>c[0]==='save').at(-1)[2].graph.nodes.find(n=>n.kind==='document').config;assert.equal(config.mode,'text');assert.equal(config.format,'rtf')})
 test('catalog不能將任意外掛或模板路徑加進Studio範本選單',()=>{const presets=availableDocumentPresets({document_presets:[{id:'custom-jinja',name:'外部自訂範本'},{id:'key_summary',name:'院內重點摘要'}]});assert.equal(presets.length,4);assert.equal(presets.find(p=>p.id==='key_summary').name,'院內重點摘要');assert.equal(presets.some(p=>p.id==='custom-jinja'),false)})
+
+async function addConnectedRag() {
+  await open(); await click('文件檢索');
+  document.querySelector('button[aria-label="移除判斷到不成立輸出的連線"]').click(); await settle();
+  const id=[...field('終點').options].find(o=>o.textContent.trim()==='文件檢索').value;
+  await change(field('起點'),'condition'); await change(field('條件出口'),'false'); await change(field('終點'),id); await click('新增連線');
+  await change(field('起點'),id); await change(field('終點'),'no'); await click('新增連線');
+  const checkbox=[...document.querySelectorAll('label')].find(l=>l.textContent.includes('採購規章'))?.querySelector('input[type=checkbox]'); checkbox.click(); await settle();
+}
+test('RAG預設語意與關鍵字搜尋，保留文件集與片段上限契約',async()=>{await addConnectedRag();assert.equal(field('文件取得方式').value,'hybrid');assert.equal(field('最多取回幾段').value,'5');assert.equal(field('最多取回幾段').disabled,false);assert.deepEqual([...field('文件取得方式').options].map(o=>o.value),RAG_MODES.map(m=>m.id));await click('儲存新版本');const config=calls.filter(c=>c[0]==='save').at(-1)[2].graph.nodes.find(n=>n.kind==='rag').config;assert.deepEqual(config,{...RAG_DEFAULTS,collection_ids:[4]})})
+test('小文件全文顯示伺服器上限與自動混合回退，top_k不截全文且模式可回復',async()=>{await addConnectedRag();await change(field('最多取回幾段'),'8');await change(field('文件取得方式'),'fulltext');assert.equal(field('最多取回幾段').disabled,true);assert.match(document.body.textContent,/最多 20 份文件、合計 10 萬字/);assert.match(document.body.textContent,/全文模式本身不以這個數字截斷文件/);await click('儲存新版本');let config=calls.filter(c=>c[0]==='save').at(-1)[2].graph.nodes.find(n=>n.kind==='rag').config;assert.deepEqual(config,{collection_ids:[4],top_k:8,mode:'fulltext'});[...document.querySelectorAll('.qb-node-title')].find(b=>b.textContent.trim()==='文件檢索').click();await settle();assert.equal(field('文件取得方式').value,'fulltext');await change(field('文件取得方式'),'hybrid');assert.equal(field('最多取回幾段').disabled,false);await click('儲存新版本');config=calls.filter(c=>c[0]==='save').at(-1)[2].graph.nodes.find(n=>n.kind==='rag').config;assert.equal(config.mode,'hybrid');assert.equal(config.top_k,8)})
+
+test('逐步紀錄以白話顯示實際全文、超限改搜尋及不完整來源提醒並遮罩',async()=>{await open();setRetrieval([{metadata:{requested_mode:'fulltext',retrieval_mode:'fulltext'}},{metadata:{requested_mode:'fulltext',retrieval_mode:'hybrid',fulltext_fallback:true,fallback_reason:'fulltext_limit',quality_notice:'此簡報僅擷取部分內容；api_key=REVIEW_CANARY'}}]);await click('測試對話');await change(field('測試問題'),'檢查來源');await click('傳送測試');assert.match(document.body.textContent,/本次採用小文件全文/);assert.match(document.body.textContent,/已自動改用語意與關鍵字搜尋/);assert.match(document.body.textContent,/來源提醒：此簡報僅擷取部分內容/);assert.doesNotMatch(document.body.textContent,/REVIEW_CANARY/)})

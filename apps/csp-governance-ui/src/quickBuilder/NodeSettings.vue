@@ -35,9 +35,15 @@
     </template>
     <template v-if="node.kind === 'rag'">
       <label>
+        文件取得方式
+        <select v-model="ragMode"><option v-for="mode in RAG_MODES" :key="mode.id" :value="mode.id">{{ mode.name }}</option></select>
+        <small v-if="ragMode === 'hybrid'">預設同時使用語意與關鍵字搜尋，適合大型文件，也能找編號、條號與專有名詞。</small>
+        <small v-else>小量文件會完整提供內容。最多 20 份文件、合計 10 萬字；內容超出可用長度時自動改用語意與關鍵字搜尋，只提供相關片段。</small>
+      </label>
+      <label>
         最多取回幾段
-        <input v-model.number="node.config.top_k" type="number" min="1" max="20">
-        <small>預設 5 段。依相符程度取回可閱讀的文件。</small>
+        <input v-model.number="node.config.top_k" type="number" min="1" max="20" :disabled="ragMode === 'fulltext'">
+        <small>預設 5 段。混合搜尋或全文超限改用混合搜尋時使用；全文模式本身不以這個數字截斷文件。</small>
       </label>
       <fieldset>
         <legend>搜尋文件集（預設不選）</legend>
@@ -165,10 +171,15 @@ import { modules } from './graph.js';
 import ToolParameter from './ToolParameter.vue';
 import { initializeToolArguments } from './toolArguments.js';
 import { DOCUMENT_DEFAULTS, DOCUMENT_PRESETS, STUDIO_DOCUMENT_FORMATS, availableDocumentPresets } from './documentSettings.js';
+import { RAG_MODES } from './ragSettings.js';
 const props = defineProps({
   node: Object,
   catalog: Object,
   fields: Array
+});
+const ragMode = computed({
+  get: () => props.node.config.mode === 'fulltext' ? 'fulltext' : 'hybrid',
+  set: mode => { if (RAG_MODES.some(item => item.id === mode)) props.node.config.mode = mode; }
 });
 const documentPresets = computed(() => availableDocumentPresets(props.catalog));
 const documentMode = computed({
