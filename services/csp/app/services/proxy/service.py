@@ -1667,6 +1667,54 @@ async def _proxy_stream_impl(
             + "\n\n"
         )
 
+    partial_queued = False
+
+    def _queue_partial_usage() -> None:
+        nonlocal partial_queued
+        if not record_usage or partial_queued:
+            return
+        try:
+            (
+                partial_prompt,
+                partial_completion,
+                partial_total,
+                partial_source,
+                partial_reasoning,
+                _partial_reasoning_source,
+            ) = _resolve_collected_usage(estimate_if_missing=True)
+            if not usage_seen:
+                partial_source = "unavailable"
+            partial = {
+                "api_key_id": api_key_id,
+                "user_id": user_id,
+                "department_id": department_id,
+                "model_id": usage_model_id,
+                "prompt_tokens": partial_prompt,
+                "completion_tokens": partial_completion,
+                "total_tokens": partial_total,
+                "request_duration_ms": int((time.time() - start_time) * 1000),
+                "conversation_id": conversation_id,
+                "trace_id": trace_id,
+                "request_type": request_type,
+                "caller_agent_id": caller_agent_id,
+                "caller_client_id": caller_client_id,
+                "invocation_id": invocation_id,
+                "usage_kind": usage_kind,
+                "token_source": partial_source,
+                "outcome": "partial",
+                "model_name_snapshot": model_name_snapshot,
+                "reasoning_tokens": partial_reasoning,
+            }
+            if task_id is not None or legacy_runtime_call:
+                partial["task_id"] = task_id
+                partial["legacy_runtime_call"] = bool(legacy_runtime_call)
+            from app.services.usage_writer import queue_usage_nowait
+
+            queue_usage_nowait(partial)
+            partial_queued = True
+        except Exception:
+            logger.exception("中斷的串流沒有排入用量")
+
     # 這段的鐵則:``finally`` 不 yield,關閉路徑(``GeneratorExit`` /
     # ``CancelledError``)也不 yield —— 關閉中 yield 會變成
     # ``RuntimeError: async generator ignored GeneratorExit``,把單純的
@@ -1716,54 +1764,16 @@ async def _proxy_stream_impl(
         # 消費端正在收掉這條 generator:同步 re-raise,不 yield 任何東西。
         # 暫存的 named meta 已經沒有收件人,直接丟。已產生的用量仍要入列，
         # 而且不能在關閉路徑上 await。
-        if record_usage:
-            try:
-                (
-                    partial_prompt,
-                    partial_completion,
-                    partial_total,
-                    partial_source,
-                    partial_reasoning,
-                    _partial_reasoning_source,
-                ) = _resolve_collected_usage(estimate_if_missing=True)
-                if not usage_seen:
-                    partial_source = "unavailable"
-                partial = {
-                    "api_key_id": api_key_id,
-                    "user_id": user_id,
-                    "department_id": department_id,
-                    "model_id": usage_model_id,
-                    "prompt_tokens": partial_prompt,
-                    "completion_tokens": partial_completion,
-                    "total_tokens": partial_total,
-                    "request_duration_ms": int((time.time() - start_time) * 1000),
-                    "conversation_id": conversation_id,
-                    "trace_id": trace_id,
-                    "request_type": request_type,
-                    "caller_agent_id": caller_agent_id,
-                    "caller_client_id": caller_client_id,
-                    "invocation_id": invocation_id,
-                    "usage_kind": usage_kind,
-                    "token_source": partial_source,
-                    "outcome": "partial",
-                    "model_name_snapshot": model_name_snapshot,
-                    "reasoning_tokens": partial_reasoning,
-                }
-                if task_id is not None or legacy_runtime_call:
-                    partial["task_id"] = task_id
-                    partial["legacy_runtime_call"] = bool(legacy_runtime_call)
-                from app.services.usage_writer import queue_usage_nowait
-
-                queue_usage_nowait(partial)
-            except Exception:
-                logger.exception("中斷的串流沒有排入用量")
+        _queue_partial_usage()
         raise
     except httpx.TimeoutException as exc:
         if _in_consumer_teardown(exc):
+            _queue_partial_usage()
             raise
         pending_failure = HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError as exc:
         if _in_consumer_teardown(exc):
+            _queue_partial_usage()
             raise
         # Identify by registered model name; endpoint_display is gated.
         label = model_name or "未知模型"
@@ -1774,16 +1784,20 @@ async def _proxy_stream_impl(
         )
     except httpx.HTTPError as exc:
         if _in_consumer_teardown(exc):
+            _queue_partial_usage()
             raise
         pending_failure = exc
     except Exception as exc:
         # 上游 4xx/5xx 的 HTTPException、解析錯等;此時多半還沒有暫存 meta,
         # ``_compose_terminal_meta`` 會回 None,行為與原本一致。
         if _in_consumer_teardown(exc):
+            _queue_partial_usage()
             raise
         pending_failure = exc
 
     if pending_failure is not None:
+        if completion_parts or reasoning_parts or usage_seen:
+            _queue_partial_usage()
         # 已離開 except:這裡的 yield 不在關閉路徑上,可以安全補送終端 meta,
         # 再讓既有機制(``proxy_stream``)把 ``anila.error`` 接在後面。
         interrupt_meta = _compose_terminal_meta(usage_complete=False)
@@ -1799,7 +1813,11 @@ async def _proxy_stream_impl(
     terminal_meta = _compose_terminal_meta(usage_complete=True)
     if terminal_meta is None:
         return
-    yield _render_terminal_meta(terminal_meta)
+    try:
+        yield _render_terminal_meta(terminal_meta)
+    except (GeneratorExit, asyncio.CancelledError):
+        _queue_partial_usage()
+        raise
     terminal_meta_emitted = True
     usage_payload = terminal_meta.get("usage") or {}
     prompt_tokens = int(usage_payload.get("prompt_tokens") or 0)
@@ -1808,7 +1826,11 @@ async def _proxy_stream_impl(
     reasoning_tokens = usage_payload.get("reasoning_tokens")
     usage_source = "reported" if usage_seen else "estimated"
     if pending_done_block:
-        yield pending_done_block
+        try:
+            yield pending_done_block
+        except (GeneratorExit, asyncio.CancelledError):
+            _queue_partial_usage()
+            raise
     if record_usage and total_tokens > 0:
         # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go through
         # the task-aware variant; every other caller keeps the
@@ -1916,7 +1938,7 @@ async def proxy_stream(
             async for position in admission.wait_positions():
                 yield format_anila_queue_status(position)
             pulse_task = asyncio.create_task(admission.pulse_forever())
-        async for chunk in _proxy_stream_impl(
+        upstream = _proxy_stream_impl(
             target_url=target_url,
             api_key_id=api_key_id,
             user_id=user_id,
@@ -1946,8 +1968,12 @@ async def proxy_stream(
             model_name_snapshot=model_name_snapshot,
             record_usage=record_usage,
             request_type=request_type,
-        ):
-            yield chunk
+        )
+        try:
+            async for chunk in upstream:
+                yield chunk
+        finally:
+            await upstream.aclose()
         _note_proxy_outcome(
             model_id=usage_model_id,
             model_name=model_name or f"id:{usage_model_id}",
