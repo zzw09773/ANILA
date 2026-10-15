@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import re
@@ -551,7 +552,6 @@ class _Runtime:
         self.stream_node_id: str | None = None
         self.steps: list[dict] = []
         self.current: dict | None = None
-        self.trace_states: dict[str, tuple[_State, _State | None]] = {}
 
     def tick(self) -> None:
         self.operations += 1
@@ -615,29 +615,48 @@ class _Runtime:
                 state.sources.extend(copy.deepcopy(entry["retrieval"]))
 
     def _replace_retrieval(self, state: _State, request: dict, result: list) -> None:
+        previous = state.external[request["external_index"]]["retrieval"]
+
+        def summary(rows):
+            encoded = _dump(rows).encode("utf-8")
+            return {
+                "chunk_count": len(rows),
+                "bytes": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            }
+
+        before, after = summary(previous), summary(result)
+        record = self.current is not None and self.current["status"] == "running"
+        if record and before != after:
+            events = self.current.setdefault("context_replacements", [])
+            if len(events) >= MAX_EXECUTION_STEPS:
+                raise QuickFlowExecutionError("STEP_LIMIT", "模型內容調整次數已達上限，請縮小文件範圍")
         self._state_retrieval(state, request, result)
-        # Trace snapshots carry the same private origin IDs. Update only states
-        # which actually included this retrieval, including merged descendants.
-        for trace in self.steps:
-            if trace["node_id"] == request["node_id"]:
-                trace["retrieval"] = copy.deepcopy(result)
-                if request["fallback"]:
-                    trace["retrieval_context"] = {
-                        "requested_mode": "fulltext",
+        # Completed steps are historical evidence. Only the pending model's
+        # input changes; the replacement is an additional, bounded event.
+        if record:
+            if before != after:
+                events.append(
+                    {
+                        "type": "retrieval_context_replaced",
+                        "source_node_id": request["node_id"],
+                        "reason": "fulltext_model_context_limit"
+                        if request["fallback"]
+                        else "model_context_limit",
+                        "requested_mode": "fulltext"
+                        if request["fallback"]
+                        else "hybrid",
                         "retrieval_mode": "hybrid",
-                        "fulltext_fallback": True,
-                        "fallback_reason": "fulltext_model_context_limit",
+                        "fulltext_fallback": request["fallback"],
+                        "context_limited": any(
+                            row.get("metadata", {}).get("context_limited")
+                            for row in result
+                        )
+                        or not result,
+                        "before": before,
+                        "after": after,
                     }
-            snapshots = self.trace_states.get(trace["node_id"], ())
-            for name, snapshot in zip(("input", "output"), snapshots):
-                if snapshot is None:
-                    continue
-                for prior in snapshot.retrievals:
-                    if prior["request_id"] == request["request_id"]:
-                        self._state_retrieval(snapshot, prior, result)
-                        trace[name] = snapshot.public()
-                        break
-        if self.current is not None:
+                )
             self.current["input"] = state.public()
 
     @staticmethod
@@ -1031,14 +1050,9 @@ class _Runtime:
                 self.tick()
                 state = _merge(active) if active else _State(text=self.message)
                 trace["input"] = state.public()
-                self.trace_states[node["id"]] = (copy.deepcopy(state), None)
                 state, decision = await self.node(node, state, trace)
                 _json_data(state.public(), "node_output", maximum=MAX_GRAPH_BYTES)
                 trace["output"] = state.public()
-                self.trace_states[node["id"]] = (
-                    self.trace_states[node["id"]][0],
-                    copy.deepcopy(state),
-                )
                 if decision is not None:
                     decisions[node["id"]] = decision
                     trace["branch"] = str(decision).lower()

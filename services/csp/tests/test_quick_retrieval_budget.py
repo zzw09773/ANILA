@@ -153,6 +153,52 @@ def assert_fallback(rows):
         assert row["metadata"]["fallback_reason"] == "fulltext_model_context_limit"
 
 
+def test_later_fallback_preserves_completed_model_and_rag_trace(corpus):
+    a, b = corpus.ids[:2]
+    corpus.batches.update(
+        {(a, "fulltext"): ["A" * 70000], (b, "fulltext"): ["B" * 70000]}
+    )
+    calls = []
+
+    async def model(messages, temperature):
+        calls.append(deepcopy(messages))
+        return "first answer" if len(calls) == 1 else "final answer"
+
+    result = execute(
+        chain(
+            node("a", "rag", collection_ids=[a], mode="fulltext"),
+            node("model1", "model"),
+            node("b", "rag", collection_ids=[b], mode="fulltext"),
+            node("model2", "model"),
+        ),
+        model,
+        corpus.rag,
+    )
+    assert result["status"] == "completed" and len(calls) == 2
+    traces = {step["node_id"]: step for step in result["steps"]}
+    first_sources = json.loads(calls[0][-1]["content"])["external_data"][0]["retrieval"]
+    assert first_sources[0]["content"] == "A" * 70000
+    assert traces["a"]["retrieval"] == first_sources
+    assert traces["a"]["output"]["sources"] == first_sources
+    assert traces["model1"]["input"]["sources"] == first_sources
+    assert traces["model1"]["output"]["sources"] == first_sources
+    assert not traces["model1"].get("context_replacements")
+    assert traces["b"]["input"]["sources"] == first_sources
+    assert all(len(row["content"]) == 70000 for row in traces["b"]["output"]["sources"])
+    latest = json.loads(calls[1][-1]["content"])["external_data"]
+    assert_fallback([row for item in latest for row in item["retrieval"]])
+    assert traces["model2"]["input"]["sources"] == [
+        row for item in latest for row in item["retrieval"]
+    ]
+    events = traces["model2"]["context_replacements"]
+    assert {event["source_node_id"] for event in events} == {"a", "b"}
+    assert all(event["type"] == "retrieval_context_replaced" for event in events)
+    assert all(event["reason"] == "fulltext_model_context_limit" for event in events)
+    assert all(
+        event["before"]["sha256"] != event["after"]["sha256"] for event in events
+    )
+
+
 def test_two_legal_fulltext_calls_fallback_before_final_model(corpus):
     a, b = corpus.ids[:2]
     corpus.batches.update(
@@ -192,8 +238,21 @@ def test_two_legal_fulltext_calls_fallback_before_final_model(corpus):
         assert entry["retrieval"][0]["content"] == "complete relevant passage"
     for step in result["steps"]:
         if step["kind"] == "rag":
-            assert_fallback(step["retrieval"])
-            assert all(len(row["content"]) < 70000 for row in step["output"]["sources"])
+            assert all(
+                row["metadata"]["retrieval_mode"] == "fulltext"
+                for row in step["retrieval"]
+            )
+            assert all(
+                len(row["content"]) == 70000 for row in step["output"]["sources"]
+            )
+    assert (
+        len(
+            next(step for step in result["steps"] if step["node_id"] == "model")[
+                "context_replacements"
+            ]
+        )
+        == 2
+    )
 
 
 def test_long_original_question_shortened_to_legal_search_query(corpus):
@@ -346,11 +405,15 @@ def test_can_omit_one_whole_source_when_other_source_fits(corpus):
     assert len(rows) == 1
     assert len(rows[0]["content"]) == 70000
     assert_fallback(rows)
-    traces = [step for step in result["steps"] if step["kind"] == "rag"]
+    traces = {step["node_id"]: step for step in result["steps"]}
     assert all(
-        step["retrieval_context"]["fallback_reason"] == "fulltext_model_context_limit"
-        for step in traces
+        step["retrieval"][0]["metadata"]["retrieval_mode"] == "fulltext"
+        for step in traces.values()
+        if step["kind"] == "rag"
     )
+    events = traces["model"]["context_replacements"]
+    assert all(event["reason"] == "fulltext_model_context_limit" for event in events)
+    assert any(event["after"]["chunk_count"] == 0 for event in events)
 
 
 def test_fallback_rechecks_live_collection_acl(db, corpus):
@@ -437,10 +500,13 @@ def test_equal_fulltext_on_two_branches_keeps_each_original_query(corpus):
         "complete passage for query-right",
     ]
     traces = {step["node_id"]: step for step in result["steps"]}
-    assert traces["ra"]["retrieval"][0]["content"].endswith("query-left")
-    assert traces["rb"]["retrieval"][0]["content"].endswith("query-right")
+    assert traces["ra"]["retrieval"][0]["content"] == "A" * 70000
+    assert traces["rb"]["retrieval"][0]["content"] == "A" * 70000
     assert len(traces["ra"]["output"]["sources"]) == 1
     assert len(traces["rb"]["output"]["sources"]) == 1
+    assert {
+        event["source_node_id"] for event in traces["join"]["context_replacements"]
+    } == {"ra", "rb"}
 
 
 @pytest.mark.parametrize("kind", ["format", "extract", "agent"])
