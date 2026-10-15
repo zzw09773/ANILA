@@ -164,6 +164,8 @@ const currentSegment = computed(() => {
 
 // 目前頁面的中文名（跟側欄同一份對照），刊頭顯示這個而不是 URL 片段。
 const PAGE_LABELS = {
+  '/quick-builder': '助手快製',
+  '/quick-builder/mcp': '助手查詢工具',
   '/': '儀表板', '/api-keys': 'API 金鑰', '/models': '模型', '/model-access-groups': '群組', '/usage': '用量', '/quotas': '額度',
   '/developer/guide': '開發指南', '/developer/agents': 'Agent', '/knowledge-collections': '知識庫',
   '/message-actions': '自訂動作', '/users': '使用者', '/departments': '部門', '/unit-admins': '單位管理員', '/alerts': '警報',

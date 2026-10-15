@@ -93,9 +93,16 @@ describe("buildShellEntries", () => {
     expect(entries.map((e) => e.label)).toEqual([
       "對話",
       "我的知識庫",
+      "助手快製",
       "專案入口",
       "記憶",
     ]);
+  });
+
+  it("provides a same-origin quick builder entry for signed-in users", () => {
+    const entry = buildShellEntries({}).find((e) => e.id === "quick-builder");
+    expect(entry.label).toBe("助手快製");
+    expect(entry.href).toBe(`${ORIGIN}/quick-builder`);
   });
 
   // 「產出中心」與「我的知識庫」曾是逐字相同的 /anilalm 連結：兩個標籤指到

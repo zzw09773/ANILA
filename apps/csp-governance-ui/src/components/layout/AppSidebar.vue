@@ -78,6 +78,7 @@ const menuGroups = computed(() => {
       label: '主要',
       items: [
         { path: '/', label: '儀表板' },
+        { path: '/quick-builder', label: '助手快製' },
         { path: '/api-keys', label: 'API 金鑰' },
         { path: '/models', label: '模型' },
         { path: '/usage', label: '用量' },
@@ -119,6 +120,7 @@ const menuGroups = computed(() => {
       ],
     })
     const adminItems = [
+      { path: '/quick-builder/mcp', label: '助手查詢工具' },
       { path: '/quotas', label: '額度' },
       { path: '/skill-review', label: 'skill 審核' },
       { path: '/alerts', label: '警報' },

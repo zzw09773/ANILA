@@ -68,7 +68,13 @@ const NO_RETRY_PATHS = [
 ]
 
 client.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // 任何 /me 更新都通知仍開著的草稿頁，避免在同一頁默默換身分。
+    if (response.config?.url?.split('?')[0] === '/api/auth/me' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('anila:identity', { detail: { userId: response.data?.id } }))
+    }
+    return response
+  },
   async (error) => {
     const originalRequest = error.config
     if (!originalRequest) return Promise.reject(error)

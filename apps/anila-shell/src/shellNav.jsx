@@ -114,6 +114,7 @@ export function buildShellEntries({ onTaskCenter, onOpenServices, onOpenUsage, o
     // 我的知識庫 = 同源知識 SPA（也承載 Studio / 產出）。
     // 開關在 anilalmReleaseGate.js。關上時保留這一列，標「即將推出」、不可點。
     knowledge,
+    { id: "quick-builder", label: "助手快製", Icon: IconPencil, href: originHref("/quick-builder") },
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, current: currentId === "projects", onClick: onOpenServices },
     { id: "memory", label: "記憶", Icon: IconHistory, current: currentId === "memory", onClick: onOpenMemory },

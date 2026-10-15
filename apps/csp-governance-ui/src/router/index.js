@@ -14,6 +14,8 @@ const routes = [
     component: () => import('../components/layout/AppLayout.vue'),
     meta: { requiresAuth: true },
     children: [
+      { path: 'quick-builder', name: 'QuickBuilder', component: () => import('../views/QuickBuilderView.vue') },
+      { path: 'quick-builder/mcp', name: 'QuickBuilderMcp', component: () => import('../views/QuickBuilderMcpView.vue'), meta: { requiresAdmin: true } },
       {
         path: '',
         name: 'Dashboard',

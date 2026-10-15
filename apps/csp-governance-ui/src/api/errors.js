@@ -76,3 +76,15 @@ export function privateEndpointFromError(err, opts) {
   return privateEndpointAction(getRawDetail(err), opts)
 }
 
+
+/** 保留後端錯誤類型供回報，同時把不明形狀收斂在這個模組。 */
+export function errorType(err, fallback = 'UNKNOWN_ERROR') {
+  const detail = getRawDetail(err)
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    for (const key of ['type', 'error_type']) {
+      if (typeof detail[key] === 'string' && detail[key].trim()) return detail[key]
+    }
+  }
+  const status = err?.response?.status
+  return Number.isInteger(status) ? `HTTP_${status}` : fallback
+}
