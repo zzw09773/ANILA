@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException
 import httpx
@@ -103,6 +105,59 @@ def _authorized_studio_service(
     return service
 
 
+def _studio_origin(entry_url: str) -> str:
+    """Resolve the registered UI entry to the fixed renderer API's origin.
+
+    Same-origin /studio/... entries use the existing server-owned SITE_URL,
+    never a request Host header, graph field, or response-supplied address.
+    The resulting origin must still pass the ordinary private/trusted guard.
+    """
+    from app.config import settings
+
+    def parts(raw):
+        if (
+            not isinstance(raw, str)
+            or not raw
+            or any(ord(char) <= 32 or ord(char) == 127 for char in raw)
+            or "\\" in raw
+        ):
+            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務位址格式不正確")
+        try:
+            parsed = urlsplit(raw)
+            port = parsed.port
+            host = parsed.hostname
+        except ValueError:
+            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務位址格式不正確")
+        if (
+            parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or port == 0
+        ):
+            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務位址不能含帳密、參數或片段")
+        return parsed, host, port
+
+    parsed, host, port = parts(entry_url)
+    if not parsed.scheme and not parsed.netloc:
+        if (
+            not re.fullmatch(r"/studio(?:/[A-Za-z0-9._~-]+)*/?", parsed.path)
+            or any(segment in (".", "..") for segment in parsed.path.split("/"))
+        ):
+            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "同源文件服務入口必須是 /studio/ 路徑")
+        parsed, host, port = parts(settings.SITE_URL)
+        if parsed.path not in ("", "/"):
+            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "平台站台位址必須是完整的 HTTP 或 HTTPS origin")
+    if parsed.scheme not in ("http", "https") or not host:
+        _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務需要完整的院內 HTTP 或 HTTPS origin")
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
+    # UI entry paths are deliberately not a backend API prefix. Both a direct
+    # Studio origin and platform ingress expose the same fixed root API.
+    return urlunsplit((parsed.scheme, authority, "", "", ""))
+
+
 async def resolve_studio_url(db, user, classification_level) -> str:
     from app.services.quick_mcp import _guard_endpoint
 
@@ -111,22 +166,23 @@ async def resolve_studio_url(db, user, classification_level) -> str:
     endpoint = _authorized_studio_service(
         db, user, level, captured_department
     ).entry_url
+    origin = _studio_origin(endpoint)
     try:
         # Existing guard requires an explicit trusted host and private intranet
         # addresses, rejecting external addresses, credentials, query/fragment.
-        await asyncio.wait_for(asyncio.to_thread(_guard_endpoint, endpoint), timeout=5)
+        await asyncio.wait_for(asyncio.to_thread(_guard_endpoint, origin), timeout=5)
     except HTTPException:
         _fail(
             503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務位址未通過院內信任主機驗證"
         )
     except TimeoutError:
         _fail(504, "DOCUMENT_RENDERER_ENDPOINT_TIMEOUT", "文件排版服務位址驗證逾時")
-    if (
-        _authorized_studio_service(db, user, level, captured_department).entry_url
-        != endpoint
-    ):
+    current_entry = _authorized_studio_service(
+        db, user, level, captured_department
+    ).entry_url
+    if current_entry != endpoint or _studio_origin(current_entry) != origin:
         _fail(409, "DOCUMENT_RENDERER_CHANGED", "文件排版服務設定已變更，請重試")
-    return endpoint.rstrip("/")
+    return origin
 
 
 def _request_hash(payload: dict) -> str:
@@ -216,7 +272,7 @@ async def render_document(
     if not outbound_action_allowed(level):
         _fail(403, "EXPORT_CLASSIFICATION", "這個密等的內容不能匯出文件")
     service = _authorized_studio_service(db, current, level, captured_department)
-    if service.entry_url.rstrip("/") != approved_url:
+    if _studio_origin(service.entry_url) != approved_url:
         _fail(409, "DOCUMENT_RENDERER_CHANGED", "文件排版服務設定已變更，請重試")
     job_id = f"quick-{run_id}-{uuid.uuid4().hex}"
     payload = {

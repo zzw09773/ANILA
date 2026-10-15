@@ -30,6 +30,10 @@
 
 Studio 此路徑僅 render 前一步文字，不再呼叫 LLM 或 RAG。管理員須確認既有 `RegisteredService.slug='studio'` 已啟用、實際 caller 通過 `can_access_service`、網址屬院內且符合既有 trusted URL 規則，以及服務分類上限適用。呼叫使用既有 keyring 簽發的專屬 120 秒 JWT：`type='studio_quick_document'`、`aud='studio-quick-document'`，沿用 Artifact 匯出 gate。此權杖不能用於通用 CSP 或 Studio 登入；不能以系統帳號或助手建立者替代 caller，也不新增另一組模型連線。
 
+服務入口可為直接院內 HTTP／HTTPS origin，或既有同源 `/studio/...` 路徑；完整網址若含 UI 路徑，文件 API 仍以其 origin 為準。同源路徑只由伺服器既有 `SITE_URL` 解析平台 origin，不採用瀏覽器 Host、畫布欄位或外部回覆中的網址。`SITE_URL` 須為完整 origin；預設 localhost 不會繞過院內安全檢查。解析結果仍適用既有信任主機、全體 DNS 回答限 RFC1918／ULA、HTTPS／明確 HTTP 放行政策；不接受帳密、查詢參數、片段、重導向或含糊路徑。
+
+請求固定送往該 origin 的 `/api/quick-documents/render`，兩個平台 nginx 入口的 `quick-documents` API prefix 均轉給既有 Studio backend，不把 `/studio/...` 當成 API 前綴。直接 origin／同源入口與拒絕案例已有離線 mock HTTP 及路由設定檢核；這不代表已部署 nginx 或驗證正式院內 ingress 連線。
+
 QuickRun 的 `execution_context` 是私有執行脈絡，不回傳一般結果或逐步紀錄。產檔後再查有效密等；若升密後不允許匯出，清除產物。每次下載仍重新核對原 task／conversation 的存取與有效密等，刪除、換所有人或升密後不能因持有舊下載網址而放行。
 
 失敗／取消的執行會將本 run 的 Artifact 標為 failed、移除版本連結並保留稽核；最後送出 render 請求前由 callback 重新驗證當下身分、有效密等與服務 ACL。合成 Task／Conversation 升密、Agent 撤權、失敗／取消清理及來源快照升密下載的獨立反例已通過；正式院內服務仍須實接驗證，轉檔成功不能取代授權驗收。

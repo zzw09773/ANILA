@@ -48,10 +48,13 @@
 list_tools(db, user) -> list[dict]
 await call_tool(db, user, tool_id, arguments,
                 assistant_id=assistant_id,
+                before_send=reauthorize,
                 expected_fingerprint=approved_version_fingerprint) -> dict
 ```
 
 `assistant_id`、工具 ID 與核准版本指紋由後端執行器取得；執行器仍需檢查助手本身與使用者的執行權限。MCP 服務層重新檢查資料來源權限。送審與正式執行均應提供 `expected_fingerprint`。
+
+`before_send` 是必要的同步重新授權回呼，成功時回傳當下真實提問者 `User`，拒絕時拋出授權錯誤。最後一次 DNS 安全驗證的等待結束後、簽發查詢權杖與送出資料之前，執行器必須透過這個回呼重新檢查完整 runtime：目前帳號與單位、助手與指定版本、Agent 授權、來源與憑證，以及原任務／對話的有效密等。不能只回傳先前快取的使用者，也不能把先前曾通過的檢查當成目前仍有效。MCP 服務層還會重查服務／工具核准、指紋及本人權限，避免等待期間撤權後仍送出請求。
 
 回覆固定為 `{"tool_id":21,"fingerprint":"…","trust":"untrusted_external_data","data":{…}}`，`data` 只保留 `content/structuredContent/isError`。執行器將整份回覆編碼為工具資料，放入 `tool` 或 `user` 角色；不得將回覆合併為系統訊息、工具定義、身分或流程設定。巢狀欄位即使叫 `role/system/sub/tools` 仍只是資料。平台不解析結果內的 URL，也不下載 resource 或圖片。
 
