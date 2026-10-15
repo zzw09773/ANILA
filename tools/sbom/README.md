@@ -21,7 +21,7 @@ python3 -I -S "$task_repo/tools/sbom/test_build_repo_sbom.py"
 
 `--installed-root /explicit/path/site-packages` 可重複指定；僅讀匹配 repo Python 套件名稱的 `*.dist-info/METADATA`，略過 symlink metadata，不匯入套件或執行 `.pth`。Installed 為額外觀測、標 `not-compared-installed-observation`，不取代 lock，也不證明建置或出貨。預設 repo SBOM 不讀本機安裝清單。
 
-來源 URL 去除 userinfo、query、fragment；完整 JSON、巢狀 properties、constraint、notices 與摘要均脫敏。機敏資訊若位於 URL 路徑或一般自由文字，無法由 URL 結構辨認；白名單不應存放此類資料。授權名稱、作者及來源均為上游宣告且未逐項複核；`license = {file = ...}` 只記錄未讀取的證據路徑，不偽裝授權內容。國別／控制關係一律 unknown。OpenCC 實際呼叫鏈及上游詞典來源列在 BOM properties，仍須來源審查。
+來源 URL 去除 userinfo、query、fragment；完整 JSON、巢狀 properties、constraint、notices 與摘要均脫敏。機敏資訊若位於 URL 路徑或一般自由文字，無法由 URL 結構辨認；白名單不應存放此類資料。授權名稱、作者及來源均為上游宣告且未逐項複核；`license = {file = ...}` 只記錄未讀取的證據路徑，不偽裝授權內容。國別／控制關係一律 unknown。OpenCC 的目前／移除觀測數與上游詞典來源列在 BOM properties；數字依實讀來源計算，不能證明程式不可達、環境已卸載或映像已移除。
 
 輸出依固定來源排序，不含當下時間；metadata 記錄產生時的 `source-head` 及實讀 manifest SHA256。工作目錄內容可能尚未提交，HEAD 本身不代表所有來源已提交；正式交付在最後提交後重生。serialNumber 由內容雜湊產生，重跑相同輸入與 HEAD 應逐位元一致。此工具不代表完整 OS／映像／瀏覽器／字型／模型／遠端服務 SBOM，也不代表 NF-11 或弱掃通過。
 

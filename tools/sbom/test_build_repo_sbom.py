@@ -174,6 +174,27 @@ class InventoryTests(unittest.TestCase):
         with TemporaryDirectory() as directory, self.assertRaises(ValueError):
             sbom.load_repository(Path(directory), "not-a-commit")
 
+    def test_opencc_observations_follow_current_and_removed_sources(self):
+        current, baseline = sbom.Inventory(), sbom.Inventory()
+        baseline.requirements("requirements.txt", "opencc-python-reimplemented==0.1.7\n")
+        with patch.object(sbom, "load_repository", side_effect=[current, baseline]):
+            bom, summary = sbom.build(Path("/tmp"))
+        properties = {p["name"]: p["value"] for p in bom["properties"]}
+        assessment = json.loads(properties["anila:opencc-observations"])
+        self.assertEqual((assessment["current"], assessment["removed"]), (0, 1))
+        self.assertEqual(summary["removed_count"], len(baseline.records))
+        self.assertIn("does not prove runtime/image removal", assessment["scope"])
+        self.assertNotIn("anila:opencc-reachability", properties)
+
+    def test_opencc_current_observation_is_not_hidden_by_removal_notice(self):
+        current = sbom.Inventory()
+        current.requirements("requirements.txt", "opencc-python-reimplemented==0.1.7\n")
+        with patch.object(sbom, "load_repository", return_value=current):
+            bom, _ = sbom.build(Path("/tmp"))
+        properties = {p["name"]: p["value"] for p in bom["properties"]}
+        assessment = json.loads(properties["anila:opencc-observations"])
+        self.assertEqual((assessment["current"], assessment["removed"]), (1, 0))
+
     def test_deterministic_bom_and_reference_invariants(self):
         inventory = sbom.Inventory()
         inventory.requirements("requirements.txt", "foo>=1\n")

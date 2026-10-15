@@ -429,8 +429,12 @@ def build(root, baseline=BASELINE, installed_roots=()):
            "properties": [prop("comparison-counts", dict(sorted(statuses.items()))), prop("removed-observations", [{"name": r["name"], "path": r["path"], "version": r["version"], "observation": r["observation"]} for r in removed]),
                           prop("notices", sorted(current.notices, key=lambda item: json.dumps(item, sort_keys=True))),
                           prop("compliance", "NF-11 not passed. Zero new declarations does not certify existing dependencies."),
-                          prop("opencc-provenance", "opencc-python-reimplemented 0.1.7 reuses BYVoid/OpenCC dictionary/configuration data; https://github.com/yichen0831/opencc-python/blob/master/NOTICE.txt"),
-                          prop("opencc-reachability", "quick_model_stream→reasoning_gate→anila_core.text.__init__→zh_normalizer→OpenCC; Shell conversation_service→zh_normalize_service→normalize_report→OpenCC(s2twp); Studio main→reports→report_runner→studio_text_normalizer startup import; pure quick renderer bypasses normalizer")]}
+                          prop("opencc-provenance", "The baseline opencc-python-reimplemented package reuses BYVoid/OpenCC dictionary/configuration data; https://github.com/yichen0831/opencc-python/blob/master/NOTICE.txt. This declaration does not establish country/control compliance."),
+                          prop("opencc-observations", {
+                              "current": sum(r["name"] == "opencc-python-reimplemented" for r in current.records.values()),
+                              "removed": sum(r["name"] == "opencc-python-reimplemented" for r in removed),
+                              "scope": "Fixed manifest/lock/explicit metadata observations only; zero observations does not prove runtime/image removal or source reachability.",
+                          })]}
     bom = safe_tree(bom)
     payload = json.dumps(bom, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     bom["serialNumber"] = "urn:uuid:" + str(uuid.uuid5(uuid.NAMESPACE_URL, hashlib.sha256(payload.encode()).hexdigest()))
@@ -473,7 +477,7 @@ def main():
                             + "declared 是 manifest 宣告；locked 是 lock 記錄；installed 僅為顯式指定本機 metadata 觀察。"
                             + "精確 pin 的 requirements.txt 仍屬 declared，不能冒充 lock。環境 marker、optional/dev 與所有平台項目未經安裝解析。\n\n"
                             + "component_count 是按來源檔案與定位區分的觀測紀錄數；同名不同版本及不同宣告位置保留，並非去重後的實體安裝套件數。license-file 路徑不是已讀取的授權內容。\n\n"
-                            + "國別／控制關係均未知；版本、授權與作者來源自述未替代完整來源審查。OpenCC 真實使用鏈與上游詞典來源保留於 BOM properties。"
+                            + "國別／控制關係均未知；版本、授權與作者來源自述未替代完整來源審查。OpenCC 的目前與移除觀測數及上游詞典來源保留於 BOM properties，未推定程式可達性或映像已移除。"
                             + "來源 URL 已移除 credential、query 與 fragment。內建檢核只驗必要結構與參照完整性，未宣稱外部 JSON Schema 完整驗證。\n")
     print(json.dumps({key: value for key, value in result.items() if key != "notices"}, ensure_ascii=False, sort_keys=True))
 
