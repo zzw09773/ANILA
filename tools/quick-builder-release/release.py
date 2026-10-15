@@ -42,6 +42,7 @@ OMITTED_FILES = (
     'services/anila-studio/tests/test_studio_batch3_layouts.py',
     'services/anila-studio/tests/test_studio_substance.py',
     'services/csp/tests/test_conversation_background_pool.py',
+    'services/csp/tests/test_external_services.py',
     'services/csp/tests/test_follow_ups.py',
     'services/csp/tests/test_quick_builder_http_load_tool.py',
     'services/csp/tests/test_quick_stream_pool.py',

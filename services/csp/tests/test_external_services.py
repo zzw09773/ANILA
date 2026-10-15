@@ -383,11 +383,12 @@ def test_list_external_services_commits_only_when_a_row_is_inserted(client, db, 
     first = client.get("/api/admin/external-services", headers=headers)
     assert first.status_code == 200, first.text
     assert len(first.json()["services"]) == 2
-    assert commits["n"] == 1
+    # 每次驗證歸還唯讀連線；只有第一次列出服務需要另行提交預設列。
+    assert commits["n"] == 2
     second = client.get("/api/admin/external-services", headers=headers)
     assert second.status_code == 200, second.text
     assert len(second.json()["services"]) == 2
-    assert commits["n"] == 1
+    assert commits["n"] == 3
 
 
 def test_probe_wall_clock_deadline_is_not_the_inactivity_timeout(db, monkeypatch):
