@@ -79,7 +79,7 @@ def test_render_only_token_cannot_authenticate_general_csp(db, synthetic_keys):
     assert denied.value.status_code == 401
 
 
-@pytest.mark.parametrize("change", ["task", "conversation", "agent"])
+@pytest.mark.parametrize("change", ["task", "conversation", "agent", "snapshot"])
 def test_inner_studio_preflight_rechecks_live_context_before_post(
     db, review_rows, synthetic_keys, monkeypatch, change
 ):
@@ -107,6 +107,13 @@ def test_inner_studio_preflight_rechecks_live_context_before_post(
         classification_ceiling="營業秘密",
     )
     db.add_all([task, conversation, studio])
+    db.flush()
+    snapshot = SourceSnapshot(
+        task_id=task.id, origin="none", source_scope="none", classification_level="無機密"
+    )
+    db.add(snapshot)
+    db.flush()
+    task.source_snapshot_id = snapshot.id
     db.commit()
     monkeypatch.setattr(quick_mcp, "_guard_endpoint", lambda url: None)
     original_resolve = documents.resolve_studio_url
@@ -122,6 +129,8 @@ def test_inner_studio_preflight_rechecks_live_context_before_post(
                 task.classification_level = "機密"
             elif change == "conversation":
                 conversation.classification_level = "機密"
+            elif change == "snapshot":
+                snapshot.classification_level = "機密"
             else:
                 agent.approval_status = "registered"
             db.commit()

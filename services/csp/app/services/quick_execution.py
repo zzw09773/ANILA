@@ -96,6 +96,34 @@ def _rtf(text):
     )
 
 
+def _snapshot_level(db, user_id, snapshot_id, *, task_id=None):
+    from app.models.source_snapshot import SourceSnapshot
+    from app.models.task import Task
+    from app.modules.policy import effective_level
+
+    snapshot = (
+        db.query(SourceSnapshot).filter_by(id=snapshot_id).populate_existing().first()
+    )
+    task = (
+        db.query(Task).filter_by(id=snapshot.task_id).populate_existing().first()
+        if snapshot
+        else None
+    )
+    if (
+        not snapshot
+        or not task
+        or task.requester_user_id != user_id
+        or (task_id is not None and snapshot.task_id != task_id)
+    ):
+        fail(403, "CONTEXT_DENIED", "文件來源快照已無法存取，請重新確認任務來源")
+    return max(
+        effective_level(
+            db, resource_type="source_snapshot", resource_id=str(snapshot.id)
+        ),
+        effective_level(db, resource_type="task", resource_id=str(task.id)),
+    )
+
+
 def artifact_execution_level(db, run, version, artifact=None):
     from app.models.task import Task
     from app.models.conversation import Conversation
@@ -120,6 +148,23 @@ def artifact_execution_level(db, run, version, artifact=None):
             level,
             effective_level(
                 db, resource_type=resource_type, resource_id=str(resource_id)
+            ),
+        )
+        if resource_type == "task" and resource.source_snapshot_id is not None:
+            level = max(
+                level,
+                _snapshot_level(
+                    db, run.user_id, resource.source_snapshot_id, task_id=resource.id
+                ),
+            )
+    if context.get("source_snapshot_id") is not None:
+        level = max(
+            level,
+            _snapshot_level(
+                db,
+                run.user_id,
+                context["source_snapshot_id"],
+                task_id=context.get("task_id"),
             ),
         )
     if artifact and artifact.get("artifact_id"):
@@ -212,6 +257,7 @@ async def run(
     task_ctx=None,
     conversation_id=None,
     dispatch_claims=None,
+    history=None,
 ):
     from app.services.quick_flow import execute_graph
 
@@ -228,7 +274,7 @@ async def run(
     ):
         fail(404, "NOT_FOUND", "這個助手尚未發布或已停用")
     payload = deepcopy(version.payload)
-    task_id = conv_id = None
+    task_id = conv_id = source_snapshot_id = None
     if not testing:
         from app.models.task import Task
         from app.models.conversation import Conversation
@@ -245,7 +291,12 @@ async def run(
         ):
             if context_id is None:
                 continue
-            context = db.get(context_model, context_id)
+            context = (
+                db.query(context_model)
+                .filter_by(id=context_id)
+                .populate_existing()
+                .first()
+            )
             if not context or getattr(context, owner_field) != user.id:
                 fail(403, "CONTEXT_DENIED", "任務或對話不屬於提問者")
             context_level = max(
@@ -254,6 +305,15 @@ async def run(
                     db, resource_type=resource_type, resource_id=str(context_id)
                 ),
             )
+            if resource_type == "task":
+                source_snapshot_id = context.source_snapshot_id
+                if source_snapshot_id is not None:
+                    context_level = max(
+                        context_level,
+                        _snapshot_level(
+                            db, user.id, source_snapshot_id, task_id=task_id
+                        ),
+                    )
         payload["classification_level"] = max(
             context_level,
             ClassificationLevel.from_storage(payload["classification_level"]),
@@ -361,6 +421,16 @@ async def run(
                     resource_type=resource_type,
                     resource_id=str(context_id),
                 )
+                if resource_type == "task":
+                    if current_context.source_snapshot_id != source_snapshot_id:
+                        fail(403, "CONTEXT_DENIED", "任務來源已變更，請重新執行助手")
+                    if source_snapshot_id is not None:
+                        current_level = max(
+                            current_level,
+                            _snapshot_level(
+                                db, current.id, source_snapshot_id, task_id=task_id
+                            ),
+                        )
                 payload["classification_level"] = max(
                     current_level,
                     ClassificationLevel.from_storage(payload["classification_level"]),
@@ -435,26 +505,15 @@ async def run(
             api_key_id=api_key_id,
         )
 
-    async def rag_call(collection_ids, query, top_k=5):
-        from app.api.ingestion.search import (
-            SearchPrincipal,
-            SearchRequest,
-            search_collection,
-        )
+    async def rag_call(collection_ids, query, top_k=5, *, mode="hybrid"):
+        from app.services.quick_retrieval import retrieve_collections
 
         current = reauthorize()
         if not set(collection_ids).issubset(payload["collection_ids"]):
             fail(403, "SOURCE_NOT_DECLARED", "流程嘗試讀取未核准的文件集")
-        hits = []
-        for collection_id in collection_ids:
-            response = await search_collection(
-                collection_id,
-                SearchRequest(query=query, top_k=top_k, search_mode="hybrid"),
-                db,
-                SearchPrincipal(user=current),
-            )
-            hits.extend(item.model_dump() for item in response.results)
-        return hits[:top_k]
+        return await retrieve_collections(
+            db, current, collection_ids, query, top_k, mode=mode
+        )
 
     async def tool_call(tool_id, arguments):
         from app.services.quick_mcp import call_tool
@@ -470,6 +529,7 @@ async def run(
             arguments,
             assistant_id=assistant.id,
             expected_fingerprint=fingerprint,
+            before_send=reauthorize,
         )
         if (
             isinstance(response, dict)
@@ -549,6 +609,7 @@ async def run(
                 rendered=rendered,
                 classification_level=payload["classification_level"],
                 task_id=task_id,
+                source_snapshot_id=source_snapshot_id,
                 agent_id=captured_agent_id,
                 model_id=payload["model_id"],
                 artifact_index=len(artifacts),
@@ -592,6 +653,7 @@ async def run(
                 rag_call=rag_call,
                 tool_call=tool_call,
                 document_call=document_call,
+                history=history,
             ),
             timeout=120,
         )
@@ -599,9 +661,7 @@ async def run(
         if artifacts and not outbound_action_allowed(
             ClassificationLevel.from_storage(payload["classification_level"])
         ):
-            fail(
-                403, "EXPORT_CLASSIFICATION", "任務或對話的密等已提高，這次文件不能匯出"
-            )
+            fail(403, "EXPORT_CLASSIFICATION", "任務或對話的密等已提高，這次文件不能匯出")
     except asyncio.CancelledError:
         result = {
             "output": "",
@@ -619,6 +679,7 @@ async def run(
             {
                 "classification_level": payload["classification_level"],
                 "task_id": task_id,
+                "source_snapshot_id": source_snapshot_id,
                 "conversation_id": conv_id,
             },
         )
@@ -650,6 +711,7 @@ async def run(
         {
             "classification_level": payload["classification_level"],
             "task_id": task_id,
+            "source_snapshot_id": source_snapshot_id,
             "conversation_id": conv_id,
         },
     )
@@ -735,16 +797,39 @@ async def agent_response(
     messages = body.get("messages")
     if not isinstance(messages, list):
         fail(422, "MESSAGE_REQUIRED", "請提供對話訊息")
-    message = next(
+    last_user = next(
         (
-            m.get("content")
-            for m in reversed(messages)
-            if isinstance(m, dict) and m.get("role") == "user"
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[index], dict)
+            and messages[index].get("role") == "user"
         ),
         None,
     )
+    message = messages[last_user].get("content") if last_user is not None else None
     if not isinstance(message, str) or not message.strip() or len(message) > 16000:
         fail(422, "INVALID_MESSAGE", "請提供長度不超過 16000 字的文字訊息")
+    history = []
+    remaining = 32000
+    for item in reversed(messages[:last_user]):
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            continue
+        content = item.get("content")
+        if not isinstance(content, str):
+            fail(422, "INVALID_HISTORY", "助手目前僅支援文字對話，請移除歷史訊息中的非文字內容")
+        if not content.strip():
+            continue
+        if len(history) >= 20 or remaining <= 0:
+            break
+        limit = min(8000, remaining)
+        if len(content) > limit:
+            marker = "[較早內容已省略]\n"
+            if limit <= len(marker):
+                break
+            content = marker + content[-(limit - len(marker)) :]
+        history.append({"role": item["role"], "content": content})
+        remaining -= len(content)
+    history.reverse()
     result = await run(
         db,
         user,
@@ -755,6 +840,7 @@ async def agent_response(
         task_ctx=task_ctx,
         conversation_id=conversation_id,
         dispatch_claims=dispatch_claims,
+        history=history,
     )
     if task_ctx:
         from app.services.proxy.task_link import finalize_task_run

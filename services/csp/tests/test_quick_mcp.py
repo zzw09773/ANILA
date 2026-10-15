@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,6 +23,8 @@ from jose import jwt
 from app.api.quick_mcp import router
 from app.database import get_db
 from app.models.department import Department
+from app.models.agent import UserAgentPermission
+from app.models.api_key import ApiKey
 from app.models.endpoint_author_grant import EndpointAuthorGrant
 from app.models.quick_mcp import QuickMCPService
 from app.models.unit_admin_assignment import UnitAdminAssignment
@@ -29,6 +32,13 @@ from app.schemas.quick_mcp import MCPServiceCreate
 from app.services import quick_mcp as mcp
 from app.services.auth_service import get_current_user
 from tests.conftest import make_user
+from tests.test_quick_builder_review import (
+    _assistant,
+    _graph,
+    review_rows as _review_rows_fixture,
+)
+
+review_rows = _review_rows_fixture
 
 URL = "https://attendance.local/mcp"
 RAW_TOOLS = [
@@ -171,6 +181,7 @@ def approve(db, people, service):
 
 
 def invoke(db, people, service, **kwargs):
+    kwargs.setdefault("before_send", lambda: people["alice"])
     return run(
         mcp.call_tool(
             db,
@@ -291,7 +302,11 @@ def test_call_checks_live_permissions_and_explicit_allowlist(db, people, remote)
         (people["alice"], forbidden),
     ):
         with pytest.raises(HTTPException) as exc:
-            run(mcp.call_tool(db, user, tool_id, {}, assistant_id=42))
+            run(
+                mcp.call_tool(
+                    db, user, tool_id, {}, assistant_id=42, before_send=lambda: user
+                )
+            )
         assert exc.value.status_code == 403
     people["alice"].department_id = people["other_department"].id
     db.commit()
@@ -311,6 +326,125 @@ def test_recheck_after_discovery_prevents_revoked_user_call(db, people, remote):
     with pytest.raises(HTTPException) as exc:
         invoke(db, people, service)
     assert exc.value.status_code == 403
+    assert not remote["queries"]
+
+
+@pytest.mark.parametrize("boundary", ["tools_list", "final_dns"])
+@pytest.mark.parametrize(
+    "change",
+    ["assistant", "agent_grant", "api_key", "token_version", "dispatch_expiry"],
+)
+def test_runtime_reauthorizes_after_mcp_awaits_before_tool_send(
+    db, review_rows, remote, monkeypatch, boundary, change
+):
+    from app.services import quick_execution as execution
+
+    _, user, admin, _, department = review_rows
+    db.add(EndpointAuthorGrant(user_id=admin.id))
+    db.commit()
+    service = run(
+        mcp.register_service(
+            db,
+            admin,
+            MCPServiceCreate(
+                name="執行邊界", endpoint_url=URL, department_id=department.id
+            ),
+        )
+    )
+    service = run(
+        mcp.approve_service(db, admin, service["id"], [service["tools"][0]["id"]])
+    )
+    tool = service["tools"][0]
+    assistant, version, agent = _assistant(
+        db,
+        review_rows,
+        graph=_graph(
+            {
+                "id": "query",
+                "kind": "mcp",
+                "config": {"tool_id": tool["id"], "arguments": {"month": "2026-10"}},
+            }
+        ),
+        tool_fingerprints={str(tool["id"]): tool["fingerprint"]},
+    )
+    api_key = ApiKey(
+        user_id=user.id,
+        name="合成執行憑證",
+        key_prefix="review00",
+        key_suffix="0000",
+        key_hash="synthetic-mcp-runtime-key",
+        is_active=True,
+    )
+    db.add(api_key)
+    db.commit()
+    started_at = int(time.time())
+    changed = []
+
+    def revoke():
+        changed.append(change)
+        if change == "assistant":
+            assistant.disabled = True
+        elif change == "agent_grant":
+            db.query(UserAgentPermission).filter_by(
+                user_id=user.id, agent_id=agent.id
+            ).delete()
+        elif change == "api_key":
+            api_key.is_active = False
+        elif change == "token_version":
+            user.token_version += 1
+        else:
+            monkeypatch.setattr(
+                execution, "time", SimpleNamespace(time=lambda: started_at + 61)
+            )
+        db.commit()
+
+    if boundary == "tools_list":
+        remote["on_list"] = revoke
+    else:
+        original_guard = mcp._guard_endpoint_async
+        guards = 0
+
+        async def guard(url):
+            nonlocal guards
+            await original_guard(url)
+            guards += 1
+            if guards == 4:
+                revoke()
+
+        monkeypatch.setattr(mcp, "_guard_endpoint_async", guard)
+
+    result = run(
+        execution.run(
+            db,
+            user,
+            assistant.id,
+            version.id,
+            "查詢本人合成差勤",
+            api_key_id=api_key.id,
+            dispatch_claims={"exp": started_at + 60},
+        )
+    )
+    assert changed == [change]
+    assert result["status"] == "failed"
+    assert not remote["queries"]
+    assert all(body["method"] != "tools/call" for body, _ in remote["calls"])
+
+
+def test_final_callback_cannot_replace_true_caller(db, people, remote):
+    service = approve(db, people, register(db, people))
+    with pytest.raises(HTTPException) as denied:
+        invoke(db, people, service, before_send=lambda: people["admin"])
+    assert denied.value.status_code == 403
+    assert denied.value.detail["error_type"] == "mcp_identity_changed"
+    assert not remote["queries"]
+
+
+def test_tool_call_requires_runtime_reauthorization_callback(db, people, remote):
+    service = approve(db, people, register(db, people))
+    with pytest.raises(HTTPException) as denied:
+        invoke(db, people, service, before_send=None)
+    assert denied.value.status_code == 403
+    assert denied.value.detail["error_type"] == "mcp_runtime_authorization_required"
     assert not remote["queries"]
 
 
@@ -395,6 +529,7 @@ def test_invalid_or_identity_arguments_never_reach_tool(db, people, remote, argu
                 service["tools"][0]["id"],
                 arguments,
                 assistant_id=42,
+                before_send=lambda: people["alice"],
             )
         )
     assert exc.value.status_code == 422

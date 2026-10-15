@@ -8,6 +8,7 @@ import json
 import re
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -417,13 +418,23 @@ class _MCPClient:
         return message["result"]
 
     async def rpc(
-        self, method: str, params: dict, *, notification: bool = False
+        self,
+        method: str,
+        params: dict,
+        *,
+        notification: bool = False,
+        before_send: Callable[[], None] | None = None,
     ) -> dict:
+        if method == "tools/call" and not callable(before_send):
+            raise _error(403, "mcp_runtime_authorization_required", "MCP 查詢須重新確認流程授權")
         await _guard_endpoint_async(self.endpoint)
         self.counter += 1
         body = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notification:
             body["id"] = self.counter
+        # DNS 等待完成後同步重驗；回呼至開始送出之間不可再等待。
+        if before_send is not None:
+            before_send()
         try:
             async with self.client.stream(
                 "POST", self.endpoint, json=body, headers=self.headers
@@ -857,8 +868,12 @@ async def call_tool(
     arguments: dict,
     *,
     assistant_id: int,
+    before_send: Callable[[], User],
     expected_fingerprint: str | None = None,
 ) -> dict:
+    """回呼須同步重查流程、真實提問者、來源憑證與助手的當下授權。"""
+    if not callable(before_send):
+        raise _error(403, "mcp_runtime_authorization_required", "MCP 查詢須重新確認流程授權")
     if (
         type(assistant_id) is not int
         or assistant_id <= 0
@@ -873,6 +888,8 @@ async def call_tool(
         raise _error(422, "mcp_arguments_invalid", "MCP 查詢參數超過上限或格式不正確")
     if {"user_id", "sub", "actor_user_id", "requester_id"} & arguments.keys():
         raise _error(422, "mcp_identity_override", "查詢者身分由平台憑證提供，不能填入查詢參數")
+    caller_id = user.id
+    arguments = json.loads(_json_bytes(arguments))
     user, tool, service = _authorized_tool(db, user, tool_id, expected_fingerprint)
     _validate_schema(tool.input_schema)
     _validate_arguments(tool.input_schema, arguments)
@@ -883,30 +900,47 @@ async def call_tool(
                 current = {t["name"]: tool_fingerprint(t) for t in await client.tools()}
                 if current.get(tool.name) != tool.approved_fingerprint:
                     raise _error(409, "mcp_schema_changed", "MCP 工具已變更，請通知管理員重新審核")
-                user, tool, service = _authorized_tool(
-                    db, user, tool_id, expected_fingerprint
-                )
-                if current.get(tool.name) != tool.approved_fingerprint:
-                    raise _error(409, "mcp_schema_changed", "MCP 工具已變更，請通知管理員重新審核")
-                if client.endpoint != service.endpoint_url:
-                    raise _error(409, "mcp_endpoint_changed", "MCP 服務位址已變更，請重新送審")
-                client.headers[
-                    "Authorization"
-                ] = f"Bearer {issue_mcp_token(db, user, service.id, tool.name, assistant_id=assistant_id)}"
-                log_audit_event_or_raise(
-                    db,
-                    action="quick_mcp.call",
-                    resource_type="quick_mcp_tool",
-                    resource_id=tool.id,
-                    actor=user,
-                    metadata={
-                        "assistant_id": assistant_id,
-                        "fingerprint": tool.schema_fingerprint,
-                    },
-                )
-                db.commit()
+                call_name, call_fingerprint = tool.name, tool.schema_fingerprint
+
+                def authorize_send():
+                    nonlocal user, tool, service
+                    current_user = before_send()
+                    if (
+                        not isinstance(current_user, User)
+                        or current_user.id != caller_id
+                    ):
+                        raise _error(403, "mcp_identity_changed", "MCP 查詢者身分不能在流程中變更")
+                    user, tool, service = _authorized_tool(
+                        db, current_user, tool_id, expected_fingerprint
+                    )
+                    if (
+                        tool.name != call_name
+                        or tool.schema_fingerprint != call_fingerprint
+                        or current.get(tool.name) != tool.approved_fingerprint
+                    ):
+                        raise _error(409, "mcp_schema_changed", "MCP 工具已變更，請通知管理員重新審核")
+                    if client.endpoint != service.endpoint_url:
+                        raise _error(409, "mcp_endpoint_changed", "MCP 服務位址已變更，請重新送審")
+                    client.headers[
+                        "Authorization"
+                    ] = f"Bearer {issue_mcp_token(db, user, service.id, tool.name, assistant_id=assistant_id)}"
+                    log_audit_event_or_raise(
+                        db,
+                        action="quick_mcp.call",
+                        resource_type="quick_mcp_tool",
+                        resource_id=tool.id,
+                        actor=user,
+                        metadata={
+                            "assistant_id": assistant_id,
+                            "fingerprint": tool.schema_fingerprint,
+                        },
+                    )
+                    db.commit()
+
                 result = await client.rpc(
-                    "tools/call", {"name": tool.name, "arguments": arguments}
+                    "tools/call",
+                    {"name": call_name, "arguments": arguments},
+                    before_send=authorize_send,
                 )
     except TimeoutError as exc:
         raise _error(504, "mcp_timeout", "MCP 查詢逾時，請稍後重試") from exc
