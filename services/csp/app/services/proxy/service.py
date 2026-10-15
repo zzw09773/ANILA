@@ -62,6 +62,7 @@ from app.services.usage_writer import (
 # Keep the pre-split logger channel ("app.services.proxy_service") so log
 # routing / filtering / capture behavior is identical after the package split.
 logger = logging.getLogger("app.services.proxy_service")
+STREAM_FINISH_REASONS = frozenset({"stop", "length", "content_filter", "tool_calls", "function_call"})
 
 _CONTEXT_OVERFLOW_UPSTREAM_CODES = frozenset(
     {
@@ -1408,12 +1409,15 @@ async def _proxy_stream_impl(
     model_name_snapshot: Optional[str] = None,
     record_usage: bool = True,
     request_type: str = "chat",
+    require_stream_terminal: bool = False,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
     Intercepts the final usage chunk to record token consumption, then
     forwards all SSE chunks verbatim to the caller. If usage is missing,
     performs a server-side token estimate from request/response text.
+    require_stream_terminal opts in to an explicit upstream [DONE] or
+    known choice-0 finish_reason; bare EOF is partial and never synthesizes either.
 
     Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
     headers only (forbids them toward the model
@@ -1484,6 +1488,7 @@ async def _proxy_stream_impl(
     pending_done_block: str | None = None
     pending_named_meta: dict | None = None
     terminal_meta_emitted = False
+    finish_seen = False
     # 中斷時要 flush 的失敗:在 except 分支記下來,離開 try 之後才 yield。
     pending_failure: BaseException | None = None
 
@@ -1508,7 +1513,7 @@ async def _proxy_stream_impl(
         return True
 
     def _ingest_stream_payload(data: str | None, event_name: str | None) -> None:
-        nonlocal prompt_tokens, completion_tokens, usage_seen, last_usage
+        nonlocal prompt_tokens, completion_tokens, usage_seen, last_usage, finish_seen
         if not data or event_name not in (None, "message"):
             return
         try:
@@ -1529,6 +1534,22 @@ async def _proxy_stream_impl(
                 prompt_tokens = usage["prompt_tokens"]
             if usage.get("completion_tokens") is not None:
                 completion_tokens = usage["completion_tokens"]
+        if require_stream_terminal and isinstance(chunk, dict):
+            choices = chunk.get("choices")
+            if isinstance(choices, list):
+                for choice in choices:
+                    if not isinstance(choice, dict) or choice.get("index", 0) != 0:
+                        continue
+                    reason = choice.get("finish_reason")
+                    if reason is None:
+                        continue
+                    if not isinstance(reason, str) or reason not in STREAM_FINISH_REASONS:
+                        raise HTTPException(status_code=502, detail={
+                            "code": "UPSTREAM_STREAM_INVALID_TERMINAL",
+                            "message": "上游串流完成標記格式不正確，請重新提問",
+                        })
+                    finish_seen = True
+
 
     def _emit(block: str, event_name: str | None, data: str | None) -> str:
         """Render a block, upgrading anila.meta.classified if required."""
@@ -1740,7 +1761,7 @@ async def _proxy_stream_impl(
                         if block_lines:
                             block = "\n".join(block_lines)
                             event_name, data = _parse_sse_block(block)
-                            if data == "[DONE]":
+                            if data == "[DONE]" and (not require_stream_terminal or event_name in (None, "message")):
                                 pending_done_block = block + "\n\n"
                             elif event_name == "anila.meta" and _hold_named_meta(data):
                                 pass
@@ -1753,13 +1774,20 @@ async def _proxy_stream_impl(
                 if block_lines:
                     block = "\n".join(block_lines)
                     event_name, data = _parse_sse_block(block)
-                    if data == "[DONE]":
+                    if data == "[DONE]" and (not require_stream_terminal or event_name in (None, "message")):
                         pending_done_block = block + "\n\n"
                     elif event_name == "anila.meta" and _hold_named_meta(data):
                         pass
                     else:
                         _ingest_stream_payload(data, event_name)
                         yield _emit(block, event_name, data)
+        # HTTP EOF alone does not prove model completion. This opt-in
+        # contract is required by consumers which publish a completed run.
+        if require_stream_terminal and not (pending_done_block or finish_seen):
+            raise HTTPException(status_code=502, detail={
+                "code": "UPSTREAM_STREAM_INCOMPLETE",
+                "message": "上游串流在完成標記前中止，請重新提問",
+            })
     except (GeneratorExit, asyncio.CancelledError):
         # 消費端正在收掉這條 generator:同步 re-raise,不 yield 任何東西。
         # 暫存的 named meta 已經沒有收件人,直接丟。已產生的用量仍要入列，
@@ -1914,6 +1942,7 @@ async def proxy_stream(
     record_usage: bool = True,
     request_type: str = "chat",
     request_timestamp: datetime | None = None,
+    require_stream_terminal: bool = False,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1968,6 +1997,7 @@ async def proxy_stream(
             model_name_snapshot=model_name_snapshot,
             record_usage=record_usage,
             request_type=request_type,
+            require_stream_terminal=require_stream_terminal,
         )
         try:
             async for chunk in upstream:

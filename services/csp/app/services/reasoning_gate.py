@@ -50,6 +50,12 @@ _DIRECTIVE_LINE_RE = re.compile(
 )
 _OPEN_PREFIXES = ("<thinking>", "<think>")
 _CLOSE_PREFIXES = ("</thinking>", "</think>")
+MAX_PENDING_THINK_TAG_CHARS = 4096
+
+
+class ReasoningTagLimitError(ValueError):
+    """An unfinished/private tag exceeded the bounded parser state."""
+
 
 Summarizer = Callable[..., Awaitable[Optional[str]]]
 
@@ -168,18 +174,26 @@ def _partial_suffix(text: str, *, closing: bool) -> int:
     lower = text.lower()
     prefixes = _CLOSE_PREFIXES if closing else _OPEN_PREFIXES
     hold = 0
-    start = max(0, len(lower) - 24)
+    if not closing:
+        # Attributes have no fixed lookbehind bound. Locate an unfinished
+        # opener after the last '>', retaining it until a complete tag arrives.
+        # Two searches also avoid rescanning every '<' with suffix copies.
+        opening = lower.find("<think", lower.rfind(">") + 1)
+        if opening >= 0:
+            hold = len(lower) - opening
+        index = lower.rfind("<")
+        frag = lower[index:]
+        if index >= 0 and any(prefix.startswith(frag) and frag != prefix for prefix in prefixes):
+            hold = max(hold, len(frag))
+        if hold > MAX_PENDING_THINK_TAG_CHARS:
+            raise ReasoningTagLimitError("模型思考標籤超過安全解析上限")
+        return hold
+    start = max(0, len(lower) - max(map(len, prefixes)))
     for index in range(start, len(lower)):
         if lower[index] != "<":
             continue
         frag = lower[index:]
         if any(prefix.startswith(frag) and frag != prefix for prefix in prefixes):
-            hold = max(hold, len(frag))
-        if (
-            not closing
-            and frag.startswith("<think")
-            and ">" not in frag
-        ):
             hold = max(hold, len(frag))
     return hold
 
@@ -238,6 +252,14 @@ class ContentRedactor:
         self._closed = False
 
     def push(self, text: str) -> tuple[str, list[str]]:
+        try:
+            return self._push(text)
+        except ReasoningTagLimitError:
+            self._closed = True
+            self._hold = self._buf = self._thought = ""
+            raise
+
+    def _push(self, text: str) -> tuple[str, list[str]]:
         if not text or self._closed:
             return "", []
         if self.reveal:
@@ -350,6 +372,8 @@ class ContentRedactor:
         while self._mode == "normal" and self._buf:
             match = _OPEN_RE.search(self._buf)
             if match:
+                if match.end() - match.start() > MAX_PENDING_THINK_TAG_CHARS:
+                    raise ReasoningTagLimitError("模型思考標籤超過安全解析上限")
                 safe.append(self._buf[:match.start()])
                 self._buf = self._buf[match.end():]
                 self._mode = "think"

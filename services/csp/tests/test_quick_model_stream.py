@@ -16,6 +16,9 @@ from app.services.internal_llm import InternalCompletionError
 from app.services.proxy import headers, service as proxy
 from app.services import quota_service
 from tests.conftest import make_user
+from tests.test_quick_builder_review import _assistant, review_rows as _review_rows
+
+review_rows = _review_rows
 
 
 def frame(content=None, *, delta=None, usage=None):
@@ -394,3 +397,49 @@ def test_error_malformed_and_empty_streams_fail_without_leaking_details(
         asyncio.run(collect(db, gateway))
     assert "private" not in str(failed.value)
     assert gateway.closed == 1
+
+
+@pytest.mark.parametrize("reported", [False, True])
+def test_clean_eof_without_upstream_terminal_is_partial(db, gateway, reported):
+    usage = {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12} if reported else None
+    gateway.chunks = [frame("部分合成回答", usage=usage)]
+    with pytest.raises(InternalCompletionError):
+        asyncio.run(collect(db, gateway))
+    assert gateway.normal == []
+    assert len(gateway.partial) == 1
+    assert gateway.partial[0]["outcome"] == "partial"
+    assert gateway.partial[0]["user_id"] == gateway.user.id
+    assert gateway.closed == 1
+
+
+def test_long_split_open_think_tag_never_discloses_private_analysis(db, gateway):
+    gateway.chunks = [frame("<think " + " " * 30),
+                      frame(">PRIVATE_ANALYSIS</think>公開回答"), "data: [DONE]\n\n"]
+    text, seen = asyncio.run(collect(db, gateway))
+    assert text == "公開回答"
+    assert "PRIVATE_ANALYSIS" not in "".join(seen)
+
+
+def test_http_clean_eof_fails_real_quick_run_and_sse(db, gateway, review_rows):
+    from app.models.quick_builder import QuickRun
+    from app.services.quick_execution import agent_response
+
+    _, user, _, model, _ = review_rows
+    _, _, agent = _assistant(db, review_rows)
+    gateway.user, gateway.model = user, model
+    gateway.chunks = [frame("這是上游中斷的部分合成回答。")]
+
+    async def scenario():
+        response = await agent_response(db, user, agent, {
+            "stream": True, "messages": [{"role": "user", "content": "合成提問"}],
+        })
+        return "".join([chunk async for chunk in response.body_iterator])
+
+    output = asyncio.run(scenario())
+    assert "anila.error" in output
+    assert '"finish_reason": "stop"' not in output
+    db.expire_all()
+    assert db.query(QuickRun).one().status == "failed"
+    assert gateway.normal == [] and len(gateway.partial) == 1
+    assert gateway.partial[0]["outcome"] == "partial"
+    assert gateway.partial[0]["user_id"] == user.id

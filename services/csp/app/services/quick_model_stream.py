@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.services.internal_llm import InternalCompletionError, _quota_fields, _snapshot
 from app.services.proxy.sse import _parse_sse_block
 from app.services.quick_flow import MAX_TEXT_CHARS
-from app.services.reasoning_gate import ContentRedactor
+from app.services.reasoning_gate import ContentRedactor, ReasoningTagLimitError
 
 MAX_FRAME_CHARS = 256 * 1024
 
@@ -30,7 +30,7 @@ async def stream_chat(
 ) -> str:
     """僅供已確認直接通往輸出的模型；回呼須同步重驗當下執行授權。"""
     from app.services.proxy.headers import resolve_model_gateway_key
-    from app.services.proxy.service import proxy_stream, resolve_proxy_tuning
+    from app.services.proxy.service import STREAM_FINISH_REASONS, proxy_stream, resolve_proxy_tuning
     from app.services.proxy.urls import join_upstream_path
     from app.services.quota_service import enforce_call_quota
 
@@ -83,11 +83,13 @@ async def stream_chat(
         usage_kind="inference",
         record_usage=True,
         request_timestamp=started,
+        require_stream_terminal=True,
     )
     redactor = ContentRedactor(reveal=False)
     parts: list[str] = []
     content_chars = 0
     done = False
+    finish_seen = False
     buf = ""
 
     async def emit(text: str):
@@ -97,7 +99,7 @@ async def stream_chat(
             parts.append(text)
 
     async def process(block: str):
-        nonlocal content_chars, done
+        nonlocal content_chars, done, finish_seen
         event, data = _parse_sse_block(block)
         if event in ("anila.error", "error"):
             raise InternalCompletionError(502)
@@ -122,6 +124,11 @@ async def stream_chat(
         choice = choices[0]
         if choice.get("index", 0) != 0:
             raise InternalCompletionError(502)
+        reason = choice.get("finish_reason")
+        if reason is not None:
+            if not isinstance(reason, str) or reason not in STREAM_FINISH_REASONS:
+                raise InternalCompletionError(502)
+            finish_seen = True
         delta = choice.get("delta", {})
         if not isinstance(delta, dict):
             raise InternalCompletionError(502)
@@ -133,7 +140,10 @@ async def stream_chat(
         content_chars += len(text)
         if content_chars > MAX_TEXT_CHARS:
             raise InternalCompletionError(502)
-        visible, _ = redactor.push(text)
+        try:
+            visible, _ = redactor.push(text)
+        except ReasoningTagLimitError as exc:
+            raise InternalCompletionError(502) from exc
         await emit(visible)
 
     failed = False
@@ -153,7 +163,12 @@ async def stream_chat(
                 raise InternalCompletionError(502)
         if buf.strip():
             await process(buf)
-        tail, _ = redactor.finish()
+        if not (done or finish_seen):
+            raise InternalCompletionError(502)
+        try:
+            tail, _ = redactor.finish()
+        except ReasoningTagLimitError as exc:
+            raise InternalCompletionError(502) from exc
         await emit(tail)
     except BaseException:
         failed = True
