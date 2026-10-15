@@ -147,6 +147,6 @@ sudo bash /opt/anila/anila-update.sh rollback
 
 FR-06 的完整模組與固定 Studio 範本已有工程實作；四固定版型乘 HTML／PDF／DOCX 共 12 組離線轉檔成功。工程樣本的 PDF 均為 1 頁並以 `pdftotext` 核對繁中內容，DOCX 以 ZIP／XML 核對內容及無院外圖片引用。這是本機實際 renderer 證據，不代表正式院內串接或任意文件版面均通過。
 
-1440／1280 真瀏覽器已驗 Studio 設定儲存、缺服務時 `DOCUMENT_RENDERER_NOT_CONFIGURED`，以及切回 RTF 下載 200／跨單位 404；未將此證據認定為瀏覽器實際 Studio DOCX 下載通過。SSE 仍為模型步驟完成後分段送結果，尚非即時 token stream，NF-09 屬部分符合。正式映像尚未製作，離線交付仍須以實際出貨物驗證。
+1440／1280 真瀏覽器已驗 Studio 設定儲存、缺服務時 `DOCUMENT_RENDERER_NOT_CONFIGURED`，以及切回 RTF 下載 200／跨單位 404；未將此證據認定為瀏覽器實際 Studio DOCX 下載通過。直接通往唯一輸出的 model／format 支援即時 delta；結構化遮罩與非終端步驟仍保守等待。合法 `length`／`content_filter` 保留回答未完成提示、結束原因及可確認用量，中間步驟遇到未完整回答會停止後續工具與產檔。EOF、使用者停止及失敗分別處理；實模型 TTFT 與平台額外延遲尚待院方核定，NF-09 屬部分符合。正式映像尚未製作，離線交付仍須以實際出貨物驗證。
 
 管理員定期查詢與匯出既有稽核，涵蓋建立、修改、送審、核准、註冊、發布、執行與停用。保存期限依院內規定核定，備份保留份數不能代替稽核保存政策。離線修補包仍需完整 SBOM、漏洞判定、回歸測試與回復方案；保固期及修補時效尚待院方確認。

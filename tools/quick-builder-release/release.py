@@ -35,6 +35,20 @@ COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
 OMITTED_FILES = (
+    'apps/anila-shell/src/__tests__/answerDelivery.test.jsx',
+    'apps/anila-shell/src/__tests__/completion.test.jsx',
+    'apps/anila-shell/src/__tests__/csrfHeaders.test.js',
+    'apps/anila-shell/src/__tests__/helpers/finishedSseReader.js',
+    'apps/anila-shell/src/__tests__/interruptResume.test.jsx',
+    'apps/anila-shell/src/__tests__/skills.test.jsx',
+    'apps/anila-shell/src/__tests__/sse.test.js',
+    'apps/anila-shell/src/__tests__/transportSessionAnswer.test.js',
+    'apps/csp-governance-ui/tests/completion.test.mjs',
+    'services/csp/tests/test_completion_metadata.py',
+    'services/csp/tests/test_internal_llm.py',
+    'services/csp/tests/test_memory_redesign.py',
+    'services/csp/tests/test_quick_completion_flow.py',
+    'services/csp/tests/test_quick_completion_metadata.py',
     'apps/anila-shell/src/__tests__/followUpsUnavailable.test.jsx',
     'apps/anila-shell/src/__tests__/redactionChokePoint.test.jsx',
     'services/anila-studio/tests/test_fixed_text_normalization.py',
@@ -116,6 +130,15 @@ ASSETS = tuple(("image:" + name, "images/" + name + ".tar.gz") for name in IMAGE
     ("licenses", "licenses/third-party-notices.txt"),
 )
 SOURCE_FILES = tuple(sorted((
+    'apps/anila-shell/src/markdown.jsx',
+    'apps/anila-shell/src/runtime/artifactRevision.js',
+    'apps/anila-shell/src/runtime/completion.js',
+    'apps/anila-shell/src/runtime/messageMeta.js',
+    'apps/anila-shell/src/runtime/messageTree.js',
+    'apps/anila-shell/src/runtime/reservedTurn.js',
+    'apps/anila-shell/src/runtime/sse.js',
+    'apps/csp-governance-ui/src/quickBuilder/completion.js',
+    'services/csp/app/services/completion_metadata.py',
     'apps/anilalm/src/utils/ingestionFileAccept.ts',
     'infra/nginx/anila.conf',
     'services/anila-studio/README.en.md',
