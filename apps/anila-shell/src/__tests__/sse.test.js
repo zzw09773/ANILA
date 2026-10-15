@@ -613,9 +613,9 @@ describe.each([
 
       expect(error).toMatchObject({ message: expected, status: 503 });
       expect(consoleError).toHaveBeenCalledWith(
-        "[ANILA SSE] HTTP 503 response body:",
-        body,
+        "[ANILA SSE] HTTP 503",
       );
+      expect(consoleError.mock.calls.flat()).not.toContain(body);
       if (body) {
         expect(error.message).not.toContain(body);
       }

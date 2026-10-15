@@ -1645,7 +1645,10 @@ export const MessageBubble = ({
           lineHeight: 1.55,
         };
         const quotaExceeded = Boolean(msg.error) && isQuotaExceededMessage(msg.error);
-        const incompleteNotice = messageCompletionNotice(msg) || msg.incompleteNotice;
+        const completionNotice = messageCompletionNotice(msg);
+        const incompleteNotice = msg.streamState === 'failed' && msg.incompleteNotice
+          ? [msg.incompleteNotice, completionNotice !== msg.error ? completionNotice : null].filter(Boolean).join(' ')
+          : completionNotice || msg.incompleteNotice;
         const messageNotices = (
           <>
             {!msg.streaming && msg.error && quotaExceeded ? (

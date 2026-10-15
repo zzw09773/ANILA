@@ -92,8 +92,17 @@ export function sanitizeTransportMeta(meta) {
   delete result.response_stream_state;
   return result;
 }
+export function completionFailureMeta(value) {
+  const completion = { ...normalizeCompletion(value), can_continue: false };
+  return {
+    completion,
+    finish_reason: completion.finish_reason,
+    usage_complete: completion.usage_complete,
+    usage: completion.usage
+  };
+}
 export function messageCompletionNotice(message) {
-  if (message?.streamState && message.streamState !== 'complete') return null;
+  if (message?.streamState && !['complete', 'failed'].includes(message.streamState)) return null;
   const hasCompletion = Object.prototype.hasOwnProperty.call(message || {}, 'completion') || Object.prototype.hasOwnProperty.call(message?.metadata || {}, 'completion');
   if (hasCompletion) {
     const completion = normalizeCompletion(message.completion ?? message.metadata?.completion);

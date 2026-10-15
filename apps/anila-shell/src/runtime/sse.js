@@ -1,4 +1,4 @@
-import { normalizeFinishReason, sanitizeTransportMeta, completionCopyForType } from './completion.js';
+import { normalizeFinishReason, sanitizeTransportMeta, completionCopyForType, completionFailureMeta } from './completion.js';
 import { modelUnavailableFromPayload } from "./modelUnavailable.js";
 import { skillHeaders } from "./skills.js";
 import { applyOverloadCopy } from "./pendingReply.js";
@@ -55,6 +55,18 @@ function errorFromHttpBody(body, status, fallback) {
     error.status = status;
     return error;
   }
+  if (status === 502) {
+    const detail = payload?.detail;
+    const meta = detail && typeof detail === 'object' && Object.hasOwn(detail, 'completion')
+      ? completionFailureMeta(detail.completion) : null;
+    const fixed = completionCopyForType(meta?.completion?.type)
+      || completionCopyForType(detail?.code) || completionCopyForType(detail?.type);
+    const error = new Error(fixed?.message || '助手流程未能完成，請稍後重試或聯絡助手建立者（FLOW_FAILED）');
+    error.status = status;
+    error.code = fixed?.type || 'FLOW_FAILED';
+    if (meta) error.completion = meta.completion;
+    return error;
+  }
   let detail = fallback;
   if (typeof payload?.detail === "string" && payload.detail.trim()) {
     detail = payload.detail;
@@ -93,11 +105,13 @@ function isTerminalEvent(event) {
   try { return Boolean(normalizeFinishReason(getFirstChoice(JSON.parse(event.data))?.finish_reason)); }
   catch { return false; }
 }
-async function readHttpError(response, label) {
+async function readHttpError(response, label, onMeta) {
   const fallback = statusFallback(label, response.status);
   const body = await response.text();
-  console.error(`[ANILA SSE] HTTP ${response.status} response body:`, body);
-  return errorFromHttpBody(body, response.status, fallback);
+  console.error(`[ANILA SSE] HTTP ${response.status}`);
+  const error = errorFromHttpBody(body, response.status, fallback);
+  if (error.completion) onMeta?.(completionFailureMeta(error.completion));
+  return error;
 }
 
 function errorFromTerminal(terminalError, accumulatedText) {
@@ -264,7 +278,7 @@ export async function streamChatCompletion({
   });
 
   if (!response.ok) {
-    throw await readHttpError(response, "串流失敗");
+    throw await readHttpError(response, "串流失敗", onMeta);
   }
 
   // A conforming JSON reply can be returned by a non-streaming gateway.
@@ -641,7 +655,7 @@ export async function streamSessionAnswer({
     body: JSON.stringify({ interrupt_id: interruptId, answer }),
   });
   if (!response.ok) {
-    throw await readHttpError(response, "續答失敗");
+    throw await readHttpError(response, "續答失敗", callbacks.onMeta);
   }
 
   const reader = response.body?.getReader();
