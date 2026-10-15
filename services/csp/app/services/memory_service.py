@@ -44,10 +44,15 @@ import logging
 import math
 import re
 import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Optional
+from threading import Event
+from types import SimpleNamespace
+from weakref import WeakKeyDictionary, ref
+from typing import Any, Callable, Iterable, Optional, TypeVar
 
-from sqlalchemy import func, text
+from sqlalchemy import event, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -324,65 +329,66 @@ async def _embed_via_proxy(
     flipping this flag alone would just make the existing rows wrong.
     See ``tests/test_memory_embed_not_metered.py``.
     """
-    from anila_core.embeddings.dims import fit_stored_vector
-    from app.services.proxy.service import (
-        proxy_request,
-        resolve_proxy_tuning,
-        sync_model_deadline,
+    prepared = await _refresh_db_phase(
+        db, lambda session: _prepare_memory_embedding(session, texts, model_id=model_id)
     )
-    from app.services.proxy.snapshot import snapshot_model
+    from app.services.proxy.service import proxy_request, sync_model_deadline
 
-    resolved = _resolved_for_embed(db, model_id=model_id)
-    if resolved is None:
-        raise RuntimeError(
-            "memory_service: no platform embedding model available "
-            "(designate one via POST /api/models/{id}/set-platform-embedding)"
-        )
-    model = resolved.model
-    model_name = resolved.name
-    native_dim = resolved.native_dim
-    raw_ver = getattr(model, "api_version", None)
-    api_version = raw_ver if raw_ver in ("v1", "v2") else "v1"
-    model_snapshot = snapshot_model(model)
-    model_snapshot.api_version = api_version
-    if not getattr(model_snapshot, "protocol", None):
-        model_snapshot.protocol = "openai_compatible"
-    if not getattr(model_snapshot, "model_type", None):
-        model_snapshot.model_type = "embedding"
-    # 逾時／重試四顆在這裡解（**還握著連線的時候**），凍結成 tuning 往下傳；
-    # commit 之後 proxy 那一層就不該再碰 DB 了。
-    tuning = resolve_proxy_tuning(db)
-    # Release the pooled connection before the outbound embed call.
-    db.commit()
-    if not texts:
-        raise RuntimeError("memory_service: nothing to embed")
     data = await proxy_request(
-        model=model_snapshot,
+        model=prepared.model,
         api_key_id=None,
         user_id=user_id,
         department_id=department_id,
-        request_body={"model": model_name, "input": list(texts)},
-        endpoint_path=f"/{api_version}/embeddings",
+        request_body={"model": prepared.name, "input": list(texts)},
+        endpoint_path=f"/{prepared.model.api_version}/embeddings",
         embedding_input_role=embedding_input_role,
         record_usage=False,
-        tuning=tuning,
+        tuning=prepared.tuning,
         deadline=sync_model_deadline(),
     )
+    return _memory_embedding_response(data, prepared, len(texts))
+
+
+def _prepare_memory_embedding(db: Session, texts: list[str], *, model_id: int | None):
+    from app.services.proxy.service import resolve_proxy_tuning
+    from app.services.proxy.snapshot import snapshot_model
+
+    if not texts:
+        raise RuntimeError("memory_service: nothing to embed")
+    resolved = _resolved_for_embed(db, model_id=model_id)
+    if resolved is None:
+        raise RuntimeError("memory_service: no platform embedding model available")
+    model = resolved.model
+    snapshot = snapshot_model(model)
+    raw_version = getattr(model, "api_version", None)
+    snapshot.api_version = raw_version if raw_version in ("v1", "v2") else "v1"
+    snapshot.protocol = getattr(snapshot, "protocol", None) or "openai_compatible"
+    snapshot.model_type = getattr(snapshot, "model_type", None) or "embedding"
+    measured = getattr(model, "embedding_native_dim", None)
+    prepared = SimpleNamespace(
+        model=snapshot, name=resolved.name, tuning=resolve_proxy_tuning(db),
+        declared=measured if isinstance(measured, int) and measured > 0 else None,
+    )
+    db.commit()
+    return prepared
+
+
+def _memory_embedding_response(data: dict, prepared, count: int):
+    from anila_core.embeddings.dims import fit_stored_vector
+
     rows = list(data.get("data") or [])
     rows.sort(key=lambda item: int(item.get("index", 0)) if isinstance(item, dict) else 0)
-    measured = getattr(model, "embedding_native_dim", None)
-    declared = measured if isinstance(measured, int) and measured > 0 else None
     vectors: list[list[float]] = []
     native = 0
     for item in rows:
         if not isinstance(item, dict):
             continue
-        stored = fit_stored_vector(item.get("embedding"), declared_native=declared)
+        stored = fit_stored_vector(item.get("embedding"), declared_native=prepared.declared)
         vectors.append(stored.values)
         native = stored.native_dims
-    if len(vectors) != len(texts):
+    if len(vectors) != count:
         raise RuntimeError("memory_service: embedding response count mismatch")
-    return vectors, model_name, native
+    return vectors, prepared.name, native
 
 
 async def _embed(
@@ -728,14 +734,9 @@ async def _extra_embeddings(
     skip_model_id: int | None,
 ) -> list[dict[str, Any]]:
     """Vectors for the rebuild target, when a rebuild is open."""
-    try:
-        from app.services.embedding_swap import column_model_id, rebuild_open, write_model_ids
-
-        if not rebuild_open(db):
-            return []
-        pending = [mid for mid in write_model_ids(db) if mid != (skip_model_id or column_model_id(db))]
-    except Exception:
-        return []
+    pending = await _refresh_db_phase(
+        db, lambda session: _pending_memory_embeddings(session, skip_model_id)
+    )
     extras: list[dict[str, Any]] = []
     for mid in pending:
         try:
@@ -753,6 +754,17 @@ async def _extra_embeddings(
                 {"model_id": mid, "embedding": vector, "native_dim": native}
             )
     return extras
+
+
+def _pending_memory_embeddings(db: Session, skip_model_id: int | None) -> list[int]:
+    try:
+        from app.services.embedding_swap import column_model_id, rebuild_open, write_model_ids
+
+        if not rebuild_open(db):
+            return []
+        return [mid for mid in write_model_ids(db) if mid != (skip_model_id or column_model_id(db))]
+    except Exception:
+        return []
 
 
 def _save_fact_embedding(db: Session, row: UserFact, fact: dict[str, Any]) -> None:
@@ -866,7 +878,9 @@ async def _attach_fact_embeddings(
                 db,
                 _fact_embed_text(item),
                 user_id=user_id,
-                skip_model_id=_slot_model_id(db, source_model),
+                skip_model_id=await _refresh_db_phase(
+                    db, lambda session: _slot_model_id(session, source_model)
+                ),
             )
         else:
             item["embedding"] = None
@@ -2073,8 +2087,11 @@ async def _call_refresh_model(
     user_id: int | None,
     department_id: int | None,
     stricter: bool = False,
+    tuning=None,
 ) -> str:
-    from app.services.internal_llm import InternalCompletionError, complete_chat
+    from app.services.internal_llm import (
+        InternalCompletionError, complete_chat, complete_chat_prepared,
+    )
 
     system_prompt = MEMORY_REFRESH_SYSTEM_PROMPT
     if stricter:
@@ -2089,6 +2106,11 @@ async def _call_refresh_model(
         "max_tokens": 800,
     }
     try:
+        if db is None:
+            return await complete_chat_prepared(
+                model, tuning, payload, user_id=user_id,
+                department_id=department_id, on_behalf_of_user=False,
+            )
         return await complete_chat(
             db,
             model,
@@ -2118,6 +2140,7 @@ async def _resolve_summary_text(
     *,
     user_id: int | None,
     department_id: int | None,
+    tuning=None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
     """超長或大量重疊助理原文時重問一次。仍不合格就不存。
 
@@ -2129,6 +2152,7 @@ async def _resolve_summary_text(
         transcript,
         user_id=user_id,
         department_id=department_id,
+        **({"tuning": tuning} if db is None else {}),
     )
     if not raw:
         return None, []
@@ -2141,6 +2165,7 @@ async def _resolve_summary_text(
         transcript,
         user_id=user_id,
         department_id=department_id,
+        **({"tuning": tuning} if db is None else {}),
         stricter=True,
     )
     if not raw:
@@ -2155,196 +2180,310 @@ async def _resolve_summary_text(
     return None, []
 
 
-async def refresh_conversation(
-    conversation_id: int, *, db: Session | None = None
-) -> None:
-    """整理一個對話的摘要與使用者事實。角色沒設就不打模型。"""
-    owns_session = db is None
-    if db is None:
-        db = SessionLocal()
+@dataclass
+class _RefreshState:
+    conversation_id: int
+    cancelled: Event = field(default_factory=Event)
     token: str | None = None
-    deferred = False
-    # 摘要先提交後，事實若失敗要把 covered 退回，閒置掃描才會在退避後再試。
-    summary_committed = False
+    deferred: bool = False
+    summary_committed: bool = False
+    completed: bool = False
     previous_covered: int | None = None
-    try:
-        if not _memory_enabled(db):
-            return
-        conv = db.get(Conversation, conversation_id)
-        if conv is None:
-            return
-        if conversation_excluded_from_memory(conv):
-            _forget_excluded_conversation(db, conv.id)
-            return
-        messages = _messages_for_extract(db, conv)
-        turns = _turns_after_boundary(
-            _eligible_turns(messages),
-            _summary_tombstone_boundary(db, conv.id),
-        )
-        if not turns:
-            return
-        latest_id = int(turns[-1][1].id)
-        existing = (
-            db.query(ConversationSummary)
-            .filter(ConversationSummary.conversation_id == conv.id)
-            .one_or_none()
-        )
-        if existing is not None and (existing.covered_message_id or 0) >= latest_id:
-            return
-        model = _summary_model(db)
-        if model is None:
-            return
-        from app.models.user import User
+    written_covered: int | None = None
 
-        owner = db.get(User, conv.user_id)
-        department_id = getattr(owner, "department_id", None) if owner else None
-        user_messages = [(int(turn[0].id), turn[0].content or "") for turn in turns]
-        user_texts = [text for _message_id, text in user_messages]
-        assistant_texts = [turn[1].content or "" for turn in turns]
-        # 助理段落不是這段對話的結論。標成「只供理解結論」時，模型會把助理的
-        # 建議寫進摘要，使用者自己講的零件、尺寸、數字就不會留下。
-        transcript = "\n\n".join(
-            "使用者："
-            f"{user}\n\n"
-            "助理（這不是使用者的決定或限制；摘要裡最多一句話帶過，"
-            f"禁止逐字抄寫，不可當成事實）：{assistant}"
-            for user, assistant in zip(user_texts, assistant_texts)
+
+class _RefreshAborted(Exception):
+    pass
+
+
+_refresh_state: ContextVar[_RefreshState] = ContextVar("memory_refresh_state")
+_refresh_limits: WeakKeyDictionary[asyncio.AbstractEventLoop, ref[asyncio.Semaphore]] = WeakKeyDictionary()
+_PhaseResult = TypeVar("_PhaseResult")
+
+
+async def _refresh_db_phase(
+    db: Session | None,
+    operation: Callable[[Session], _PhaseResult],
+    *,
+    cleanup: bool = False,
+) -> _PhaseResult:
+    """背景階段只在工作執行緒持有 Session；取消也要等階段清理完。"""
+    if db is not None:
+        return operation(db)
+    state = _refresh_state.get()
+
+    def run():
+        def check(*_args):
+            if state.cancelled.is_set():
+                raise _RefreshAborted()
+
+        if not cleanup:
+            check()
+        session = SessionLocal()
+        try:
+            if not cleanup:
+                # after_begin 在 pool checkout 之後執行。
+                for name in ("after_begin", "before_flush", "before_commit"):
+                    event.listen(session, name, check)
+            return operation(session)
+        finally:
+            session.close()
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            cancelled = True
+            state.cancelled.set()
+            if task.done():
+                break
+        except _RefreshAborted:
+            raise asyncio.CancelledError() from None
+        except Exception:
+            if not cancelled:
+                raise
+            break
+    if cancelled and not cleanup:
+        # 取回 worker 例外；取消優先，且不能遺留無人回收的工作。
+        if task.done() and not task.cancelled():
+            task.exception()
+        raise asyncio.CancelledError()
+    return task.result() if cancelled else result
+
+
+def _prepare_refresh(db, state: _RefreshState, *, background: bool):
+    conversation_id = state.conversation_id
+    if not _memory_enabled(db):
+        return
+    conv = db.get(Conversation, conversation_id)
+    if conv is None:
+        return
+    if conversation_excluded_from_memory(conv):
+        _forget_excluded_conversation(db, conv.id)
+        return
+    messages = _messages_for_extract(db, conv)
+    turns = _turns_after_boundary(
+        _eligible_turns(messages),
+        _summary_tombstone_boundary(db, conv.id),
+    )
+    if not turns:
+        return
+    latest_id = int(turns[-1][1].id)
+    existing = (
+        db.query(ConversationSummary)
+        .filter(ConversationSummary.conversation_id == conv.id)
+        .one_or_none()
+    )
+    if existing is not None and (existing.covered_message_id or 0) >= latest_id:
+        return
+    model = _summary_model(db)
+    if model is None:
+        return
+    from app.models.user import User
+
+    owner = db.get(User, conv.user_id)
+    department_id = getattr(owner, "department_id", None) if owner else None
+    user_messages = [(int(turn[0].id), turn[0].content or "") for turn in turns]
+    user_texts = [text for _message_id, text in user_messages]
+    assistant_texts = [turn[1].content or "" for turn in turns]
+    # 助理段落不是這段對話的結論。標成「只供理解結論」時，模型會把助理的
+    # 建議寫進摘要，使用者自己講的零件、尺寸、數字就不會留下。
+    transcript = "\n\n".join(
+        "使用者："
+        f"{user}\n\n"
+        "助理（這不是使用者的決定或限制；摘要裡最多一句話帶過，"
+        f"禁止逐字抄寫，不可當成事實）：{assistant}"
+        for user, assistant in zip(user_texts, assistant_texts)
+    )
+    if len(transcript.strip()) < _EXTRACT_MIN_CHARS:
+        return
+    state.token = claim_refresh_lease(db, conv.id)
+    if state.token is None:
+        return
+    db.commit()
+    existing = (
+        db.query(ConversationSummary)
+        .filter(ConversationSummary.conversation_id == conv.id)
+        .one_or_none()
+    )
+    if existing is not None and (existing.covered_message_id or 0) >= latest_id:
+        return
+    state.previous_covered = (
+        existing.covered_message_id if existing is not None else None
+    )
+    from app.services.internal_llm import _snapshot
+    from app.services.proxy.service import resolve_proxy_tuning
+
+    return SimpleNamespace(
+        conversation_id=conv.id, user_id=conv.user_id, department_id=department_id,
+        latest_id=latest_id, user_messages=user_messages, user_texts=user_texts,
+        assistant_texts=assistant_texts, transcript=transcript,
+        model=_snapshot(model) if background else model,
+        tuning=resolve_proxy_tuning(db) if background else None,
+    )
+
+
+def _persist_refresh(
+    db, state, plan, summary, facts, embedding, source_model, native_dim, summary_extras,
+):
+    save_conversation_summary(
+        db,
+        user_id=plan.user_id,
+        conversation_id=plan.conversation_id,
+        summary=summary,
+        covered_message_id=plan.latest_id,
+        embedding=embedding,
+        source_model=source_model,
+        native_dim=native_dim,
+        is_encrypted=False,
+        claim_token=state.token,
+        extra_slots=summary_extras,
+    )
+    # 摘要先提交。後面的事實寫入用另一個交易，失敗只丟事實。
+    db.commit()
+    state.summary_committed = True
+    state.written_covered = plan.latest_id
+    _upsert_facts_generic(
+        db,
+        plan.user_id,
+        facts,
+        source_conversation_id=plan.conversation_id,
+        source_message_id=plan.latest_id,
+    )
+    db.commit()
+    state.completed = True
+
+
+def _failed_refresh(db, state: _RefreshState):
+    db.rollback()
+    if state.completed:
+        return
+    if state.summary_committed:
+        # 摘要文字留下，但這次不算整理完成，退避結束後才再寫事實。
+        try:
+            db.execute(
+                text(
+                    """
+                    UPDATE conversation_summaries
+                       SET covered_message_id = :covered
+                     WHERE conversation_id = :cid
+                       AND covered_message_id = :written
+                       AND EXISTS (
+                           SELECT 1 FROM memory_refresh_leases
+                            WHERE conversation_id = :cid AND claim_token = :token
+                       )
+                    """
+                ),
+                {
+                    "covered": state.previous_covered, "cid": state.conversation_id,
+                    "written": state.written_covered, "token": state.token,
+                },
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "memory_service: rewind summary coverage failed conv_id=%s",
+                state.conversation_id,
+            )
+    if state.token is not None:
+        try:
+            defer_refresh_retry(db, state.conversation_id, state.token)
+            db.commit()
+            state.deferred = True
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "memory_service: defer refresh retry failed conv_id=%s",
+                state.conversation_id,
+            )
+
+
+def _release_refresh(db, state: _RefreshState):
+    if state.token is not None and not state.deferred:
+        try:
+            release_refresh_lease(db, state.conversation_id, state.token)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "memory_service: release refresh lease failed conv_id=%s", state.conversation_id,
+            )
+
+
+async def refresh_conversation(conversation_id: int, *, db: Session | None = None) -> None:
+    """整理摘要與事實；背景資料庫階段不占住事件迴圈。"""
+    if db is not None:
+        await _refresh_conversation(conversation_id, db=db)
+        return
+    loop = asyncio.get_running_loop()
+    limit_ref = _refresh_limits.get(loop)
+    limit = limit_ref() if limit_ref is not None else None
+    if limit is None:
+        limit = asyncio.Semaphore(4)
+        _refresh_limits[loop] = ref(limit)
+    async with limit:
+        await _refresh_conversation(conversation_id, db=None)
+
+
+async def _refresh_conversation(conversation_id: int, *, db: Session | None) -> None:
+    state = _RefreshState(conversation_id)
+    context_token = _refresh_state.set(state)
+    try:
+        plan = await _refresh_db_phase(
+            db, lambda session: _prepare_refresh(session, state, background=db is None)
         )
-        if len(transcript.strip()) < _EXTRACT_MIN_CHARS:
+        if plan is None:
             return
-        token = claim_refresh_lease(db, conv.id)
-        if token is None:
-            return
-        db.commit()
-        existing = (
-            db.query(ConversationSummary)
-            .filter(ConversationSummary.conversation_id == conv.id)
-            .one_or_none()
-        )
-        if existing is not None and (existing.covered_message_id or 0) >= latest_id:
-            return
-        previous_covered = (
-            existing.covered_message_id if existing is not None else None
-        )
         summary, raw_facts = await _resolve_summary_text(
-            db,
-            model,
-            transcript,
-            assistant_texts,
-            user_id=conv.user_id,
-            department_id=department_id,
+            db, plan.model, plan.transcript, plan.assistant_texts,
+            user_id=plan.user_id, department_id=plan.department_id,
+            **({"tuning": plan.tuning} if db is None else {}),
         )
         if not summary:
-            # 不寫摘要、不立墓碑。租約往後推，下一輪閒置再試。
-            defer_refresh_retry(db, conv.id, token)
-            db.commit()
-            deferred = True
+            def defer(session):
+                defer_refresh_retry(session, conversation_id, state.token)
+                session.commit()
+                state.deferred = True
+            await _refresh_db_phase(db, defer)
             return
-        facts = facts_safe_for_extraction(
-            facts_from_user_statements(
-                raw_facts,
-                user_texts,
-                assistant_texts,
-                user_messages=user_messages,
-            )
-        )
-        # 事實向量要在摘要嵌入之前算完。_embed 會 commit，此時兩邊都還沒落庫，
-        # 最後一次嵌入看到的事實筆數與摘要筆數才會仍是 0。
-        facts = await _attach_fact_embeddings(
-            db, _merge_fact_batch(facts), user_id=conv.user_id
-        )
-        # 嵌入前 session 必須是乾的。_embed 會 commit 把連線還回池子，
-        # 若事實還掛在同一個交易裡，這次 commit 會把半套列寫進去，
-        # 唯一鍵失敗時連摘要一起丟掉。
+        facts = facts_safe_for_extraction(facts_from_user_statements(
+            raw_facts, plan.user_texts, plan.assistant_texts, user_messages=plan.user_messages,
+        ))
+        facts = await _attach_fact_embeddings(db, _merge_fact_batch(facts), user_id=plan.user_id)
         embedding, source_model, native_dim = await _embed(
-            db,
-            summary,
-            user_id=conv.user_id,
-            embedding_input_role="document",
+            db, summary, user_id=plan.user_id, embedding_input_role="document",
         )
+        summary_extras = []
         if not _vector_is_finite(embedding):
             embedding = None
-            summary_extras: list[dict[str, Any]] = []
         else:
+            skip = await _refresh_db_phase(db, lambda session: _slot_model_id(session, source_model))
             summary_extras = await _extra_embeddings(
-                db,
-                summary,
-                user_id=conv.user_id,
-                skip_model_id=_slot_model_id(db, source_model),
+                db, summary, user_id=plan.user_id, skip_model_id=skip,
             )
-        save_conversation_summary(
-            db,
-            user_id=conv.user_id,
-            conversation_id=conv.id,
-            summary=summary,
-            covered_message_id=latest_id,
-            embedding=embedding,
-            source_model=source_model,
-            native_dim=native_dim,
-            is_encrypted=False,
-            claim_token=token,
-            extra_slots=summary_extras,
-        )
-        # 摘要先提交。後面的事實寫入用另一個交易，失敗只丟事實。
-        db.commit()
-        summary_committed = True
-        _upsert_facts_generic(
-            db,
-            conv.user_id,
-            facts,
-            source_conversation_id=conv.id,
-            source_message_id=latest_id,
-        )
-        db.commit()
+        await _refresh_db_phase(db, lambda session: _persist_refresh(
+            session, state, plan, summary, facts, embedding, source_model, native_dim, summary_extras,
+        ))
+    except asyncio.CancelledError:
+        if db is None:
+            state.cancelled.set()
+            await _refresh_db_phase(db, lambda session: _failed_refresh(session, state), cleanup=True)
+        raise
     except Exception:
-        db.rollback()
-        logger.exception(
-            "memory_service: refresh failed conv_id=%s", conversation_id
-        )
-        if summary_committed:
-            # 摘要文字留下，但這次不算整理完成，退避結束後才再寫事實。
-            try:
-                db.execute(
-                    text(
-                        """
-                        UPDATE conversation_summaries
-                           SET covered_message_id = :covered
-                         WHERE conversation_id = :cid
-                        """
-                    ),
-                    {"covered": previous_covered, "cid": conversation_id},
-                )
-                db.commit()
-            except Exception:
-                db.rollback()
-                logger.exception(
-                    "memory_service: rewind summary coverage failed conv_id=%s",
-                    conversation_id,
-                )
-        if token is not None:
-            try:
-                defer_refresh_retry(db, conversation_id, token)
-                db.commit()
-                deferred = True
-            except Exception:
-                db.rollback()
-                logger.exception(
-                    "memory_service: defer refresh retry failed conv_id=%s",
-                    conversation_id,
-                )
+        logger.exception("memory_service: refresh failed conv_id=%s", conversation_id)
+        await _refresh_db_phase(db, lambda session: _failed_refresh(session, state), cleanup=True)
     finally:
-        if token is not None and not deferred:
-            try:
-                release_refresh_lease(db, conversation_id, token)
-                db.commit()
-            except Exception:
-                db.rollback()
-                logger.exception(
-                    "memory_service: release refresh lease failed conv_id=%s",
-                    conversation_id,
-                )
-        if owns_session:
-            db.close()
+        try:
+            if state.token is not None:
+                await _refresh_db_phase(db, lambda session: _release_refresh(session, state), cleanup=True)
+        finally:
+            _refresh_state.reset(context_token)
+            if db is None and state.cancelled.is_set():
+                raise asyncio.CancelledError()
 
 
 async def search_conversation_summaries(
@@ -2474,15 +2613,16 @@ def _drop_excluded_summaries(db: Session, hits: list[Any]) -> list[Any]:
     return visible
 
 
-async def flush_idle_conversations() -> None:
+def _idle_conversations_due() -> list[int]:
     db = SessionLocal()
     try:
-        ids = conversations_due(
-            db, now=datetime.now(timezone.utc), force=False
-        )
+        return conversations_due(db, now=datetime.now(timezone.utc), force=False)
     finally:
         db.close()
-    for conversation_id in ids:
+
+
+async def flush_idle_conversations() -> None:
+    for conversation_id in await asyncio.to_thread(_idle_conversations_due):
         await refresh_conversation(conversation_id)
 
 
