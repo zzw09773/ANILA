@@ -353,6 +353,8 @@ def _message_out(
 
     沒有檢視者就當一般使用者：舊資料列裡的 metadata.reasoning 也不回傳。
     """
+    from app.services.follow_ups_policy import public_message_metadata
+
     ids = sibling_ids if sibling_ids is not None else [msg.id]
     try:
         index = ids.index(msg.id)
@@ -366,7 +368,9 @@ def _message_out(
         "sibling_index": index,
         "sibling_count": len(ids),
         "sibling_ids": ids,
-        "metadata": redact_message_metadata(base.metadata, reveal=reveal),
+        "metadata": public_message_metadata(
+            redact_message_metadata(base.metadata, reveal=reveal)
+        ),
         "content": redact_visible_text(base.content, reveal=reveal),
     }
     # Symmetric union is deliberate: siblings are two versions of the same
