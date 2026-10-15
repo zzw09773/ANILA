@@ -454,6 +454,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     skillAutoApply,
     setSkillAutoApply,
     followUpsEnabled,
+    followUpsAvailable,
     setFollowUpsEnabled,
     foldersRef,
     uiSettingsLoadError,
@@ -512,10 +513,14 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
   const [composerInsert, setComposerInsert] = useState(null);
   const composerInsertSeq = useRef(0);
   const insertIntoComposer = useCallback((q) => {
+    if (!followUpsEnabledRef.current) return;
     if (typeof q !== "string" || !q.trim()) return;
     composerInsertSeq.current += 1;
     setComposerInsert({ text: q, token: composerInsertSeq.current });
   }, []);
+  useEffect(() => {
+    if (!followUpsEnabled) { cancelFollowUps(); setComposerInsert(null); }
+  }, [followUpsEnabled, cancelFollowUps]);
 
   // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
   // OW-1: hydration/list already hold the server active path, so export
@@ -1102,7 +1107,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     if (typeof convId !== "number") return;
     const detail = await apiGetConversation(authRequest, convId, { view: "active" });
     const mapped = (detail.messages || []).map((m) => ({
-      ...mapServerMessage(m),
+      ...mapServerMessage(m, { followUpsEnabled: followUpsEnabledRef.current }),
       conversationId: convId,
     }));
     let nextPath = applyServerPath(messagesRef.current[convId] || [], mapped, convId);
@@ -1235,7 +1240,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         });
         if (!active) return;
         const msgs = (detail.messages || []).map((m) => ({
-          ...mapServerMessage(m),
+          ...mapServerMessage(m, { followUpsEnabled: followUpsEnabledRef.current }),
           conversationId: selectedConvId,
         }));
         setMessagesByConv((prev) => ({
@@ -1949,7 +1954,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       thinkingApplied: outgoingThinkingApplied({ thinkingTier }),
     };
     const newUserMsg = {
-      ...mapServerMessage(savedUser),
+      ...mapServerMessage(savedUser, { followUpsEnabled: followUpsEnabledRef.current }),
       text: trimmed,
       conversationId: convId,
     };
@@ -2253,7 +2258,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     pending.set(convId, controller);
     void fetchFollowUps(authRequest, convId, messageDbId, controller.signal).then((list) => {
       if (pending.get(convId) === controller) pending.delete(convId);
-      if (controller.signal.aborted || list.length === 0) return;
+      if (controller.signal.aborted || !followUpsEnabledRef.current || list.length === 0) return;
       updateMsg(convId, assistantId, { followUps: list });
     });
   }
@@ -2649,7 +2654,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       citations: meta.citations || [],
       confidence: meta.confidence,
       handoffChain: meta.handoff_chain || [],
-      followUps: meta.follow_ups || [],
+      followUps: followUpsEnabledRef.current ? meta.follow_ups || [] : [],
       ...(adopted ? {
         interrupt: adopted.interrupt,
         settledInterrupts: adopted.settledInterrupts,
@@ -2945,7 +2950,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
           referenceIds: bindIds,
           attachmentAdmitted,
         });
-        const paint = (row) => ({ ...mapServerMessage(row), conversationId: convId });
+        const paint = (row) => ({ ...mapServerMessage(row, { followUpsEnabled: followUpsEnabledRef.current }), conversationId: convId });
         const rows = [];
         if (saved?.unanswered) rows.push(paint(saved.unanswered));
         if (saved?.user) rows.push(paint(saved.user));
@@ -3038,7 +3043,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
       // 而不是等下一次重整才冒出來。
       if (resolved.unansweredSaved) {
         const filler = {
-          ...mapServerMessage(resolved.unansweredSaved),
+          ...mapServerMessage(resolved.unansweredSaved, { followUpsEnabled: followUpsEnabledRef.current }),
           conversationId: convId,
         };
         setMessagesByConv((prev) => {
@@ -3970,7 +3975,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
     try {
       const path = await apiDeleteMessageBranch(authRequest, convId, msg.dbId);
       const mapped = (path.messages || []).map((m) => ({
-        ...mapServerMessage(m),
+        ...mapServerMessage(m, { followUpsEnabled: followUpsEnabledRef.current }),
         conversationId: convId,
       }));
       setMessagesByConv((prev) => ({
@@ -4124,7 +4129,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
                         citations: m.citations || [],
                         confidence: m.confidence,
                         handoffChain: m.handoff_chain || [],
-                        followUps: m.follow_ups || [],
+                        followUps: followUpsEnabledRef.current ? m.follow_ups || [] : [],
                         latencyMs: m.latency_ms,
                         classified: m.classified,
                         routedAgentId:
@@ -4222,7 +4227,7 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         ...prev.filter((c) => c.id !== detail.id),
       ]);
       const msgsMapped = (detail.messages || []).map((m) => ({
-        ...mapServerMessage(m),
+        ...mapServerMessage(m, { followUpsEnabled: followUpsEnabledRef.current }),
         conversationId: detail.id,
       }));
       setMessagesByConv((prev) => ({
@@ -4764,7 +4769,9 @@ export function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen
         }}
         onSkillsChanged={reloadUsableSkills}
         followUpsEnabled={followUpsEnabled}
+        followUpsAvailable={followUpsAvailable}
         onFollowUpsEnabledChange={(on) => {
+          if (!followUpsAvailable) return;
           markUiSettingsUserEdited("followUpsEnabled");
           setFollowUpsEnabled(on);
           if (!on) cancelFollowUps();

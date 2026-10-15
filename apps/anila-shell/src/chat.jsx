@@ -1075,7 +1075,7 @@ export const MessageBubble = ({
   showRawReasoning = false,
   includeManualSkill = false,
   // 使用者設定「回答後顯示建議問題」。
-  followUpsEnabled = true,
+  followUpsEnabled = false,
 }) => {
   const showNextQuestions = !msg.streaming && isLatestAssistant && !conversationStreaming && followUpsEnabled !== false;
   const [copied, setCopied] = useState(false);

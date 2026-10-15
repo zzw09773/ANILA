@@ -13,13 +13,14 @@ import {
   IconUser,
 } from "../icons.jsx";
 import { REDACTION_MODES } from "../trust.jsx";
+import { FOLLOW_UPS_UNAVAILABLE, FOLLOW_UPS_UNAVAILABLE_MESSAGE } from '../runtime/followUps.js';
 
 export function SettingsModal({
   open, tab, setTab, onClose,
   user, agents, authRequest,
   redactionMode, onChangeRedactionMode,
   skillAutoApply, onSkillAutoApplyChange, onSkillsChanged,
-  followUpsEnabled = true, onFollowUpsEnabledChange,
+  followUpsEnabled = false, followUpsAvailable = false, onFollowUpsEnabledChange,
   onOpenConversation,
   settingsLoadError, settingsUnsaved, onRetrySettingsLoad,
 }) {
@@ -83,12 +84,12 @@ export function SettingsModal({
               <div>
                 <div style={{ fontSize: 13, fontWeight: 500 }}>預設助手</div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4 }}>
-                  目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用助手。
-                  切換預設助手 請從主介面的 agent selector 進行。
+                  目前有 {Math.max(agents.length - 1, 0)} 個可用助手，請從主畫面的助手選單切換。
                 </div>
               </div>
               <div data-testid="follow-ups-setting">
                 <div style={{ fontSize: 13, fontWeight: 500 }} id="follow-ups-setting-title">回答後顯示建議問題</div>
+                {followUpsAvailable !== true ? <p role="status" style={{ fontSize: 12, color: "var(--fg-muted)" }}>{FOLLOW_UPS_UNAVAILABLE_MESSAGE}（{FOLLOW_UPS_UNAVAILABLE}）</p> : <>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4, lineHeight: 1.6 }}>
                   每則回答結束後，在下方列出兩三個你可能想接著問的問題；點一下會帶進輸入框，不會直接送出。
                   輸入框空著時也會用灰字預覽第一個，按 Tab 採用。關掉後就不再產生。
@@ -115,9 +116,10 @@ export function SettingsModal({
                     );
                   })}
                 </div>
+                </>}
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
-                列管等級由 agent 的預設分類等級（無機密／營業秘密／密／機密）決定；對話一旦升至較高等級即單向鎖定，使用者無法手動切換或降級。
+                列管等級由助手的預設分類等級（無機密／營業秘密／密／機密）決定；對話一旦升至較高等級即單向鎖定，使用者無法手動切換或降級。
               </div>
             </div>
           )}

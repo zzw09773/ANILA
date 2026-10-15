@@ -85,7 +85,7 @@ export function mapServerConversation(serverRow, agentNameLookup, agentRequiresE
   };
 }
 
-export function mapServerMessage(msg) {
+export function mapServerMessage(msg, { followUpsEnabled = false } = {}) {
   const meta = msg.metadata || {};
   return {
     id: `srv-${msg.id}`,
@@ -100,7 +100,7 @@ export function mapServerMessage(msg) {
     siblingIds: Array.isArray(msg.sibling_ids) ? msg.sibling_ids : [msg.id],
     trace: meta.trace || [],
     citations: meta.citations || [],
-    followUps: meta.follow_ups || [],
+    followUps: followUpsEnabled === true && Array.isArray(meta.follow_ups) ? meta.follow_ups : [],
     handoffChain: meta.handoff_chain || [],
     // 重新載入這一縫。同一份定義也要接在 applyMeta(SSE 現場那一縫)上。
     ...kbMetaFields(meta),

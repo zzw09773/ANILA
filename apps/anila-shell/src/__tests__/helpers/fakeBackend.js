@@ -332,6 +332,7 @@ export function createFakeBackend(options = {}) {
     enforceCsrf = true,
     // users.ui_settings 的初始值。真後端存的是 per-user blob,PUT 整包覆蓋。
     uiSettings: initialUiSettings = {},
+    uiCapabilities = { follow_ups: { available: false, reason: "FOLLOW_UPS_UNAVAILABLE" } },
     myUsageByRange: initialMyUsageByRange = {},
     conversationUsageById: initialConversationUsage = {},
   } = options;
@@ -658,7 +659,7 @@ export function createFakeBackend(options = {}) {
       if (method === "PUT") {
         uiSettings = body?.ui_settings || {};
       }
-      return jsonResponse({ ui_settings: uiSettings });
+      return jsonResponse({ ui_settings: uiSettings, capabilities: uiCapabilities });
     }
     if (/^\/api\/agents\/[^/]+\/functions$/.test(path)) return jsonResponse([]);
     if (path === "/api/handoffs") return jsonResponse([]);

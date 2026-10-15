@@ -49,7 +49,13 @@ export async function fetchFollowUps(authRequest, convId, messageId, signal) {
   }
 }
 
-/** 使用者設定：沒設過就是開啟（opt-out）。 */
-export function followUpsEnabledFrom(settings) {
-  return !(settings && settings.followUpsEnabled === false);
+export const FOLLOW_UPS_UNAVAILABLE = 'FOLLOW_UPS_UNAVAILABLE';
+export const FOLLOW_UPS_UNAVAILABLE_MESSAGE = '追問建議目前未提供';
+
+/** Server-owned capability is separate from the user's legacy preference. */
+export function followUpsAvailableFrom(capability) {
+  return capability?.available === true;
+}
+export function followUpsEnabledFrom(settings, capability) {
+  return followUpsAvailableFrom(capability) && settings?.followUpsEnabled !== false;
 }

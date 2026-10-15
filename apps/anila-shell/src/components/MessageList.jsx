@@ -17,7 +17,7 @@ export function MessageList({
   onRegenerate, onRate, onEditUser, onSwitchBranch, onDeleteBranch,
   onOpenCitation, onPickFollowUp, onAction, onContinue, onInterruptSubmit,
   onCiteDocument,
-  followUpsEnabled = true,
+  followUpsEnabled = false,
 }) {
   return (
     <div ref={scrollRef} style={{

@@ -118,7 +118,8 @@ describe("敏感資訊扼流點:每一條路都擋得住", () => {
   });
 
   it("後續建議（onPickFollowUp）:只帶進輸入框，按 Enter 也擋住 —— 模型可能把個資回敬給你當建議", async () => {
-    const backend = await mountBlocked();
+    // 相容能力 fixture 保留原有個資閘門覆蓋；正式 API 固定停用追問。
+    const backend = await mountBlocked({ uiCapabilities: { follow_ups: { available: true } } });
     backend.enqueueAnswer("好的", {
       meta: {
         follow_ups: [`要我核對 ${ID_NUMBER} 嗎？`],
@@ -175,7 +176,8 @@ describe("敏感資訊扼流點:每一條路都擋得住", () => {
   // 與空白對話的固定起手問題。這裡保留結果面的檢查:Task 建立一律失敗、
   // 第二輪從建議帶入再按 Enter,Task 標題仍然不能帶著身分證號出去。
   it("Task 標題:建議帶入後送出,Task 標題也不帶個資", async () => {
-    const backend = createFakeBackend({ uiSettings: { redactionMode: "block" } });
+    // 相容能力 fixture：仍驗建議帶入不能繞過 Task 個資閘門。
+    const backend = createFakeBackend({ uiSettings: { redactionMode: "block" }, uiCapabilities: { follow_ups: { available: true } } });
     backend.route("POST", "/api/tasks", (req, { errorResponse }) =>
       errorResponse(503, "task 服務暫停"),
     );

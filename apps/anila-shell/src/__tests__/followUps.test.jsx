@@ -31,8 +31,9 @@ describe("followUps runtime", () => {
 
   it("path 與 opt-out 預設", () => {
     expect(followUpsPath(7, 42)).toBe("/api/conversations/7/messages/42/follow-ups");
-    expect(followUpsEnabledFrom({})).toBe(true);
-    expect(followUpsEnabledFrom({ followUpsEnabled: false })).toBe(false);
+    expect(followUpsEnabledFrom({})).toBe(false);
+    expect(followUpsEnabledFrom({}, { available: true })).toBe(true);
+    expect(followUpsEnabledFrom({ followUpsEnabled: false }, { available: true })).toBe(false);
   });
 
   it("fetch：POST 到端點；任何失敗都是 []，不丟錯", async () => {
@@ -67,16 +68,16 @@ describe("NextQuestionChips", () => {
 
   it("live region 在建議到之前就掛著，建議到了才填字；關掉設定就不顯示", () => {
     const base = { id: "a1", role: "assistant", text: "好", followUps: [] };
-    const { rerender } = render(<MessageBubble msg={base} agents={[]} isLatestAssistant />);
+    const { rerender } = render(<MessageBubble msg={base} agents={[]} isLatestAssistant followUpsEnabled />);
     const live = screen.getByTestId("follow-ups-live");
     expect(live.getAttribute("aria-live")).toBe("polite");
     expect(live.textContent).toBe("");
-    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？", "要多久？"] }} agents={[]} isLatestAssistant />);
+    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？", "要多久？"] }} agents={[]} isLatestAssistant followUpsEnabled />);
     expect(screen.getByTestId("follow-ups-live")).toBe(live);
     expect(live.textContent).toBe("有 2 個建議問題");
     rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？"] }} agents={[]} isLatestAssistant followUpsEnabled={false} />);
     expect(screen.queryByTestId("next-question-chips")).toBeNull();
-    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？"] }} agents={[]} isLatestAssistant={false} />);
+    rerender(<MessageBubble msg={{ ...base, followUps: ["那預算呢？"] }} agents={[]} isLatestAssistant={false} followUpsEnabled />);
     expect(screen.queryByTestId("next-question-chips")).toBeNull();
   });
 
@@ -176,7 +177,7 @@ describe("建議問題：整條資料流", () => {
   const followUpCalls = (backend) => backend.requestsFor(/\/messages\/\d+\/follow-ups$/, "POST");
 
   it("串流中不呼叫；完成後呼叫一次，chip 只掛在最後一則，點了只帶入", async () => {
-    const backend = createFakeBackend();
+    const backend = createFakeBackend({ uiCapabilities: { follow_ups: { available: true } } });
     const served = [];
     backend.route("POST", (p) => /\/follow-ups$/.test(p), (req, { jsonResponse }) => {
       served.push(req.path);
@@ -207,7 +208,7 @@ describe("建議問題：整條資料流", () => {
   });
 
   it("失敗時靜默：沒有 chip、沒有錯誤提示", async () => {
-    const backend = createFakeBackend();
+    const backend = createFakeBackend({ uiCapabilities: { follow_ups: { available: true } } });
     backend.route("POST", (p) => /\/follow-ups$/.test(p), (req, { errorResponse }) => errorResponse(502, "上游壞了"));
     await mountOrchestrator({ backend });
     backend.enqueueAnswer("回答");
@@ -219,7 +220,7 @@ describe("建議問題：整條資料流", () => {
   });
 
   it("opt-out：使用者關掉就不呼叫", async () => {
-    const backend = createFakeBackend({ uiSettings: { followUpsEnabled: false } });
+    const backend = createFakeBackend({ uiSettings: { followUpsEnabled: false }, uiCapabilities: { follow_ups: { available: true } } });
     await mountOrchestrator({ backend });
     backend.enqueueAnswer("回答");
     await sendText("問題");
@@ -229,7 +230,7 @@ describe("建議問題：整條資料流", () => {
   });
 
   it("開始打字就 abort 還在跑的請求", async () => {
-    const backend = createFakeBackend();
+    const backend = createFakeBackend({ uiCapabilities: { follow_ups: { available: true } } });
     let seen = null;
     backend.route("POST", (p) => /\/follow-ups$/.test(p), (req, { jsonResponse }) => {
       seen = req.init.signal;
@@ -250,6 +251,7 @@ describe("建議問題：整條資料流", () => {
 
   it("重載對話時從 meta 讀回，不重算", async () => {
     const backend = createFakeBackend({
+      uiCapabilities: { follow_ups: { available: true } },
       conversations: [
         { id: 55, title: "既有對話甲", agent_id: null, classified: false, tags: [], starred: false, folder: "all" },
       ],
@@ -281,7 +283,7 @@ describe("設定：回答後顯示建議問題", () => {
     render(
       <ConfirmProvider>
         <SettingsModal open tab="general" setTab={() => {}} onClose={() => {}} user={{}} agents={[]}
-          authRequest={vi.fn()} followUpsEnabled onFollowUpsEnabledChange={onChange} />
+          authRequest={vi.fn()} followUpsEnabled followUpsAvailable onFollowUpsEnabledChange={onChange} />
       </ConfirmProvider>,
     );
     const on = screen.getByRole("button", { name: "顯示建議問題" });

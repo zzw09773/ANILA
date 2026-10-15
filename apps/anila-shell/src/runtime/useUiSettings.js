@@ -14,6 +14,7 @@ import { getUiSettings, putUiSettings } from "./conversations.js";
 import { DEFAULT_FOLDERS } from "../data.jsx";
 import { readFoldersCache, resolveFoldersFromServer, writeFoldersCache } from "./folderSettings.js";
 import { REDACTION_MODES, REDACTION_MODE_DEFAULT } from "../trust.jsx";
+import { followUpsAvailableFrom, followUpsEnabledFrom } from './followUps.js';
 
 export function useUiSettings({ authRequest, isAuthenticated, user }) {
   // 敏感資訊模式(提醒／阻擋)。使用者自己在提示列選的偏好,跟資料夾
@@ -38,8 +39,15 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
   // localStorage 只當這位使用者的離線暫存，key 帶 user id；未區分帳號的舊 key 會被清掉。
   const uiSettingsHydratedRef = useRef(false);
   const [skillAutoApply, setSkillAutoApply] = useState(true);
-  // 回答後顯示建議問題（opt-out）。後端也讀同一個欄位，關掉就不產生。
+  // 保留使用者偏好；有效開關另受 server 能力限制。
   const [followUpsEnabled, setFollowUpsEnabled] = useState(true);
+  const [followUpsAvailable, setFollowUpsAvailable] = useState(false);
+  const followUpsAvailableRef = useRef(false);
+  const captureCapabilities = useCallback((capabilities) => {
+    const available = followUpsAvailableFrom(capabilities?.follow_ups);
+    followUpsAvailableRef.current = available;
+    setFollowUpsAvailable(available);
+  }, []);
   const followUpsEnabledRef = useRef(followUpsEnabled);
   followUpsEnabledRef.current = followUpsEnabled;
   const uiSettingsDirtyRef = useRef({ folders: false, redactionMode: false, skillAutoApply: false, followUpsEnabled: false });
@@ -70,7 +78,8 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
       skillAutoApply: nextSkillAutoApply !== false,
       followUpsEnabled: followUpsEnabledRef.current !== false,
     })
-      .then(() => {
+      .then((response) => {
+        captureCapabilities(response?.capabilities);
         uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false, followUpsEnabled: false };
         uiSettingsSaveErrorRef.current = false;
         setUiSettingsUnsaved(false);
@@ -80,9 +89,10 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
         uiSettingsSaveErrorRef.current = true;
         setUiSettingsUnsaved(true);
       });
-  }, [authRequest]);
+  }, [authRequest, captureCapabilities]);
 
-  const applyServerUiSettings = useCallback((s) => {
+  const applyServerUiSettings = useCallback((s, capabilities) => {
+    captureCapabilities(capabilities);
     const dirty = uiSettingsDirtyRef.current;
     const nextFolders = dirty.folders
       ? foldersRef.current
@@ -109,9 +119,10 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
       uiSettingsSaveErrorRef.current = false;
       setUiSettingsUnsaved(false);
     }
-  }, [persistUiSettings]);
+  }, [persistUiSettings, captureCapabilities]);
 
   useEffect(() => {
+    captureCapabilities(null);
     if (!isAuthenticated) {
       uiSettingsHydratedRef.current = false;
       uiSettingsDirtyRef.current = { folders: false, redactionMode: false, skillAutoApply: false, followUpsEnabled: false };
@@ -131,7 +142,7 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
     getUiSettings(authRequest)
       .then((res) => {
         if (!alive) return;
-        applyServerUiSettings(res?.ui_settings || {});
+        applyServerUiSettings(res?.ui_settings || {}, res?.capabilities);
       })
       .catch(() => {
         if (!alive) return;
@@ -148,7 +159,7 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
     }
     getUiSettings(authRequest)
       .then((res) => {
-        applyServerUiSettings(res?.ui_settings || {});
+        applyServerUiSettings(res?.ui_settings || {}, res?.capabilities);
       })
       .catch(() => {
         setUiSettingsLoadError(true);
@@ -172,8 +183,9 @@ export function useUiSettings({ authRequest, isAuthenticated, user }) {
     setFolders,
     skillAutoApply,
     setSkillAutoApply,
-    followUpsEnabled,
-    setFollowUpsEnabled,
+    followUpsEnabled: followUpsEnabledFrom({ followUpsEnabled }, { available: followUpsAvailable }),
+    followUpsAvailable,
+    setFollowUpsEnabled: (enabled) => { if (followUpsAvailableRef.current) setFollowUpsEnabled(enabled); },
     foldersRef,
     uiSettingsLoadError,
     uiSettingsUnsaved,
