@@ -35,6 +35,16 @@ COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
 OMITTED_FILES = (
+    'apps/anila-shell/src/__tests__/followUpsUnavailable.test.jsx',
+    'apps/anila-shell/src/__tests__/redactionChokePoint.test.jsx',
+    'services/anila-studio/tests/test_fixed_text_normalization.py',
+    'services/anila-studio/tests/test_no_anila_core_import.py',
+    'services/anila-studio/tests/test_studio_batch3_layouts.py',
+    'services/anila-studio/tests/test_studio_substance.py',
+    'services/csp/tests/test_conversation_background_pool.py',
+    'services/csp/tests/test_follow_ups.py',
+    'services/csp/tests/test_quick_builder_http_load_tool.py',
+    'services/csp/tests/test_quick_stream_pool.py',
     'apps/anila-shell/src/__tests__/followUps.test.jsx',
     'apps/anila-shell/src/__tests__/helpers/fakeBackend.js',
     'apps/anila-shell/src/__tests__/normalizeAgents.test.js',
@@ -103,6 +113,18 @@ ASSETS = tuple(("image:" + name, "images/" + name + ".tar.gz") for name in IMAGE
     ("licenses", "licenses/third-party-notices.txt"),
 )
 SOURCE_FILES = tuple(sorted((
+    'apps/anilalm/src/utils/ingestionFileAccept.ts',
+    'infra/nginx/anila.conf',
+    'services/anila-studio/README.en.md',
+    'services/anila-studio/README.md',
+    'services/anila-studio/app/schemas/infographic.py',
+    'services/asr-gateway/README.md',
+    'services/csp/app/services/auth_service.py',
+    'services/csp/app/services/memory_service.py',
+    'tools/loadtest/quick_builder_README.md',
+    'tools/loadtest/quick_builder_http_README.md',
+    'tools/loadtest/quick_builder_http_load.py',
+    'tools/loadtest/quick_builder_load.py',
     'apps/anila-shell/src/app.jsx',
     'apps/anila-shell/src/chat.jsx',
     'apps/anila-shell/src/components/MessageList.jsx',

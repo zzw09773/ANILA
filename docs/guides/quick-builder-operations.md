@@ -67,6 +67,12 @@ tesseract --list-langs
 
 缺少其中一項時，依來源審核與離線出貨程序補齊，或恢復院內 Docling 後重試。開發主機存在工具不代表 ingestion-worker 映像已有工具；主機的版本也不能當成映像 SBOM 的版本。繁體中文 OCR 的真實語料品質、舊 Office 的實際轉檔與完整 fallback 串接都須另附測試紀錄。
 
+工具及語料須放在**實際執行解析工作的環境**：背景文件處理的 ingestion worker 必須能從自身 `PATH` 找到 Tesseract／LibreOffice，並從該 Tesseract 的語料搜尋位置載入 `chi_tra.traineddata` 與 `eng.traineddata`。若 CSP 亦執行同步解析，CSP 同樣需要自己的資產；兩者不會因共用 Python 程式碼就自動共用系統執行檔或語料。`readiness` 回覆僅能證明 CSP 當下探測結果，須另保存 worker 使用者、映像版本及相同固定命令的結果。
+
+補齊 OCR 的出貨流程為：由核准的建置環境依 [Tesseract 官方安裝文件](https://tesseract-ocr.github.io/tessdoc/Installation.html)選定受支援版本，再從 [Tesseract 官方 tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) 選定固定提交的 `chi_tra.traineddata`、`eng.traineddata`；經來源審核後記錄上游、提交／版本、授權與 SHA256，納入離線包及各執行環境的 SBOM。目標環境不自動連網補語料。部署後以 `tesseract --list-langs` 核對兩語言均可見，再以無敏感資料的繁中掃描樣本實跑並核對文字、頁碼及表格限制；只有檔名存在不能取代版本、來源或辨識驗證。
+
+工程環境的固定工具及標準路徑實查僅發現 LibreOffice 7.3.7.2 與 Poppler 22.02.0；`PATH` 無 Tesseract，指定標準位置無 `chi_tra`／`eng` 語料。因此現有本機資產尚不足以完成 Docling 故障時的真實繁中 OCR 驗收，語料版本、來源校驗與辨識結果均待出貨環境提供；上述流程未在本環境執行下載或安裝。
+
 本機 PDF OCR 程式目前設定最多 500 頁、整份 180 秒及單頁辨識最多 45 秒；這些是程式防護上限，並非 NF-10 的承諾容量或效能結果。大文件先分檔，記錄錯誤類型再評估資源。OCR 使用 CPU、記憶體及暫存空間；不部署本機語言模型或嵌入模型，正式資源建議須以試辦語料量測。
 
 ## 離線工具預檢
