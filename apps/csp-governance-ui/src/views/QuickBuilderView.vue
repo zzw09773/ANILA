@@ -319,10 +319,10 @@
           <pre>{{ pretty(step.input) }}</pre>
           <h4>輸出</h4>
           <pre>{{ pretty(step.output) }}</pre>
-          <template v-if="step.retrieval">
+          <template v-if="step.retrieval || step.retrieval_context">
             <h4>檢索文件片段與來源</h4>
-            <p v-for="text in retrievalNotices(step.retrieval)" :key="text" role="status">{{ text }}</p>
-            <pre>{{ pretty(step.retrieval) }}</pre>
+            <p v-for="text in retrievalNotices(step.retrieval, step.retrieval_context)" :key="text" role="status">{{ text }}</p>
+            <pre v-if="step.retrieval">{{ pretty(step.retrieval) }}</pre>
           </template>
           <template v-if="step.tool">
             <h4>工具參數與結果</h4>
