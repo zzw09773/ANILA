@@ -298,7 +298,7 @@ def _can_use(db: Session, user: User, service: QuickMCPService) -> bool:
     return scope is not None and service.department_id in scope
 
 
-def _guard_endpoint(url: str) -> None:
+def _guard_endpoint(url: str) -> str:
     try:
         parsed = urlsplit(url)
         parsed.port
@@ -346,15 +346,16 @@ def _guard_endpoint(url: str) -> None:
             for addr in addresses
         ):
             raise ValueError("MCP 僅限院內私有位址")
+        return str(sorted(addresses, key=lambda addr: (addr.version, int(addr)))[0])
     except (UnsafeEndpointError, ValueError, OSError, TimeoutError) as exc:
         raise _error(
             422, "mcp_endpoint_untrusted", "服務位址未通過平台出向安全驗證，請確認治理中心的信任主機"
         ) from exc
 
 
-async def _guard_endpoint_async(url: str) -> None:
+async def _guard_endpoint_async(url: str) -> str:
     try:
-        await asyncio.wait_for(
+        return await asyncio.wait_for(
             asyncio.to_thread(_guard_endpoint, url),
             timeout=MCP_ENDPOINT_TIMEOUT_SECONDS,
         )
@@ -427,7 +428,15 @@ class _MCPClient:
     ) -> dict:
         if method == "tools/call" and not callable(before_send):
             raise _error(403, "mcp_runtime_authorization_required", "MCP 查詢須重新確認流程授權")
-        await _guard_endpoint_async(self.endpoint)
+        address = await _guard_endpoint_async(self.endpoint)
+        try:
+            ipaddress.ip_address(address)
+            if "%" in address:
+                raise ValueError
+        except (ValueError, TypeError) as exc:
+            raise _error(422, "mcp_endpoint_untrusted", "MCP 服務未提供可固定連線的院內位址") from exc
+        original_url = httpx.URL(self.endpoint)
+        pinned_url = original_url.copy_with(host=address)
         self.counter += 1
         body = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notification:
@@ -437,7 +446,11 @@ class _MCPClient:
             before_send()
         try:
             async with self.client.stream(
-                "POST", self.endpoint, json=body, headers=self.headers
+                "POST",
+                pinned_url,
+                json=body,
+                headers={**self.headers, "Host": original_url.netloc.decode("ascii")},
+                extensions={"sni_hostname": original_url.host},
             ) as response:
                 if not 200 <= response.status_code < 300:
                     raise _error(502, "mcp_http_error", "MCP 服務連線失敗，請通知資料來源管理員")
@@ -549,9 +562,12 @@ class _MCPClient:
 
 async def _discover(db, user, service) -> list[dict]:
     token = issue_mcp_token(db, user, service.id, "__catalog__", assistant_id=0)
+    endpoint = service.endpoint_url
+    # 簽發憑證可能重新取得連線；網路等候期間不持有資料庫交易。
+    db.commit()
     try:
         async with asyncio.timeout(MCP_TOTAL_SECONDS):
-            async with _MCPClient(service.endpoint_url, token) as client:
+            async with _MCPClient(endpoint, token) as client:
                 return await client.tools()
     except TimeoutError as exc:
         raise _error(504, "mcp_timeout", "MCP 工具擷取逾時") from exc
@@ -615,6 +631,7 @@ def list_services(db: Session, user: User) -> list[dict]:
 async def register_service(db: Session, user: User, body: MCPServiceCreate) -> dict:
     user = _admin(db, user)
     require_endpoint_address_author(db, user)
+    db.commit()
     await _guard_endpoint_async(body.endpoint_url)
     user = _admin(db, user)
     require_endpoint_address_author(db, user)
@@ -894,13 +911,16 @@ async def call_tool(
     _validate_schema(tool.input_schema)
     _validate_arguments(tool.input_schema, arguments)
     token = issue_mcp_token(db, user, service.id, tool.name, assistant_id=assistant_id)
+    endpoint = service.endpoint_url
+    call_name, call_fingerprint = tool.name, tool.schema_fingerprint
+    approved_fingerprint = tool.approved_fingerprint
+    db.commit()
     try:
         async with asyncio.timeout(MCP_TOTAL_SECONDS):
-            async with _MCPClient(service.endpoint_url, token) as client:
+            async with _MCPClient(endpoint, token) as client:
                 current = {t["name"]: tool_fingerprint(t) for t in await client.tools()}
-                if current.get(tool.name) != tool.approved_fingerprint:
+                if current.get(call_name) != approved_fingerprint:
                     raise _error(409, "mcp_schema_changed", "MCP 工具已變更，請通知管理員重新審核")
-                call_name, call_fingerprint = tool.name, tool.schema_fingerprint
 
                 def authorize_send():
                     nonlocal user, tool, service

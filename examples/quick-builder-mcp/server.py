@@ -114,7 +114,7 @@ def verify_jwt(token: str, jwks: dict, *, service_id: int, tool_name: str) -> di
         ) from exc
 
 
-def _private_jwks_url(url: str) -> None:
+def _private_jwks_url(url: str) -> tuple[httpx.URL, str, str]:
     parsed = urlsplit(url)
     if (
         parsed.scheme not in ("http", "https")
@@ -141,6 +141,10 @@ def _private_jwks_url(url: str) -> None:
         not any(a.version == n.version and a in n for n in networks) for a in addresses
     ):
         raise ValueError("JWKS 位址必須解析到院內私有位址")
+    address = min(addresses, key=lambda item: (item.version, int(item)))
+    original = httpx.URL(url)
+    # Connect to the checked address; preserve the configured HTTP/TLS identity.
+    return original.copy_with(host=str(address)), parsed.netloc, original.host
 
 
 class Verifier:
@@ -150,14 +154,21 @@ class Verifier:
     async def verify(self, token: str, tool_name: str) -> dict:
         try:
             async with asyncio.timeout(10):
-                await run_in_threadpool(_private_jwks_url, self.settings.jwks_url)
+                target, host, hostname = await run_in_threadpool(
+                    _private_jwks_url, self.settings.jwks_url
+                )
                 async with httpx.AsyncClient(
                     timeout=5,
                     follow_redirects=False,
                     trust_env=False,
                     headers={"Accept-Encoding": "identity"},
                 ) as client:
-                    async with client.stream("GET", self.settings.jwks_url) as response:
+                    async with client.stream(
+                        "GET",
+                        target,
+                        headers={"Host": host},
+                        extensions={"sni_hostname": hostname},
+                    ) as response:
                         if (
                             response.status_code != 200
                             or response.headers.get("content-encoding", "identity")

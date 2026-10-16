@@ -41,6 +41,7 @@ from tests.test_quick_builder_review import (
 review_rows = _review_rows_fixture
 
 URL = "https://attendance.local/mcp"
+PINNED_URL = "https://10.1.2.3/mcp"
 RAW_TOOLS = [
     {
         "name": "attendance_my_records",
@@ -102,7 +103,7 @@ def people(db):
 
 @pytest.fixture
 def remote(monkeypatch, synthetic_keys):
-    monkeypatch.setattr(mcp, "_guard_endpoint", lambda url: None)
+    monkeypatch.setattr(mcp, "_guard_endpoint", lambda url: "10.1.2.3")
     state = {"tools": deepcopy(RAW_TOOLS), "calls": [], "queries": [], "on_list": None}
 
     def reply(request):
@@ -136,6 +137,7 @@ def remote(monkeypatch, synthetic_keys):
 
     with respx.mock(assert_all_called=False) as mock:
         mock.post(URL).mock(side_effect=reply)
+        mock.post(PINNED_URL).mock(side_effect=reply)
         yield state
 
 
@@ -406,10 +408,11 @@ def test_runtime_reauthorizes_after_mcp_awaits_before_tool_send(
 
         async def guard(url):
             nonlocal guards
-            await original_guard(url)
+            address = await original_guard(url)
             guards += 1
             if guards == 4:
                 revoke()
+            return address
 
         monkeypatch.setattr(mcp, "_guard_endpoint_async", guard)
 
@@ -573,7 +576,7 @@ def test_endpoint_requires_explicit_trust_and_private_resolution(monkeypatch):
 
 
 def test_redirect_large_response_and_timeout_are_bounded(monkeypatch):
-    monkeypatch.setattr(mcp, "_guard_endpoint", lambda url: None)
+    monkeypatch.setattr(mcp, "_guard_endpoint", lambda url: "10.1.2.3")
 
     async def request():
         client = mcp._MCPClient(URL, "synthetic")
@@ -583,7 +586,7 @@ def test_redirect_large_response_and_timeout_are_bounded(monkeypatch):
             await client.client.aclose()
 
     with respx.mock(assert_all_called=False) as mock:
-        route = mock.post(URL)
+        route = mock.post(PINNED_URL)
         route.respond(307, headers={"Location": "https://elsewhere.invalid"})
         with pytest.raises(HTTPException) as exc:
             run(request())
@@ -603,7 +606,7 @@ def test_redirect_large_response_and_timeout_are_bounded(monkeypatch):
 
 
 def test_sse_response_ignores_server_requests(monkeypatch):
-    monkeypatch.setattr(mcp, "_guard_endpoint", lambda url: None)
+    monkeypatch.setattr(mcp, "_guard_endpoint", lambda url: "10.1.2.3")
 
     async def request():
         client = mcp._MCPClient(URL, "synthetic")
@@ -614,7 +617,7 @@ def test_sse_response_ignores_server_requests(monkeypatch):
 
     events = 'data: {"jsonrpc":"2.0","id":99,"method":"sampling/createMessage","params":{}}\n\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
     with respx.mock as mock:
-        mock.post(URL).respond(
+        mock.post(PINNED_URL).respond(
             200, text=events, headers={"Content-Type": "text/event-stream"}
         )
         assert run(request()) == {"tools": []}
