@@ -1,6 +1,7 @@
 """快製平台 HTTP 輸入契約。"""
 
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 from fastapi.exceptions import RequestValidationError
@@ -96,6 +97,7 @@ class Review(VersionRef):
 
 class TestInput(VersionRef):
     message: str = Field(min_length=1, max_length=16000)
+    request_id: UUID | None = None
 
 
 class TemplateWrite(StrictInput):

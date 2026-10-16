@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from copy import deepcopy
+import hashlib
 import json
 import re
 import time
@@ -12,6 +13,7 @@ import uuid
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 
 from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
@@ -41,6 +43,223 @@ _IDENTITY = re.compile(r"\b[A-Z][12]\d{8}\b")
 _QUOTED_FIELD = re.compile(
     r"(?P<label>(?P<quote>[\"'])(?P<key>(?:\\.|(?!(?P=quote))[^\\])+)(?P=quote)\s*[:=：]\s*)"
 )
+
+
+def test_tracking(run_row):
+    """Read only the server-created recovery marker; never expose its hash."""
+    value = (run_row.result or {}).get("test_tracking")
+    if not isinstance(value, dict) or value.get("testing") is not True:
+        return None
+    if set(value) != {"testing", "request_id", "request_hash", "actor_department_id"}:
+        return None
+    request_id = value["request_id"]
+    try:
+        if request_id is not None and str(uuid.UUID(request_id)) != request_id:
+            return None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    department_id = value["actor_department_id"]
+    if department_id is not None and (
+        type(department_id) is not int or department_id <= 0
+    ):
+        return None
+    if not isinstance(value["request_hash"], str) or not re.fullmatch(
+        r"[a-f0-9]{64}", value["request_hash"]
+    ):
+        return None
+    return {key: value[key] for key in value}
+
+
+def authorize_test_read(db, user, assistant_id, version_id, *, tracking=None):
+    """The same current edit/review and source/model gates as a new test."""
+    actor_id, token_version, department_id = (
+        user.id,
+        user.token_version,
+        user.department_id,
+    )
+    current = db.get(User, actor_id, populate_existing=True)
+    assistant = db.get(QuickAssistant, assistant_id, populate_existing=True)
+    version = (
+        db.get(QuickVersion, version_id, populate_existing=True)
+        if version_id is not None
+        else None
+    )
+    if (
+        not current
+        or not current.is_active
+        or not current.is_approved
+        or current.token_version != token_version
+        or current.department_id != department_id
+        or not assistant
+        or assistant.disabled
+        or (
+            version_id is not None
+            and (not version or version.assistant_id != assistant.id)
+        )
+        or (
+            tracking is not None
+            and tracking["actor_department_id"] != current.department_id
+        )
+        or not (can_edit(db, current, assistant) or can_review(db, current, assistant))
+    ):
+        fail(404, "NOT_FOUND", "找不到這筆試跑紀錄")
+    try:
+        if version is not None:
+            validate_sources(
+                db, current, version.payload, complete=True, check_model_access=True
+            )
+    except HTTPException:
+        fail(404, "NOT_FOUND", "找不到這筆試跑紀錄")
+    return assistant, version
+
+
+def stored_public_result(run_row, version):
+    """Project authoritative row state, including provenance for recoverable tests."""
+    result = dict(run_row.result or {})
+    artifacts = result.pop("artifacts", [])
+    result["status"] = run_row.status
+    tracking = test_tracking(run_row)
+    if tracking is not None:
+        result.update(
+            version_id=version.id,
+            revision=version.revision,
+            request_id=tracking["request_id"],
+        )
+    return public_result(run_row.id, result, artifacts)
+
+
+def _start_test(db, user, assistant_id, version_id, message, request_id):
+    # Preserve the authenticated identity before populate_existing can refresh it.
+    actor_id, token_version, department_id = (
+        user.id,
+        user.token_version,
+        user.department_id,
+    )
+    try:
+        nonce = str(uuid.UUID(str(request_id))) if request_id is not None else None
+    except (ValueError, TypeError, AttributeError):
+        fail(422, "INVALID_INPUT", "試跑識別碼格式不正確")
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    try:
+        current = (
+            db.query(User)
+            .filter_by(id=actor_id)
+            .populate_existing()
+            .with_for_update(nowait=True, of=User)
+            .first()
+        )
+        if (
+            not current
+            or not current.is_active
+            or not current.is_approved
+            or current.token_version != token_version
+            or current.department_id != department_id
+        ):
+            fail(404, "NOT_FOUND", "找不到可測試的流程版本")
+        if nonce is not None:
+            previous = (
+                db.query(QuickRun)
+                .filter(
+                    QuickRun.user_id == actor_id,
+                    QuickRun.result["test_tracking"]["testing"].as_boolean().is_(True),
+                    QuickRun.result["test_tracking"]["request_id"].as_string() == nonce,
+                )
+                .order_by(QuickRun.id)
+                .populate_existing()
+                .first()
+            )
+            if previous is not None:
+                tracking = test_tracking(previous)
+                previous_version = db.get(
+                    QuickVersion, previous.version_id, populate_existing=True
+                )
+                if tracking is None or tracking["actor_department_id"] != department_id:
+                    fail(404, "NOT_FOUND", "找不到這筆試跑紀錄")
+                if previous_version is None:
+                    fail(404, "NOT_FOUND", "找不到這筆試跑紀錄")
+                authorize_test_read(
+                    db,
+                    current,
+                    previous_version.assistant_id,
+                    previous_version.id,
+                    tracking=tracking,
+                )
+                if (
+                    previous.version_id != version_id
+                    or not previous_version
+                    or previous_version.assistant_id != assistant_id
+                    or tracking["request_hash"] != digest
+                ):
+                    fail(
+                        409,
+                        "TEST_REQUEST_CONFLICT",
+                        "這個試跑識別碼已用於不同內容或版本，請重新開始試跑",
+                    )
+                response = stored_public_result(previous, previous_version)
+                db.commit()
+                return None, response
+        assistant = load(db, current, assistant_id)
+        assistant = db.get(QuickAssistant, assistant.id, populate_existing=True)
+        version = version_for(db, assistant, version_id)
+        if not (can_edit(db, current, assistant) or can_review(db, current, assistant)):
+            fail(404, "NOT_FOUND", "找不到可測試的流程版本")
+        if assistant.disabled:
+            fail(409, "ASSISTANT_DISABLED", "助手已停用，無法執行")
+        payload = deepcopy(version.payload)
+        validate_sources(db, current, payload, complete=True, check_model_access=True)
+        marker = {
+            "testing": True,
+            "request_id": nonce,
+            "request_hash": digest,
+            "actor_department_id": department_id,
+        }
+        row = QuickRun(
+            version_id=version.id,
+            user_id=actor_id,
+            status="running",
+            result={
+                "status": "running",
+                "output": "",
+                "steps": [],
+                "test_tracking": marker,
+            },
+        )
+        db.add(row)
+        db.flush()
+        audit(
+            db,
+            current,
+            "execute_start",
+            assistant.id,
+            version_id=version.id,
+            run_id=row.id,
+            testing=True,
+        )
+        agent = db.get(Agent, version.agent_id) if version.agent_id else None
+        db.commit()  # Release the User mutex before any model/tool await.
+        return (
+            assistant,
+            version,
+            agent,
+            payload,
+            row,
+            actor_id,
+            department_id,
+            token_version,
+        ), None
+    except DBAPIError as exc:
+        db.rollback()
+        if (
+            getattr(exc.orig, "sqlstate", None) == "55P03"
+            or getattr(exc.orig, "pgcode", None) == "55P03"
+        ):
+            fail(
+                409, "TEST_REQUEST_BUSY", "另一個試跑請求正在建立，請稍後重試同一識別碼"
+            )
+        raise
+    except BaseException:
+        db.rollback()
+        raise
 
 
 def _mask_quoted_fields(text):
@@ -310,22 +529,44 @@ async def run(
     dispatch_claims=None,
     history=None,
     on_delta=None,
+    test_request_id=None,
 ):
     from app.services.quick_flow import execute_graph
 
-    assistant = load(db, user, assistant_id)
-    version = version_for(db, assistant, version_id)
-    agent = db.get(Agent, version.agent_id) if version.agent_id else None
     if testing:
-        if not can_edit(db, user, assistant) and not can_review(db, user, assistant):
-            fail(404, "NOT_FOUND", "找不到可測試的流程版本")
-    elif (
-        not agent
-        or agent.approval_status != "approved"
-        or not quick_agent_allowed(db, user, agent.id)
-    ):
-        fail(404, "NOT_FOUND", "這個助手尚未發布或已停用")
-    payload = deepcopy(version.payload)
+        started, previous = _start_test(
+            db, user, assistant_id, version_id, message, test_request_id
+        )
+        if previous is not None:
+            return previous
+        (
+            assistant,
+            version,
+            agent,
+            payload,
+            run_row,
+            captured_user_id,
+            captured_department,
+            captured_token_version,
+        ) = started
+        test_provenance = {
+            "version_id": version.id,
+            "revision": version.revision,
+            "request_id": test_tracking(run_row)["request_id"],
+        }
+    else:
+        if test_request_id is not None:
+            fail(422, "INVALID_INPUT", "試跑識別碼僅供測試流程使用")
+        assistant = load(db, user, assistant_id)
+        version = version_for(db, assistant, version_id)
+        agent = db.get(Agent, version.agent_id) if version.agent_id else None
+        if (
+            not agent
+            or agent.approval_status != "approved"
+            or not quick_agent_allowed(db, user, agent.id)
+        ):
+            fail(404, "NOT_FOUND", "這個助手尚未發布或已停用")
+        payload = deepcopy(version.payload)
     task_id = conv_id = source_snapshot_id = None
     if not testing:
         from app.models.task import Task
@@ -370,28 +611,29 @@ async def run(
             context_level,
             ClassificationLevel.from_storage(payload["classification_level"]),
         ).to_storage()
-    if assistant.disabled:
-        fail(409, "ASSISTANT_DISABLED", "助手已停用，無法執行")
-    validate_sources(db, user, payload, complete=True, check_model_access=testing)
-    captured_user_id, captured_department = user.id, user.department_id
-    captured_token_version = user.token_version
+    if not testing:
+        if assistant.disabled:
+            fail(409, "ASSISTANT_DISABLED", "助手已停用，無法執行")
+        validate_sources(db, user, payload, complete=True, check_model_access=False)
+        captured_user_id, captured_department = user.id, user.department_id
+        captured_token_version = user.token_version
+        run_row = QuickRun(
+            version_id=version.id, user_id=user.id, status="running", result={}
+        )
+        db.add(run_row)
+        db.flush()
+        audit(
+            db,
+            user,
+            "execute_start",
+            assistant.id,
+            version_id=version.id,
+            run_id=run_row.id,
+            testing=False,
+        )
+        db.commit()
     captured_agent_id = agent.id if agent else None
-    run_row = QuickRun(
-        version_id=version.id, user_id=user.id, status="running", result={}
-    )
-    db.add(run_row)
-    db.flush()
     run_id = run_row.id
-    audit(
-        db,
-        user,
-        "execute_start",
-        assistant.id,
-        version_id=version.id,
-        run_id=run_id,
-        testing=testing,
-    )
-    db.commit()
     artifacts = []
 
     def reauthorize():
@@ -763,7 +1005,9 @@ async def run(
         if artifacts and not outbound_action_allowed(
             ClassificationLevel.from_storage(payload["classification_level"])
         ):
-            fail(403, "EXPORT_CLASSIFICATION", "任務或對話的密等已提高，這次文件不能匯出")
+            fail(
+                403, "EXPORT_CLASSIFICATION", "任務或對話的密等已提高，這次文件不能匯出"
+            )
     except (asyncio.CancelledError, GeneratorExit):
         result = {
             "output": "",
@@ -817,12 +1061,16 @@ async def run(
             "conversation_id": conv_id,
         },
     )
-    return public_result(run_id, result, artifacts)
+    response = public_result(run_id, result, artifacts)
+    if testing:
+        response.update(test_provenance)
+    return response
 
 
 def _finish(db, user, assistant_id, run_id, result, artifacts, execution_context):
     db.rollback()
     stored = db.get(QuickRun, run_id)
+    tracking = test_tracking(stored)
     if result["status"] != "completed":
         from app.models.artifact import Artifact, ArtifactVersion
 
@@ -860,6 +1108,8 @@ def _finish(db, user, assistant_id, run_id, result, artifacts, execution_context
         "artifacts": artifacts,
         "execution_context": execution_context,
     }
+    if tracking is not None:
+        stored.result["test_tracking"] = tracking
     audit(
         db, user, "execute_finish", assistant_id, run_id=run_id, status=result["status"]
     )
@@ -889,7 +1139,9 @@ def _mask_flow_result(result):
 
 
 def completion_envelope(completion):
-    metadata = normalize_completion({"text": "", "completion": completion})["completion"]
+    metadata = normalize_completion({"text": "", "completion": completion})[
+        "completion"
+    ]
     return {
         "completion": metadata,
         "finish_reason": metadata["finish_reason"],
@@ -902,7 +1154,11 @@ def public_result(run_id, result, artifacts):
     return {
         "id": run_id,
         **_mask_flow_result(
-            {key: value for key, value in result.items() if key != "execution_context"}
+            {
+                key: value
+                for key, value in result.items()
+                if key not in {"execution_context", "test_tracking"}
+            }
         ),
         "artifacts": [
             {
@@ -950,7 +1206,11 @@ async def agent_response(
             continue
         content = item.get("content")
         if not isinstance(content, str):
-            fail(422, "INVALID_HISTORY", "助手目前僅支援文字對話，請移除歷史訊息中的非文字內容")
+            fail(
+                422,
+                "INVALID_HISTORY",
+                "助手目前僅支援文字對話，請移除歷史訊息中的非文字內容",
+            )
         if not content.strip():
             continue
         if len(history) >= 20 or remaining <= 0:
@@ -1018,7 +1278,9 @@ async def agent_response(
                     "type": detail.get("type", "FLOW_FAILED"),
                     "message": detail.get("message", "助手流程未能完成（FLOW_FAILED）"),
                     "answer_complete": False,
-                    "completion": completion_envelope(result["completion"])["completion"],
+                    "completion": completion_envelope(result["completion"])[
+                        "completion"
+                    ],
                 },
             )
         fail(
@@ -1046,10 +1308,14 @@ async def agent_response(
                     "index": 0,
                     "message": {"role": "assistant", "content": text},
                     "finish_reason": (terminal_meta["finish_reason"] or "stop")
-                    if terminal_meta else "stop",
+                    if terminal_meta
+                    else "stop",
                 }
             ],
-            **({"anila_meta": terminal_meta, "usage": terminal_meta["usage"]}
-               if terminal_meta else {}),
+            **(
+                {"anila_meta": terminal_meta, "usage": terminal_meta["usage"]}
+                if terminal_meta
+                else {}
+            ),
         }
     )

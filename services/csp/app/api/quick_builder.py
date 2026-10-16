@@ -30,6 +30,7 @@ from app.services import quick_builder as service
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
+from uuid import UUID
 
 router = APIRouter(
     prefix="/api/quick-builder", tags=["助手快製"], route_class=QuickBuilderRoute
@@ -298,24 +299,49 @@ def update_template(
 
 
 def _run_access(db, user, run_id):
-    run = db.get(QuickRun, run_id)
+    from app.services.quick_execution import authorize_test_read, test_tracking
+
+    run = db.get(QuickRun, run_id, populate_existing=True)
     if run is None or (run.user_id != user.id and not is_admin_tier(user)):
         service.fail(404, "NOT_FOUND", "找不到這筆執行紀錄")
-    version = db.get(QuickVersion, run.version_id)
+    version = db.get(QuickVersion, run.version_id, populate_existing=True)
+    if not version:
+        service.fail(404, "NOT_FOUND", "找不到這筆執行紀錄")
+    if "test_tracking" in (run.result or {}):
+        tracking = test_tracking(run)
+        if run.user_id != user.id or tracking is None:
+            service.fail(404, "NOT_FOUND", "找不到這筆執行紀錄")
+        assistant, version = authorize_test_read(
+            db, user, version.assistant_id, version.id, tracking=tracking
+        )
+        return run, version, assistant
     assistant = service.load(db, user, version.assistant_id)
     service.validate_sources(db, user, version.payload, check_model_access=False)
     return run, version, assistant
 
 
+def _ensure_test_read_identity(request, user):
+    expected = request.headers.get("X-ANILA-Actor-Id") if request is not None else None
+    if expected is not None and expected != str(user.id):
+        service.fail(
+            409,
+            "IDENTITY_CHANGED",
+            "登入身分已變更，無法在這個頁面查詢；請確認帳號並重新載入",
+        )
+
+
 @router.get("/runs/{run_id}")
 def read_run(
-    run_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    run_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
-    from app.services.quick_execution import public_result
+    from app.services.quick_execution import stored_public_result
 
-    run, _, _ = _run_access(db, user, run_id)
-    result = {k: v for k, v in run.result.items() if k != "artifacts"}
-    return public_result(run.id, result, run.result.get("artifacts", []))
+    _ensure_test_read_identity(request, user)
+    run, version, _ = _run_access(db, user, run_id)
+    return stored_public_result(run, version)
 
 
 @router.get("/runs/{run_id}/artifacts/{artifact_id}")
@@ -550,5 +576,62 @@ async def test(
     from app.services.quick_execution import run
 
     return await run(
-        db, user, assistant_id, body.version_id, body.message, testing=True
+        db,
+        user,
+        assistant_id,
+        body.version_id,
+        body.message,
+        testing=True,
+        test_request_id=body.request_id,
     )
+
+
+@router.get("/{assistant_id}/test-runs")
+def test_runs(
+    assistant_id: int,
+    version_id: int | None = Query(default=None, gt=0),
+    request_id: UUID | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    from app.services.quick_execution import authorize_test_read, test_tracking
+
+    _ensure_test_read_identity(request, user)
+    authorize_test_read(db, user, assistant_id, version_id)
+    query = (
+        db.query(QuickRun, QuickVersion)
+        .join(QuickVersion, QuickRun.version_id == QuickVersion.id)
+        .filter(
+            QuickRun.user_id == user.id,
+            QuickVersion.assistant_id == assistant_id,
+            QuickRun.result["test_tracking"]["testing"].as_boolean().is_(True),
+            QuickRun.result["test_tracking"]["actor_department_id"].as_integer()
+            == user.department_id,
+        )
+    )
+    if version_id is not None:
+        query = query.filter(QuickRun.version_id == version_id)
+    if request_id is not None:
+        query = query.filter(
+            QuickRun.result["test_tracking"]["request_id"].as_string()
+            == str(request_id)
+        )
+    rows = query.order_by(QuickRun.id.desc()).limit(20).populate_existing().all()
+    results = []
+    for row, version in rows:
+        tracking = test_tracking(row)
+        if tracking is None:
+            continue
+        authorize_test_read(db, user, assistant_id, version.id, tracking=tracking)
+        results.append(
+            {
+                "id": row.id,
+                "version_id": version.id,
+                "revision": version.revision,
+                "status": row.status,
+                "created_at": row.created_at,
+                "request_id": tracking["request_id"],
+            }
+        )
+    return {"runs": results}
