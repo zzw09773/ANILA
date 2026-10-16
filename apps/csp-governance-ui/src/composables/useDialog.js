@@ -12,9 +12,10 @@
 //   if (!(await confirm({ message, requireText: link.name, danger: true }))) return
 //
 import { reactive } from 'vue'
+import { currentIdentityEpoch, onIdentityInvalidated } from '../api/identityEpoch.js'
 
-const state = reactive({
-  confirm: {
+const emptyConfirm = () => ({
+    id: 0,
     open: false,
     title: '請確認',
     message: '',
@@ -23,17 +24,22 @@ const state = reactive({
     danger: false,
     requireText: '',
     input: '',
-  },
-  toasts: [], // [{ id, message, tone }]
 })
+const state = reactive({ confirm: emptyConfirm(), toasts: [] })
 
 let resolver = null
+let confirmSeq = 0
+let observedActor = null
 let toastSeq = 0
+let actorGeneration = 0
+const toastTimers = new Map()
 
-function settle(value) {
+function settle(value, instance = state.confirm) {
+  if (instance !== state.confirm) return
   const r = resolver
   resolver = null
-  state.confirm.open = false
+  Object.assign(state.confirm, emptyConfirm())
+  state.confirm = emptyConfirm()
   if (r) r(value)
 }
 
@@ -41,9 +47,10 @@ function confirm(opts) {
   const o = typeof opts === 'string' ? { message: opts } : (opts || {})
   return new Promise((resolve) => {
     // Never strand a previously pending confirm.
-    if (resolver) { const r = resolver; resolver = null; r(false) }
+    if (resolver) settle(false)
     resolver = resolve
     state.confirm = {
+      id: ++confirmSeq,
       open: true,
       title: o.title || '請確認',
       message: o.message || '',
@@ -60,14 +67,42 @@ function toast(message, opts = {}) {
   const id = ++toastSeq
   state.toasts.push({ id, message: String(message ?? ''), tone: opts.tone || 'info' })
   const duration = opts.duration ?? 3600
-  setTimeout(() => {
+  const timer = setTimeout(() => {
+    toastTimers.delete(id)
     const i = state.toasts.findIndex((t) => t.id === id)
     if (i !== -1) state.toasts.splice(i, 1)
   }, duration)
+  toastTimers.set(id, timer)
+}
+
+export function clearActorDialogs() {
+  actorGeneration += 1
+  settle(false)
+  for (const timer of toastTimers.values()) clearTimeout(timer)
+  toastTimers.clear()
+  state.toasts = []
+}
+
+onIdentityInvalidated(clearActorDialogs)
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', clearActorDialogs)
+  window.addEventListener('anila:identity', event => {
+    const actor = event.detail?.userId
+    if (actor == null) { observedActor = null; clearActorDialogs(); return }
+    if (!Number.isSafeInteger(actor) || actor <= 0) return
+    if (observedActor !== null && actor !== observedActor) clearActorDialogs()
+    observedActor = actor
+  })
 }
 
 export function useDialog() {
-  return { confirm, toast }
+  const generation = actorGeneration
+  const epoch = currentIdentityEpoch()
+  const current = () => generation === actorGeneration && epoch === currentIdentityEpoch()
+  return {
+    confirm: options => current() ? confirm(options) : Promise.resolve(false),
+    toast: (message, options) => { if (current()) toast(message, options) },
+  }
 }
 
 // Host-only internals (consumed by TermDialogHost.vue).

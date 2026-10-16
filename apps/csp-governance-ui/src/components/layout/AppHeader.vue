@@ -43,7 +43,7 @@
         {{ theme === 'dark' ? '淺色' : '深色' }}
       </button>
       <template v-if="!compact">
-        <button class="topbar__action" type="button" @click="showChangePwModal = true">
+        <button class="topbar__action" type="button" @click="openChangePw">
           變更密碼
         </button>
         <button class="topbar__action" type="button" @click="handleLogout">
@@ -70,48 +70,78 @@
   </header>
 
   <!-- Change-password modal — terminal style ----------------------------- -->
-  <TermModal :visible="showChangePwModal" title="變更密碼" width="440px" @close="closeChangePw">
-    <div class="pw-grid">
-      <TermField label="目前密碼">
-        <input v-model="pw.current" type="password" class="term-input" placeholder="••••••••" autocomplete="current-password" />
-      </TermField>
+  <template v-for="password in [pw]" :key="password.id">
+    <TermModal v-if="showChangePwModal" :visible="showChangePwModal" title="變更密碼" width="440px" @close="closeChangePw(password)">
+      <div class="pw-grid">
+        <TermField label="目前密碼">
+          <input
+            :value="password.current"
+            @input="inputPassword(password, 'current', $event)"
+            @compositionstart="startPasswordComposition(password, $event)"
+            @compositionend="endPasswordComposition(password, 'current', $event)"
+            type="password"
+            class="term-input"
+            placeholder="••••••••"
+            autocomplete="current-password"
+          />
+        </TermField>
 
-      <TermField label="新密碼" :hint="pw.new ? '' : '至少 8 字元 · 大寫 · 小寫 · 符號'">
-        <input v-model="pw.new" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
-        <ul v-if="pw.new" class="pw-rules">
-          <li :class="pwRule(pw.new.length >= 8)">{{ pwGlyph(pw.new.length >= 8) }} 8 字元以上</li>
-          <li :class="pwRule(/[A-Z]/.test(pw.new))">{{ pwGlyph(/[A-Z]/.test(pw.new)) }} 大寫字母</li>
-          <li :class="pwRule(/[a-z]/.test(pw.new))">{{ pwGlyph(/[a-z]/.test(pw.new)) }} 小寫字母</li>
-          <li :class="pwRule(hasSpecial(pw.new))">{{ pwGlyph(hasSpecial(pw.new)) }} 符號</li>
-        </ul>
-      </TermField>
+        <TermField label="新密碼" :hint="password.new ? '' : '至少 8 字元 · 大寫 · 小寫 · 符號'">
+          <input
+            :value="password.new"
+            @input="inputPassword(password, 'new', $event)"
+            @compositionstart="startPasswordComposition(password, $event)"
+            @compositionend="endPasswordComposition(password, 'new', $event)"
+            type="password"
+            class="term-input"
+            placeholder="••••••••"
+            autocomplete="new-password"
+          />
+          <ul v-if="password.new" class="pw-rules">
+            <li :class="pwRule(password.new.length >= 8)">{{ pwGlyph(password.new.length >= 8) }} 8 字元以上</li>
+            <li :class="pwRule(/[A-Z]/.test(password.new))">{{ pwGlyph(/[A-Z]/.test(password.new)) }} 大寫字母</li>
+            <li :class="pwRule(/[a-z]/.test(password.new))">{{ pwGlyph(/[a-z]/.test(password.new)) }} 小寫字母</li>
+            <li :class="pwRule(hasSpecial(password.new))">{{ pwGlyph(hasSpecial(password.new)) }} 符號</li>
+          </ul>
+        </TermField>
 
-      <TermField
-        label="確認新密碼"
-        :error="pw.confirm && pw.new !== pw.confirm ? '不一致' : ''"
-      >
-        <input v-model="pw.confirm" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
-      </TermField>
+        <TermField
+          label="確認新密碼"
+          :error="password.confirm && password.new !== password.confirm ? '不一致' : ''"
+        >
+          <input
+            :value="password.confirm"
+            @input="inputPassword(password, 'confirm', $event)"
+            @compositionstart="startPasswordComposition(password, $event)"
+            @compositionend="endPasswordComposition(password, 'confirm', $event)"
+            type="password"
+            class="term-input"
+            placeholder="••••••••"
+            autocomplete="new-password"
+          />
+        </TermField>
 
-      <div v-if="pwError" class="pw-msg pw-msg--err">! {{ pwError }}</div>
-      <div v-if="pwSuccess" class="pw-msg pw-msg--ok">✓ {{ pwSuccess }}</div>
-    </div>
+        <div v-if="pwError" class="pw-msg pw-msg--err">! {{ pwError }}</div>
+        <div v-if="pwSuccess" class="pw-msg pw-msg--ok">✓ {{ pwSuccess }}</div>
+      </div>
 
-    <template #footer>
-      <TermButton variant="ghost" @click="closeChangePw" label="取消" />
-      <TermButton
-        variant="primary"
-        :disabled="!canSubmit"
-        :loading="saving"
-        :label="saving ? '儲存中' : '更新'"
-        @click="handleChangePassword"
-      />
-    </template>
-  </TermModal>
+      <template #footer>
+        <TermButton variant="ghost" @click="closeChangePw(password)" label="取消" />
+        <TermButton
+          variant="primary"
+          :disabled="!canSubmit"
+          :loading="saving"
+          :label="saving ? '儲存中' : '更新'"
+          @click="handleChangePassword(password)"
+        />
+      </template>
+    </TermModal>
+  </template>
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { currentIdentityEpoch, onIdentityInvalidated } from '../../api/identityEpoch'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { roleLabel } from '../../utils/roleLabel'
@@ -135,7 +165,7 @@ watch(compact, (c) => { if (!c) accountOpen.value = false })
 
 function openChangePwFromMenu() {
   accountOpen.value = false
-  showChangePwModal.value = true
+  openChangePw()
 }
 
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
@@ -186,10 +216,36 @@ watch(currentPageLabel, (label) => {
 
 
 const showChangePwModal = ref(false)
-const pw = ref({ current: '', new: '', confirm: '' })
+const pw = ref({ id: 0, current: '', new: '', confirm: '' })
 const pwError = ref('')
 const pwSuccess = ref('')
 const saving = ref(false)
+let passwordGeneration = 0, passwordTimer = null, passwordActor = null
+function clearPasswordState() {
+  passwordGeneration += 1
+  clearTimeout(passwordTimer)
+  passwordTimer = null
+  passwordActor = null
+  accountOpen.value = false
+  showChangePwModal.value = false
+  Object.assign(pw.value, {current:'',new:'',confirm:''})
+  pw.value = {id:passwordGeneration,current:'',new:'',confirm:''}
+  pwError.value = ''
+  pwSuccess.value = ''
+  saving.value = false
+}
+function openChangePw() {
+  if (!authStore.user?.id) return
+  clearPasswordState()
+  passwordActor = {id:authStore.user.id,epoch:currentIdentityEpoch()}
+  showChangePwModal.value = true
+}
+const unsubscribePasswordIdentity = onIdentityInvalidated(clearPasswordState)
+const onPasswordIdentity = event => { if (event.detail?.userId == null || passwordActor && String(event.detail.userId) !== String(passwordActor.id)) clearPasswordState() }
+window.addEventListener('anila:identity', onPasswordIdentity)
+window.addEventListener('pagehide', clearPasswordState)
+watch(() => authStore.user?.id, clearPasswordState, {flush:'sync'})
+onBeforeUnmount(() => { unsubscribePasswordIdentity(); window.removeEventListener('anila:identity', onPasswordIdentity); window.removeEventListener('pagehide', clearPasswordState); clearPasswordState() })
 
 const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
 function hasSpecial(str) { return [...str].some(c => SPECIAL_CHARS.includes(c)) }
@@ -206,32 +262,55 @@ const canSubmit = computed(() =>
   pw.value.new === pw.value.confirm
 )
 
-function closeChangePw() {
-  showChangePwModal.value = false
-  pw.value = { current: '', new: '', confirm: '' }
-  pwError.value = ''
-  pwSuccess.value = ''
+function passwordCurrent(instance) {
+  return instance === pw.value && showChangePwModal.value
+    && passwordActor?.id === authStore.user?.id
+    && passwordActor?.epoch === currentIdentityEpoch()
+}
+function inputPassword(instance, field, event) {
+  if (passwordCurrent(instance) && !event.target.composing) instance[field] = event.target.value
+}
+function startPasswordComposition(instance, event) {
+  if (passwordCurrent(instance)) event.target.composing = true
+}
+function endPasswordComposition(instance, field, event) {
+  if (!passwordCurrent(instance)) return
+  event.target.composing = false
+  inputPassword(instance, field, event)
+}
+function closeChangePw(instance) {
+  if (passwordCurrent(instance)) clearPasswordState()
 }
 
-async function handleChangePassword() {
+async function handleChangePassword(instance) {
+  const context = passwordActor, generation = passwordGeneration
+  const current = () => passwordCurrent(instance) && generation === passwordGeneration
+    && context?.id === authStore.user?.id && context?.epoch === currentIdentityEpoch()
+  if (!current() || !canSubmit.value) return
   pwError.value = ''
   pwSuccess.value = ''
   saving.value = true
   try {
-    await changePassword(pw.value.current, pw.value.new)
+    await changePassword(instance.current, instance.new)
+    if (!current()) return
     pwSuccess.value = '密碼已更新 — 需重新登入'
-    setTimeout(() => {
+    passwordTimer = setTimeout(() => {
+      if (!current()) return
+      closeChangePw(instance)
       authStore.logout()
       router.push('/login')
     }, 1500)
   } catch (e) {
+    if (!current()) return
+    if ([401,403,404].includes(e?.response?.status)) { clearPasswordState(); return }
     pwError.value = extractError(e, '更新失敗')
   } finally {
-    saving.value = false
+    if (current()) saving.value = false
   }
 }
 
 function handleLogout() {
+  clearPasswordState()
   authStore.logout()
   router.push('/login')
 }

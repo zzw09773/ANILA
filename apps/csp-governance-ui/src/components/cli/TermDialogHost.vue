@@ -5,36 +5,41 @@
   confirm()/toast() from useDialog().
 -->
 <template>
-  <TermModal
-    :visible="s.confirm.open"
-    :title="s.confirm.title"
+  <template v-for="confirmation in [s.confirm]" :key="confirmation.id">
+  <TermModal v-if="confirmation.open"
+    :visible="confirmation.open"
+    :title="confirmation.title"
     width="460px"
     elevated
-    @close="settle(false)"
+    @close="settleFor(confirmation, false)"
   >
-    <p class="term-confirm__msg">{{ s.confirm.message }}</p>
-    <div v-if="s.confirm.requireText" class="term-confirm__verify">
+    <p class="term-confirm__msg">{{ confirmation.message }}</p>
+    <div v-if="confirmation.requireText" class="term-confirm__verify">
       <label class="term-confirm__hint">
-        請輸入「<code>{{ s.confirm.requireText }}</code>」以確認：
+        請輸入「<code>{{ confirmation.requireText }}</code>」以確認：
       </label>
       <input
         class="term-confirm__input"
-        v-model="s.confirm.input"
+        :value="confirmation.input"
+        @input="onInput(confirmation, $event)"
+        @compositionstart="onCompositionStart(confirmation, $event)"
+        @compositionend="onCompositionEnd(confirmation, $event)"
         autocomplete="off"
         spellcheck="false"
-        @keydown.enter.prevent="onEnter"
+        @keydown.enter.prevent="onEnter(confirmation, $event)"
       />
     </div>
     <template #footer>
-      <TermButton variant="ghost" :label="s.confirm.cancelText" @click="settle(false)" />
+      <TermButton variant="ghost" :label="confirmation.cancelText" @click="settleFor(confirmation, false)" />
       <TermButton
-        :variant="s.confirm.danger ? 'danger' : 'primary'"
-        :disabled="!canConfirm"
-        :label="s.confirm.confirmText"
-        @click="settle(true)"
+        :variant="confirmation.danger ? 'danger' : 'primary'"
+        :disabled="!canConfirm(confirmation)"
+        :label="confirmation.confirmText"
+        @click="settleFor(confirmation, true)"
       />
     </template>
   </TermModal>
+  </template>
 
   <Teleport to="body">
     <div class="term-toasts" aria-live="polite">
@@ -52,16 +57,30 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
 import TermModal from './TermModal.vue'
 import TermButton from './TermButton.vue'
 import { _dialogState as s, _settleConfirm as settle } from '../../composables/useDialog'
 
-const canConfirm = computed(
-  () => !s.confirm.requireText || s.confirm.input === s.confirm.requireText,
-)
-function onEnter() {
-  if (canConfirm.value) settle(true)
+const current = confirmation => s.confirm === confirmation && confirmation.open
+const canConfirm = confirmation => !confirmation.requireText || confirmation.input === confirmation.requireText
+function settleFor(confirmation, accepted) {
+  if (!current(confirmation) || accepted && !canConfirm(confirmation)) return
+  settle(accepted, confirmation)
+}
+function onEnter(confirmation, event) {
+  if (event.isComposing || event.keyCode === 229 || event.target.composing) return
+  settleFor(confirmation, true)
+}
+function onInput(confirmation, event) {
+  if (current(confirmation) && !event.target.composing) confirmation.input = event.target.value
+}
+function onCompositionStart(confirmation, event) {
+  if (current(confirmation)) event.target.composing = true
+}
+function onCompositionEnd(confirmation, event) {
+  if (!current(confirmation)) return
+  event.target.composing = false
+  onInput(confirmation, event)
 }
 </script>
 

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import './helpers/dom.mjs'
+import { _dialogState, _settleConfirm, clearActorDialogs } from '../src/composables/useDialog.js'
 import { createApp, nextTick } from 'vue'
 import { build } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -15,15 +16,15 @@ import { RAG_DEFAULTS, RAG_MODES } from '../src/quickBuilder/ragSettings.js'
 import { DOCUMENT_DEFAULTS, DOCUMENT_PRESETS, availableDocumentPresets } from '../src/quickBuilder/documentSettings.js'
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..')
 let View, mounted
-const settle=async()=>{for(let i=0;i<15;i++){await Promise.resolve();await nextTick()}}
+const settle=async()=>{for(let i=0;i<15;i++){await Promise.resolve();await nextTick();if(_dialogState.confirm.open)_settleConfirm(window.confirm())}}
 const button=text=>document.querySelector(`[data-module-kind="${modules.find(m=>m.name===text)?.kind || '__missing'}"]`) || [...document.querySelectorAll('button')].find(n=>n.textContent.trim()===text || n.firstChild?.textContent.trim()===text)
 const field=text=>[...document.querySelectorAll('label')].find(n=>n.firstChild?.textContent.includes(text))?.querySelector('input,select,textarea')
 async function change(node,value){assert.ok(node,'欄位存在');node.value=String(value);node.dispatchEvent(new Event(node.tagName==='SELECT'?'change':'input',{bubbles:true}));await settle()}
 async function click(text){assert.ok(button(text),text);button(text).click();await settle()}
 async function open(){await change(field('助手'), '11'); assert.ok(calls.find(c=>c[0]==='get'), JSON.stringify([...document.querySelectorAll('select')].map(s=>({value:s.value,html:s.innerHTML}))))}
-test.before(async()=>{const require=createRequire(import.meta.url);const result=await build({configFile:false,envDir:false,root:ROOT,plugins:[{name:'builder-test-api',enforce:'pre',resolveId(id){if(id==='../api/quickBuilder')return{id:'builder-test-api',external:true}}},vue()],logLevel:'silent',build:{write:false,minify:false,lib:{entry:resolve(ROOT,'src/views/QuickBuilderView.vue'),formats:['es']},rollupOptions:{external:['vue','vue-router','builder-test-api'],output:{inlineDynamicImports:true,paths:{vue:pathToFileURL(require.resolve('vue')).href,'vue-router':pathToFileURL(require.resolve('vue-router')).href,'builder-test-api':new URL('./helpers/quickBuilderMock.mjs',import.meta.url).href}}}}});const chunk=(Array.isArray(result)?result[0]:result).output.find(o=>o.type==='chunk'&&o.isEntry);View=(await import(`data:text/javascript;base64,${Buffer.from(chunk.code).toString('base64')}`)).default})
+test.before(async()=>{const require=createRequire(import.meta.url);const result=await build({configFile:false,envDir:false,root:ROOT,plugins:[{name:'builder-test-api',enforce:'pre',resolveId(id){if(id.endsWith('/composables/useDialog') || id.endsWith('/composables/useDialog.js'))return{id:'builder-test-dialog',external:true};if(id==='../api/quickBuilder')return{id:'builder-test-api',external:true}}},vue()],logLevel:'silent',build:{write:false,minify:false,lib:{entry:resolve(ROOT,'src/views/QuickBuilderView.vue'),formats:['es']},rollupOptions:{external:['vue','vue-router','builder-test-api'],output:{inlineDynamicImports:true,paths:{'builder-test-dialog':new URL('../src/composables/useDialog.js',import.meta.url).href,vue:pathToFileURL(require.resolve('vue')).href,'vue-router':pathToFileURL(require.resolve('vue-router')).href,'builder-test-api':new URL('./helpers/quickBuilderMock.mjs',import.meta.url).href}}}}});const chunk=(Array.isArray(result)?result[0]:result).output.find(o=>o.type==='chunk'&&o.isEntry);View=(await import(`data:text/javascript;base64,${Buffer.from(chunk.code).toString('base64')}`)).default})
 test.beforeEach(async()=>{window.sessionStorage.clear();reset();window.confirm=()=>true;const el=document.createElement('div');document.body.append(el);mounted=createApp(View);mounted.mount(el);await settle()})
-test.afterEach(()=>{mounted.unmount();document.body.replaceChildren()})
+test.afterEach(()=>{clearActorDialogs();mounted.unmount();document.body.replaceChildren()})
 const liveGraph={nodes:[{id:'in',kind:'input',label:'輸入',position:{x:0,y:0},config:{}},{id:'model',kind:'model',label:'產生回答',position:{x:0,y:240},config:{}},{id:'out',kind:'output',label:'輸出',position:{x:0,y:480},config:{}}],edges:[{source:'in',target:'model'},{source:'model',target:'out'}]};
 let source,send,end,streamCancelled,request,sequence;
 async function begin({uncancellable=false}={}){
@@ -98,13 +99,13 @@ for(const status of [401,403,404]){
   await click('查詢這次試跑');
   assert.equal(streamCancelled,true);
   assert.equal(document.querySelector('.qb-answer'),null);
-  assert.equal(field('測試問題').value,'');
-  assert.match(document.body.textContent,/TEST_RESULT_UNAVAILABLE/);
-  assert.equal(document.querySelector('.qb-test-tracking').dataset.runId,'7');
+  assert.equal(field('測試問題'),undefined);assert.equal(document.querySelectorAll('input,select,textarea,option').length,0);
+  assert.match(document.body.textContent,/ACCESS_CHANGED/);
+  assert.equal(document.querySelector('.qb-test-tracking'),null);
   await send('output_delta',{node_id:'model',text:'REVOKED_BUFFER_CANARY'});
   assert.equal(document.querySelector('.qb-answer'),null);
   assert.doesNotMatch(document.body.textContent,/撤權前內容|REVOKED_BUFFER_CANARY|STREAM_QUESTION_CANARY/);
-  assert.equal(field('助手名稱').closest('fieldset').disabled,false);
+  assert.equal(field('助手名稱'),undefined);
   assert.equal(calls.some(call=>call[0]==='cancelTestRun'),false);
   assert.equal(calls.filter(call=>call[0]==='test').length,1);
   assert.doesNotMatch(JSON.stringify(window.sessionStorage),/CANARY|撤權前內容/);
@@ -122,18 +123,18 @@ for(const status of [401,403,404]){
   await click('取消伺服器執行');
   assert.equal(streamCancelled,true);
   assert.equal(document.querySelector('.qb-answer'),null);
-  assert.equal(field('測試問題').value,'');
+  assert.equal(field('測試問題'),undefined);assert.equal(document.querySelectorAll('input,select,textarea,option').length,0);
   releaseRun();await settle();
   await send('output_delta',{node_id:'model',text:'LATE_CANCEL_BUFFER_CANARY'});
   assert.equal(document.querySelector('.qb-answer'),null);
   assert.doesNotMatch(document.body.textContent,/LATE_GET_CANARY|LATE_CANCEL_BUFFER_CANARY|執行已停止/);
-  assert.match(document.body.textContent,/TEST_RESULT_UNAVAILABLE/);
-  assert.equal(document.querySelector('.qb-test-tracking').dataset.runStatus,'unknown');
-  assert.equal(field('助手名稱').closest('fieldset').disabled,false);
+  assert.match(document.body.textContent,/ACCESS_CHANGED/);
+  assert.equal(document.querySelector('.qb-test-tracking'),null);
+  assert.equal(field('助手名稱'),undefined);
  });
 }
-test('本人清單拒權也清除先前已取得題目與結果，保留指標供明確再查',async()=>{
+test('本人清單拒權也清除先前已取得題目與結果，清空整份畫面且只保留安全識別指標',async()=>{
  await begin();setRunResult(7,result('completed'));await send('run_finished',{result:result('completed')});
  assert.ok(document.querySelector('.qb-answer'));denyRun(403);await click('查詢我的試跑');
- assert.equal(document.querySelector('.qb-answer'),null);assert.equal(field('測試問題').value,'');assert.match(document.body.textContent,/TEST_RESULT_UNAVAILABLE/);assert.equal(document.querySelector('.qb-test-tracking').dataset.runId,'7');assert.equal(field('助手名稱').closest('fieldset').disabled,false);
+ assert.equal(document.querySelector('.qb-answer'),null);assert.equal(field('測試問題'),undefined);assert.equal(document.querySelectorAll('input,select,textarea,option').length,0);assert.match(document.body.textContent,/ACCESS_CHANGED/);assert.equal(document.querySelector('.qb-test-tracking'),null);assert.equal(field('助手名稱'),undefined);
 });

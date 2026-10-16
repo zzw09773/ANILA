@@ -1,3 +1,5 @@
+import { bannerIdentityToken, bannerIdentityCurrent, onBannerSummaryReset } from './unreadFeedbackBanner.js'
+
 /** 閒置停用試算／執行結果。筆數來自警報摘要的同一次回應。 */
 
 /**
@@ -23,8 +25,8 @@ export function inactivityNoticeModel(summary) {
 let current = null
 const listeners = new Set()
 
-export function publishInactivityNotice(summary) {
-  current = summary ?? null
+function deliver(summary) {
+  current = summary
   for (const listener of [...listeners]) {
     try {
       listener(current)
@@ -32,6 +34,14 @@ export function publishInactivityNotice(summary) {
       // 一個訂閱失敗不擋其他頁。
     }
   }
+}
+
+onBannerSummaryReset(() => deliver(null))
+
+export function publishInactivityNotice(summary, token = bannerIdentityToken()) {
+  if (!bannerIdentityCurrent(token)) return
+  const model = inactivityNoticeModel(summary)
+  deliver(model ? { inactivity_notice: { phase: model.phase, count: model.count, days: model.days } } : null)
 }
 
 export function subscribeInactivityNotice(listener) {

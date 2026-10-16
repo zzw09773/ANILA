@@ -19,35 +19,51 @@ import {
   openAlertBannerModel,
   subscribeOpenAlertBanner,
 } from '../../utils/openAlertBanner'
-import { publishUnreadFeedback } from '../../utils/unreadFeedbackBanner'
+import { publishUnreadFeedback, bannerIdentityToken, bannerIdentityCurrent, onBannerSummaryReset, clearBannerSummaries } from '../../utils/unreadFeedbackBanner'
 import { publishInactivityNotice } from '../../utils/inactivityNotice'
 
 const model = ref(null)
 let requestGen = 0
 
 async function load() {
+  const token = bannerIdentityToken()
+  if (!token.active) return
   const gen = ++requestGen
   try {
     const { data } = await getAlertSummary()
-    if (gen !== requestGen) return
+    if (gen !== requestGen || !bannerIdentityCurrent(token)) return
     model.value = openAlertBannerModel(data)
-    publishUnreadFeedback(data)
-    publishInactivityNotice(data)
-  } catch {
-    // 這次讀不到就留著上次的橫幅，不要把整頁弄壞。
+    publishUnreadFeedback(data, token)
+    publishInactivityNotice(data, token)
+  } catch (error) {
+    if (gen !== requestGen || !bannerIdentityCurrent(token)) return
+    if ([401, 403, 404].includes(error?.response?.status)) clearBannerSummaries()
+    // 同一身份的暫時讀取失敗可保留上次摘要。
   }
 }
 
 const poller = createPoller(load, { intervalMs: OPEN_ALERT_BANNER_POLL_MS })
 let unsubscribe = () => {}
+let unsubscribeReset = () => {}
 
 onMounted(() => {
+  unsubscribeReset = onBannerSummaryReset((active) => {
+    requestGen += 1
+    model.value = null
+    poller.stop()
+    if (active) {
+      load()
+      poller.start()
+    }
+  })
   load()
-  poller.start()
+  if (bannerIdentityToken().active) poller.start()
   unsubscribe = subscribeOpenAlertBanner(load)
 })
 
 onUnmounted(() => {
+  requestGen += 1
+  unsubscribeReset()
   poller.stop()
   unsubscribe()
 })

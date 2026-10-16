@@ -1,5 +1,8 @@
 <template>
   <div class="page qb">
+    <section v-if="identityChanged" class="qb-section" data-actor-cleared role="alert"><h2>請重新確認身分</h2><p>{{ identityMessage }}</p><button type="button" @click="reloadActor">重新確認身分</button></section>
+    <template v-else>
+    <p class="hint">未儲存內容會在重新整理、離開頁面或登入身分變更後清除。</p>
     <PageHead title="助手快製" subtitle="從範本開始，用拖拉與設定建立單位助手。主管核准後註冊為 Agent，再由平台管理員核准使用。">
       <template #actions>
         <button :disabled="blocked || !actorReady" @click="newAssistant">建立助手</button>
@@ -374,9 +377,10 @@
         <button :disabled="!collection.publication_scope" @click="saveCollectionPublication(collection)">儲存文件開放範圍</button>
       </fieldset>
     </details>
-    <ReadinessPanel v-if="catalog.can_manage_readiness === true && !identityChanged"/>
+    <ReadinessPanel v-if="catalog.can_manage_readiness === true && !identityChanged" :key="actor.generation.value" @unavailable="actor.revokeAccess()"/>
     </details>
     </fieldset>
+    </template>
   </div>
 </template>
 <script setup>
@@ -384,7 +388,7 @@ import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } 
 import { onBeforeRouteLeave } from 'vue-router';
 import { PageHead } from '../components/cli';
 import { extractError, errorType } from '../api/errors';
-import * as api from '../api/quickBuilder';
+import * as rawApi from '../api/quickBuilder';
 import NodeSettings from '../quickBuilder/NodeSettings.vue';
 import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
 import TestRunReview from '../quickBuilder/TestRunReview.vue';
@@ -433,6 +437,8 @@ const runStatus = value => ({running:'執行中',completed:'已完成',failed:'�
 let liveTest = null;
 let testController, testEpoch = 0, trackEpoch = 0, trackTimer, trackController, trackSelectedVersion, trackAttempts = 0;
 const actor = useDraftActor();
+const api = actor.protectApi(rawApi);
+const reloadActor = () => window.location.reload();
 const { identityChanged, identityMessage, ready: actorReady } = actor;
 const blocked = computed(() => busy.value || loading.value || identityChanged.value);
 const tabs = [{
@@ -484,6 +490,7 @@ async function changeZoom(value) {
   zoom.value = Math.min(1.5, Math.max(0.4, Math.round(value * 100) / 100));
   fitMode.value = false;
   await nextTick();
+  if (identityChanged.value) return;
   if (viewport && centre) {
     viewport.scrollLeft = Math.max(0, centre.x * zoom.value - viewport.clientWidth / 2);
     viewport.scrollTop = Math.max(0, centre.y * zoom.value - viewport.clientHeight / 2);
@@ -492,11 +499,13 @@ async function changeZoom(value) {
 async function fitCanvas() {
   fitMode.value = true;
   await nextTick();
+  if (identityChanged.value) return;
   const viewport = canvasViewport.value;
   if (!viewport?.clientWidth || !viewport.clientHeight) return;
   const bounds = contentBounds.value;
   zoom.value = Math.min(1, Math.max(1, viewport.clientWidth - 48) / bounds.width, Math.max(1, viewport.clientHeight - 48) / bounds.height);
   await nextTick();
+  if (identityChanged.value) return;
   viewport.scrollLeft = Math.max(0, (bounds.x - canvasBounds.value.x + bounds.width / 2) * zoom.value - viewport.clientWidth / 2);
   viewport.scrollTop = Math.max(0, (bounds.y - canvasBounds.value.y + bounds.height / 2) * zoom.value - viewport.clientHeight / 2);
 }
@@ -504,6 +513,7 @@ async function resetCanvasView() {
   zoom.value = 1;
   fitMode.value = false;
   await nextTick();
+  if (identityChanged.value) return;
   if (canvasViewport.value) {
     canvasViewport.value.scrollLeft = 0;
     canvasViewport.value.scrollTop = 0;
@@ -518,6 +528,7 @@ function arrangeNodes() {
 let canvasObserver;
 watch([canvasViewport, configOpen], async () => {
   await nextTick();
+  if (identityChanged.value) return;
   canvasObserver?.disconnect();
   if (canvasViewport.value) canvasObserver?.observe(canvasViewport.value);
   if (fitMode.value) fitCanvas();
@@ -554,14 +565,17 @@ function safeArtifactUrl(value) {
   return typeof value === 'string' && value.startsWith('/api/') && !value.includes('\\');
 }
 function fail(e) {
+  if (identityChanged.value || e?.code === 'ACTOR_CLEARED') return;
   const type = errorType(e, e.code || 'QUICK_BUILDER');
   if (type === 'IDENTITY_CHANGED') { actor.lockIdentity(); error.value = ''; notice.value = ''; return; }
   error.value = `${extractError(e, '暫時無法完成，請稍後重試')}（${type}）。請檢查設定後重試；若版本衝突，先保留變更內容再重新整理。`;
 }
-function discard() {
-  return !dirty.value || window.confirm('目前有尚未儲存的變更。確定捨棄這些變更？');
+async function discard() {
+  if (identityChanged.value) return true;
+  return !dirty.value || actor.confirmCurrent('目前有尚未儲存的變更。確定捨棄這些變更？');
 }
 function setForm(data) {
+  if (identityChanged.value) return;
   invalidateTest();
   const next = blank();
   for (const key of Object.keys(next)) {
@@ -581,8 +595,8 @@ function setForm(data) {
   testedQuestion.value = '';
   resetCanvasView();
 }
-function newAssistant() {
-  if (blocked.value || !actorReady.value || !discard()) return;
+async function newAssistant() {
+  if (blocked.value || !actorReady.value || !await discard() || identityChanged.value) return;
   detail.value = null;
   versionId.value = '';
   templateId.value = '';
@@ -591,7 +605,7 @@ function newAssistant() {
   notice.value = '';
 }
 async function load() {
-  if (blocked.value || !discard()) return;
+  if (blocked.value || !await discard() || identityChanged.value) return;
   loading.value = true;
   error.value = '';
   try {
@@ -620,13 +634,14 @@ async function fetchDetail(id) {
   return true;
 }
 async function chooseAssistant(event) {
-  if (blocked.value || !discard()) {
-    event.target.value = String(detail.value?.id || '');
+  if (blocked.value || !await discard() || identityChanged.value) {
+    if (!identityChanged.value) event.target.value = String(detail.value?.id || '');
     return;
   }
   await openAssistant(event.target.value);
 }
 async function openAssistant(id) {
+  if (identityChanged.value) return;
   if (!id) {
     detail.value = null;
     versionId.value = '';
@@ -645,16 +660,16 @@ async function openAssistant(id) {
     busy.value = false;
   }
 }
-function viewVersion(event) {
-  if (blocked.value || !discard()) {
-    event.target.value = String(versionId.value);
+async function viewVersion(event) {
+  if (blocked.value || !await discard() || identityChanged.value) {
+    if (!identityChanged.value) event.target.value = String(versionId.value);
     return;
   }
   versionId.value = event.target.value;
   setForm(version.value);
 }
-function applyTemplate() {
-  if (!editable.value || !discard()) return;
+async function applyTemplate() {
+  if (!editable.value || !await discard() || identityChanged.value) return;
   form.graph = layoutGraph(chosenTemplate.value.graph);
   form.name = chosenTemplate.value.name;
   form.description = chosenTemplate.value.description;
@@ -672,7 +687,7 @@ function setDepartments(value) {
 }
 async function saveCollectionPublication(collection) {
   if (blocked.value) return;
-  if (!window.confirm(`確定將「${collection.name}」的文件查詢範圍改為${collection.publication_scope === 'public' ? '全院' : collection.publication_scope === 'departments' ? '指定單位' : '本單位'}？請先確認文件內容可供這些人員使用。`)) return;
+  if (!await actor.confirmCurrent(`確定將「${collection.name}」的文件查詢範圍改為${collection.publication_scope === 'public' ? '全院' : collection.publication_scope === 'departments' ? '指定單位' : '本單位'}？請先確認文件內容可供這些人員使用。`)) return;
   busy.value = true;
   error.value = '';
   try {
@@ -692,7 +707,7 @@ async function saveCollectionPublication(collection) {
 }
 async function saveTemplate(update) {
   if (blocked.value) return;
-  if (update && !window.confirm('更新此範本後，之後套用會使用目前畫布。確定更新？')) return;
+  if (update && !await actor.confirmCurrent('更新此範本後，之後套用會使用目前畫布。確定更新？')) return;
   busy.value = true;
   error.value = '';
   try {
@@ -762,11 +777,12 @@ async function action(name, body) {
     busy.value = false;
   }
 }
-function disableAssistant() {
+async function disableAssistant() {
   if (blocked.value || dirty.value) { notice.value = '請先儲存或捨棄變更，再停用助手。'; return; }
-  if (window.confirm('停用後同仁將無法使用這個助手。確定停用？')) action('disable', {});
+  if (await actor.confirmCurrent('停用後同仁將無法使用這個助手。確定停用？')) action('disable', {});
 }
 async function compare() {
+  if (blocked.value) return;
   busy.value = true;
   error.value = '';
   try {
@@ -778,19 +794,23 @@ async function compare() {
   }
 }
 function selectNode(id, open = false) {
+  if (identityChanged.value) return;
   selectedId.value = id;
   if (open) configOpen.value = true;
 }
 async function goToSetting(issue) {
+  if (identityChanged.value) return;
   panel.value = 'canvas';
   if (issue.nodeId) selectNode(issue.nodeId, true);
   else if (metadataDetails.value) metadataDetails.value.open = true;
   await nextTick();
+  if (identityChanged.value) return;
   const target = issue.nodeId ? document.getElementById('qb-step-settings') : document.querySelector(issue.key === 'model' ? '.qb-metadata select' : '.qb-metadata input');
   target?.scrollIntoView?.({block:'nearest'});
   (issue.nodeId ? target?.querySelector('input,select,textarea') : target)?.focus?.();
 }
 function editTestStep(id) {
+  if (identityChanged.value) return;
   if (id) goToSetting({nodeId:id});
   else panel.value = 'canvas';
 }
@@ -814,29 +834,7 @@ function invalidateTest() {
   testing.value = false;
   waitingStopped.value = false;
 }
-function testUnavailable(pointer = trackedTest.value) {
-  ++testEpoch;
-  testController?.abort();
-  testController = null;
-  liveTest = null;
-  stopTracking();
-  testResult.value = null;
-  testedQuestion.value = '';
-  message.value = '';
-  testedGraph.value = null;
-  testedRevision.value = null;
-  recentTests.value = [];
-  observerNotice.value = '';
-  testing.value = false;
-  busy.value = false;
-  cancellingTest.value = false;
-  waitingStopped.value = false;
-  if (pointer) {
-    trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
-    rememberTest(trackedTest.value);
-  }
-  testNotice.value = '無法讀取這次試跑結果（TEST_RESULT_UNAVAILABLE）。已停止接收進度並清除這次題目與結果；可確認權限後明確查詢同一次試跑。這不會取消伺服器執行。';
-}
+function testUnavailable() { actor.revokeAccess(); }
 function trackingCurrent(pointer, epoch) {
   return epoch === trackEpoch && !identityChanged.value && actor.actorId.value === pointer.actor && detail.value?.id === pointer.assistant && String(versionId.value) === String(trackSelectedVersion);
 }
@@ -983,7 +981,7 @@ function stopTest() {
 async function cancelTest() {
   const pointer = trackedTest.value, epoch = trackEpoch;
   if (!pointer?.run || !pointer.request_id || cancellingTest.value || !trackingCurrent(pointer, epoch)) return;
-  if (!window.confirm('要取消這次伺服器執行嗎？取消後不會提供完整答案；外部服務可能仍需要時間停止。')) return;
+  if (!await actor.confirmCurrent('要取消這次伺服器執行嗎？取消後不會提供完整答案；外部服務可能仍需要時間停止。') || !trackingCurrent(pointer, epoch)) return;
   cancellingTest.value = true;
   try {
     const raw = (await api.cancelTestRun(pointer.run, {version_id:pointer.version,request_id:pointer.request_id}, actor.mutationOptions())).data;
@@ -999,9 +997,9 @@ async function cancelTest() {
     queryTracked(pointer, epoch);
   } finally { cancellingTest.value = false; }
 }
-function leaveUnknownTest() {
+async function leaveUnknownTest() {
   if (testing.value || !unresolvedTest.value) return;
-  if (!window.confirm('先前試跑可能仍在執行。建立另一個測試可能產生額外執行；確定不再追蹤目前紀錄？')) return;
+  if (!await actor.confirmCurrent('先前試跑可能仍在執行。建立另一個測試可能產生額外執行；確定不再追蹤目前紀錄？')) return;
   stopTracking();
   trackedTest.value = null;
   testNotice.value = '已結束目前的查詢；先前試跑的伺服器狀態仍未確認。';
@@ -1073,14 +1071,37 @@ async function test() {
     }
   }
 }
-watch(identityChanged, changed => {
-  if (!changed) return;
+function clearActorState() {
   invalidateTest();
-  busy.value = false;
+  if (moving?.target) { try { moving.target.releasePointerCapture?.(moving.pointerId); } catch { /* Capture may already be released. */ } }
+  moving = null;
+  try { dragTransfer?.clearData?.(); } catch { /* The browser may have ended the drag. */ }
+  dragTransfer = null;
+  document.activeElement?.closest?.('.qb') && document.activeElement.blur?.();
+  canvasObserver?.disconnect();
+  assistants.value = [];
+  templates.value = [];
+  catalog.value = {models:[],collections:[],mcp_tools:[]};
+  detail.value = null;
+  Object.assign(form, blank(), {graph:{nodes:[],edges:[]}});
+  baseline.value = JSON.stringify(form);
+  for (const state of [versionId,selectedId,sourceId,targetId,templateId,message,reviewReason,compareLeft,compareRight,templateName,templateDescription,moduleQuery,error,notice,testNotice,testedQuestion,observerNotice]) state.value = '';
+  comparison.value = null;
   testResult.value = null;
-  testNotice.value = '';
-  testedQuestion.value = '';
-});
+  testedGraph.value = null;
+  testedRevision.value = null;
+  trackSelectedVersion = null;
+  trackAttempts = 0;
+  loading.value = false;
+  busy.value = false;
+  configOpen.value = false;
+  zoom.value = 1;
+  fitMode.value = false;
+  branch.value = 'true';
+  panel.value = 'canvas';
+  metadataDetails.value = null;
+}
+watch(identityChanged, changed => { if (changed) clearActorState(); }, {flush:'sync'});
 
 function addNode(kind, position, toolId) {
   if (!editable.value || busy.value) return;
@@ -1095,6 +1116,7 @@ function addNode(kind, position, toolId) {
   form.graph.nodes.push(n);
   selectNode(n.id, true);
   if (!position) nextTick(() => {
+    if (identityChanged.value) return;
     const viewport = canvasViewport.value;
     if (!viewport?.clientWidth || !viewport.clientHeight) return;
     viewport.scrollLeft = Math.max(0, (n.position.x - canvasBounds.value.x) * zoom.value - 24);
@@ -1102,6 +1124,8 @@ function addNode(kind, position, toolId) {
   });
 }
 function edgeDrag(event, source, branch) {
+  if (identityChanged.value) { event.preventDefault(); return; }
+  dragTransfer = event.dataTransfer;
   if (!editable.value || busy.value) {
     event.preventDefault();
     return;
@@ -1126,6 +1150,8 @@ function edgeDrop(event, target) {
   }
 }
 function paletteDrag(event, kind, toolId) {
+  if (identityChanged.value) return;
+  dragTransfer = event.dataTransfer;
   event.dataTransfer.setData('application/anila-node', JSON.stringify({
     kind,
     toolId
@@ -1148,7 +1174,7 @@ function dropNode(event) {
     fail(e);
   }
 }
-let moving = null;
+let moving = null, dragTransfer = null;
 function startMove(e, node) {
   if (!editable.value || busy.value || e.button !== 0) return;
   selectedId.value = node.id;
@@ -1158,7 +1184,7 @@ function startMove(e, node) {
     y: e.clientY,
     left: node.position.x,
     top: node.position.y,
-    zoom: zoom.value
+    zoom: zoom.value, target:e.currentTarget, pointerId:e.pointerId
   };
   e.currentTarget.setPointerCapture?.(e.pointerId);
 }
@@ -1186,13 +1212,15 @@ function moveKey(e, node) {
   node.position.x = Math.max(0, node.position.x + deltas[e.key][0]);
   node.position.y = Math.max(0, node.position.y + deltas[e.key][1]);
 }
-function deleteNode() {
-  if (window.confirm('移除此步驟與它的連線？儲存前可重新開啟已儲存版本。')) {
+async function deleteNode() {
+  if (identityChanged.value) return;
+  if (await actor.confirmCurrent('移除此步驟與它的連線？儲存前可重新開啟已儲存版本。')) {
     removeNode(form.graph, selectedId.value);
     selectedId.value = '';
   }
 }
 function addEdge() {
+  if (identityChanged.value) return;
   error.value = '';
   try {
     connect(form.graph, sourceId.value, targetId.value, branch.value);
@@ -1202,12 +1230,6 @@ function addEdge() {
     fail(e);
   }
 }
-function beforeUnload(e) {
-  if (dirty.value) {
-    e.preventDefault();
-    e.returnValue = '';
-  }
-}
 baseline.value = JSON.stringify(form);
 onMounted(() => {
   load();
@@ -1215,9 +1237,8 @@ onMounted(() => {
     canvasObserver = new ResizeObserver(() => { if (fitMode.value) fitCanvas(); });
     if (canvasViewport.value) canvasObserver.observe(canvasViewport.value);
   }
-  window.addEventListener('beforeunload', beforeUnload);
 });
-onBeforeUnmount(() => { invalidateTest(); window.removeEventListener('beforeunload', beforeUnload); canvasObserver?.disconnect(); });
+onBeforeUnmount(() => { invalidateTest(); canvasObserver?.disconnect(); });
 onBeforeRouteLeave(() => discard());
 </script>
 <style src="../quickBuilder/builder.css"></style>

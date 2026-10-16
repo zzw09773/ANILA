@@ -1,5 +1,7 @@
 <template>
   <div class="page qb">
+    <section v-if="identityChanged" class="qb-section" data-actor-cleared role="alert"><h2>請重新確認身分</h2><p>{{ identityMessage }}</p><button @click="reloadActor">重新確認身分</button></section>
+    <template v-else>
     <PageHead title="助手查詢工具" subtitle="登錄院內 MCP 服務，逐項確認唯讀工具後才能供助手使用。每次查詢以提問者身分執行。">
       <template #actions>
         <button :disabled="blocked" @click="load">重新整理</button>
@@ -103,11 +105,12 @@
       <button class="danger" :disabled="busy || service.status === 'disabled'" @click="disable(service)">停用此服務</button>
     </section>
     </fieldset>
+    </template>
   </div>
 </template>
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
-import client from '../api/client';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
+import rawClient from '../api/client';
 import { extractError, errorType } from '../api/errors';
 import { PageHead } from '../components/cli';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
@@ -128,10 +131,13 @@ const form = reactive({
 });
 const root = '/api/quick-builder/mcp';
 const actor = useDraftActor();
+const client = actor.protectApi({get:(...args)=>rawClient.get(...args),post:(...args)=>rawClient.post(...args)});
+const reloadActor = () => window.location.reload();
 const { identityChanged, identityMessage, ready: actorReady } = actor;
 const blocked = computed(() => busy.value || loading.value || identityChanged.value);
 const pretty = value => JSON.stringify(maskTrace(value), null, 2);
 function fail(e) {
+  if (identityChanged.value || e?.code === 'ACTOR_CLEARED') return;
   const type = errorType(e, e.code || 'MCP_GOVERNANCE');
   if (type === 'IDENTITY_CHANGED') { actor.lockIdentity(); error.value = ''; notice.value = ''; return; }
   error.value = `${extractError(e, '服務操作未完成')}（${type}）。請檢查院內服務設定後重試。`;
@@ -161,7 +167,7 @@ async function mutate(path, body, success) {
   try {
     await client.post(path, body, actor.mutationOptions());
     await load();
-    notice.value = success;
+    if (!identityChanged.value) notice.value = success;
   } catch (e) {
     fail(e);
   } finally {
@@ -181,11 +187,20 @@ async function approve(service) {
   }, '唯讀核准清單已更新。只有這些工具可在助手畫布選用。');
 }
 async function refresh(service) {
-  if (window.confirm('重新擷取會撤銷原核准清單，需重新確認工具後才能使用。確定重新擷取？')) await mutate(`${root}/${service.id}/refresh`, {}, '已重新擷取工具，請重新確認唯讀核准清單。');
+  if (await actor.confirmCurrent('重新擷取會撤銷原核准清單，需重新確認工具後才能使用。確定重新擷取？')) await mutate(`${root}/${service.id}/refresh`, {}, '已重新擷取工具，請重新確認唯讀核准清單。');
 }
 async function disable(service) {
-  if (window.confirm(`停用「${service.name}」後，使用此服務的助手無法再查詢。確定停用？`)) await mutate(`${root}/${service.id}/disable`, {}, '服務已停用。');
+  if (await actor.confirmCurrent(`停用「${service.name}」後，使用此服務的助手無法再查詢。確定停用？`)) await mutate(`${root}/${service.id}/disable`, {}, '服務已停用。');
 }
+watch(identityChanged, changed => {
+  if (!changed) return;
+  services.value = [];
+  Object.assign(form,{name:'',description:'',endpoint_url:'',department_id:null,is_public:false});
+  for (const key of Object.keys(selectedTools)) delete selectedTools[key];
+  for (const key of Object.keys(confirmed)) delete confirmed[key];
+  error.value = ''; notice.value = ''; loading.value = false; busy.value = false;
+  document.activeElement?.closest?.('.qb') && document.activeElement.blur?.();
+}, {flush:'sync'});
 onMounted(load);
 </script>
 <style src="../quickBuilder/builder.css"></style>

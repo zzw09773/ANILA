@@ -43,6 +43,7 @@ import { getReadiness } from '../api/quickBuilder'
 import { formatDate } from '../utils/formatDate'
 import { readinessView } from './readiness'
 
+const emit = defineEmits(['unavailable'])
 const checking = ref(false), result = ref(null), error = ref('')
 let active = true
 onBeforeUnmount(() => { active = false; result.value = null })
@@ -57,6 +58,7 @@ async function check() {
   } catch (e) {
     if (!active) return
     const status = e?.response?.status
+    if ([401,403,404].includes(status)) { emit('unavailable'); return }
     const type = e?.code === 'READINESS_INVALID_RESPONSE' ? e.code : Number.isInteger(status) ? `HTTP_${status}` : 'READINESS_UNAVAILABLE'
     error.value = status === 401 || status === 403
       ? `目前沒有檢查權限，請用管理員身分登入（${type}）。`
