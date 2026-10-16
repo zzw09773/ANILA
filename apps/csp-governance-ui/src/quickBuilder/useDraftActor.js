@@ -12,7 +12,7 @@ export function useDraftActor() {
   const { confirm } = useDialog()
   const ready = computed(() => actorId.value !== null && !identityChanged.value)
   const identityMessage = computed(() => identityChanged.value
-    ? `${reason.value === 'ACCESS_CHANGED' ? '資料存取權已變更（ACCESS_CHANGED）' : '登入身分已變更（IDENTITY_CHANGED）'}。前一個帳號的畫面與未儲存內容已清除。請重新確認身分後，從伺服器載入已儲存的資料。`
+    ? `${reason.value === 'ACCESS_CHANGED' ? '資料存取權已變更（ACCESS_CHANGED）' : '登入身分已變更（IDENTITY_CHANGED）'}。原畫面與未儲存內容已清除。請重新確認身分後，從伺服器載入已儲存的資料。`
     : '')
   function invalidate(nextReason) {
     if (identityChanged.value || disposed) return
