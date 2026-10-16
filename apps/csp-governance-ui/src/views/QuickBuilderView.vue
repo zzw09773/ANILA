@@ -10,10 +10,6 @@
     <p v-if="error" role="alert" class="qb-error">{{ error }}</p>
     <p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在讀取助手與可用資源…</p>
-    <details class="qb-start-guide">
-      <summary>三步開始：選範本 → 補設定、接步驟 → 儲存後試跑</summary>
-      <ol><li>選接近工作情境的範本，再調整流程。</li><li>點選步驟看用途、輸入輸出與例子；展開設定提醒補缺件。</li><li>儲存後用一個實際問題試跑，確認結果再送主管審核。</li></ol>
-    </details>
     <fieldset class="qb-content" :disabled="loading || identityChanged || !actorReady">
     <div class="qb-top">
       <label>
@@ -32,10 +28,9 @@
       </label>
       <button :disabled="!templateId || !editable || busy" @click="applyTemplate">套用範本</button>
     </div>
-    <details v-if="chosenTemplate" class="qb-template-notes"><summary>範本說明與套用後的設定</summary><p>{{ chosenTemplate.description }}</p><p>{{ (chosenTemplate.configuration_notes || chosenTemplate.required_settings || []).join?.('；') || chosenTemplate.configuration_notes }}</p></details>
-    <form class="qb-metadata" novalidate @submit.prevent="save">
+    <form class="qb-metadata qb-meta-toolbar" novalidate @submit.prevent="save">
       <details ref="metadataDetails" class="qb-metadata-details">
-        <summary>助手基本資料 <span>{{ form.name || '尚未命名' }} · {{ selectedModelName }} · {{ form.classification_level }} · {{ scopeName }}</span><small>展開修改名稱、模型與開放範圍</small></summary>
+        <summary>助手基本資料 <small>{{ dirty ? '（尚未儲存）' : '（已儲存）' }}</small> <span>{{ form.name || '尚未命名' }} · {{ selectedModelName }} · {{ form.classification_level }} · {{ scopeName }}</span><small>展開修改名稱、模型與開放範圍</small></summary>
       <fieldset :disabled="!editable || busy">
         <legend>助手設定</legend>
         <div class="qb-meta-grid">
@@ -85,16 +80,27 @@
         <span>{{ dirty ? '有尚未儲存的變更' : '目前內容已儲存' }}</span>
       </div>
     </form>
+    <div class="qb-workspace-heading">
     <div class="qb-tabs" aria-label="助手工作區">
       <button v-for="tab in tabs" :key="tab.id" :aria-pressed="panel === tab.id" :disabled="testing" @click="panel = tab.id">{{ tab.label }}</button>
     </div>
-    <template v-if="panel === 'canvas'">
+      <template v-if="panel === 'canvas'">
       <details v-if="setupIssues.length" class="qb-setup-check">
         <summary>還有 {{ setupIssues.length }} 項設定待確認 <small>展開清單並前往設定</small></summary>
         <p class="hint">這是基本設定提醒；執行時仍會檢查模型、來源權限與流程。</p>
         <ul><li v-for="(issue, index) in setupIssues" :key="`${issue.key}-${index}`">{{ issue.message }} <button @click="goToSetting(issue)">前往設定</button></li></ul>
       </details>
       <p v-else class="qb-setup-ready">基本設定已填妥；儲存後可到「測試對話」試跑。</p>
+      </template>
+    <div class="qb-help-row">
+    <details class="qb-start-guide">
+      <summary>第一次使用：三步說明</summary>
+      <ol><li>選接近工作情境的範本，再調整流程。</li><li>點選步驟看用途、輸入輸出與例子；展開設定提醒補缺件。</li><li>儲存後用一個實際問題試跑，確認結果再送主管審核。</li></ol>
+    </details>
+    <details v-if="chosenTemplate" class="qb-template-notes"><summary>範本說明</summary><p>{{ chosenTemplate.description }}</p><p>{{ (chosenTemplate.configuration_notes || chosenTemplate.required_settings || []).join?.('；') || chosenTemplate.configuration_notes }}</p></details>
+    </div>
+    </div>
+    <template v-if="panel === 'canvas'">
       <div class="qb-workspace" :class="{'qb-workspace--config-closed': !configOpen}">
         <aside class="qb-palette" aria-label="模組庫">
           <h2>模組庫</h2>
