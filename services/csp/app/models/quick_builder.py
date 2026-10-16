@@ -8,12 +8,14 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     JSON,
     String,
     Text,
     UniqueConstraint,
     event,
     inspect,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -88,6 +90,11 @@ def _immutable_payload(mapper, connection, target):
 
 class QuickRun(Base):
     __tablename__ = "quick_runs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "test_request_id", name="uq_quick_run_user_nonce"),
+        Index("ix_quick_run_test_lease", "is_test", "status", "lease_expires_at"),
+        Index("ix_quick_run_test_lookup", "user_id", "is_test", "version_id", "id"),
+    )
     id = Column(Integer, primary_key=True)
     version_id = Column(
         Integer, ForeignKey("quick_versions.id"), nullable=False, index=True
@@ -95,6 +102,15 @@ class QuickRun(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     status = Column(String(24), nullable=False)
     result = Column(JSONValue, nullable=False)
+    # Nullable nonce preserves legacy tests which did not supply request_id.
+    # The owner token is private execution authority, never a public request ID.
+    is_test = Column(Boolean, nullable=False, default=False, server_default=false())
+    test_request_id = Column(String(36), nullable=True)
+    test_request_hash = Column(String(64), nullable=True)
+    test_actor_department_id = Column(Integer, nullable=True)
+    execution_owner_token = Column(String(36), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    lease_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=now)
 
 
