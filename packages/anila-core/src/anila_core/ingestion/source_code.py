@@ -20,6 +20,9 @@ class _Token:
 
 
 _TOKEN = re.compile(r"[A-Za-z_]\w*|::|->|&&|\|\||[^\s]")
+# Preprocessing-number boundaries keep C++ digit separators inside the number.
+# Numeric validity/types still belong to a compiler; only token boundaries matter.
+_NUMBER = re.compile(r"(?:[0-9]|\.[0-9])(?:[eEpP][+-]|[\w.]|'[A-Za-z0-9_])*")
 _NOT_FUNCTION = {
     "if",
     "for",
@@ -148,7 +151,7 @@ def _lex_cpp(text: str) -> tuple[list[_Token], dict[int, int], str | None]:
                 return tokens, pairs, "unterminated_literal"
             cursor += 1
             continue
-        match = _TOKEN.match(text, cursor)
+        match = _NUMBER.match(text, cursor) or _TOKEN.match(text, cursor)
         assert match is not None
         value = match.group()
         index = len(tokens)

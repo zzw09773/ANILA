@@ -585,6 +585,22 @@ class PdfPageChunker(ChunkerStrategy):
         merged = {**self.default_params, **params}
         max_tok = int(merged["max_page_tokens"])
 
+        if metadata.get('format') == 'docx' or metadata.get('page_location_source') == 'docx_ooxml_markers':
+            return [
+                ChunkResult(
+                    content=chunk.content,
+                    chunk_key='unpaged-' + chunk.chunk_key,
+                    token_count=chunk.token_count,
+                    metadata={
+                        **{key: value for key, value in chunk.metadata.items() if key not in {'page', 'total_pages'}},
+                        'strategy': self.name,
+                    },
+                )
+                for chunk in FixedChunker().chunk(
+                    document_text, metadata, {'size': max_tok, 'overlap': max_tok // 16}
+                )
+            ]
+
         # Split positionally — the Nth field IS real page N. Blank pages
         # keep their slot on purpose: filtering them out here renumbered
         # every page after a blank verso (common in printed specs) and

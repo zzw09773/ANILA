@@ -1047,17 +1047,29 @@ class DocxParser:
         title = path.stem
 
         table_blocks: list[str] = []
+        from .docx_locations import DocxPageEvidence
+
+        page_evidence = DocxPageEvidence()
         skipped_with_content: Counter[str] = Counter()
-        for kind, block in self._iter_body_blocks(doc, skipped_with_content):
+        for block_index, (kind, block) in enumerate(self._iter_body_blocks(doc, skipped_with_content)):
             if kind == "table":
                 rows = []
-                for row in block.rows:
+                visited_cells: set[Any] = set()
+                for row_index, row in enumerate(block.rows):
                     cells = []
-                    for cell in row.cells:
+                    for cell_index, cell in enumerate(row.cells):
                         text = cell.text.strip()
-                        for paragraph in cell.paragraphs:
+                        for paragraph_index, paragraph in enumerate(cell.paragraphs):
+                            if cell._tc not in visited_cells:
+                                page_evidence.paragraph(paragraph, {
+                                    'body_block': block_index,
+                                    'table_row': row_index,
+                                    'table_cell': cell_index,
+                                    'paragraph': paragraph_index,
+                                })
                             for image_id in self._collect_para_images(paragraph, doc, images):
                                 text += f"\n[[IMAGE:{image_id}]]"
+                        visited_cells.add(cell._tc)
                         cells.append(text.strip())
                     rows.append(" | ".join(cells))
                 if rows:
@@ -1067,6 +1079,7 @@ class DocxParser:
                 continue
 
             para = block
+            page_evidence.paragraph(para, {'body_block': block_index})
             text = para.text.strip()
             para_images = self._collect_para_images(para, doc, images)
 
@@ -1090,7 +1103,8 @@ class DocxParser:
             for img_id in para_images:
                 parts.append(f"[[IMAGE:{img_id}]]")
 
-        metadata = {"title": title, "embedded_images": len(images), "table_blocks": table_blocks}
+        metadata = {"title": title, "embedded_images": len(images), "table_blocks": table_blocks,
+                    **page_evidence.metadata()}
         skipped_n = int(sum(skipped_with_content.values()))
         if skipped_n:
             metadata["docx_wrapped_skipped"] = skipped_n
