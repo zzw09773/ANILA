@@ -120,6 +120,8 @@ sudo bash /opt/anila/anila-update.sh rollback
 
 密封憑證與簽章金鑰的還原另依既有受控備份程序處理，使用備份時相容的密封金鑰。不要將金鑰值加入助手、操作紀錄、文件、設定匯出或問題回報。
 
+無正式 DB 或 volume 的工程環境，可依[檔案還原演練](quick-builder-recovery-drill.md)使用明確檔案清冊、獨立 manifest SHA256 與新建空白目錄，驗證 artifact／ingestion 檔案位元組是否可還原。這項工具不產生資料庫 dump、不還原使用者或 ACL，也不證明跨資料庫與檔案的一致性；來源必須停寫或來自一致性快照。
+
 還原及更新後由維護人員逐項核對：
 
 1. 登入、單位與主管權限正確，未公開助手仍不可跨單位查得。
@@ -128,6 +130,20 @@ sudo bash /opt/anila/anila-update.sh rollback
 4. 由一般同仁在 ANILA 使用原已發布版本；尚待新版核准時仍為舊版。
 5. 驗證撤權、停用、過期 JWT 及取消 MCP 核准仍被拒絕。
 6. 核對稽核與庫外鏈頭、備份狀態及既有 `operations.log`；保留本次還原紀錄。
+
+## 試跑串流與執行權
+
+建立者試跑的 `POST /api/quick-builder/{assistant_id}/test` 可使用 `stream:true` 與 UUID `request_id`；省略 `stream` 保留同步 JSON。首事件在唯一執行紀錄提交後才送出。相同使用者、相同 UUID 沿用原 run，不重新呼叫模型；不同正文、助手或版本沿用 UUID 會回 `TEST_REQUEST_CONFLICT`。重複串流請求只提供當下快照後結束，不提供事件重播。
+
+SSE 的 `quick.run_started`、`quick.step_started`、`quick.step_finished`、`quick.output_delta`、`quick.run_finished`、`quick.typed_error` 與 `quick.run_snapshot` 均含固定版本、run、revision、UUID 及單調序號。步驟事件由引擎真實邊界產生；步驟紀錄先保存，再交付遮罩後資料。超過 1 MiB 的步驟或終局事件改送 `result_available:true`，由同一 run 的 GET 取得完整紀錄。瀏覽器事件接收上限是 16 MiB／2048 事件，超限只停止即時顯示並改查原 run，不使伺服器流程因展示限制失敗。
+
+「停止等待」、關頁或慢速事件接收只解除訂閱；執行仍保存在原 run。每個觀測器 queue 上限 8、ACK 等候最多 5 秒，單程序最多 32 個串流 producer。本人最多 2 筆持有效執行權的試跑，同步 JSON 與串流共同計算；在建立新 run 的 User 短鎖交易中查 DB，因此不因換 worker 而擴增。相同 UUID 查原紀錄不受新工作限額阻擋；到期或無執行權的舊紀錄不當作活動工作，也不重新派發。這些是工程資源保護，不能換算成全平台或正式模型容量，平台模型額度仍沿原有規則。`TEST_RUN_BUSY` 會在建立新 run 前拒絕，不暗中排入持久佇列。
+
+試跑持有私人執行權 token；前端只取得 UUID，不取得執行權。DB 時間 lease 預設 30 秒，heartbeat 每 5 秒使用短交易續租，不跨模型等待持有 User 鎖。每個新步驟、模型片段與交付都重新確認本人、原單位、來源、模型、指定版本及執行權。停止續租或程序崩潰後，授權查詢會將到期試跑以 CAS 標為 `interrupted`／`RESULT_UNCONFIRMED`，失效相關 artifact 並留稽核；沒有新 producer 接手或自動重試。舊 binary 沒有此 fencing 能力，不能與新版 producer 混跑。
+
+明確取消使用 `POST /api/quick-builder/runs/{run_id}/cancel`，附 `{version_id,request_id}` 與既有 Actor／CSRF header。本人授權與 UUID／版本核對後，先在同一交易撤銷執行權、失效 artifact 並記稽核，再取消本程序 coroutine。跨程序 producer 在下一次檢查停止；已在進行的唯讀 I/O 不保證立即物理停止。晚到完成結果不能覆寫取消或失聯終局，部分模型用量是否已結算仍須從平台 usage 核對。
+
+`r1_0077` 接在 `r1_0076` 後，新增本人 UUID 唯一限制、清單／lease 索引及執行權欄位。更新前停止接收新試跑並結束舊 worker，保持停寫直到 migration 與所有 worker binary 切換完成。有效舊 `test_tracking` 只回填查詢欄位，不簽發執行權；重複 UUID 會在 DDL 前以 `DUPLICATE_TEST_REQUEST` 停止，原紀錄保留，不能刪掉其中一筆後擅自重跑。降版若仍有 `running` 試跑持有 owner token，會以 `TEST_EXECUTION_ACTIVE` 拒絕；先在新版完成取消／失聯核對及備份，再做受控退版。此檢查不是跨 DDL 的流量鎖，仍需維護窗口與停寫。
 
 ## 異常排除與例行維護
 

@@ -30,11 +30,25 @@ import re
 import stat
 import tarfile
 
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
 COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
 OMITTED_FILES = (
+    'apps/csp-governance-ui/tests/authIdentity.test.mjs',
+    'apps/csp-governance-ui/tests/identityEpoch.test.mjs',
+    'apps/csp-governance-ui/tests/helpers/authIdentityMock.mjs',
+    'apps/csp-governance-ui/tests/builderStream.test.mjs',
+    'apps/csp-governance-ui/tests/testStream.test.mjs',
+    'apps/csp-governance-ui/tests/testStreamApi.test.mjs',
+    'apps/csp-governance-ui/tests/helpers/testStreamClientMock.mjs',
+    'packages/anila-core/tests/test_docx_page_provenance.py',
+    'packages/anila-core/tests/test_source_numeric_boundaries.py',
+    'services/csp/tests/test_quick_flow_step_events.py',
+    'services/csp/tests/test_quick_document_fence.py',
+    'services/csp/tests/test_quick_test_lifecycle.py',
+    'services/csp/tests/test_quick_test_lifecycle_migration.py',
+    'services/csp/tests/test_quick_test_stream.py',
     'services/csp/tests/test_quick_service_errors.py',
     'services/csp/tests/test_quick_test_tracking.py',
     'apps/csp-governance-ui/tests/moduleGuides.test.mjs',
@@ -139,6 +153,24 @@ ASSETS = tuple(("image:" + name, "images/" + name + ".tar.gz") for name in IMAGE
     ("licenses", "licenses/third-party-notices.txt"),
 )
 SOURCE_FILES = tuple(sorted((
+    'apps/csp-governance-ui/src/api/identityEpoch.js',
+    'apps/csp-governance-ui/src/stores/auth.js',
+    'apps/csp-governance-ui/src/quickBuilder/testStream.js',
+    'apps/csp-governance-ui/src/quickBuilder/testStreamState.js',
+    'packages/anila-core/src/anila_core/ingestion/docx_locations.py',
+    'services/csp/app/services/quick_test_lifecycle.py',
+    'services/csp/app/services/quick_test_stream.py',
+    'services/csp/migrations/versions/r1_0077_quick_test_lifecycle.py',
+    'tools/benchmarks/document_structure.py',
+    'docs/guides/document-structure-engineering.md',
+    'docs/guides/quick-builder-recovery-drill.md',
+    'tools/quick-builder-recovery/recovery.py',
+    'tools/quick-builder-recovery/delivery_plan.py',
+    'tools/quick-builder-recovery/delivery_plan.schema.json',
+    'tools/quick-builder-recovery/delivery-plan.example.json',
+    'tools/quick-builder-recovery/test_recovery.py',
+    'tools/quick-builder-recovery/test_delivery_plan.py',
+    'tools/quick-builder-recovery/README.md',
     'apps/csp-governance-ui/src/quickBuilder/TestRunReview.vue',
     'apps/csp-governance-ui/src/quickBuilder/moduleGuides.js',
     'apps/csp-governance-ui/src/quickBuilder/builderGuidance.js',
