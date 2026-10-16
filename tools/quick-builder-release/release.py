@@ -35,6 +35,9 @@ COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
 OMITTED_FILES = (
+    'apps/csp-governance-ui/tests/moduleGuides.test.mjs',
+    'apps/csp-governance-ui/tests/moduleSettings.test.mjs',
+    'apps/csp-governance-ui/tests/builderGuidance.test.mjs',
     'apps/anila-shell/src/__tests__/httpCompletionFailure.test.jsx',
     'apps/anila-shell/src/__tests__/reservedTurn.test.jsx',
     'apps/csp-governance-ui/tests/executionError.test.mjs',
@@ -134,6 +137,10 @@ ASSETS = tuple(("image:" + name, "images/" + name + ".tar.gz") for name in IMAGE
     ("licenses", "licenses/third-party-notices.txt"),
 )
 SOURCE_FILES = tuple(sorted((
+    'apps/csp-governance-ui/src/quickBuilder/TestRunReview.vue',
+    'apps/csp-governance-ui/src/quickBuilder/moduleGuides.js',
+    'apps/csp-governance-ui/src/quickBuilder/builderGuidance.js',
+    'apps/csp-governance-ui/src/quickBuilder/testSession.js',
     'apps/csp-governance-ui/src/quickBuilder/executionError.js',
     'apps/anila-shell/src/markdown.jsx',
     'apps/anila-shell/src/runtime/artifactRevision.js',
