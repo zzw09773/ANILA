@@ -58,6 +58,25 @@
 
 LibreOffice、Tesseract、`chi_tra`、`eng` 各需獨立列出上游專案、實際取得位置、套件發行者、精確版本／提交、授權、下載或封存 SHA256、來源背景審查及修補責任。系統套件的版本要含發行版修訂；語料沒有版本標籤時用提交與雜湊識別，不猜測版本。離線環境不得執行時自動下載工具、字型或語料。
 
+### 核心解析元件的來源佐證
+
+核對日期為 2026-10-16。下表分開記錄 lock、本機 metadata 及上游參考版本；這些都不能取代正式映像的實裝清單。八項元件的完整來源／控制背景仍未核定，未知不視為准用。網站內容與參考 tag 只證明所列上游自述，正式離線交付須另保存相符原始碼、授權全文、NOTICE、二進位／語料 SHA256 及背景審認結果。
+
+| 元件 | 版本與本機觀測 | 上游授權／專案依據 | 待補證據 |
+|---|---|---|---|
+| LibreOffice | 本機 OS 套件 `1:7.3.7-0ubuntu0.22.04.13`；上游參考 `libreoffice-7.3.7.2`，Ubuntu 修訂尚未完整對帳 | [官方授權說明](https://www.libreoffice.org/licenses/)列 MPL-2.0 主體與其他隨附授權；[TDF imprint](https://www.libreoffice.org/imprint/)可證基金會受德國法管轄 | 基金會管轄地不等於全部程式／依賴的來源國別；出貨映像、Ubuntu 修訂來源與隨附授權仍需核對 |
+| Tesseract | 固定 PATH 未找到執行檔，`dpkg` 顯示 `tesseract-ocr` 未安裝；尚未選定出貨版本 | [官方專案](https://github.com/tesseract-ocr/tesseract)及 [Apache-2.0 授權](https://raw.githubusercontent.com/tesseract-ocr/tesseract/main/LICENSE) | 精確版本、binary/source、系統依賴、來源背景與離線執行證據 |
+| `chi_tra` 語料 | 標準 4.00／5 路徑均缺；尚未選定 family、commit 或 SHA256 | [官方 best 說明](https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/README.md)及 [standard 資料血緣](https://raw.githubusercontent.com/tesseract-ocr/tessdata/main/README.md) | 語料與原訓練資料／字型／詞典來源、權利及控制背景；繁體中文不是產地證據 |
+| `eng` 語料 | 同上，固定路徑缺件，無已核定版本 | [官方版本與語言資料表](https://tesseract-ocr.github.io/tessdoc/Data-Files-in-different-versions.html) | 不能由相同檔名或英文語言推定來源；須與實際選定的語料 repo／commit／SHA256 對帳 |
+| PyMuPDF | `uv.lock` 為 `1.27.2.2`；本機 metadata 觀測為 `1.26.7` | [固定 tag 專案說明](https://raw.githubusercontent.com/pymupdf/PyMuPDF/1.27.2.2/README.md)及 [AGPLv3](https://raw.githubusercontent.com/pymupdf/PyMuPDF/1.27.2.2/COPYING)，另有商業授權選項 | lock 與本機 metadata 不一致；出貨版本待對帳，授權路徑與控制背景未核定 |
+| PyMuPDF4LLM | `uv.lock` 為 `1.27.2.2`；本機 metadata 觀測為 `0.2.9` | [固定 tag 專案說明](https://raw.githubusercontent.com/pymupdf/PyMuPDF4LLM/1.27.2.2/README.md)及 [AGPLv3 授權](https://raw.githubusercontent.com/pymupdf/PyMuPDF4LLM/1.27.2.2/LICENSE) | 版本對帳、完整權利／控制證據及實際隨包聲明 |
+| python-docx | lock／本機 metadata 均為 `1.2.0`；參考 tag `v1.2.0` | [MIT／Steve Canny 授權檔](https://raw.githubusercontent.com/python-openxml/python-docx/v1.2.0/LICENSE)及 [固定 tag metadata](https://raw.githubusercontent.com/python-openxml/python-docx/v1.2.0/pyproject.toml) | 作者自述不能證明國籍／控制背景；`lxml` 等傳遞依賴另核 |
+| 院內 Docling | 實際遠端版本與 image digest 未知；上游參考 `v2.60.0`／`3467b0a0357eb72fd5ab3b45ef03c07305e8bf8e` | [參考版本 MIT 授權](https://raw.githubusercontent.com/docling-project/docling/v2.60.0/LICENSE)列 IBM copyright；[目前 main MIT 授權](https://raw.githubusercontent.com/docling-project/docling/main/LICENSE)列 Docling Contributors | 不能將參考版本當作院內版本，亦不能由 IBM 名稱或研究團隊所在地推定整套國別；遠端 OCR／模型／語料與映像清單未齊 |
+
+本機數位 PDF 路徑使用 `pymupdf4llm`／`fitz`，DOCX 使用 `python-docx`，PPTX 使用標準函式庫 ZIP／XML。這個限定路徑沒有使用 `pypdf` 或 `python-pptx`，不能據此推定遠端服務也沒有。Docling 的[參考版本宣告](https://raw.githubusercontent.com/docling-project/docling/v2.60.0/pyproject.toml)包含 `python-pptx` 與 RapidOCR；實際遠端部署須提供自己的完整依賴與模型清單，且不得採用未符合來源限制的元件或模型。
+
+Docling [官方文件](https://docling-project.github.io/docling/)記載 IBM Research Zurich 團隊起始及 LF AI & Data hosting。這些資訊不等同於完整法律控制關係，也無法證明未知遠端映像的版本或授權。Client 程式註解不能作為來源核准文件。
+
 ## 完整 SBOM 每筆欄位
 
 | 欄位 | 內容 |

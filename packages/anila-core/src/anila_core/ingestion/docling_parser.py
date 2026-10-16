@@ -1,26 +1,14 @@
-"""Docling parser backend (IBM Research, Apache-2.0, US origin).
+"""Docling 文件解析服務介面。
 
-Docling is a layout-aware document converter that handles PDF / DOCX /
-PPTX / XLSX / HTML in one pipeline. Compared to the ``native`` parsers
-(pymupdf4llm + python-docx + odfpy), Docling adds:
+治理中心的已註冊來源提供服務位址，``build_remote_docling_parser``
+據此建立 :class:`RemoteDoclingParser`。遠端服務的格式、OCR 與模型能力
+由其實際部署版本決定；本介面不證明該部署的套件、授權或控制來源。
+遠端服務與其依賴、模型仍須有各自可追溯的交付清單。
 
-* Layout-aware reading order (multi-column scientific PDFs)
-* Table-structure recovery (header rows, merged cells)
-* Built-in EasyOCR for scanned / font-subsetted PDFs
-* Optional picture description via IBM Granite-Vision-3.2-2B
-
-⚠ **2026-08-17 擁有者裁決:docling 一律跑在遠端 GPU 端點,不進平台映像。**
-
-平台主機永遠是 CPU-only;所有 GPU 工作(含 docling 的 layout model、
-EasyOCR、Granite picture description)都以 HTTP 端點抵達,像 ASR 一樣。
-位址來自已註冊的治理中心來源，由 ``build_remote_docling_parser`` 組出
-:class:`RemoteDoclingParser`。平台映像因此**不帶 docling / torch / easyocr**,
-只有 httpx。沒有註冊來源時用原生解析器。
-
-下面的 :class:`DoclingParser` 是本機(in-process)實作,留作參考。它
-刻意把 ``docling`` import 延後,所以沒裝 ``[docling]`` extra 也能 import
-本模組。遠端客戶端將非 2xx 回應保留為結構化錯誤；共用解析入口
-會記錄原因並使用獨立的原生解析或離線 OCR 備援。
+:class:`DoclingParser` 提供程序內解析實作，延後載入 ``docling``。
+匯入此模組不會載入本機 Docling、OCR 或模型權重。遠端客戶端將非 2xx
+回應保留為結構化錯誤；共用解析入口會記錄原因，並可使用獨立的原生
+解析或離線 OCR 備援。
 """
 from __future__ import annotations
 
@@ -166,11 +154,6 @@ DOCLING_SUPPORTED_EXTS: frozenset[str] = frozenset(
 class DoclingParser:
     """Layout-aware parser backed by an in-process Docling.
 
-    ⚠ 參考用，全樹無建構點（D-1，審查長 2026-08-21 裁定標記）：
-    活路是下面的 ``RemoteDoclingParser``（治理中心註冊來源之後才會建）；
-    這個類別留著是給讀 docling API 形狀的人看的，**不要為它加測試**（那會把死路
-    認證成活路），要改行為去改 Remote 那邊。
-
     Constructed once and reused — the underlying ``DocumentConverter``
     is itself lazy: it only loads model weights on the first call to
     ``convert()``. This means importing the parser does not pay any
@@ -222,7 +205,7 @@ class DoclingParser:
             ocr_options=EasyOcrOptions(lang=self._ocr_languages),
         )
         if self._enable_pic_desc:
-            # IBM Granite-Vision-3.2-2B for non-China image captions.
+            # Optional IBM Granite-Vision-3.2-2B picture-description preset.
             try:
                 from docling.datamodel.pipeline_options import (
                     granite_picture_description,
@@ -263,9 +246,8 @@ class DoclingParser:
         content = _safe_export_markdown(document)
         images, captions = _collect_pictures(document)
         if images:
-            # P-3：這裡仍是舊行為（全部串在尾端、不清 <!-- image --> 註解）。
-            # 不可達（見類別 docstring），刻意不改；活路的對映在
-            # ``_place_image_placeholders``（RemoteDoclingParser._reconstruct 用它）。
+            # 程序內解析將圖像附加於文字尾端；遠端解析的原位置對映由
+            # RemoteDoclingParser._reconstruct 使用 _place_image_placeholders。
             placeholders = "\n\n".join(f"[[IMAGE:{img_id}]]" for img_id in images)
             content = f"{content}\n\n{placeholders}".strip()
 
