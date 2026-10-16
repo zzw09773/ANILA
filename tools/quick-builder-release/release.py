@@ -35,6 +35,10 @@ COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
 OMITTED_FILES = (
+    'apps/csp-governance-ui/tests/actorIsolation.test.mjs',
+    'apps/csp-governance-ui/tests/bannerIdentityIsolation.test.mjs',
+    'apps/csp-governance-ui/tests/helpers/actorIsolationMock.mjs',
+    'apps/csp-governance-ui/tests/helpers/bannerIdentityMock.mjs',
     'apps/csp-governance-ui/tests/authIdentity.test.mjs',
     'apps/csp-governance-ui/tests/identityEpoch.test.mjs',
     'apps/csp-governance-ui/tests/helpers/authIdentityMock.mjs',
@@ -154,6 +158,11 @@ ASSETS = tuple(("image:" + name, "images/" + name + ".tar.gz") for name in IMAGE
     ("licenses", "licenses/third-party-notices.txt"),
 )
 SOURCE_FILES = tuple(sorted((
+    'apps/csp-governance-ui/src/components/cli/TermDialogHost.vue',
+    'apps/csp-governance-ui/src/components/layout/OpenAlertBanner.vue',
+    'apps/csp-governance-ui/src/composables/useDialog.js',
+    'apps/csp-governance-ui/src/utils/inactivityNotice.js',
+    'apps/csp-governance-ui/src/utils/unreadFeedbackBanner.js',
     'apps/csp-governance-ui/src/api/auth.js',
     'apps/csp-governance-ui/src/api/identityEpoch.js',
     'apps/csp-governance-ui/src/stores/auth.js',
