@@ -30,7 +30,7 @@ import re
 import stat
 import tarfile
 
-TOOL_VERSION = "1.1.2"
+TOOL_VERSION = "1.1.3"
 COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
@@ -294,6 +294,7 @@ SOURCE_FILES = tuple(sorted((
     "docs/guides/quick-builder-acceptance.md", "docs/guides/quick-builder-creator.md",
     "docs/guides/quick-builder-reviewer.md", "docs/guides/quick-builder-mcp.md",
     "docs/guides/quick-builder-operations.md", "docs/guides/quick-builder-dependencies.md",
+    "docs/runbooks/csp-db-backup-restore.md",
     "docs/guides/quick-builder-offline-delivery.md",
     "examples/quick-builder-mcp/README.md", "examples/quick-builder-mcp/server.py",
     "examples/quick-builder-mcp/postgresql-readonly.sql",
