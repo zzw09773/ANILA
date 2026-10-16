@@ -35,6 +35,8 @@ COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
 OMITTED_FILES = (
+    'services/csp/tests/test_quick_service_errors.py',
+    'services/csp/tests/test_quick_test_tracking.py',
     'apps/csp-governance-ui/tests/moduleGuides.test.mjs',
     'apps/csp-governance-ui/tests/moduleSettings.test.mjs',
     'apps/csp-governance-ui/tests/builderGuidance.test.mjs',
