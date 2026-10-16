@@ -28,7 +28,7 @@ python3 -I -S "$task_repo/tools/quick-builder-release/release.py" verify \
 
 | 產物／欄位 | 可證明的範圍 |
 |---|---|
-| `manifest.json` | 工具版 1.1.0、schema v1、固定來源路徑與 SHA256、固定資產 slot 的 present／missing、images.tsv 原有宣告 |
+| `manifest.json` | 工具版 1.1.1、schema v1、固定來源路徑與 SHA256、固定資產 slot 的 present／missing、images.tsv 原有宣告 |
 | `SHA256SUMS` | manifest 及可選 source.tar 的雜湊；本身不是簽章或來源授權 |
 | `source.tar` | 只含 manifest 與 `source/` 下的固定選集；不包含外部資產、密鑰、完整 build context |
 | `selection_complete` | 僅表示固定 `SOURCE_FILES` 選集齊全，不是產品、依賴或出貨完成 |

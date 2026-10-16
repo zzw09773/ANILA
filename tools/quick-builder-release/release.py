@@ -30,7 +30,7 @@ import re
 import stat
 import tarfile
 
-TOOL_VERSION = "1.1.0"
+TOOL_VERSION = "1.1.1"
 COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
@@ -124,9 +124,13 @@ OMITTED_FILES = (
     'services/csp/tests/test_quick_document_routing.py',
     'services/csp/tests/test_quick_execution_context.py',
     'services/csp/tests/test_quick_flow.py',
+    'services/csp/tests/test_quick_flow_condition_types.py',
     'services/csp/tests/test_quick_hybrid.py',
     'services/csp/tests/test_quick_live_sources.py',
     'services/csp/tests/test_quick_mcp.py',
+    'services/csp/tests/test_quick_mcp_connection_lifetime.py',
+    'services/csp/tests/test_quick_mcp_pinned_transport.py',
+    'services/csp/tests/test_quick_mcp_template_jwks.py',
     'services/csp/tests/test_quick_model_stream.py',
     'services/csp/tests/test_quick_readiness.py',
     'services/csp/tests/test_quick_retrieval.py',

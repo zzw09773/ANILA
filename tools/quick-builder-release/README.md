@@ -1,6 +1,6 @@
 # 快製 source-only 離線準備包
 
-`release.py` 1.1.0 使用 Python 3.11+ 標準函式庫，產生固定來源選集的 manifest、SHA256 與可選 source tar。這是工程準備包，**不能直接建置或安裝完整平台**；不是映像交付物、完整 SBOM、來源合規核准或離線安裝通過證明。
+`release.py` 1.1.1 使用 Python 3.11+ 標準函式庫，產生固定來源選集的 manifest、SHA256 與可選 source tar。這是工程準備包，**不能直接建置或安裝完整平台**；不是映像交付物、完整 SBOM、來源合規核准或離線安裝通過證明。
 
 操作步驟、固定資產位置、限制及正式交付前待辦，見[離線交付手冊](../../docs/guides/quick-builder-offline-delivery.md)。工具自身不執行 Docker、子程序、網路、下載、安裝或應用匯入。
 
