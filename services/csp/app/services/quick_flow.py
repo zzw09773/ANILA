@@ -528,10 +528,14 @@ def _condition(config: dict, state: _State) -> bool:
         return actual is None or actual == ""
     if actual is None:
         return False
-    if operator == "equals":
-        return actual == expected
-    if operator == "not_equals":
-        return actual != expected
+    if operator in ("equals", "not_equals"):
+        # JSON booleans and numbers are separate literal types. Python's
+        # bool subclasses int, so equality alone would treat false as 0.
+        comparable = type(actual) is type(expected) or (
+            type(actual) in (int, float) and type(expected) in (int, float)
+        )
+        equal = comparable and actual == expected
+        return equal if operator == "equals" else not equal
     if operator == "contains":
         return str(expected) in str(actual)
     if operator == "starts_with":
