@@ -1677,6 +1677,56 @@ switch_current() {
   info "目前指標改為 ${ver}"
 }
 
+verify_restored_database_ownership() {
+  local tree="$1" ownership_sql="$1/infra/deployment/scripts/assert-db-ownership.sql"
+  if [[ ! -f "$ownership_sql" || -L "$ownership_sql" ]]; then
+    die "缺少還原後的資料庫權限檢查檔，已停止切換。請確認版本目錄完整（RESTORE_OWNERSHIP_CHECK_MISSING）"
+  fi
+  if ! dc "$tree" exec -T csp-db psql -U csp -d csp_restore -v ON_ERROR_STOP=1 \
+    < "$ownership_sql"; then
+    die "還原後的資料表擁有權校正失敗，已停止切換（RESTORE_OWNERSHIP_REPAIR_FAILED）"
+  fi
+  if ! dc "$tree" exec -T csp-db psql -U csp -d csp_restore -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+    boot_tables TEXT[] := ARRAY['users', 'model_registry', 'token_usage',
+        'departments', 'api_keys', 'alerts', 'platform_links', 'attachments'];
+    audit_tables TEXT[] := ARRAY['audit_logs', 'policy_decisions',
+        'classification_events', 'audit_checkpoints'];
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'csp_app'
+                   AND NOT rolsuper AND NOT rolbypassrls) THEN
+        RAISE EXCEPTION 'RESTORE_RUNTIME_ROLE_INVALID';
+    END IF;
+    IF (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relkind = 'r'
+           AND c.relname = ANY(boot_tables || audit_tables)) <> 12 THEN
+        RAISE EXCEPTION 'RESTORE_REQUIRED_TABLES_MISSING';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                  AND c.relname = ANY(boot_tables)
+                  AND pg_get_userbyid(c.relowner) <> 'csp_app') THEN
+        RAISE EXCEPTION 'RESTORE_BOOT_OWNER_INVALID';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
+                    unnest(ARRAY['UPDATE', 'DELETE', 'TRUNCATE']) AS denied(privilege_name)
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
+                  AND c.relname = ANY(audit_tables)
+                  AND (pg_get_userbyid(c.relowner) = 'csp_app'
+                       OR has_table_privilege('csp_app', c.oid, privilege_name))) THEN
+        RAISE EXCEPTION 'RESTORE_AUDIT_PRIVILEGES_INVALID';
+    END IF;
+    IF has_table_privilege('csp_app', 'public.audit_checkpoints', 'INSERT') THEN
+        RAISE EXCEPTION 'RESTORE_CHECKPOINT_INSERT_ALLOWED';
+    END IF;
+END $$;
+SQL
+  then
+    die "還原後的啟動與稽核權限未通過檢查，已停止切換（RESTORE_OWNERSHIP_INVALID）"
+  fi
+}
+
 restore_dump() {
   local tree="$1" dump="$2" expect got err rc
   assert_destructive_allowed
@@ -1685,20 +1735,28 @@ restore_dump() {
   expect="$(tr -d '[:space:]' < "${dump}.alembic")"
   [[ "$expect" =~ ^[0-9A-Za-z_]+$ ]] || die "備份裡的資料庫版本不正確"
   info "還原更新前的資料庫備份"
-  stop_writers "$tree"
-  dc "$tree" cp "$dump" csp-db:/tmp/anila-pre-update.dump
+  if ! stop_writers "$tree"; then
+    die "無法停止資料寫入，已停止還原（RESTORE_STOP_WRITERS_FAILED）"
+  fi
+  if ! dc "$tree" cp "$dump" csp-db:/tmp/anila-pre-update.dump; then
+    die "無法複製更新前的備份，已停止還原（RESTORE_COPY_FAILED）"
+  fi
   # 先還原進空資料庫。核對版本通過才換掉線上那顆，失敗時原本的庫還在。
-  dc "$tree" exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 \
+  if ! dc "$tree" exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'csp_restore' AND pid <> pg_backend_pid()" \
     -c "DROP DATABASE IF EXISTS csp_restore" \
-    -c "CREATE DATABASE csp_restore OWNER csp TEMPLATE template0"
+    -c "CREATE DATABASE csp_restore OWNER csp TEMPLATE template0"; then
+    die "無法建立還原用的暫存資料庫，已停止還原（RESTORE_CREATE_FAILED）"
+  fi
   # template0 仍有 public。pg_dump 會再建一次，--exit-on-error 會停在「已經存在」。
-  dc "$tree" exec -T csp-db psql -U csp -d csp_restore -v ON_ERROR_STOP=1 \
-    -c "DROP SCHEMA IF EXISTS public CASCADE"
+  if ! dc "$tree" exec -T csp-db psql -U csp -d csp_restore -v ON_ERROR_STOP=1 \
+    -c "DROP SCHEMA IF EXISTS public CASCADE"; then
+    die "無法準備還原用的暫存資料庫，已停止還原（RESTORE_SCHEMA_FAILED）"
+  fi
   err="$(mktemp)"
   set +e
   dc "$tree" exec -T csp-db \
-    pg_restore -U csp -d csp_restore --no-owner --exit-on-error /tmp/anila-pre-update.dump \
+    pg_restore -U csp -d csp_restore --exit-on-error /tmp/anila-pre-update.dump \
     >"$err" 2>&1
   rc=$?
   set -e
@@ -1709,17 +1767,24 @@ restore_dump() {
     die "資料庫還原失敗。原本的資料庫還在。請先看上方訊息，不要重跑更新。"
   fi
   rm -f "$err"
-  got="$(dc "$tree" exec -T csp-db psql -U csp -d csp_restore -tAc 'SELECT version_num FROM alembic_version' | tr -d '[:space:]')"
+  if ! got="$(dc "$tree" exec -T csp-db psql -U csp -d csp_restore -v ON_ERROR_STOP=1 -tAc 'SELECT version_num FROM alembic_version' | tr -d '[:space:]')"; then
+    die "無法核對還原後的資料庫版本，已停止切換（RESTORE_REVISION_CHECK_FAILED）"
+  fi
   if [[ "$got" != "$expect" ]]; then
     dc "$tree" exec -T csp-db psql -U csp -d postgres -c "DROP DATABASE IF EXISTS csp_restore" >/dev/null 2>&1 || true
     die "還原後的資料庫版本是 ${got:-（空白）}，備份時是 ${expect}。原本的資料庫還在。"
   fi
+  if ! ( verify_restored_database_ownership "$tree" ); then
+    die "還原後的資料庫權限尚未確認，已保留原資料庫並停止切換（RESTORE_OWNERSHIP_FAILED）"
+  fi
   # 線上庫改名保留，等健康檢查過了才丟掉。檢查沒過可以改回來。
-  dc "$tree" exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 \
+  if ! dc "$tree" exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('csp', 'csp_restore', 'csp_previous') AND pid <> pg_backend_pid()" \
     -c "DROP DATABASE IF EXISTS csp_previous" \
     -c "ALTER DATABASE csp RENAME TO csp_previous" \
-    -c "ALTER DATABASE csp_restore RENAME TO csp"
+    -c "ALTER DATABASE csp_restore RENAME TO csp"; then
+    die "資料庫切換未完成，已保留還原資料。請先確認 csp 與 csp_previous 的狀態，不要重跑更新（RESTORE_SWITCH_FAILED）"
+  fi
   ok "已還原更新前的資料庫，原本的庫先改名保留"
 }
 

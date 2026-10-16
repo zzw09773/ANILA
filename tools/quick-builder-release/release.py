@@ -105,6 +105,7 @@ OMITTED_FILES = (
     'packages/anila-core/tests/test_parse_remote_error_routing.py',
     'packages/anila-core/tests/test_pdf_ocr_trigger.py',
     'packages/anila-core/tests/test_pdf_page_markers.py',
+    'packages/anila-core/tests/test_pdf_independent_native_fallback.py',
     'packages/anila-core/tests/test_quick_builder_documents.py',
     'packages/anila-core/tests/test_source_boundaries_limits.py',
     'packages/anila-core/tests/test_zh_normalizer.py',
@@ -140,6 +141,7 @@ OMITTED_FILES = (
     'services/ingestion-worker/tests/test_handlers_relation_progress.py',
     'services/ingestion-worker/tests/test_handlers_zero_chunk.py',
     'tools/sbom/test_build_repo_sbom.py',
+    'scripts/release/tests/test_restore_ownership.sh',
 )
 MAX_SOURCE_FILE = 16 * 1024 * 1024
 MAX_SOURCE_TOTAL = 64 * 1024 * 1024
@@ -297,6 +299,7 @@ SOURCE_FILES = tuple(sorted((
     "packages/anila-core/src/anila_core/storage/adapters/pgvector_store.py",
     "scripts/release/images.tsv", "scripts/release/build-release.sh",
     "scripts/release/release-lib.sh", "scripts/release/anila-update.sh",
+    "infra/deployment/scripts/assert-db-ownership.sql",
     "scripts/release/preflight.sh", "services/csp/requirements.txt", "services/csp/requirements-dev.txt",
     "services/csp/app/api/quick_builder.py", "services/csp/app/api/quick_mcp.py",
     "services/csp/app/api/quick_readiness.py", "services/csp/app/api/ingestion/search.py",
