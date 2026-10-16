@@ -8,7 +8,7 @@ export function resetIdentityMock() {
   clientAuthCalls.refresh = 0; clientAuthCalls.logout = 0
   refreshBehaviour = async () => {}
 }
-export function getMe() { return new Promise((resolve, reject) => reads.push({ resolve, reject })) }
+export function getMe(options) { return new Promise((resolve, reject) => reads.push({ resolve, reject, options })) }
 export const login = async () => ({})
 export const refreshTokenApi = async () => ({})
 export function logout() { return new Promise((resolve, reject) => logouts.push({ resolve, reject })) }

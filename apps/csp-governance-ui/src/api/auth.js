@@ -8,8 +8,8 @@ export const login = (username, password, extra = {}) =>
 export const refreshTokenApi = () =>
   client.post('/api/auth/refresh', {})
 
-export const getMe = () =>
-  client.get('/api/auth/me')
+export const getMe = ({ observeIdentityOnly = false } = {}) =>
+  client.get('/api/auth/me', { _identityObservation: observeIdentityOnly === true })
 
 export const logout = () =>
   client.post('/api/auth/logout', {})

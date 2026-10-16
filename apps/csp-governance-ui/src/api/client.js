@@ -103,6 +103,10 @@ client.interceptors.response.use(
       if (url.split('?')[0] === '/api/auth/refresh') invalidateIdentity()
       return Promise.reject(identityChangedError())
     }
+    // 跨分頁通知只查詢現在身分；失敗交由 store 清除，不再登出並通知其他分頁。
+    if (url.split('?')[0] === '/api/auth/me' && originalRequest._identityObservation === true) {
+      return Promise.reject(error)
+    }
     const skipRetry = NO_RETRY_PATHS.some((p) => url.includes(p))
 
     if (error.response?.status === 401 && !skipRetry && !originalRequest._retry) {

@@ -59,10 +59,10 @@ export const useAuthStore = defineStore('auth', () => {
     await refreshTokenApi()
   }
 
-  async function fetchUser() {
+  async function fetchUser({ observeIdentityOnly = false } = {}) {
     const sequence = ++fetchSequence
     try {
-      const { data } = await getMe()
+      const { data } = await getMe({ observeIdentityOnly })
       if (sequence === fetchSequence) user.value = data
     } catch {
       if (sequence === fetchSequence) user.value = null
@@ -85,7 +85,7 @@ export const useAuthStore = defineStore('auth', () => {
   const unsubscribeIdentity = onIdentityInvalidated((reason) => {
     fetchSequence += 1
     user.value = null
-    if (reason === 'remote') fetchUser()
+    if (reason === 'remote') fetchUser({ observeIdentityOnly: true })
   })
   onScopeDispose(unsubscribeIdentity)
 

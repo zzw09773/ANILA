@@ -11,7 +11,7 @@ import { reads, logouts, resetIdentityMock, clientAuthCalls, setRefreshBehaviour
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const mock = new URL('./helpers/authIdentityMock.mjs', import.meta.url).href
 const identity = new URL('../src/api/identityEpoch.js', import.meta.url).href
-let useAuthStore, client, store
+let useAuthStore, client, store, integrated
 const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 
 async function load(entry, aliases) {
@@ -33,6 +33,10 @@ test.before(async () => {
   ;({ default: client } = await load('src/api/client.js', {
     '../stores/auth': mock, '../router': mock, './identityEpoch': identity,
   }))
+  integrated = await load('tests/helpers/authIdentityIntegration.mjs', {
+    '../api/caAuth': mock, '../router': mock,
+    '../api/identityEpoch': identity, './identityEpoch': identity,
+  })
 })
 test.beforeEach(() => { resetIdentityMock(); setActivePinia(createPinia()); store = null })
 test.afterEach(() => { store?.$dispose() })
@@ -54,6 +58,7 @@ test('other-tab invalidation rechecks /me and ignores an older account response'
     epoch: 'bbbbcccc-dddd-4eee-8fff-000000000001' }) })
   window.dispatchEvent(event)
   assert.equal(reads.length, 2)
+  assert.deepEqual(reads[1].options, { observeIdentityOnly: true })
   assert.equal(store.user, null)
   reads[1].resolve({ data: { id: 52, role: 'user' } })
   reads[0].resolve({ data: { id: 41, role: 'owner' } })
@@ -61,6 +66,61 @@ test('other-tab invalidation rechecks /me and ignores an older account response'
   assert.equal(store.user.id, 52)
   assert.equal(store.isOwner, false)
   assert.equal(store.initialized, true)
+})
+
+test('identity observation 401 cannot refresh, log out or broadcast another invalidation', async () => {
+  const calls = [], announced = []
+  const listener = event => announced.push(event.detail.userId)
+  client.defaults.adapter = async config => { calls.push(config.url); throw unauthorized(config) }
+  window.addEventListener('anila:identity', listener)
+  const epoch = currentIdentityEpoch()
+  try {
+    await assert.rejects(client.get('/api/auth/me', { _identityObservation: true }))
+    assert.deepEqual(calls, ['/api/auth/me'])
+    assert.deepEqual(clientAuthCalls, { refresh: 0, logout: 0 })
+    assert.equal(currentIdentityEpoch(), epoch)
+    assert.deepEqual(announced, [])
+  } finally { window.removeEventListener('anila:identity', listener) }
+})
+
+test('identity observation uses the actual API, client and store without an auth request echo', async () => {
+  const calls = [], announced = []
+  let loggedOut = false
+  integrated.client.defaults.adapter = async config => {
+    calls.push({ url: config.url, observation: config._identityObservation })
+    if (loggedOut && config.url !== '/api/auth/logout') throw unauthorized(config)
+    return { config, data: config.url === '/api/auth/me' ? { id: 52, role: 'user' } : {}, status: 200, statusText: 'OK', headers: {} }
+  }
+  store = integrated.useAuthStore()
+  await settle()
+  assert.equal(store.user?.id, 52)
+  calls.length = 0
+  loggedOut = true
+  const listener = event => announced.push(event.detail.userId)
+  window.addEventListener('anila:identity', listener)
+  try {
+    const event = new Event('storage')
+    Object.assign(event, { key: 'anila:identity-epoch', newValue: JSON.stringify({ version: 1,
+      epoch: 'bbbbcccc-dddd-4eee-8fff-000000000003' }) })
+    window.dispatchEvent(event)
+    await settle()
+    await settle()
+    assert.equal(store.user, null)
+    assert.deepEqual(calls, [{ url: '/api/auth/me', observation: true }])
+    assert.deepEqual(announced, [null])
+  } finally { window.removeEventListener('anila:identity', listener) }
+})
+
+test('identity observation flag cannot suppress normal authentication recovery on another API', async () => {
+  let calls = 0
+  client.defaults.adapter = async config => {
+    if (++calls === 1) throw unauthorized(config)
+    return { config, data: { ok: true }, status: 200, statusText: 'OK', headers: {} }
+  }
+  const response = await client.get('/api/synthetic-private', { _identityObservation: true })
+  assert.equal(response.data.ok, true)
+  assert.equal(calls, 2)
+  assert.deepEqual(clientAuthCalls, { refresh: 1, logout: 0 })
 })
 
 test('concurrent account reads only adopt the most recently requested result', async () => {

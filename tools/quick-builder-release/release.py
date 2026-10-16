@@ -38,6 +38,7 @@ OMITTED_FILES = (
     'apps/csp-governance-ui/tests/authIdentity.test.mjs',
     'apps/csp-governance-ui/tests/identityEpoch.test.mjs',
     'apps/csp-governance-ui/tests/helpers/authIdentityMock.mjs',
+    'apps/csp-governance-ui/tests/helpers/authIdentityIntegration.mjs',
     'apps/csp-governance-ui/tests/builderStream.test.mjs',
     'apps/csp-governance-ui/tests/testStream.test.mjs',
     'apps/csp-governance-ui/tests/testStreamApi.test.mjs',
@@ -153,6 +154,7 @@ ASSETS = tuple(("image:" + name, "images/" + name + ".tar.gz") for name in IMAGE
     ("licenses", "licenses/third-party-notices.txt"),
 )
 SOURCE_FILES = tuple(sorted((
+    'apps/csp-governance-ui/src/api/auth.js',
     'apps/csp-governance-ui/src/api/identityEpoch.js',
     'apps/csp-governance-ui/src/stores/auth.js',
     'apps/csp-governance-ui/src/quickBuilder/testStream.js',
