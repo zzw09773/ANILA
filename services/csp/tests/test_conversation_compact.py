@@ -427,12 +427,18 @@ def test_alembic_heads_single_current_revision():
     cfg.set_main_option("script_location", str(CSP_ROOT / "migrations"))
     script = ScriptDirectory.from_config(cfg)
     heads = list(script.get_heads())
-    assert heads == ["r1_0076"], f"alembic head 應為 r1_0076，實得 {heads}"
+    assert heads == ["r1_0077"], f"alembic head 應為 r1_0077，實得 {heads}"
     quick_builder = (
         CSP_ROOT / "migrations" / "versions" / "r1_0076_quick_builder.py"
     ).read_text(encoding="utf-8")
     assert 'revision = "r1_0076"' in quick_builder
     assert 'down_revision = "r1_0075"' in quick_builder
+    quick_test_lifecycle = (
+        CSP_ROOT / "migrations" / "versions" / "r1_0077_quick_test_lifecycle.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision = "r1_0077"' in quick_test_lifecycle
+    assert 'down_revision = "r1_0076"' in quick_test_lifecycle
+    assert script.get_revision("r1_0077").down_revision == "r1_0076"
 
     facts = (
         CSP_ROOT / "migrations" / "versions" / "r1_0057_fact_kind_embedding_attachment_origin.py"
@@ -449,7 +455,7 @@ def test_alembic_heads_single_current_revision():
     )
     lines = [line for line in cli.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, cli.stdout
-    assert "r1_0076" in cli.stdout
+    assert "r1_0077" in cli.stdout
     nullable = (
         CSP_ROOT / "migrations" / "versions"
         / "r1_0055_collection_embedding_model_nullable.py"
