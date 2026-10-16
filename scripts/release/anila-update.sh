@@ -1001,7 +1001,7 @@ _copy_tree() {
   if grep -q 'Invalid cross-device link' "$err"; then
     rm -f "$err"
     rm -rf -- "$dest"
-    cp -a "$src" "$dest"
+    cp -a "$src" "$dest" || return 1
     return 0
   fi
   cat "$err" >&2 || true
