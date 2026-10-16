@@ -87,3 +87,13 @@ test('server明確CANCELLED保留取消類型，不誤稱權限或服務失敗',
   assert.match(notice.message, /執行已取消，沒有完整答案/);
   assert.doesNotMatch(JSON.stringify(notice), /ERROR_CANARY|授權|權限|服務失敗/);
 });
+
+test('執行權失效與結果未確認保留固定類型，不捏造取消或自動重派', () => {
+  for (const type of ['RESULT_UNCONFIRMED', 'TEST_RUN_INACTIVE']) {
+    const notice = executionErrorNotice({type, message: 'ERROR_CANARY', owner_token: 'ERROR_CANARY'});
+    assert.equal(notice.type, type);
+    assert.match(notice.message, /確認/);
+    assert.match(notice.action, /同一次試跑/);
+    assert.doesNotMatch(JSON.stringify(notice), /ERROR_CANARY|owner_token|執行已取消|執行失敗|請重新執行/);
+  }
+});

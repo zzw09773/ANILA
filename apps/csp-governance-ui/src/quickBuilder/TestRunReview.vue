@@ -5,7 +5,7 @@
       <button v-if="result.status === 'failed'" type="button" @click="$emit('edit', failedNode)">回到流程修正</button>
     </header>
     <p v-if="question" class="qb-tested-question"><strong>這次提問</strong> {{ question }}</p>
-    <div class="qb-answer">{{ resultText(result.output) || (result.status === 'failed' ? '這次沒有取得完整答案。請先查看失敗步驟的說明。' : '這次沒有留下回答文字，請查看步驟與模型完成資訊。') }}</div>
+    <div class="qb-answer">{{ resultText(result.output) || (result.status === 'running' ? '正在執行，尚未收到回答文字。' : result.status === 'failed' ? '這次沒有取得完整答案。請先查看失敗步驟的說明。' : '這次沒有留下回答文字，請查看步驟與模型完成資訊。') }}</div>
     <p v-for="item in completionNotices(result)" :key="item.type" role="status">{{ item.message }}</p>
     <div v-if="result.error && !completionErrorIsShown(result)" class="qb-step-error" role="alert">
       <p>{{ executionErrorNotice(result.error).message }}</p><p>錯誤類型：{{ executionErrorNotice(result.error).type }}</p>
@@ -14,20 +14,21 @@
     <ul v-if="result.artifacts?.length">
       <li v-for="artifact in result.artifacts" :key="artifact.download_url"><a v-if="safeUrl(artifact.download_url)" :href="artifact.download_url" download>{{ artifact.filename }}（下載文件草稿）</a></li>
     </ul>
-    <h3>這次怎麼完成的</h3>
+    <h3>{{ result.status === 'running' ? '目前執行進度' : '這次怎麼完成的' }}</h3>
     <p class="hint">以下是伺服器實際回傳的步驟；未列出的分支不表示失敗。詳細紀錄依目前權限提供，敏感資料已遮罩。</p>
-    <p v-if="!result.steps?.length">這次沒有取得逐步紀錄。請確認執行狀態與錯誤類型後再試。</p>
+    <p v-if="!result.steps?.length">{{ result.status === 'running' ? '正在等待伺服器提供第一個步驟。' : '這次沒有取得逐步紀錄。請確認執行狀態與錯誤類型後再試。' }}</p>
     <ol class="qb-run-steps">
       <li v-for="(step, i) in result.steps" :key="i" class="qb-run-step">
-        <div class="qb-run-step-heading"><strong>{{ i + 1 }}. {{ nodeLabel(step.node_id) }}</strong><span>{{ step.status === 'incomplete' ? '回答未完成' : step.error ? '執行失敗' : '已收到紀錄' }}</span></div>
-        <p>{{ stepSummary(step, nodeKind(step.node_id)) }}</p>
+        <div class="qb-run-step-heading"><strong>{{ i + 1 }}. {{ nodeLabel(step.node_id) }}</strong><span>{{ step.status === 'running' ? '執行中' : step.status === 'incomplete' ? '回答未完成' : step.error ? '執行失敗' : '已收到紀錄' }}</span></div>
+        <p>{{ step.status === 'running' ? '伺服器已開始這個步驟；完成後才會提供輸入、輸出與實際耗時。' : stepSummary(step, nodeKind(step.node_id)) }}</p>
         <p v-for="item in completionNotices(step)" :key="item.type" role="status">{{ item.message }}</p>
         <div v-if="step.error && !completionErrorIsShown(step)" class="qb-step-error" role="alert">
           <p>{{ executionErrorNotice(step.error).message }}</p><p>錯誤類型：{{ executionErrorNotice(step.error).type }}</p>
           <p v-if="executionErrorNotice(step.error).action">{{ executionErrorNotice(step.error).action }}</p>
         </div>
         <button v-if="step.error && nodeKind(step.node_id)" type="button" @click="$emit('edit', step.node_id)">調整這個步驟</button>
-        <details class="qb-technical">
+        <p v-if="step.result_available" role="status">此步驟的詳細紀錄較大，正在查詢同一次試跑的完整紀錄。</p>
+        <details v-if="step.status !== 'running'" class="qb-technical">
           <summary>查看詳細紀錄 · {{ Number.isFinite(step.elapsed_ms) ? step.elapsed_ms : '未提供' }} 毫秒</summary>
           <section class="qb-model-completions" aria-label="模型完成資訊"><h4>模型完成資訊</h4>
             <p v-if="!modelCompletionDetails(step).length">此步驟未提供模型完成資訊。</p>

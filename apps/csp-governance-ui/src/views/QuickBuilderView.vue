@@ -318,15 +318,17 @@
         <button class="primary" type="submit" :disabled="busy || unresolvedTest || dirty || !version || !message.trim()">{{ testing ? '正在測試…' : '傳送測試' }}</button>
         <button v-if="testing" type="button" @click="stopTest">停止等待</button>
       </form>
-      <p v-if="testing" class="qb-test-wait" role="status">問題已送出，正在等待流程回傳結果。目前尚未收到逐步進度，完成後會列出實際執行的步驟。</p>
+      <p v-if="testing" class="qb-test-wait" role="status">{{ testResult?.steps?.length ? '正在接收伺服器的實際執行進度；尚未完成的回答會繼續更新。' : '問題已送出，尚未收到逐步進度；正在等待伺服器提供實際紀錄。' }}</p>
       <section v-if="trackedTest" class="qb-test-tracking" aria-label="目前試跑追蹤" :data-run-id="trackedTest.run || ''" :data-request-id="trackedTest.request_id || ''" :data-run-status="trackedTest.serverStatus">
         <p><strong>這次試跑：{{ runStatus(trackedTest.serverStatus) }}</strong><span v-if="trackedTest.run"> · 執行編號 {{ trackedTest.run }}</span> · 第 {{ versions.find(v => v.id === trackedTest.version)?.revision || '—' }} 版</p>
         <p v-if="trackedTest.request_id">請求識別碼：{{ trackedTest.request_id }}</p>
         <button type="button" :disabled="checkingTest" @click="queryTracked()">{{ checkingTest ? '正在查詢…' : '查詢這次試跑' }}</button>
+        <button v-if="unresolvedTest && trackedTest.run && trackedTest.request_id" type="button" :disabled="cancellingTest" @click="cancelTest">{{ cancellingTest ? '正在確認取消…' : '取消伺服器執行' }}</button>
         <button v-if="unresolvedTest && !testing" type="button" @click="leaveUnknownTest">結束查詢，準備另一個測試</button>
       </section>
       <button type="button" :disabled="checkingTest || testing || !version" @click="findMyTests">查詢我的試跑</button>
       <ul v-if="recentTests.length" class="qb-test-history" aria-label="本人的試跑紀錄"><li v-for="run in recentTests" :key="run.id"><button type="button" :disabled="testing || checkingTest" @click="selectTestRun(run)">查看執行 {{ run.id }} · 第 {{ run.revision }} 版 · {{ runStatus(run.status) }}</button></li></ul>
+      <p v-if="observerNotice" class="qb-test-notice" role="status">{{ observerNotice }}</p>
       <p v-if="testNotice" class="qb-test-notice" role="status">{{ testNotice }}</p>
       <p v-if="testResult && testedRevision !== version?.revision" class="qb-test-notice">下方是第 {{ testedRevision }} 版的結果，目前選的是第 {{ version?.revision }} 版。修改後請儲存並重新試跑，不能用舊結果確認新內容。</p>
       <TestRunReview v-if="testResult" :result="testResult" :graph="testedGraph" :revision="testedRevision" :question="testedQuestion" @edit="editTestStep"/>
@@ -391,6 +393,8 @@ import { setupNeeds, nodeSummary, nodeIO } from '../quickBuilder/builderGuidance
 import { readTestSession, saveTestSession, testStorage, newTestRequestId } from '../quickBuilder/testSession';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
+import { readTestEventStream, testStreamError } from '../quickBuilder/testStream';
+import { createTestStreamState } from '../quickBuilder/testStreamState';
 import { completionTestResult } from '../quickBuilder/completion';
 import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel, GRAPH_GEOMETRY, layoutGraph, edgeGeometry, graphBounds, canvasPoint, canvasDelta } from '../quickBuilder/graph';
 const assistants = ref([]),
@@ -422,10 +426,11 @@ const assistants = ref([]),
   baseline = ref(''),
   templateName = ref(''),
   templateDescription = ref('');
-const moduleQuery = ref(''), testNotice = ref(''), testedRevision = ref(null), testedGraph = ref(null), testedQuestion = ref('');
-const trackedTest = ref(null), checkingTest = ref(false), recentTests = ref([]), waitingStopped = ref(false);
-const unresolvedTest = computed(() => trackedTest.value && !['completed','failed','cancelled'].includes(trackedTest.value.serverStatus));
-const runStatus = value => ({running:'執行中',completed:'已完成',failed:'執行失敗',cancelled:'已取消'}[value] || '結果待確認');
+const moduleQuery = ref(''), testNotice = ref(''), testedRevision = ref(null), testedGraph = ref(null), testedQuestion = ref(''), observerNotice = ref('');
+const trackedTest = ref(null), checkingTest = ref(false), recentTests = ref([]), waitingStopped = ref(false), cancellingTest = ref(false);
+const unresolvedTest = computed(() => trackedTest.value && !['completed','failed','cancelled','interrupted'].includes(trackedTest.value.serverStatus));
+const runStatus = value => ({running:'執行中',completed:'已完成',failed:'執行失敗',cancelled:'執行已停止',interrupted:'執行已中斷；結果尚未確認'}[value] || '結果待確認');
+let liveTest = null;
 let testController, testEpoch = 0, trackEpoch = 0, trackTimer, trackController, trackSelectedVersion, trackAttempts = 0;
 const actor = useDraftActor();
 const { identityChanged, identityMessage, ready: actorReady } = actor;
@@ -797,6 +802,9 @@ function stopTracking() {
   checkingTest.value = false;
 }
 function invalidateTest() {
+  liveTest = null;
+  observerNotice.value = '';
+  cancellingTest.value = false;
   ++testEpoch;
   testController?.abort();
   testController = null;
@@ -805,6 +813,29 @@ function invalidateTest() {
   recentTests.value = [];
   testing.value = false;
   waitingStopped.value = false;
+}
+function testUnavailable(pointer = trackedTest.value) {
+  ++testEpoch;
+  testController?.abort();
+  testController = null;
+  liveTest = null;
+  stopTracking();
+  testResult.value = null;
+  testedQuestion.value = '';
+  message.value = '';
+  testedGraph.value = null;
+  testedRevision.value = null;
+  recentTests.value = [];
+  observerNotice.value = '';
+  testing.value = false;
+  busy.value = false;
+  cancellingTest.value = false;
+  waitingStopped.value = false;
+  if (pointer) {
+    trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
+    rememberTest(trackedTest.value);
+  }
+  testNotice.value = '無法讀取這次試跑結果（TEST_RESULT_UNAVAILABLE）。已停止接收進度並清除這次題目與結果；可確認權限後明確查詢同一次試跑。這不會取消伺服器執行。';
 }
 function trackingCurrent(pointer, epoch) {
   return epoch === trackEpoch && !identityChanged.value && actor.actorId.value === pointer.actor && detail.value?.id === pointer.assistant && String(versionId.value) === String(trackSelectedVersion);
@@ -820,15 +851,22 @@ function scheduleTracking(pointer, epoch) {
 function acceptRun(raw, pointer, epoch, restored = false) {
   if (!trackingCurrent(pointer, epoch)) return;
   if (!Number.isSafeInteger(raw?.id) || raw.id <= 0 || pointer.run && raw.id !== pointer.run || raw.version_id !== undefined && raw.version_id !== pointer.version || pointer.request_id && (raw.version_id !== pointer.version || raw.request_id !== pointer.request_id)) throw new Error('TEST_RESULT_INVALID');
-  const status = ['running','completed','failed','cancelled'].includes(raw.status) ? raw.status : 'unknown';
+  const status = ['running','completed','failed','cancelled','interrupted'].includes(raw.status) ? raw.status : 'unknown';
   const current = {...pointer,run:raw.id,state:status === 'running' ? 'waiting' : status === 'unknown' ? 'unknown' : 'finished'};
   trackedTest.value = {...current,serverStatus:status};
   const stored = rememberTest(current);
   if (status === 'running' || status === 'unknown') {
-    testNotice.value = status === 'running' ? (waitingStopped.value ? '已停止等待回覆，伺服器仍在執行；這裡會繼續查詢同一次試跑。' : '已找到同一次試跑，伺服器仍在執行；尚未提供逐步進度。') : '這次試跑的伺服器狀態尚未確認（TEST_RESULT_UNKNOWN），查詢不會重新執行。';
+    if (status === 'running' && Array.isArray(raw.steps)) {
+      testResult.value = liveTest ? liveTest.mergeSnapshot(raw) : completionTestResult(raw, maskTrace(raw));
+      const source = versions.value.find(v => v.id === pointer.version);
+      if (source) { testedGraph.value = clone(source.graph); testedRevision.value = source.revision; }
+    }
+    testNotice.value = status === 'running' ? (waitingStopped.value ? '已停止等待回覆，伺服器仍在執行；這裡會繼續查詢同一次試跑。' : '已找到同一次試跑，伺服器仍在執行；這裡會持續查詢實際紀錄。') : '這次試跑的伺服器狀態尚未確認（TEST_RESULT_UNKNOWN），查詢不會重新執行。';
     scheduleTracking(current, epoch);
     return;
   }
+  liveTest = null;
+  observerNotice.value = '';
   stopTracking();
   const sourceVersion = versions.value.find(v => v.id === pointer.version);
   if (!sourceVersion) throw new Error('TEST_RESULT_INVALID');
@@ -878,8 +916,7 @@ async function queryTracked(pointer = trackedTest.value, epoch = trackEpoch) {
     trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
     rememberTest(trackedTest.value);
     if ([401,403,404].includes(e?.response?.status)) {
-      testResult.value = null;
-      testNotice.value = '無法讀取這次試跑結果（TEST_RESULT_UNAVAILABLE）。可能已無權限或資料已不可用；請確認登入身分與助手版本。';
+      testUnavailable({...pointer,...(trackedTest.value?.run ? {run:trackedTest.value.run} : {})});
     } else {
       testNotice.value = '暫時無法確認試跑狀態（TEST_RESULT_UNKNOWN）。伺服器可能仍在執行，可繼續查詢同一次試跑。';
       scheduleTracking(pointer, epoch);
@@ -919,6 +956,7 @@ async function findMyTests() {
     testNotice.value = rows.length ? '請選擇要查看的本人試跑紀錄；查詢不會重新執行。' : '目前沒有可查詢的本人試跑紀錄。尚未找到不代表先前請求一定未執行。';
   } catch (e) {
     if (epoch === trackEpoch && errorType(e) === 'IDENTITY_CHANGED') { actor.lockIdentity(); return; }
+    if (epoch === trackEpoch && !identityChanged.value && [401,403,404].includes(e?.response?.status)) { testUnavailable(); return; }
     if (epoch === trackEpoch && !identityChanged.value) testNotice.value = '無法讀取本人試跑紀錄（TEST_RESULT_UNAVAILABLE）。請確認登入身分與助手版本。';
   } finally { if (epoch === trackEpoch) checkingTest.value = false; }
 }
@@ -942,6 +980,25 @@ function stopTest() {
   testNotice.value = '已停止等待回覆，沒有取消伺服器執行。會用同一個識別碼查詢結果；重新整理後也可找回。';
   queryTracked();
 }
+async function cancelTest() {
+  const pointer = trackedTest.value, epoch = trackEpoch;
+  if (!pointer?.run || !pointer.request_id || cancellingTest.value || !trackingCurrent(pointer, epoch)) return;
+  if (!window.confirm('要取消這次伺服器執行嗎？取消後不會提供完整答案；外部服務可能仍需要時間停止。')) return;
+  cancellingTest.value = true;
+  try {
+    const raw = (await api.cancelTestRun(pointer.run, {version_id:pointer.version,request_id:pointer.request_id}, actor.mutationOptions())).data;
+    if (!trackingCurrent(pointer, epoch)) return;
+    acceptRun(raw, pointer, epoch);
+    if (raw.status === 'cancelled') testNotice.value = '執行已停止。這次沒有完整答案；外部服務可能仍需要時間停止。';
+    else testNotice.value = '已查得伺服器的實際結果；這次執行並未改為取消。';
+  } catch (e) {
+    if (!trackingCurrent(pointer, epoch)) return;
+    if (errorType(e) === 'IDENTITY_CHANGED') { actor.lockIdentity(); return; }
+    if ([401,403,404].includes(e?.response?.status)) { testUnavailable(pointer); return; }
+    testNotice.value = '尚未確認取消結果（TEST_CANCEL_UNCONFIRMED）。將查詢同一次試跑，不會重新執行。';
+    queryTracked(pointer, epoch);
+  } finally { cancellingTest.value = false; }
+}
 function leaveUnknownTest() {
   if (testing.value || !unresolvedTest.value) return;
   if (!window.confirm('先前試跑可能仍在執行。建立另一個測試可能產生額外執行；確定不再追蹤目前紀錄？')) return;
@@ -958,6 +1015,7 @@ async function test() {
   waitingStopped.value = false;
   error.value = '';
   testNotice.value = '';
+  observerNotice.value = '';
   testResult.value = null;
   const token = ++testEpoch;
   const pointer = {actor:actor.actorId.value,assistant:detail.value.id,version:version.value.id,state:'waiting',request_id:requestId};
@@ -970,20 +1028,43 @@ async function test() {
   testController = controller;
   scheduleTracking(pointer, epoch);
   try {
-    const raw = (await api.assistantAction(pointer.assistant, 'test', {
+    liveTest = createTestStreamState({version:pointer.version,revision:testedRevision.value,request_id:pointer.request_id}, testedGraph.value);
+    const response = await api.streamAssistantTest(pointer.assistant, {
       version_id: pointer.version,
       message: message.value,
       request_id: pointer.request_id
-    }, {...actor.mutationOptions(), signal:controller.signal})).data;
+    }, {...actor.mutationOptions(), signal:controller.signal});
     if (token !== testEpoch || !trackingCurrent(pointer, epoch)) return;
-    acceptRun(raw, pointer, epoch);
+    if (typeof response.data?.getReader !== 'function') { liveTest = null; acceptRun(response.data, pointer, epoch); return; }
+    const observer = liveTest;
+    await readTestEventStream(response.data, {signal:controller.signal,onEvent: async frame => {
+      if (token !== testEpoch || !trackingCurrent(pointer, epoch)) return true;
+      const event = observer.apply(frame);
+      const current = {...pointer,run:event.run,state:'waiting'};
+      trackedTest.value = {...current,serverStatus:'running'};
+      rememberTest(current);
+      testResult.value = event.result;
+      if (event.observerError) {
+        if (event.observerError.type === 'IDENTITY_CHANGED') actor.lockIdentity();
+        else observerNotice.value = testStreamError('TEST_STREAM_INTERRUPTED').message;
+      }
+      if (event.finalResult) acceptRun(event.finalResult, current, epoch);
+      if (event.needsResult || event.observerError || event.terminal && event.finalResult?.status === 'running') {
+        await queryTracked(current, epoch);
+        scheduleTracking(current, epoch);
+      }
+      return event.terminal;
+    }});
   } catch (e) {
     if (token !== testEpoch || !trackingCurrent(pointer, epoch)) return;
-    trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
-    rememberTest(trackedTest.value);
-    testNotice.value = '尚未取得可確認的試跑結果（TEST_RESULT_UNKNOWN）。會查詢同一次試跑，連線中斷不代表執行已取消。';
-    fail(e);
-    scheduleTracking(pointer, epoch);
+    if (errorType(e) === 'IDENTITY_CHANGED') { actor.lockIdentity(); return; }
+    if ([401,403,404].includes(e?.response?.status)) { testUnavailable(trackedTest.value || pointer); return; }
+    const current = {...pointer,...(trackedTest.value?.run ? {run:trackedTest.value.run} : {}),state:'unknown'};
+    trackedTest.value = {...current,serverStatus:'unknown'};
+    rememberTest(current);
+    observerNotice.value = testStreamError(e?.code).message;
+    scheduleTracking(current, epoch);
+    queryTracked(current, epoch);
   } finally {
     if (testController === controller) testController = null;
     if (token === testEpoch) {

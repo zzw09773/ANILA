@@ -81,6 +81,8 @@ export function completionErrorIsShown(step) {
   return completionNotices(step).some(item => item.type === step.error?.type);
 }
 export function testRunStatus(result) {
+  if (result.status === 'interrupted') return '執行已中斷；結果尚未確認';
+  if (result.status === 'running') return '執行中；回答尚未完成';
   if (result.status === 'failed') return '失敗';
   if (result.status === 'cancelled') return '執行已取消；沒有完整答案';
   if (result.status !== 'completed') return '狀態無法辨識';

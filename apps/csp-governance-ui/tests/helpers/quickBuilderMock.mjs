@@ -1,3 +1,4 @@
+let streamFactory = null, cancelDenied = false;
 export const calls = []
 export const mutationRequests = []
 export const readRequests = []
@@ -8,7 +9,7 @@ let testResultOverride=null,stepsOverride=null,readinessAllowed=false,readinessD
 
 const graph = {nodes:[{id:'in',kind:'input',label:'輸入',position:{x:20,y:30},config:{placeholder:'請輸入問題'}},{id:'condition',kind:'condition',label:'判斷',position:{x:240,y:30},config:{field:'text',operator:'contains',value:'請假'}},{id:'yes',kind:'output',label:'成立輸出',position:{x:460,y:30},config:{include_sources:true}},{id:'no',kind:'output',label:'不成立輸出',position:{x:460,y:190},config:{include_sources:true}}],edges:[{source:'in',target:'condition'},{source:'condition',target:'yes',branch:'true'},{source:'condition',target:'no',branch:'false'}]}
 let detail, failNext,manageTemplates,actorId,holdRead,releaseRead,identityReject,retrievalOverride,retrievalContextOverride
-export function reset(){ readRequests.length=0;trackedRuns=new Map();listedRuns=null;testHeld=false;releaseTestRequest=undefined;runHeld=false;releaseRunRequest=undefined;runDenied=false;testResultOverride=null;stepsOverride=null;readinessAllowed=false;readinessData=null;readinessError=null;readinessHeld=false;releaseReadinessRequest=undefined;retrievalOverride=null;retrievalContextOverride=null;calls.length=0;mutationRequests.length=0;failNext=false;manageTemplates=false;actorId=101;holdRead=false;releaseRead=undefined;identityReject=false;detail={id:11,name:'規章問答',draft_revision:2,can_edit:true,can_review:true,disabled:false,versions:[{id:22,revision:2,status:'draft',name:'規章問答',description:'單位規章問答',model_id:1,classification_level:'無機密',collection_ids:[],scope:'unit',target_department_ids:[],graph:clone(graph)},{id:21,revision:1,status:'approved',name:'舊版規章',description:'舊說明',model_id:1,classification_level:'無機密',collection_ids:[],scope:'unit',target_department_ids:[],graph:clone(graph)}]}}
+export function reset(){streamFactory=null;cancelDenied=false; readRequests.length=0;trackedRuns=new Map();listedRuns=null;testHeld=false;releaseTestRequest=undefined;runHeld=false;releaseRunRequest=undefined;runDenied=false;testResultOverride=null;stepsOverride=null;readinessAllowed=false;readinessData=null;readinessError=null;readinessHeld=false;releaseReadinessRequest=undefined;retrievalOverride=null;retrievalContextOverride=null;calls.length=0;mutationRequests.length=0;failNext=false;manageTemplates=false;actorId=101;holdRead=false;releaseRead=undefined;identityReject=false;detail={id:11,name:'規章問答',draft_revision:2,can_edit:true,can_review:true,disabled:false,versions:[{id:22,revision:2,status:'draft',name:'規章問答',description:'單位規章問答',model_id:1,classification_level:'無機密',collection_ids:[],scope:'unit',target_department_ids:[],graph:clone(graph)},{id:21,revision:1,status:'approved',name:'舊版規章',description:'舊說明',model_id:1,classification_level:'無機密',collection_ids:[],scope:'unit',target_department_ids:[],graph:clone(graph)}]}}
 reset()
 export function changeActor(id){actorId=id}
 export function rejectIdentity(){identityReject=true}
@@ -60,9 +61,23 @@ export function holdTest(){testHeld=true}
 export function releaseTest(){testHeld=false;releaseTestRequest?.()}
 export function holdRun(){runHeld=true}
 export function releaseRun(){runHeld=false;releaseRunRequest?.()}
-export function denyRun(){runDenied=true}
+export function denyRun(status=404){runDenied=status}
 export function setListedRuns(rows){listedRuns=clone(rows)}
 export function setRunResult(id,result){trackedRuns.set(id,clone(result))}
 function recordTestRead(options){readRequests.push(clone(options));const expected=options?.headers?.['X-ANILA-Actor-Id'];if(expected!==undefined && expected!==String(actorId))throw{response:{status:409,data:{detail:{type:'IDENTITY_CHANGED',message:'登入身分已變更'}}}}}
-export const getTestRuns=async(id,params={},options={})=>{recordTestRead(options);calls.push(['getTestRuns',id,clone(params)]);if(runDenied)throw{response:{status:404}};const rows=listedRuns || [...trackedRuns.values()];return{data:{runs:clone(rows.filter(row=>(!params.version_id || row.version_id===params.version_id)&&(!params.request_id || row.request_id===params.request_id)))}}}
-export const getRun=async(id,options={})=>{recordTestRead(options);calls.push(['getRun',id]);const result=clone(trackedRuns.get(id)||{id,version_id:22,status:'completed',output:'測試回答',steps:[],...(testResultOverride||{})});if(runHeld)await new Promise(resolve=>releaseRunRequest=resolve);if(runDenied)throw{response:{status:404}};return{data:result}}
+export const getTestRuns=async(id,params={},options={})=>{recordTestRead(options);calls.push(['getTestRuns',id,clone(params)]);if(runDenied)throw{response:{status:runDenied}};const rows=listedRuns || [...trackedRuns.values()];return{data:{runs:clone(rows.filter(row=>(!params.version_id || row.version_id===params.version_id)&&(!params.request_id || row.request_id===params.request_id)))}}}
+export const getRun=async(id,options={})=>{recordTestRead(options);calls.push(['getRun',id]);const result=clone(trackedRuns.get(id)||{id,version_id:22,status:'completed',output:'測試回答',steps:[],...(testResultOverride||{})});if(runHeld)await new Promise(resolve=>releaseRunRequest=resolve);if(runDenied)throw{response:{status:runDenied}};return{data:result}}
+
+export function setTestStream(factory) { streamFactory = factory; }
+export const streamAssistantTest = async (id, body, options) => {
+  if (!streamFactory) return assistantAction(id, 'test', body, options);
+  recordMutation('test', options); calls.push(['test', id, clone(body)]);
+  return {data: streamFactory(body, options)};
+};
+export function denyCancel(status=403) { cancelDenied=status; }
+export const cancelTestRun = async (id, body, options) => {
+  recordMutation('cancelTestRun', options); calls.push(['cancelTestRun', id, clone(body)]);
+  if(cancelDenied)throw {response:{status:cancelDenied}};
+  const result = {...trackedRuns.get(id),id,version_id:body.version_id,request_id:body.request_id,status:'cancelled',output:'',steps:[]};
+  trackedRuns.set(id, result); return {data:clone(result)};
+};

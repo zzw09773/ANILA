@@ -3,6 +3,8 @@ import { completionCopyForType } from './completion.js';
 // Execution errors may carry provider details. Present only this fixed vocabulary.
 const ERRORS = {
   CANCELLED: ['這次執行已取消，沒有完整答案。', '如需結果，請重新執行測試。'],
+  RESULT_UNCONFIRMED: ['這次試跑的執行結果尚未確認，系統沒有重新執行。', '請查看同一次試跑紀錄；如需另做測試，請先確認原執行狀態。'],
+  TEST_RUN_INACTIVE: ['目前無法確認這次試跑的執行權，較晚回覆不會覆寫原紀錄。', '請查詢同一次試跑，確認伺服器保存的狀態。'],
   PROVIDER_ERROR: ['這個步驟的服務未能完成處理。', '請稍後重試；若持續發生，請聯絡管理員。'],
   PROVIDER_UNAVAILABLE: ['這個步驟需要的服務目前無法使用。', '請聯絡管理員確認服務是否可用。'],
   MODEL_SERVICE_ERROR: ['模型服務未能完成這次回答。', '請稍後重試；若持續發生，請聯絡管理員。'],
