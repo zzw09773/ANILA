@@ -267,11 +267,26 @@ def test_public_chat_http_preserves_history_and_conversation_scope(
     response = http.post("/v1/chat/completions", headers=headers, json=body)
     assert response.status_code == 200, response.text
     if stream:
+        blocks = response.text.split("\n\n")
+        assert not any(
+            block.startswith(("event: error", "event: anila.error")) for block in blocks
+        )
         chunks = [
             json.loads(line[6:])
-            for line in response.text.splitlines()
+            for block in blocks
+            if not block.startswith("event:") or block.startswith("event: message\n")
+            for line in block.splitlines()
             if line.startswith("data: {")
         ]
+        metadata = [
+            json.loads(line[6:])
+            for block in blocks
+            if block.startswith("event: anila.meta\n")
+            for line in block.splitlines()
+            if line.startswith("data: {")
+        ]
+        assert len(metadata) == 1
+        assert {"completion", "finish_reason", "usage", "usage_complete"} <= metadata[0].keys()
         assert (
             "".join(chunk["choices"][0]["delta"].get("content", "") for chunk in chunks)
             == "合成表格"

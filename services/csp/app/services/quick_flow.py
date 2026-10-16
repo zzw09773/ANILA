@@ -563,6 +563,7 @@ class _Runtime:
         self.current: dict | None = None
         self.completions: list[dict] = []
         self.model_usage_complete = True
+        self.error_service: str | None = None
 
     def completion_fields(self, *, succeeded: bool) -> dict:
         if not self.completions:
@@ -599,12 +600,19 @@ class _Runtime:
         if self.operations > MAX_EXECUTION_STEPS:
             raise QuickFlowExecutionError("STEP_LIMIT", "執行步數已達上限，請縮短流程")
 
-    async def call(self, callback: Callable, *args, **kwargs) -> Any:
+    async def call(self, callback: Callable, *args, _service: str, **kwargs) -> Any:
+        self.error_service = None
         self.tick()
         if callback is None:
-            raise QuickFlowExecutionError("PROVIDER_UNAVAILABLE", "此模組的授權服務尚未設定")
+            self.error_service = _service
+            raise QuickFlowExecutionError("PROVIDER_UNAVAILABLE", "此步驟需要的服務尚未設定")
         _json_data([list(args), kwargs], "callback_arguments", maximum=MAX_GRAPH_BYTES)
-        result = await callback(*copy.deepcopy(args), **copy.deepcopy(kwargs))
+        try:
+            result = await callback(*copy.deepcopy(args), **copy.deepcopy(kwargs))
+        except Exception:
+            # Retain exception identity so existing timeout and retry policies stay intact.
+            self.error_service = _service
+            raise
         try:
             _json_data(result, "callback_result")
         except QuickFlowValidationError as exc:
@@ -737,6 +745,7 @@ class _Runtime:
                 request["collection_ids"],
                 request["query"],
                 request["top_k"],
+                _service="rag",
             )
             if type(result) is not list or len(result) > request["top_k"]:
                 raise QuickFlowExecutionError(
@@ -811,7 +820,7 @@ class _Runtime:
         )
         messages = await self._fit_model_context(state, instruction)
         try:
-            result = await self.call(callback, messages, state.temperature)
+            result = await self.call(callback, messages, state.temperature, _service="model")
         except BaseException:
             self.model_usage_complete = False
             raise
@@ -893,7 +902,7 @@ class _Runtime:
                 started = time.monotonic()
                 try:
                     result = await self.call(
-                        self.tool_call, plan["tool_id"], plan["arguments"]
+                        self.tool_call, plan["tool_id"], plan["arguments"], _service="tool"
                     )
                     if type(result) is not dict:
                         raise QuickFlowExecutionError("TOOL_RESPONSE", "工具未回傳物件")
@@ -901,7 +910,7 @@ class _Runtime:
                     if result.get("isError") or result.get("error"):
                         raise QuickFlowExecutionError("TOOL_FAILED", "查詢工具回報失敗")
                 except Exception as exc:
-                    record["error"] = _error(exc)
+                    record["error"] = _error(exc, service=self.error_service)
                     # 身分、授權、逾時與大小限制失敗不能靠代理重試繞過。
                     retryable = (
                         isinstance(exc, QuickFlowExecutionError)
@@ -940,6 +949,7 @@ class _Runtime:
                 config["collection_ids"],
                 state.text,
                 config["top_k"],
+                _service="rag",
                 **kwargs,
             )
             maximum = (
@@ -978,7 +988,7 @@ class _Runtime:
                 "result": None,
             }
             trace["tool"].append(record)
-            result = await self.call(self.tool_call, config["tool_id"], arguments)
+            result = await self.call(self.tool_call, config["tool_id"], arguments, _service="tool")
             if type(result) is not dict:
                 raise QuickFlowExecutionError("TOOL_RESPONSE", "工具未回傳物件")
             record["result"] = copy.deepcopy(result)
@@ -1024,11 +1034,11 @@ class _Runtime:
                 raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇或填寫文件範本")
             if config["mode"] == "studio":
                 result = await self.call(
-                    self.document_call, config["template"], state.text, config=config
+                    self.document_call, config["template"], state.text, _service="document", config=config
                 )
             else:
                 result = await self.call(
-                    self.document_call, config["template"], state.text
+                    self.document_call, config["template"], state.text, _service="document"
                 )
             if type(result) is not dict:
                 raise QuickFlowExecutionError("DOCUMENT_RESPONSE", "文件服務未回傳產物資料")
@@ -1122,7 +1132,7 @@ class _Runtime:
                 if node["kind"] == "output":
                     outputs.append(state)
             except Exception as exc:
-                trace["error"], trace["status"] = _error(exc), "failed"
+                trace["error"], trace["status"] = _error(exc, service=self.error_service), "failed"
                 return {
                     "output": "",
                     "steps": self.steps,
@@ -1159,13 +1169,126 @@ def _substitute_arguments(value: Any, state: _State) -> Any:
     return value
 
 
-def _error(exc: Exception) -> dict:
+_SERVICE_FAILURES = {
+    "model": ("MODEL_SERVICE_ERROR", "模型服務未能完成這次回答，請稍後重試或聯絡管理員"),
+    "rag": ("RAG_SERVICE_ERROR", "文件檢索服務未能完成這次查詢，請稍後重試或聯絡資料管理者"),
+    "tool": ("TOOL_SERVICE_ERROR", "查詢工具服務未能完成這次查詢，請稍後重試或聯絡管理員"),
+    "document": ("DOCUMENT_SERVICE_ERROR", "文件輸出服務未能完成這份草稿，請稍後重試或聯絡管理員"),
+}
+_SERVICE_UNAVAILABLE = {
+    "model": ("MODEL_SERVICE_UNAVAILABLE", "模型服務目前無法使用，請聯絡管理員確認服務狀態"),
+    "rag": ("RAG_SERVICE_UNAVAILABLE", "文件檢索服務目前無法使用，請聯絡資料管理者確認服務狀態"),
+    "tool": ("TOOL_SERVICE_UNAVAILABLE", "查詢工具服務目前無法使用，請聯絡管理員確認服務狀態"),
+    "document": ("DOCUMENT_SERVICE_UNAVAILABLE", "文件輸出服務目前無法使用，請聯絡管理員確認服務狀態"),
+}
+# Only first-party error identifiers select these copies; status codes and free text do not.
+_KNOWN_CALLBACK_ERRORS = {
+    "CANCELLED": "這次執行已取消，沒有完整答案",
+    "MODEL_DENIED": "目前帳號沒有這個模型的使用權限，請聯絡管理員確認模型使用權限",
+    "MODEL_UNAVAILABLE": "助手選用的模型目前無法使用，請聯絡助手建立者或管理員確認可用模型",
+    "SOURCE_UNAVAILABLE": "選取的文件來源目前無法使用，請聯絡資料管理者確認文件狀態與存取權限",
+    "SOURCE_NOT_DECLARED": "流程使用的文件來源未列入已核准版本，請聯絡助手建立者確認來源並重新送審",
+    "TOOL_UNAVAILABLE": "選取的查詢工具目前無法使用，請聯絡管理員確認工具狀態與使用範圍",
+    "TOOL_NOT_DECLARED": "流程使用的查詢工具未列入已核准版本，請聯絡助手建立者確認工具並重新送審",
+    "IDENTITY_CHANGED": "登入身分或所屬單位已變更，請確認帳號並重新登入後再試",
+    "CONTEXT_DENIED": "目前無法使用這段對話或任務的資料來源，請確認原對話或任務仍可存取",
+    "EXPORT_CLASSIFICATION": "這份內容的密等不允許匯出文件，請使用允許的回覆方式",
+    "SOURCE_CLASSIFICATION": "助手設定的密等未涵蓋選取的文件來源，請聯絡助手建立者確認密等與資料來源",
+    "CLASSIFICATION_CEILING": "這份內容的密等超過模型可處理的上限，請聯絡管理員確認適用模型",
+    "DOCUMENT_RENDERER_NOT_CONFIGURED": "目前尚未提供這個文件輸出服務，請管理員到治理中心確認 Studio 服務登錄與啟用狀態",
+    "DOCUMENT_RENDERER_DENIED": "目前不能使用文件排版服務，請聯絡管理員確認服務使用權限與密等上限",
+    "DOCUMENT_RENDERER_ENDPOINT": "文件排版服務目前無法連線，請聯絡管理員確認服務設定",
+    "DOCUMENT_RENDERER_ENDPOINT_TIMEOUT": "文件排版服務驗證逾時，請稍後重試或聯絡管理員",
+    "DOCUMENT_RENDERER_CHANGED": "文件排版服務設定已變更，請重新測試",
+    "DOCUMENT_RENDERER_FAILED": "文件排版服務未能完成工作，請稍後重試或聯絡管理員",
+    "DOCUMENT_RENDERER_UNAVAILABLE": "文件排版服務目前無法使用，請稍後重試或聯絡管理員",
+    "DOCUMENT_CONFIG": "文件範本或輸出格式不符合要求，請確認選用的範本與格式",
+    "DOCUMENT_INPUT": "文件標題或內容未填寫，或超過長度限制，請確認後重試",
+    "DOCUMENT_TOO_LARGE": "文件內容超過大小限制，請縮小彙整範圍",
+    "DOCUMENT_LIMIT": "這次流程產生的文件數量超過上限，請減少文件步驟",
+    "DOCUMENT_CONTEXT": "目前無法使用這份文件的來源，請確認原任務仍可存取",
+    "DOCUMENT_ENCODING": "文件排版服務回覆格式不符合要求，請聯絡管理員確認服務",
+    "DOCUMENT_RESPONSE": "文件服務未提供可下載的產物，請稍後重試或聯絡管理員",
+    "DOCUMENT_FAILED": "文件產生失敗，請稍後重試或聯絡管理員",
+    "TOOL_FAILED": "查詢工具回報失敗，請稍後重試或聯絡管理員",
+    "mcp_user_denied": "目前帳號不能使用查詢工具，請聯絡管理員確認帳號狀態",
+    "mcp_tool_missing": "選取的查詢工具目前無法使用，請聯絡管理員確認工具狀態",
+    "mcp_service_missing": "選取的查詢工具服務目前無法使用，請聯絡管理員確認服務狀態",
+    "mcp_tool_denied": "選取的查詢工具未核准、已停用或不在目前使用範圍，請聯絡管理員確認",
+    "mcp_runtime_authorization_required": "這次查詢尚未完成必要的身分與流程確認，請重新登入後再試",
+    "mcp_identity_changed": "查詢者身分已變更，這次查詢已停止，請確認帳號並重新登入",
+    "mcp_arguments_invalid": "查詢條件不符合工具要求，請確認必填欄位與資料型別",
+    "mcp_identity_override": "查詢條件不能指定或更改執行者身分，請聯絡助手建立者確認查詢條件",
+    "mcp_version_changed": "查詢工具的核准版本已變更，請聯絡助手建立者另存版本並重新送審",
+    "mcp_schema_changed": "查詢工具的參數已變更，請聯絡管理員重新審核工具",
+    "mcp_endpoint_changed": "查詢工具的服務設定已變更，請聯絡助手建立者重新送審",
+    "mcp_http_error": "查詢工具服務連線失敗，請稍後重試或聯絡管理員",
+    "mcp_timeout": "查詢工具服務回覆逾時，請稍後重試或聯絡管理員",
+    "mcp_endpoint_timeout": "查詢工具服務驗證逾時，請稍後重試或聯絡管理員",
+    "mcp_response_invalid": "查詢工具服務回覆格式不正確，請聯絡管理員確認工具",
+    "rag_collection_inactive": "選取的文件集已停用，請重新選擇可用的資料來源",
+    "rag_response_invalid": "文件檢索服務回覆格式不正確，請聯絡資料管理者確認來源",
+    "rag_configuration_invalid": "文件檢索條件不符合要求，請確認文件集與搜尋設定",
+    "rag_candidates_too_large": "文件檢索資料量超過上限，請縮小文件集範圍",
+    "rag_context_too_large": "檢索片段超過可用內容上限，請縮小文件或查詢範圍",
+    "rag_fulltext_fallback_empty": "文件超過全文上限，改用搜尋後仍無相關片段，請縮小文件範圍",
+}
+
+
+_KNOWN_FLOW_ERRORS = {
+    "CANCELLED": "這次執行已取消，沒有完整答案",
+    "OUTPUT_TOO_LARGE": "回答超過串流安全處理上限，請縮小問題範圍",
+    "OUTPUT_MASK_CLOSED": "串流已因安全限制結束，請重新提問",
+    "DATA_LIMIT": "流程資料超過可處理的大小或格式限制，請縮小問題或資料範圍",
+    "STEP_LIMIT": "執行步數已達上限，請縮短流程",
+    "RAG_CONTEXT_LIMIT": "問題、提示詞與文件內容合計超過模型可用長度，請縮小來源或問題",
+    "CONFIGURATION_REQUIRED": "這個步驟尚缺少必要設定，請確認文件集、查詢工具或文件範本",
+    "CONDITION_VALUE": "數值條件的欄位或比較值不是有效數字，請確認比較型別",
+    "MERGE_CONFLICT": "合流的擷取欄位內容衝突，請調整連線",
+    "RAG_RESPONSE": "檢索結果格式不正確，請聯絡資料管理者確認來源",
+    "MODEL_RESPONSE": "模型回覆格式不正確，請重新測試或聯絡管理員",
+    "TOOL_NOT_ALLOWED": "代理選擇了未勾選的工具，已停止執行",
+    "AGENT_PLAN": "代理規劃未符合工具選擇格式，已停止執行",
+    "TOOL_RESPONSE": "查詢工具回覆格式不正確，請聯絡管理員確認工具",
+    "EXTRACT_RESPONSE": "模型回傳的擷取欄位不符合設定，請確認問題與擷取欄位",
+    "NO_OUTPUT": "本次執行沒有抵達輸出步驟，請確認流程連線",
+}
+for _reason in ("length", "content_filter", "tool_calls"):
+    _notice = completion_metadata(finish_reason=_reason)
+    _KNOWN_FLOW_ERRORS[_notice["type"]] = _notice["message"].removesuffix(f"（{_notice['type']}）")
+
+
+def _fixed_error(code: str, message: str) -> dict:
+    return {"type": code, "message": f"{message}（{code}）"}
+
+
+def _error(exc: Exception, *, service: str | None = None) -> dict:
+    known_service = type(service) is str and service in _SERVICE_FAILURES
     if isinstance(exc, QuickFlowValidationError):
         return {"type": exc.code, "message": str(exc), "path": exc.path}
     if isinstance(exc, QuickFlowExecutionError):
-        return {"type": exc.code, "message": str(exc)}
-    # 回呼可能拋出含連線字串的例外；維護者可由原服務紀錄追查，trace 不外洩。
-    return {"type": "PROVIDER_ERROR", "message": "授權服務執行失敗，請稍後重試或通知管理員（PROVIDER_ERROR）"}
+        code = exc.code
+        if code == "PROVIDER_UNAVAILABLE" and known_service:
+            return _fixed_error(*_SERVICE_UNAVAILABLE[service])
+        if code == "PROVIDER_ERROR" and known_service:
+            return _fixed_error(*_SERVICE_FAILURES[service])
+        if type(code) is str and code in _KNOWN_CALLBACK_ERRORS:
+            return _fixed_error(code, _KNOWN_CALLBACK_ERRORS[code])
+        if type(code) is str and code in _KNOWN_FLOW_ERRORS:
+            return _fixed_error(code, _KNOWN_FLOW_ERRORS[code])
+        # First-party failures keep their identifier even when raised during a callback.
+        # An unknown identifier does not justify echoing an arbitrary exception message.
+        if type(code) is str and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code):
+            return _fixed_error(code, "這個步驟已停止執行，請聯絡助手建立者確認")
+        return _fixed_error("FLOW_FAILED", "這個步驟未能完成，請聯絡助手建立者確認")
+    if known_service:
+        detail = getattr(exc, "detail", None)
+        code = detail.get("type", detail.get("error_type")) if type(detail) is dict else None
+        if type(code) is str and code in _KNOWN_CALLBACK_ERRORS:
+            return _fixed_error(code, _KNOWN_CALLBACK_ERRORS[code])
+        return _fixed_error(*_SERVICE_FAILURES[service])
+    # Unknown failures do not imply a model or authorization problem.
+    return _fixed_error("PROVIDER_ERROR", "這個步驟的服務未能完成處理，請稍後重試或聯絡管理員")
 
 
 async def execute_graph(
@@ -1213,6 +1336,6 @@ async def execute_graph(
             "output": "",
             "steps": runtime.steps,
             "status": "failed",
-            "error": _error(exc),
+            "error": _error(exc, service=runtime.error_service),
             **runtime.completion_fields(succeeded=False),
         }
