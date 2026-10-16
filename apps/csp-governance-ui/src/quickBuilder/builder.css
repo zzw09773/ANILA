@@ -26,8 +26,8 @@
 .qb-error {border:1px solid var(--c-danger,var(--c-border));border-left-width:4px;padding:12px;background:var(--c-surface-1);}
 .qb-tabs {display:flex;gap:8px;border-bottom:1px solid var(--c-border);padding-bottom:10px;margin-bottom:16px;}
 .qb-tabs [aria-pressed=true] {border-bottom:3px solid var(--c-accent);font-weight:600;}
-.qb-workspace {display:grid;grid-template-columns:160px minmax(0,1fr) 280px;border:1px solid var(--c-border);min-width:0;align-items:stretch;}
-.qb-workspace--config-closed {grid-template-columns:160px minmax(0,1fr);}
+.qb-workspace {display:grid;grid-template-columns:220px minmax(0,1fr) 300px;border:1px solid var(--c-border);min-width:0;align-items:stretch;}
+.qb-workspace--config-closed {grid-template-columns:220px minmax(0,1fr);}
 .qb-stage {min-width:0;overflow:hidden;}
 .qb-canvas-tools {display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px;background:var(--c-surface-1);border-bottom:1px solid var(--c-border);}
 .qb-canvas-tools strong {font-size:14px;white-space:nowrap;}
@@ -40,7 +40,7 @@
 .qb-palette,.qb-config {padding:14px;overflow:auto;max-height:660px;}
 .qb-palette {border-right:1px solid var(--c-border);}
 .qb-palette button {display:block;text-align:left;width:100%;margin-bottom:8px;padding:10px;}
-.qb-palette small {display:block;margin-top:4px;font-size:11px;}
+.qb-palette small {display:block;margin-top:6px;font-size:12px;}
 .qb-palette p {font-size:12px;}
 .qb-config {border-left:1px solid var(--c-border);background:var(--c-surface-1);}
 .qb-config fieldset {border:0;padding:0;}
@@ -78,7 +78,45 @@
 .qb-table-scroll {overflow:auto;}
 .qb table {border-collapse:collapse;width:100%;font-size:13px;}
 .qb th,.qb td {padding:10px;text-align:left;vertical-align:top;border-bottom:1px solid var(--c-border);overflow-wrap:anywhere;}
-@media(max-width:1350px) {.qb-workspace,.qb-workspace--config-closed{grid-template-columns:150px minmax(0,1fr)}.qb-palette,.qb-config{padding:10px}.qb-meta-grid{grid-template-columns:1fr 1fr}.qb-config{grid-column:1/-1;border-left:0;border-top:1px solid var(--c-border);max-height:none}.qb-config .node-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.qb-config .node-settings>p{grid-column:1/-1}}
+@media(max-width:1350px) {.qb-workspace,.qb-workspace--config-closed{grid-template-columns:220px minmax(0,1fr)}.qb-palette,.qb-config{padding:10px}.qb-meta-grid{grid-template-columns:1fr 1fr}.qb-config{grid-column:1/-1;border-left:0;border-top:1px solid var(--c-border);max-height:none}.qb-config .node-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.qb-config .node-settings>p{grid-column:1/-1}}
 @media(max-width:550px) {.qb-workspace{grid-template-columns:minmax(0,1fr)}.qb-palette{max-height:210px;border-right:0;border-bottom:1px solid var(--c-border)}.qb-palette button{display:inline-block;width:calc(50% - 8px);margin-right:8px;vertical-align:top}.qb-palette button small{display:none}.qb-meta-grid,.qb-config .node-settings{grid-template-columns:1fr}.qb-tabs{flex-wrap:wrap}.qb-top label{max-width:none;min-width:100%}}
 
 .qb fieldset.qb-content { border:0; padding:0; margin:0; opacity:1; }
+.qb-start-guide {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:20px 0;padding:18px;background:var(--c-surface-1);border:1px solid var(--c-border);border-radius:6px;}
+.qb-start-guide p {font-size:13px;margin:8px 0 0;color:var(--c-fg-2);}
+.qb-guide-number {display:inline-grid;place-items:center;width:24px;height:24px;margin-right:8px;border:1px solid var(--c-accent);border-radius:50%;font-weight:600;}
+.qb-setup-check {padding:16px;margin:16px 0;background:var(--c-surface-1);border:1px solid var(--c-border);border-left:3px solid var(--c-accent);}
+.qb-setup-check ul {padding-left:22px;margin-bottom:0;}
+.qb-setup-check li {margin:8px 0;font-size:13px;line-height:1.6;}
+.qb-setup-check button {font-size:12px;margin-left:8px;min-height:32px;}
+.qb .qb-module-search {font-size:13px;}
+.qb-module-group h3 {font-size:13px;padding-top:10px;border-top:1px solid var(--c-border);}
+.qb-module-group button strong {font-size:14px;}
+.qb-link-status {padding:10px 12px;margin:0;background:var(--c-accent-soft);font-size:13px;}
+.qb-link-status button {margin-left:8px;}
+.qb-node-state {font-size:11px;font-weight:600;color:var(--c-fg-2);line-height:1.4;margin-bottom:2px;}
+.qb-node--linking {border:2px dashed var(--c-accent);}
+.qb-node .qb-node-description {font-size:11px;line-height:16px;margin:2px 0;min-height:16px;max-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.qb-node-io {font-size:11px;line-height:16px;color:var(--c-fg-2);white-space:nowrap;}
+.qb .qb-node-title {min-height:40px;max-height:40px;}
+.qb .qb-ports button {min-height:24px;padding:2px;font-size:11px;}
+.qb-test-wait,.qb-test-notice {padding:14px;border:1px solid var(--c-border);border-left:3px solid var(--c-accent);background:var(--c-surface-2);}
+.qb-run-heading,.qb-run-step-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.qb-run-heading h3 {font-size:18px;margin-bottom:0;}
+.qb-run-heading p {font-size:13px;color:var(--c-fg-2);}
+.qb-tested-question {border-bottom:1px solid var(--c-border);padding:12px 0;white-space:pre-wrap;}
+.qb-answer {white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.85;padding:18px;background:var(--c-surface-2);border:1px solid var(--c-border);}
+.qb-run-steps {padding:0;list-style:none;}
+.qb-run-step {padding:16px;margin:12px 0;border:1px solid var(--c-border);border-radius:6px;}
+.qb-run-step-heading span {font-size:12px;padding:3px 8px;border:1px solid var(--c-border);border-radius:4px;}
+.qb-run-step>p,.qb-step-error p {font-size:13px;}
+.qb-step-error {border-left:3px solid var(--c-danger,var(--c-border));padding:4px 12px;background:var(--c-surface-2);}
+.qb .qb-technical {border-bottom:0;}
+.qb-technical summary {font-size:13px;}
+.qb-config .node-guide {padding:12px;background:var(--c-surface-2);border:1px solid var(--c-border);border-radius:4px;}
+.qb-config .node-guide h4 {margin-top:0;font-size:15px;}
+.qb-config .node-guide dl {font-size:12px;line-height:1.65;margin:8px 0;}
+.qb-config .node-guide dt {font-weight:600;}
+.qb-config .node-guide dd {margin:0 0 8px;}
+@media(min-width:701px) and (max-width:1350px) {.qb-config .node-settings>.node-guide,.qb-config .node-settings>h4,.qb-config .node-settings>details{grid-column:1/-1}}
+@media(max-width:700px) {.qb-start-guide{grid-template-columns:1fr}.qb-workspace,.qb-workspace--config-closed{grid-template-columns:minmax(0,1fr)}.qb-palette{max-height:280px}.qb-palette button{width:100%;margin-right:0}.qb-palette button small{display:block}.qb-config .node-settings{grid-template-columns:1fr}}

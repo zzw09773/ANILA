@@ -10,7 +10,12 @@
     <p v-if="error" role="alert" class="qb-error">{{ error }}</p>
     <p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在讀取助手與可用資源…</p>
-    <fieldset class="qb-content" :disabled="blocked || !actorReady">
+    <nav class="qb-start-guide" aria-label="建立助手的三個步驟">
+      <div><span class="qb-guide-number">1</span><strong>選一個接近的範本</strong><p>先用情境範本帶入流程，再調整成自己的工作。</p></div>
+      <div><span class="qb-guide-number">2</span><strong>補資料、接好步驟</strong><p>點選步驟看用途與例子；下方清單會提醒尚缺設定。</p></div>
+      <div><span class="qb-guide-number">3</span><strong>儲存後，問一題試試</strong><p>確認答案與失敗原因，再送主管審核。</p></div>
+    </nav>
+    <fieldset class="qb-content" :disabled="loading || identityChanged || !actorReady">
     <div class="qb-top">
       <label>
         助手
@@ -80,7 +85,7 @@
             <input v-model="form.name" required maxlength="80" placeholder="例如：規章問答助手">
           </label>
           <label>
-            平台模型
+            平台模型（必填）
             <select v-model="form.model_id" required>
               <option value="">請選擇</option>
               <option v-for="m in catalog.models" :key="m.id" :value="m.id">{{ m.name || m.display_name }}</option>
@@ -121,19 +126,32 @@
       </div>
     </form>
     <div class="qb-tabs" aria-label="助手工作區">
-      <button v-for="tab in tabs" :key="tab.id" :aria-pressed="panel === tab.id" @click="panel = tab.id">{{ tab.label }}</button>
+      <button v-for="tab in tabs" :key="tab.id" :aria-pressed="panel === tab.id" :disabled="testing" @click="panel = tab.id">{{ tab.label }}</button>
     </div>
     <template v-if="panel === 'canvas'">
+      <section class="qb-setup-check" aria-label="試跑前的設定提醒">
+        <h2>{{ setupIssues.length ? `還有 ${setupIssues.length} 項設定待確認` : '已填入基本設定，可儲存後試跑' }}</h2>
+        <p class="hint">此清單協助檢查基本資料；實際執行仍會檢查模型、來源權限與流程。</p>
+        <ul v-if="setupIssues.length"><li v-for="(issue, index) in setupIssues" :key="`${issue.key}-${index}`">{{ issue.message }} <button @click="goToSetting(issue)">前往設定</button></li></ul>
+        <button v-else @click="panel = 'test'">前往測試對話</button>
+      </section>
       <p class="hint">從模組庫拖入畫布，或按模組加入。拖曳步驟標題可移動；標題取得焦點後可用方向鍵移動。拖曳出口到另一個步驟的「接到這裡」即可連線，也可在下方表單選起點與終點。</p>
       <div class="qb-workspace" :class="{'qb-workspace--config-closed': !configOpen}">
         <aside class="qb-palette" aria-label="模組庫">
           <h2>模組庫</h2>
-          <button v-for="m in modules" :key="m.kind" :disabled="!editable || busy" draggable="true" :title="m.description" @dragstart="paletteDrag($event, m.kind)" @click="addNode(m.kind)">
-            {{ m.name }}
-            <small>{{ m.description }}</small>
-          </button>
-          <h3>核准的查詢工具</h3>
-          <button v-for="tool in catalog.mcp_tools" :key="tool.id" :disabled="!editable || busy" draggable="true" @dragstart="paletteDrag($event, 'mcp', tool.id)" @click="addNode('mcp', null, tool.id)">
+          <label class="qb-module-search">找需要的模組<input v-model="moduleQuery" type="search" placeholder="例如：文件、判斷、回答"></label>
+          <p class="hint">按一下加入，也可以拖入畫布。</p>
+          <section v-for="group in visibleModuleGroups" :key="group.id" class="qb-module-group">
+            <h3>{{ group.name }}</h3>
+            <button v-for="m in group.modules" :key="m.kind" :data-module-kind="m.kind" :disabled="!editable || busy" draggable="true" :title="moduleGuide(m.kind).example" @dragstart="paletteDrag($event, m.kind)" @click="addNode(m.kind)">
+              <strong>{{ moduleGuide(m.kind).title }}</strong>
+              <small>{{ moduleGuide(m.kind).description }}</small>
+              <small>輸入：{{ moduleGuide(m.kind).input }}<br>輸出：{{ moduleGuide(m.kind).output }}</small>
+            </button>
+          </section>
+          <p v-if="!visibleModuleGroups.length && !visibleTools.length" role="status">找不到符合的模組，試試「文件」或清除搜尋。</p>
+          <h3>可直接加入的查詢工具</h3>
+          <button v-for="tool in visibleTools" :key="tool.id" :disabled="!editable || busy" draggable="true" @dragstart="paletteDrag($event, 'mcp', tool.id)" @click="addNode('mcp', null, tool.id)">
             {{ tool.name }}
             <small>{{ tool.description }}</small>
           </button>
@@ -154,7 +172,8 @@
               <button :aria-expanded="configOpen" aria-controls="qb-step-settings" @click="configOpen = !configOpen">{{ configOpen ? '收合步驟設定' : '顯示步驟設定' }}</button>
             </div>
           </div>
-          <p class="qb-canvas-status">{{ selected ? `已選取：${selected.label}` : '選取步驟後可調整設定' }}<span v-if="!configOpen">；步驟設定已收合</span>。可捲動查看，按「適合畫面」查看完整流程。</p>
+          <p class="qb-canvas-status" role="status">{{ selected ? `已選取：${selected.label}` : '選取步驟後可調整設定' }}<span v-if="!configOpen">；步驟設定已收合</span>。可捲動查看，按「適合畫面」查看完整流程。</p>
+          <p v-if="sourceNode" class="qb-link-status" role="status">正在從「{{ sourceNode.label }}」{{ sourceNode.kind === 'condition' ? (branch === 'false' ? '不成立' : '成立') + '出口' : '' }}連線。請按下一步的「接到這裡」。<button @click="sourceId = ''; targetId = ''">取消連線</button></p>
           <p v-if="drawnEdges.some(item => !item.geometry)" class="qb-canvas-status">部分步驟重疊或位置太近，連線暫時無法清楚顯示。可按「整理排列」重新排列步驟（GRAPH_LAYOUT）。</p>
           <div ref="canvasViewport" class="qb-canvas-scroll" tabindex="0" aria-label="流程畫布，可捲動查看所有步驟" @dragover.prevent @drop.prevent="dropNode">
             <div class="qb-canvas-size" :style="{width: canvasWidth * zoom + 'px', height: canvasHeight * zoom + 'px'}">
@@ -174,11 +193,13 @@
                       </g>
                     </g>
                   </svg>
-                  <article v-for="node in form.graph.nodes" :key="node.id" class="qb-node" :aria-label="`流程步驟：${node.label}`" :class="{selected: selectedId === node.id}" :style="{left: node.position.x + 'px', top: node.position.y + 'px'}">
-                    <button class="qb-node-title" :title="node.label" :aria-label="`選取${node.label}；方向鍵移動`" @click="selectedId = node.id" @pointerdown="startMove($event, node)" @pointermove="moveNode($event, node)" @pointerup="endMove" @pointercancel="endMove" @keydown="moveKey($event, node)">
+                  <article v-for="node in form.graph.nodes" :key="node.id" class="qb-node" :aria-label="`流程步驟：${node.label}`" :class="{selected: selectedId === node.id, 'qb-node--linking': sourceId === node.id}" :style="{left: node.position.x + 'px', top: node.position.y + 'px'}">
+                    <div class="qb-node-state">{{ selectedId === node.id ? '已選取' : moduleGuide(node.kind).title }}<span v-if="setupIssues.some(i => i.nodeId === node.id)"> · 待設定</span></div>
+                    <button class="qb-node-title" :title="node.label" :aria-label="`選取${node.label}；方向鍵移動`" @click="selectNode(node.id)" @pointerdown="startMove($event, node)" @pointermove="moveNode($event, node)" @pointerup="endMove" @pointercancel="endMove" @keydown="moveKey($event, node)">
                       {{ node.label }}
                     </button>
-                    <small>{{ modules.find(m => m.kind === node.kind)?.name }}</small>
+                    <p v-if="node.kind !== 'condition'" class="qb-node-description">{{ nodeSummary(node) }}</p>
+                    <div class="qb-node-io" :title="`輸入：${moduleGuide(node.kind).input} 輸出：${moduleGuide(node.kind).output}`">{{ nodeIO(node.kind).input }} → {{ nodeIO(node.kind).output }}</div>
                     <div class="qb-ports">
                       <template v-if="node.kind === 'condition'">
                         <button :disabled="!editable || busy" draggable="true" :aria-label="`從${node.label}的成立出口連線`" @dragstart="edgeDrag($event, node.id, 'true')" @click="sourceId = node.id; branch = 'true'">成立 →</button>
@@ -206,6 +227,7 @@
       </div>
       <section class="qb-connections">
         <h2>流程連線</h2>
+        <p class="hint">連線表示資料接著交給哪一步。要改接同一出口，先移除原連線，再新增；移除連線不會刪除步驟。</p>
         <fieldset :disabled="!editable || busy">
           <div class="qb-top">
             <label>
@@ -325,57 +347,17 @@
       <form @submit.prevent="test">
         <label>
           測試問題
-          <textarea v-model="message" rows="3" required maxlength="8000" placeholder="例如：出差申請需要哪些文件？"/>
+          <textarea v-model="message" :disabled="testing" rows="3" required maxlength="8000" placeholder="例如：出差申請需要哪些文件？"/>
         </label>
+        <p v-if="dirty || !version" class="hint">請先回到助手設定儲存新版本，再用這個版本試跑。</p>
         <button class="primary" type="submit" :disabled="busy || dirty || !version || !message.trim()">{{ testing ? '正在測試…' : '傳送測試' }}</button>
+        <button v-if="testing" type="button" @click="stopTest">停止等待</button>
       </form>
-      <template v-if="testResult">
-        <h3>助手回覆</h3>
-        <pre>{{ pretty(testResult.output) }}</pre>
-        <p>執行狀態：{{ testRunStatus(testResult) }}</p>
-        <p v-for="item in completionNotices(testResult)" :key="item.type" role="status">{{ item.message }}</p>
-        <ul v-if="testResult.artifacts?.length">
-          <li v-for="artifact in testResult.artifacts" :key="artifact.download_url">
-            <a v-if="safeArtifactUrl(artifact.download_url)" :href="artifact.download_url" download>{{ artifact.filename }}（下載文件草稿）</a>
-          </li>
-        </ul>
-        <h3>逐步紀錄（敏感資料已遮罩）</h3>
-        <details v-for="(step, i) in testResult.steps" :key="i">
-          <summary>{{ i + 1 }}. {{ nodeLabel(step.node_id) }} · {{ step.elapsed_ms }} 毫秒{{ step.status === 'incomplete' ? ' · 回答未完成' : step.error ? ' · 執行失敗' : '' }}</summary>
-          <p v-for="item in completionNotices(step)" :key="item.type" role="status">{{ item.message }}</p>
-          <section class="qb-model-completions" aria-label="模型完成資訊">
-            <h4>模型完成資訊</h4>
-            <p v-if="!modelCompletionDetails(step).length">此步驟未提供模型完成資訊。</p>
-            <div v-for="(item, index) in modelCompletionDetails(step)" :key="index">
-              <p>第 {{ index + 1 }} 次模型呼叫 · 結束原因：{{ item.reason }}</p>
-              <ul><li v-for="usage in item.usage" :key="usage.label">{{ usage.label }}：{{ usage.value }}</li></ul>
-              <p>{{ item.usageStatus }}</p>
-            </div>
-          </section>
-          <h4>輸入</h4>
-          <pre>{{ pretty(step.input) }}</pre>
-          <h4>輸出</h4>
-          <pre>{{ pretty(step.output) }}</pre>
-          <template v-if="step.retrieval || step.retrieval_context">
-            <h4>檢索文件片段與來源</h4>
-            <p v-for="text in retrievalNotices(step.retrieval, step.retrieval_context)" :key="text" role="status">{{ text }}</p>
-            <pre v-if="step.retrieval">{{ pretty(step.retrieval) }}</pre>
-          </template>
-          <template v-if="step.tool">
-            <h4>工具參數與結果</h4>
-            <pre>{{ pretty(step.tool) }}</pre>
-          </template>
-          <template v-if="modelContextNotices(step.context_replacements).length">
-            <h4>模型內容調整</h4>
-            <ul><li v-for="(event, index) in modelContextNotices(step.context_replacements)" :key="index">{{ contextSourceLabel(event.sourceId) }}：{{ event.message }}</li></ul>
-          </template>
-          <div v-if="step.error && !completionErrorIsShown(step)" class="qb-step-error" role="alert">
-            <p>{{ executionErrorNotice(step.error).message }}</p>
-            <p>錯誤類型：{{ executionErrorNotice(step.error).type }}</p>
-            <p v-if="executionErrorNotice(step.error).action">{{ executionErrorNotice(step.error).action }}</p>
-          </div>
-        </details>
-      </template>
+      <p v-if="testing" class="qb-test-wait" role="status">問題已送出，正在等待流程回傳結果。目前尚未收到逐步進度，完成後會列出實際執行的步驟。</p>
+      <p v-if="testNotice" class="qb-test-notice" role="status">{{ testNotice }}</p>
+      <p v-if="testResult && testedRevision !== version?.revision" class="qb-test-notice">下方是第 {{ testedRevision }} 版的結果，目前選的是第 {{ version?.revision }} 版。修改後請儲存並重新試跑，不能用舊結果確認新內容。</p>
+      <TestRunReview v-if="testResult" :result="testResult" :graph="testedGraph" :revision="testedRevision" :question="testedQuestion" @edit="editTestStep"/>
+
     </section>
     </fieldset>
   </div>
@@ -388,11 +370,13 @@ import { extractError, errorType } from '../api/errors';
 import * as api from '../api/quickBuilder';
 import NodeSettings from '../quickBuilder/NodeSettings.vue';
 import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
+import TestRunReview from '../quickBuilder/TestRunReview.vue';
+import { moduleGuide, MODULE_GROUPS } from '../quickBuilder/moduleGuides';
+import { setupNeeds, nodeSummary, nodeIO } from '../quickBuilder/builderGuidance';
+import { readTestSession, saveTestSession, testStorage } from '../quickBuilder/testSession';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
-import { completionNotices, completionTestResult, completionErrorIsShown, testRunStatus, modelCompletionDetails } from '../quickBuilder/completion';
-import { executionErrorNotice } from '../quickBuilder/executionError';
-import { retrievalNotices, modelContextNotices } from '../quickBuilder/retrievalNotices';
+import { completionTestResult } from '../quickBuilder/completion';
 import { clone, modules, initialGraph, makeNode, connect, removeNode, maskTrace, statusLabel, GRAPH_GEOMETRY, layoutGraph, edgeGeometry, graphBounds, canvasPoint, canvasDelta } from '../quickBuilder/graph';
 const assistants = ref([]),
   templates = ref([]),
@@ -423,6 +407,8 @@ const assistants = ref([]),
   baseline = ref(''),
   templateName = ref(''),
   templateDescription = ref('');
+const moduleQuery = ref(''), testNotice = ref(''), testedRevision = ref(null), testedGraph = ref(null), testedQuestion = ref('');
+let testController, testEpoch = 0;
 const actor = useDraftActor();
 const { identityChanged, identityMessage, ready: actorReady } = actor;
 const blocked = computed(() => busy.value || loading.value || identityChanged.value);
@@ -448,6 +434,10 @@ const blank = () => ({
 });
 const form = reactive(blank());
 const configOpen = ref(true), canvasViewport = ref(null), zoom = ref(1), fitMode = ref(false);
+const setupIssues = computed(() => setupNeeds(form));
+const moduleMatches = m => { const g = moduleGuide(m.kind); return [g.title,g.description,g.input,g.output,g.example,g.technicalName].join(' ').toLocaleLowerCase().includes(moduleQuery.value.trim().toLocaleLowerCase()); };
+const visibleModuleGroups = computed(() => MODULE_GROUPS.map(g => ({...g,modules:modules.filter(m => moduleGuide(m.kind).group === g.id && moduleMatches(m))})).filter(g => g.modules.length));
+const visibleTools = computed(() => (catalog.value.mcp_tools || []).filter(t => `${t.name} ${t.description || ''}`.toLocaleLowerCase().includes(moduleQuery.value.trim().toLocaleLowerCase())));
 const versions = computed(() => detail.value?.versions || []);
 const version = computed(() => versions.value.find(v => String(v.id) === String(versionId.value)));
 const editable = computed(() => !blocked.value && actorReady.value && (!detail.value || detail.value.can_edit === true && (!version.value || Number(version.value.revision) === Number(detail.value.draft_revision))));
@@ -560,6 +550,8 @@ function setForm(data) {
   selectedId.value = form.graph.nodes[0]?.id || '';
   baseline.value = JSON.stringify(form);
   testResult.value = null;
+  testNotice.value = '';
+  testedQuestion.value = '';
   resetCanvasView();
 }
 function newAssistant() {
@@ -597,6 +589,7 @@ async function fetchDetail(id) {
   const latest = [...versions.value].sort((a, b) => b.revision - a.revision)[0];
   versionId.value = latest?.id || '';
   setForm(latest || res.data);
+  await restoreTest();
   return true;
 }
 async function chooseAssistant(event) {
@@ -639,6 +632,8 @@ function applyTemplate() {
   form.name = chosenTemplate.value.name;
   form.description = chosenTemplate.value.description;
   selectedId.value = form.graph.nodes[0]?.id;
+  testResult.value = null;
+  testNotice.value = '';
   resetCanvasView();
   notice.value = '已套用範本，請選擇模型、文件集或查詢工具後儲存。';
 }
@@ -750,25 +745,102 @@ async function compare() {
     busy.value = false;
   }
 }
+function selectNode(id, open = false) {
+  selectedId.value = id;
+  if (open) configOpen.value = true;
+}
+async function goToSetting(issue) {
+  panel.value = 'canvas';
+  if (issue.nodeId) selectNode(issue.nodeId, true);
+  await nextTick();
+  const target = issue.nodeId ? document.getElementById('qb-step-settings') : document.querySelector(issue.key === 'model' ? '.qb-metadata select' : '.qb-metadata input');
+  target?.scrollIntoView?.({block:'nearest'});
+  (issue.nodeId ? target?.querySelector('input,select,textarea') : target)?.focus?.();
+}
+function editTestStep(id) {
+  if (id) goToSetting({nodeId:id});
+  else panel.value = 'canvas';
+}
+function sessionPointer(state, run, versionIdValue = version.value?.id) {
+  return {actor:actor.actorId.value,assistant:detail.value?.id,version:versionIdValue,state,run};
+}
+async function restoreTest() {
+  const current = readTestSession(testStorage(), actor.actorId.value, detail.value?.id);
+  if (!current || identityChanged.value) return;
+  if (current.state !== 'finished') {
+    testNotice.value = '上次試跑的結果尚未確認（TEST_RESULT_UNKNOWN）。可能仍在伺服器執行，請先確認後再試，不代表執行成功或已停止。';
+    return;
+  }
+  const token = ++testEpoch;
+  try {
+    const response = await api.getRun(current.run);
+    if (token !== testEpoch || identityChanged.value || actor.actorId.value !== current.actor || detail.value?.id !== current.assistant) return;
+    const sourceVersion = versions.value.find(v => v.id === current.version);
+    if (!sourceVersion) return;
+    testResult.value = completionTestResult(response.data, maskTrace(response.data));
+    testedGraph.value = clone(sourceVersion.graph);
+    testedRevision.value = sourceVersion.revision;
+    testedQuestion.value = '';
+    testNotice.value = `已重新取得第 ${sourceVersion.revision} 版的上次試跑結果；這不是新的執行。`;
+  } catch {
+    if (token === testEpoch && !identityChanged.value) testNotice.value = '無法讀取上次試跑結果（TEST_RESULT_UNAVAILABLE）。可能已無權限或資料已不可用；請確認登入身分與助手版本。';
+  }
+}
+function stopTest() {
+  if (!testing.value) return;
+  ++testEpoch;
+  testController?.abort();
+  saveTestSession(testStorage(), sessionPointer('unknown'));
+  testing.value = false;
+  busy.value = false;
+  testNotice.value = '已停止等待（TEST_RESULT_UNKNOWN）。無法確認伺服器執行是否已結束；請先確認後再試，這不是執行成功或已停止的證明。';
+}
 async function test() {
-  if (blocked.value || dirty.value || !version.value) return;
+  if (blocked.value || dirty.value || !version.value || !message.value.trim()) return;
   busy.value = true;
   testing.value = true;
   error.value = '';
+  testNotice.value = '';
   testResult.value = null;
+  const token = ++testEpoch;
+  const pointer = sessionPointer('waiting');
+  testedGraph.value = clone(version.value.graph);
+  testedRevision.value = version.value.revision;
+  testedQuestion.value = maskTrace(message.value);
+  saveTestSession(testStorage(), pointer);
+  testController = new AbortController();
   try {
     const raw = (await api.assistantAction(detail.value.id, 'test', {
       version_id: version.value.id,
       message: message.value
-    }, actor.mutationOptions())).data;
+    }, {...actor.mutationOptions(), signal:testController.signal})).data;
+    if (token !== testEpoch || identityChanged.value || actor.actorId.value !== pointer.actor || detail.value?.id !== pointer.assistant) return;
     testResult.value = completionTestResult(raw, maskTrace(raw));
+    if (!saveTestSession(testStorage(), {...pointer,state:'finished',run:raw.id})) testNotice.value = '已取得這次結果，但瀏覽器未保留執行指標（TEST_HISTORY_UNAVAILABLE）；重載後不會自動找回這次結果。';
   } catch (e) {
+    if (token !== testEpoch || identityChanged.value) return;
+    saveTestSession(testStorage(), {...pointer,state:'unknown'});
+    testNotice.value = '尚未取得可確認的試跑結果（TEST_RESULT_UNKNOWN）。請確認連線或服務狀態後再試。';
     fail(e);
   } finally {
-    busy.value = false;
-    testing.value = false;
+    if (token === testEpoch) {
+      busy.value = false;
+      testing.value = false;
+      testController = null;
+    }
   }
 }
+watch(identityChanged, changed => {
+  if (!changed) return;
+  ++testEpoch;
+  testController?.abort();
+  testing.value = false;
+  busy.value = false;
+  testResult.value = null;
+  testNotice.value = '';
+  testedQuestion.value = '';
+});
+
 function addNode(kind, position, toolId) {
   if (!editable.value || busy.value) return;
   fitMode.value = false;
@@ -780,7 +852,7 @@ function addNode(kind, position, toolId) {
   const n = makeNode(kind, nodes.length, available);
   if (toolId) n.config.tool_id = toolId;
   form.graph.nodes.push(n);
-  selectedId.value = n.id;
+  selectNode(n.id, true);
   if (!position) nextTick(() => {
     const viewport = canvasViewport.value;
     if (!viewport?.clientWidth || !viewport.clientHeight) return;
@@ -807,6 +879,7 @@ function edgeDrop(event, target) {
     error.value = '';
     sourceId.value = '';
     targetId.value = '';
+    notice.value = '已連接步驟，儲存新版本後即可試跑。';
   } catch (e) {
     fail(e);
   }
@@ -903,7 +976,7 @@ onMounted(() => {
   }
   window.addEventListener('beforeunload', beforeUnload);
 });
-onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); canvasObserver?.disconnect(); });
+onBeforeUnmount(() => { ++testEpoch; testController?.abort(); window.removeEventListener('beforeunload', beforeUnload); canvasObserver?.disconnect(); });
 onBeforeRouteLeave(() => discard());
 </script>
 <style src="../quickBuilder/builder.css"></style>
