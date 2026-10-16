@@ -30,7 +30,7 @@ import re
 import stat
 import tarfile
 
-TOOL_VERSION = "1.1.1"
+TOOL_VERSION = "1.1.2"
 COVERAGE_BASELINE = "816f2b2b053023b9113892e4f7d595d2fc1ba18c"
 # Frozen review-time comparison, not runtime Git discovery. Future changes
 # require a new explicit review. Omitted files are never opened or archived.
@@ -146,6 +146,7 @@ OMITTED_FILES = (
     'services/ingestion-worker/tests/test_handlers_zero_chunk.py',
     'tools/sbom/test_build_repo_sbom.py',
     'scripts/release/tests/test_restore_ownership.sh',
+    'scripts/release/tests/test_copy_tree.py',
     'infra/deployment/scripts/tests/test_restore_offline.py',
 )
 MAX_SOURCE_FILE = 16 * 1024 * 1024

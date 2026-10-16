@@ -90,31 +90,75 @@ rsync -aH --delete \
 
 `pg_restore` 進一個**已經有表**的庫會失敗。演練用下面的丟棄庫；正式換庫時先換一顆空的 data volume，或先在丟棄庫還原成功再把平台指過去。不要對還在服務的 production 庫直接灌。
 
-還原腳本自己會先用 `ANILA_RESTORE_CONTAINER` 連進目標庫做檢查，只要容器活著就行，映像不必是同一張；`restore-all.sh` 驗 `db.dump` 時預設用 `ANILA_BACKUP_IMAGE`（`anila-pgvector:local`），所以出貨包載入的映像就夠，不必再拉別的。
+還原腳本會用 `ANILA_RESTORE_CONTAINER` 檢查目標庫。兩支腳本都先檢查已在本機的 `ANILA_BACKUP_IMAGE`（預設 `anila-pgvector:local`），固定其不可變映像 ID 後才進行寫入；helper 使用 `--pull never`，不會在還原時下載。缺少或無法識別映像時會在寫入前停止，回報 `RESTORE_HELPER_IMAGE_MISSING` 或 `RESTORE_HELPER_IMAGE_INVALID`。先核對離線映像清單及載入結果，不要臨時拉取其他映像。
+
+**丟棄資料庫不等於完整演練隔離。** `restore-all.sh` 還會寫入檔案目錄及三個具名 volume。演練必須同時使用全新資料庫容器、全新 data volume、空白 share 目錄及三個獨享 volume；不可沿用 repo 的 `share/` 或 `anila_*` volume。下例只用新建暫存目錄衍生名稱，先拒絕已存在的容器或 volume。執行前將快照路徑換成已核對的完整快照，並準備已核對的本機 helper。
 
 ```bash
-# 演練庫（不要跟活著的 anila-csp-db-1 撞名）
-docker volume create anila-ops-restore-data
-docker run -d --name anila-ops-restore-db \
-  -e POSTGRES_USER=csp \
-  -e POSTGRES_PASSWORD='暫訂密碼-自己想' \
-  -e POSTGRES_DB=csp \
-  -v anila-ops-restore-data:/var/lib/postgresql/data \
-  -p 127.0.0.1:5544:5432 \
-  anila-pgvector:local
-until docker exec anila-ops-restore-db pg_isready -U csp -d csp; do sleep 1; done
+# 所有目標皆為這一輪新建；快照來源唯讀使用。
+drill_root="$(mktemp -d "${TMPDIR:-/tmp}/anila-restore-drill.XXXXXXXX")"
+drill_project="$(basename "$drill_root")"
+drill_db="${drill_project}-db"
+drill_data="${drill_project}-data"
+drill_studio="${drill_project}-studio"
+drill_router="${drill_project}-router"
+drill_n8n="${drill_project}-n8n"
+drill_share="$drill_root/share"
+drill_snapshot='/受控備份目錄/daily/YYYYMMDD-HHMMSS'
 
-# 這一行同時還原資料庫與檔案。SNAPSHOT 用 daily/ 或 monthly/ 那個目錄。
+# 只接受已載入的本機映像，啟動演練庫也固定同一個不可變 ID。
+drill_image="$(docker image inspect --format '{{.Id}}' -- anila-pgvector:local)" || exit 1
+[[ "$drill_image" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+if docker container inspect "$drill_db" >/dev/null 2>&1; then
+  printf '演練容器已存在，停止。\n' >&2
+  exit 1
+fi
+for drill_volume in "$drill_data" "$drill_studio" "$drill_router" "$drill_n8n"; do
+  if docker volume inspect "$drill_volume" >/dev/null 2>&1; then
+    printf '演練 volume 已存在，停止。\n' >&2
+    exit 1
+  fi
+done
+mkdir -m 700 "$drill_share"
+for drill_volume in "$drill_data" "$drill_studio" "$drill_router" "$drill_n8n"; do
+  docker volume create "$drill_volume" || exit 1
+done
+
+# 密碼由操作者輸入，不寫入指令文字或文件；不開放主機連接埠。
+read -r -s -p '演練資料庫密碼：' drill_password
+printf '\n'
+[[ -n "$drill_password" ]] || exit 1
+POSTGRES_PASSWORD="$drill_password" docker run -d --pull never --network none \
+  --name "$drill_db" \
+  -e POSTGRES_USER=csp \
+  -e POSTGRES_PASSWORD \
+  -e POSTGRES_DB=csp \
+  -v "$drill_data:/var/lib/postgresql/data" \
+  "$drill_image" || exit 1
+unset drill_password
+for drill_attempt in {1..60}; do
+  docker exec "$drill_db" pg_isready -U csp -d csp && break
+  sleep 1
+done
+docker exec "$drill_db" pg_isready -U csp -d csp || exit 1
+
+# 同時指定所有檔案與 volume 目標，不能只改資料庫容器。
 ANILA_RESTORE_CONFIRM=yes \
-ANILA_RESTORE_CONTAINER=anila-ops-restore-db \
-bash infra/deployment/scripts/restore-all.sh share/backups/daily/YYYYMMDD-HHMMSS
+ANILA_BACKUP_IMAGE="$drill_image" \
+ANILA_RESTORE_CONTAINER="$drill_db" \
+ANILA_SHARE_ROOT="$drill_share" \
+ANILA_COMPOSE_PROJECT="$drill_project" \
+ANILA_STUDIO_VOLUME="$drill_studio" \
+ANILA_ROUTER_VOLUME="$drill_router" \
+ANILA_N8N_VOLUME="$drill_n8n" \
+bash infra/deployment/scripts/restore-all.sh "$drill_snapshot"
 ```
 
-最後一行要看到 `RESTORE_ALL_OK`。檔案會解進 repo 的 `share/`（上傳、附件、靜態檔、CA、快速起步 profile），並解回 Studio、路由會話、n8n 三個 volume。具名 volume 的名字預設是 `anila_anila-studio-artifacts`、`anila_router-sessions`、`anila_n8n_data`（專案名預設 `anila`；可用 `ANILA_COMPOSE_PROJECT` 或 `ANILA_STUDIO_VOLUME` 等覆寫）。
+最後一行要看到 `RESTORE_ALL_OK`。本例的上傳、附件、靜態檔、CA、快速起步 profile 都解入 `$drill_share`，Studio、路由會話及 n8n 解入本輪獨享 volume。正式還原若省略這些覆寫，腳本仍預設 repo 的 `share/` 與專案 volume；不要把省略目標的指令當成演練。
 
-兩邊都是 `tar -xzf` 蓋上去（volume 是用 `anila-pgvector:local` 的 `--rm` 容器解）：同名的檔會被覆蓋，但備份之後才新增的檔會留著，不會先清空。
+兩邊都是 `tar -xzf` 蓋上去（volume 用已固定映像 ID 的 `--rm --pull never --network none` 容器解）：同名的檔會被覆蓋，備份之後才新增的檔會留著，不會先清空。快照需先由受權維護人員核對可信來源與完整性；腳本的可讀性檢查不等於可信快照驗證，也不保證資料庫與檔案跨資源原子切換。
 
-只要資料庫、不要動檔案時，仍可用 `restore-csp-db.sh`（`ANILA_RESTORE_DUMP` 指到快照裡的 `db.dump`，`ANILA_RESTORE_CONTAINER` 指目標容器）。它從 `pgvector/pgvector:pg16` 起一個 `--rm` 的 `pg_restore`；內網若沒有這張，先 `docker tag` 或補載入，才不會在還原中途停住。
+只要資料庫、不要動檔案時，使用 `restore-csp-db.sh`，將 `ANILA_RESTORE_DUMP` 指向快照的 `db.dump`，`ANILA_RESTORE_CONTAINER` 指向獨享目標庫，`ANILA_BACKUP_IMAGE` 指向已核對的本機 helper。helper 固定映像 ID，使用 `--pull never --network container:<目標庫>`，保留擁有權並核對還原不變式；不需要另外取得 `pgvector/pgvector:pg16`。
 
 ### 3.1 還原後必核
 
@@ -138,8 +182,10 @@ bash infra/deployment/scripts/restore-all.sh share/backups/daily/YYYYMMDD-HHMMSS
 演練完：
 
 ```bash
-docker rm -f anila-ops-restore-db
-docker volume rm anila-ops-restore-data
+docker rm -f "$drill_db"
+docker volume rm "$drill_data" "$drill_studio" "$drill_router" "$drill_n8n"
+# 保留 drill_root 供核對；確認本輪資料不需留存後，再按受控程序清理。
+printf '本輪演練目錄：%s\n' "$drill_root"
 ```
 
 ---
