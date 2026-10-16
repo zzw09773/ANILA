@@ -1,0 +1,406 @@
+{
+  "schema": "anila.offline-patch-plan/v1",
+  "base_revision": "0000000000000000000000000000000000000000",
+  "target_revision": "1111111111111111111111111111111111111111",
+  "source_bundle_sha256": null,
+  "changes": [
+    {
+      "path": "docs/example.md",
+      "before_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "sources": [
+    {
+      "id": "image:pgvector",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:pgbouncer",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:csp-credential-dirs",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:csp",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:redis",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:ingestion-worker",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:router",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:nginx",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:pptx-renderer",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:hr-lookup",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:anila-studio",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:anilalm",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:anila-ui",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:codeserver",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:n8n",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    },
+    {
+      "id": "image:asr-gateway",
+      "version": null,
+      "artifact_sha256": null,
+      "source_url": null,
+      "publisher": null,
+      "license_expression": null,
+      "author_country": null,
+      "control_country": null,
+      "approval": {
+        "decision": "pending",
+        "reviewer_id": null,
+        "evidence_sha256": null
+      }
+    }
+  ],
+  "images": [
+    {
+      "id": "pgvector",
+      "source_id": "image:pgvector",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "pgbouncer",
+      "source_id": "image:pgbouncer",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "csp-credential-dirs",
+      "source_id": "image:csp-credential-dirs",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "csp",
+      "source_id": "image:csp",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "redis",
+      "source_id": "image:redis",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "ingestion-worker",
+      "source_id": "image:ingestion-worker",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "router",
+      "source_id": "image:router",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "nginx",
+      "source_id": "image:nginx",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "pptx-renderer",
+      "source_id": "image:pptx-renderer",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "hr-lookup",
+      "source_id": "image:hr-lookup",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "anila-studio",
+      "source_id": "image:anila-studio",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "anilalm",
+      "source_id": "image:anilalm",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "anila-ui",
+      "source_id": "image:anila-ui",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "codeserver",
+      "source_id": "image:codeserver",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "n8n",
+      "source_id": "image:n8n",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    },
+    {
+      "id": "asr-gateway",
+      "source_id": "image:asr-gateway",
+      "archive_sha256": null,
+      "image_digest": null,
+      "sbom_sha256": null,
+      "license_review_sha256": null
+    }
+  ],
+  "worker": {
+    "scope": "target-worker-image",
+    "image_digest": null,
+    "checks": {
+      "parser-packages": null,
+      "tesseract": null,
+      "chi_tra": null,
+      "eng": null,
+      "libreoffice": null,
+      "pandoc": null,
+      "fonts": null,
+      "chromium": null,
+      "offline-egress-policy": null
+    }
+  },
+  "acceptance": {
+    "source_verification_sha256": null,
+    "file_restore_rehearsal_sha256": null,
+    "regression_report_sha256": null,
+    "rollback_review_sha256": null
+  }
+}
