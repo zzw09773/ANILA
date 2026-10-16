@@ -12,6 +12,7 @@
 #
 # 可選：
 #   ANILA_DB_NAME / ANILA_DB_USER     預設 csp / csp
+#   ANILA_BACKUP_IMAGE               已載入的 helper 映像，預設 anila-pgvector:local
 #
 # 還原後若要讓平台 csp 服務連得上，請依 runbook 手動 ALTER ROLE csp_app
 # PASSWORD（值來自 .env 的 CSP_APP_DB_PASSWORD）。本腳本不碰密碼。
@@ -27,6 +28,12 @@ DB_NAME="${ANILA_DB_NAME:-csp}"
 DB_USER="${ANILA_DB_USER:-csp}"
 
 [[ -f "$DUMP" ]] || fail "找不到 dump 檔"
+# 本機標籤只解析一次；後續固定使用 ID，缺映像時尚未寫入資料庫或檔案。
+BACKUP_IMAGE="${ANILA_BACKUP_IMAGE:-anila-pgvector:local}"
+BACKUP_IMAGE_ID="$(docker image inspect --format '{{.Id}}' -- "$BACKUP_IMAGE" 2>/dev/null)" \
+  || fail "找不到已載入的還原 helper 映像，尚未寫入；請先核對離線映像清單（RESTORE_HELPER_IMAGE_MISSING）"
+[[ "$BACKUP_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] \
+  || fail "還原 helper 映像 ID 無效，尚未寫入（RESTORE_HELPER_IMAGE_INVALID）"
 docker inspect "$CONTAINER" >/dev/null 2>&1 || fail "目標容器不存在或未啟動"
 
 # dump 含授予 csp_app 的 ACL；目標必須先有這個 role，否則 pg_restore 滿屏 ERROR。
@@ -67,10 +74,11 @@ log "開始 pg_restore（保留 dump 內的擁有權，見下方說明）"
 # 一句話：正確狀態不是「全歸某一個 role」，而是 dump 當下那張擁有權地圖。
 # 保留它最簡單也最忠實；之後再用 assert-db-ownership.sql 補強不變式。
 set +e
-docker run --rm --network "container:${CONTAINER}" \
+docker run --rm --pull never --network "container:${CONTAINER}" \
+  --entrypoint pg_restore \
   -v "$WORKDIR:/backup:ro" \
-  pgvector/pgvector:pg16 \
-  pg_restore -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
+  "$BACKUP_IMAGE_ID" \
+  -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
     /backup/restore.dump \
   >"$RESTORE_OUT" 2>"$RESTORE_ERR"
 RC=$?

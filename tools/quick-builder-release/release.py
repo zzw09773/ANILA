@@ -142,6 +142,7 @@ OMITTED_FILES = (
     'services/ingestion-worker/tests/test_handlers_zero_chunk.py',
     'tools/sbom/test_build_repo_sbom.py',
     'scripts/release/tests/test_restore_ownership.sh',
+    'infra/deployment/scripts/tests/test_restore_offline.py',
 )
 MAX_SOURCE_FILE = 16 * 1024 * 1024
 MAX_SOURCE_TOTAL = 64 * 1024 * 1024
@@ -300,6 +301,8 @@ SOURCE_FILES = tuple(sorted((
     "scripts/release/images.tsv", "scripts/release/build-release.sh",
     "scripts/release/release-lib.sh", "scripts/release/anila-update.sh",
     "infra/deployment/scripts/assert-db-ownership.sql",
+    "infra/deployment/scripts/restore-csp-db.sh",
+    "infra/deployment/scripts/restore-all.sh",
     "scripts/release/preflight.sh", "services/csp/requirements.txt", "services/csp/requirements-dev.txt",
     "services/csp/app/api/quick_builder.py", "services/csp/app/api/quick_mcp.py",
     "services/csp/app/api/quick_readiness.py", "services/csp/app/api/ingestion/search.py",

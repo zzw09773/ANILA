@@ -9,6 +9,7 @@
 #   ANILA_RESTORE_CONFIRM=yes
 #   ANILA_RESTORE_CONTAINER   目標 Postgres 容器（不會猜 production）
 #   參數：快照目錄
+# 可選 ANILA_BACKUP_IMAGE：已載入的 helper 映像，預設 anila-pgvector:local。
 #
 # 檔案會解進 repo 的 share/（上傳、附件、靜態檔、CA、快速起步 profile），
 # 具名 volume 用 docker 解回去。先停掉會寫這些路徑的服務再跑。
@@ -40,6 +41,18 @@ for f in "${need[@]}"; do
   [[ -f "$SNAPSHOT/$f" ]] || fail "快照缺少 $f"
 done
 
+# 在任何資料庫或檔案寫入前固定 helper ID；未使用 helper 的略過模式不要求映像。
+BACKUP_IMAGE_ID=""
+if [[ "${ANILA_RESTORE_SKIP_DB:-}" != "1" || "${ANILA_RESTORE_SKIP_VOLUMES:-}" != "1" ]] \
+  || ! command -v pg_restore >/dev/null 2>&1; then
+  BACKUP_IMAGE="${ANILA_BACKUP_IMAGE:-anila-pgvector:local}"
+  BACKUP_IMAGE_ID="$(docker image inspect --format '{{.Id}}' -- "$BACKUP_IMAGE" 2>/dev/null)" \
+    || fail "找不到已載入的還原 helper 映像，尚未寫入；請先核對離線映像清單（RESTORE_HELPER_IMAGE_MISSING）"
+  [[ "$BACKUP_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || fail "還原 helper 映像 ID 無效，尚未寫入（RESTORE_HELPER_IMAGE_INVALID）"
+  export ANILA_BACKUP_IMAGE="$BACKUP_IMAGE_ID"
+fi
+
 # 任何寫入之前先確認每一份封存讀得回去。壞掉的附件 tar 不能發生在
 # 資料庫已經被換掉之後。
 dump_magic=$(dd if="$SNAPSHOT/db.dump" bs=5 count=1 2>/dev/null || true)
@@ -49,10 +62,9 @@ if command -v pg_restore >/dev/null 2>&1; then
   pg_restore --list "$SNAPSHOT/db.dump" >/dev/null \
     || fail "db.dump 目錄無法讀取，尚未寫入"
 else
-  image="${ANILA_BACKUP_IMAGE:-anila-pgvector:local}"
-  docker run --rm --entrypoint pg_restore \
+  docker run --rm --pull never --network none --entrypoint pg_restore \
     -v "${SNAPSHOT}:/src:ro" \
-    "$image" \
+    "$BACKUP_IMAGE_ID" \
     --list /src/db.dump >/dev/null \
     || fail "db.dump 目錄無法讀取，尚未寫入"
 fi
@@ -90,14 +102,13 @@ extract_bind "$SNAPSHOT/files-quickstart.tar" "$SHARE_ROOT/quickstart"
 
 if [[ "${ANILA_RESTORE_SKIP_VOLUMES:-}" != "1" ]]; then
   project="${ANILA_COMPOSE_PROJECT:-anila}"
-  image="${ANILA_BACKUP_IMAGE:-anila-pgvector:local}"
   extract_volume() {
     local tarname=$1 vol=$2
     log "解 volume ${vol}"
-    docker run --rm --entrypoint tar \
+    docker run --rm --pull never --network none --entrypoint tar \
       -v "${vol}:/dest" \
       -v "${SNAPSHOT}:/src:ro" \
-      "$image" \
+      "$BACKUP_IMAGE_ID" \
       -xzf "/src/${tarname}" -C /dest
   }
   extract_volume files-studio-artifacts.tar \
