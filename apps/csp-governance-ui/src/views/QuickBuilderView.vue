@@ -10,11 +10,10 @@
     <p v-if="error" role="alert" class="qb-error">{{ error }}</p>
     <p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在讀取助手與可用資源…</p>
-    <nav class="qb-start-guide" aria-label="建立助手的三個步驟">
-      <div><span class="qb-guide-number">1</span><strong>選一個接近的範本</strong><p>先用情境範本帶入流程，再調整成自己的工作。</p></div>
-      <div><span class="qb-guide-number">2</span><strong>補資料、接好步驟</strong><p>點選步驟看用途與例子；下方清單會提醒尚缺設定。</p></div>
-      <div><span class="qb-guide-number">3</span><strong>儲存後，問一題試試</strong><p>確認答案與失敗原因，再送主管審核。</p></div>
-    </nav>
+    <details class="qb-start-guide">
+      <summary>三步開始：選範本 → 補設定、接步驟 → 儲存後試跑</summary>
+      <ol><li>選接近工作情境的範本，再調整流程。</li><li>點選步驟看用途、輸入輸出與例子；展開設定提醒補缺件。</li><li>儲存後用一個實際問題試跑，確認結果再送主管審核。</li></ol>
+    </details>
     <fieldset class="qb-content" :disabled="loading || identityChanged || !actorReady">
     <div class="qb-top">
       <label>
@@ -33,50 +32,10 @@
       </label>
       <button :disabled="!templateId || !editable || busy" @click="applyTemplate">套用範本</button>
     </div>
-    <p v-if="chosenTemplate" class="hint">
-      {{ chosenTemplate.description }}
-      {{ (chosenTemplate.configuration_notes || chosenTemplate.required_settings || []).join?.('；') || chosenTemplate.configuration_notes }}
-    </p>
-    <details v-if="catalog.can_manage_templates" class="qb-section">
-      <summary>管理情境範本</summary>
-      <p>將目前畫布與用途另存為範本；不包含模型、文件存取權或工具核准權。內建範本可複製新增，單位自訂範本可更新。</p>
-      <label>
-        範本名稱
-        <input v-model="templateName" maxlength="100" required>
-      </label>
-      <label>
-        範本用途
-        <textarea v-model="templateDescription" maxlength="1000" rows="2"/>
-      </label>
-      <div class="qb-actions">
-        <button :disabled="busy || !templateName.trim()" @click="saveTemplate(false)">另存為新範本</button>
-        <button :disabled="busy || !templateName.trim() || typeof chosenTemplate?.id !== 'number'" @click="saveTemplate(true)">更新選取的自訂範本</button>
-      </div>
-    </details>
-    <details v-if="catalog.can_manage_templates" class="qb-section">
-      <summary>管理文件集開放範圍</summary>
-      <p>這裡核准的是文件本身的查詢範圍。助手公開不會自動公開文件；開放後，指定範圍內且符合密等的人員才可檢索。</p>
-      <p v-if="!catalog.collections?.length">尚無可管理的文件集。</p>
-      <fieldset v-for="collection in catalog.collections" :key="collection.id" :disabled="busy">
-        <legend>{{ collection.name }}</legend>
-        <label>
-          文件開放範圍
-          <select v-model="collection.publication_scope">
-            <option value="unit">本單位</option>
-            <option value="departments">指定單位</option>
-            <option value="public">全院</option>
-          </select>
-        </label>
-        <label v-if="collection.publication_scope === 'departments'">
-          可查詢的單位編號
-          <input :value="(collection.target_department_ids || []).join(', ')" @input="collection.target_department_ids = parseDepartments($event.target.value)">
-          <small>以逗號分隔單位編號。請確認文件內容適合開放給這些單位。</small>
-        </label>
-        <button :disabled="!collection.publication_scope" @click="saveCollectionPublication(collection)">儲存文件開放範圍</button>
-      </fieldset>
-    </details>
-    <ReadinessPanel v-if="catalog.can_manage_readiness === true && !identityChanged"/>
-    <form class="qb-metadata" @submit.prevent="save">
+    <details v-if="chosenTemplate" class="qb-template-notes"><summary>範本說明與套用後的設定</summary><p>{{ chosenTemplate.description }}</p><p>{{ (chosenTemplate.configuration_notes || chosenTemplate.required_settings || []).join?.('；') || chosenTemplate.configuration_notes }}</p></details>
+    <form class="qb-metadata" novalidate @submit.prevent="save">
+      <details ref="metadataDetails" class="qb-metadata-details">
+        <summary>助手基本資料 <span>{{ form.name || '尚未命名' }} · {{ selectedModelName }} · {{ form.classification_level }} · {{ scopeName }}</span><small>展開修改名稱、模型與開放範圍</small></summary>
       <fieldset :disabled="!editable || busy">
         <legend>助手設定</legend>
         <div class="qb-meta-grid">
@@ -120,7 +79,8 @@
         </label>
         <small>公開助手不會自動公開文件。模型、文件與工具仍依提問者的權限使用。</small>
       </fieldset>
-      <div class="qb-actions">
+      </details>
+      <div class="qb-actions qb-save-actions">
         <button type="submit" class="primary" :disabled="busy || !editable || !dirty">{{ busy ? '處理中…' : '儲存新版本' }}</button>
         <span>{{ dirty ? '有尚未儲存的變更' : '目前內容已儲存' }}</span>
       </div>
@@ -129,13 +89,12 @@
       <button v-for="tab in tabs" :key="tab.id" :aria-pressed="panel === tab.id" :disabled="testing" @click="panel = tab.id">{{ tab.label }}</button>
     </div>
     <template v-if="panel === 'canvas'">
-      <section class="qb-setup-check" aria-label="試跑前的設定提醒">
-        <h2>{{ setupIssues.length ? `還有 ${setupIssues.length} 項設定待確認` : '已填入基本設定，可儲存後試跑' }}</h2>
-        <p class="hint">此清單協助檢查基本資料；實際執行仍會檢查模型、來源權限與流程。</p>
-        <ul v-if="setupIssues.length"><li v-for="(issue, index) in setupIssues" :key="`${issue.key}-${index}`">{{ issue.message }} <button @click="goToSetting(issue)">前往設定</button></li></ul>
-        <button v-else @click="panel = 'test'">前往測試對話</button>
-      </section>
-      <p class="hint">從模組庫拖入畫布，或按模組加入。拖曳步驟標題可移動；標題取得焦點後可用方向鍵移動。拖曳出口到另一個步驟的「接到這裡」即可連線，也可在下方表單選起點與終點。</p>
+      <details v-if="setupIssues.length" class="qb-setup-check">
+        <summary>還有 {{ setupIssues.length }} 項設定待確認 <small>展開清單並前往設定</small></summary>
+        <p class="hint">這是基本設定提醒；執行時仍會檢查模型、來源權限與流程。</p>
+        <ul><li v-for="(issue, index) in setupIssues" :key="`${issue.key}-${index}`">{{ issue.message }} <button @click="goToSetting(issue)">前往設定</button></li></ul>
+      </details>
+      <p v-else class="qb-setup-ready">基本設定已填妥；儲存後可到「測試對話」試跑。</p>
       <div class="qb-workspace" :class="{'qb-workspace--config-closed': !configOpen}">
         <aside class="qb-palette" aria-label="模組庫">
           <h2>模組庫</h2>
@@ -172,7 +131,7 @@
               <button :aria-expanded="configOpen" aria-controls="qb-step-settings" @click="configOpen = !configOpen">{{ configOpen ? '收合步驟設定' : '顯示步驟設定' }}</button>
             </div>
           </div>
-          <p class="qb-canvas-status" role="status">{{ selected ? `已選取：${selected.label}` : '選取步驟後可調整設定' }}<span v-if="!configOpen">；步驟設定已收合</span>。可捲動查看，按「適合畫面」查看完整流程。</p>
+          <div class="qb-canvas-status" role="status">{{ selected ? `已選取：${selected.label}` : '選取步驟後可調整設定' }}<span v-if="!configOpen">；步驟設定已收合</span>。拖曳模組加入；從出口連到「接到這裡」。<details class="qb-canvas-help"><summary>操作說明</summary><p>拖曳步驟標題可移動；標題取得焦點後可用方向鍵移動。可捲動或按「適合畫面」查看全圖，也可用下方表單連線。</p></details></div>
           <p v-if="sourceNode" class="qb-link-status" role="status">正在從「{{ sourceNode.label }}」{{ sourceNode.kind === 'condition' ? (branch === 'false' ? '不成立' : '成立') + '出口' : '' }}連線。請按下一步的「接到這裡」。<button @click="sourceId = ''; targetId = ''">取消連線</button></p>
           <p v-if="drawnEdges.some(item => !item.geometry)" class="qb-canvas-status">部分步驟重疊或位置太近，連線暫時無法清楚顯示。可按「整理排列」重新排列步驟（GRAPH_LAYOUT）。</p>
           <div ref="canvasViewport" class="qb-canvas-scroll" tabindex="0" aria-label="流程畫布，可捲動查看所有步驟" @dragover.prevent @drop.prevent="dropNode">
@@ -350,15 +309,65 @@
           <textarea v-model="message" :disabled="testing" rows="3" required maxlength="8000" placeholder="例如：出差申請需要哪些文件？"/>
         </label>
         <p v-if="dirty || !version" class="hint">請先回到助手設定儲存新版本，再用這個版本試跑。</p>
-        <button class="primary" type="submit" :disabled="busy || dirty || !version || !message.trim()">{{ testing ? '正在測試…' : '傳送測試' }}</button>
+        <button class="primary" type="submit" :disabled="busy || unresolvedTest || dirty || !version || !message.trim()">{{ testing ? '正在測試…' : '傳送測試' }}</button>
         <button v-if="testing" type="button" @click="stopTest">停止等待</button>
       </form>
       <p v-if="testing" class="qb-test-wait" role="status">問題已送出，正在等待流程回傳結果。目前尚未收到逐步進度，完成後會列出實際執行的步驟。</p>
+      <section v-if="trackedTest" class="qb-test-tracking" aria-label="目前試跑追蹤" :data-run-id="trackedTest.run || ''" :data-request-id="trackedTest.request_id || ''" :data-run-status="trackedTest.serverStatus">
+        <p><strong>這次試跑：{{ runStatus(trackedTest.serverStatus) }}</strong><span v-if="trackedTest.run"> · 執行編號 {{ trackedTest.run }}</span> · 第 {{ versions.find(v => v.id === trackedTest.version)?.revision || '—' }} 版</p>
+        <p v-if="trackedTest.request_id">請求識別碼：{{ trackedTest.request_id }}</p>
+        <button type="button" :disabled="checkingTest" @click="queryTracked()">{{ checkingTest ? '正在查詢…' : '查詢這次試跑' }}</button>
+        <button v-if="unresolvedTest && !testing" type="button" @click="leaveUnknownTest">結束查詢，準備另一個測試</button>
+      </section>
+      <button type="button" :disabled="checkingTest || testing || !version" @click="findMyTests">查詢我的試跑</button>
+      <ul v-if="recentTests.length" class="qb-test-history" aria-label="本人的試跑紀錄"><li v-for="run in recentTests" :key="run.id"><button type="button" :disabled="testing || checkingTest" @click="selectTestRun(run)">查看執行 {{ run.id }} · 第 {{ run.revision }} 版 · {{ runStatus(run.status) }}</button></li></ul>
       <p v-if="testNotice" class="qb-test-notice" role="status">{{ testNotice }}</p>
       <p v-if="testResult && testedRevision !== version?.revision" class="qb-test-notice">下方是第 {{ testedRevision }} 版的結果，目前選的是第 {{ version?.revision }} 版。修改後請儲存並重新試跑，不能用舊結果確認新內容。</p>
       <TestRunReview v-if="testResult" :result="testResult" :graph="testedGraph" :revision="testedRevision" :question="testedQuestion" @edit="editTestStep"/>
 
     </section>
+    <details v-if="catalog.can_manage_templates || catalog.can_manage_readiness" class="qb-management">
+      <summary>範本、文件開放與離線工具管理</summary>
+    <details v-if="catalog.can_manage_templates" class="qb-section">
+      <summary>管理情境範本</summary>
+      <p>將目前畫布與用途另存為範本；不包含模型、文件存取權或工具核准權。內建範本可複製新增，單位自訂範本可更新。</p>
+      <label>
+        範本名稱
+        <input v-model="templateName" maxlength="100" required>
+      </label>
+      <label>
+        範本用途
+        <textarea v-model="templateDescription" maxlength="1000" rows="2"/>
+      </label>
+      <div class="qb-actions">
+        <button :disabled="busy || !templateName.trim()" @click="saveTemplate(false)">另存為新範本</button>
+        <button :disabled="busy || !templateName.trim() || typeof chosenTemplate?.id !== 'number'" @click="saveTemplate(true)">更新選取的自訂範本</button>
+      </div>
+    </details>
+    <details v-if="catalog.can_manage_templates" class="qb-section">
+      <summary>管理文件集開放範圍</summary>
+      <p>這裡核准的是文件本身的查詢範圍。助手公開不會自動公開文件；開放後，指定範圍內且符合密等的人員才可檢索。</p>
+      <p v-if="!catalog.collections?.length">尚無可管理的文件集。</p>
+      <fieldset v-for="collection in catalog.collections" :key="collection.id" :disabled="busy">
+        <legend>{{ collection.name }}</legend>
+        <label>
+          文件開放範圍
+          <select v-model="collection.publication_scope">
+            <option value="unit">本單位</option>
+            <option value="departments">指定單位</option>
+            <option value="public">全院</option>
+          </select>
+        </label>
+        <label v-if="collection.publication_scope === 'departments'">
+          可查詢的單位編號
+          <input :value="(collection.target_department_ids || []).join(', ')" @input="collection.target_department_ids = parseDepartments($event.target.value)">
+          <small>以逗號分隔單位編號。請確認文件內容適合開放給這些單位。</small>
+        </label>
+        <button :disabled="!collection.publication_scope" @click="saveCollectionPublication(collection)">儲存文件開放範圍</button>
+      </fieldset>
+    </details>
+    <ReadinessPanel v-if="catalog.can_manage_readiness === true && !identityChanged"/>
+    </details>
     </fieldset>
   </div>
 </template>
@@ -373,7 +382,7 @@ import ReadinessPanel from '../quickBuilder/ReadinessPanel.vue';
 import TestRunReview from '../quickBuilder/TestRunReview.vue';
 import { moduleGuide, MODULE_GROUPS } from '../quickBuilder/moduleGuides';
 import { setupNeeds, nodeSummary, nodeIO } from '../quickBuilder/builderGuidance';
-import { readTestSession, saveTestSession, testStorage } from '../quickBuilder/testSession';
+import { readTestSession, saveTestSession, testStorage, newTestRequestId } from '../quickBuilder/testSession';
 import { useDraftActor } from '../quickBuilder/useDraftActor';
 import { initializeToolArguments } from '../quickBuilder/toolArguments';
 import { completionTestResult } from '../quickBuilder/completion';
@@ -408,7 +417,10 @@ const assistants = ref([]),
   templateName = ref(''),
   templateDescription = ref('');
 const moduleQuery = ref(''), testNotice = ref(''), testedRevision = ref(null), testedGraph = ref(null), testedQuestion = ref('');
-let testController, testEpoch = 0;
+const trackedTest = ref(null), checkingTest = ref(false), recentTests = ref([]), waitingStopped = ref(false);
+const unresolvedTest = computed(() => trackedTest.value && !['completed','failed','cancelled'].includes(trackedTest.value.serverStatus));
+const runStatus = value => ({running:'執行中',completed:'已完成',failed:'執行失敗',cancelled:'已取消'}[value] || '結果待確認');
+let testController, testEpoch = 0, trackEpoch = 0, trackTimer, trackController, trackSelectedVersion, trackAttempts = 0;
 const actor = useDraftActor();
 const { identityChanged, identityMessage, ready: actorReady } = actor;
 const blocked = computed(() => busy.value || loading.value || identityChanged.value);
@@ -433,6 +445,9 @@ const blank = () => ({
   target_department_ids: []
 });
 const form = reactive(blank());
+const metadataDetails = ref(null);
+const selectedModelName = computed(() => catalog.value.models.find(m => String(m.id) === String(form.model_id))?.name || (form.model_id ? '已選模型' : '未選模型'));
+const scopeName = computed(() => ({unit:'本單位',departments:'指定單位',public:'全院'}[form.scope] || '未選範圍'));
 const configOpen = ref(true), canvasViewport = ref(null), zoom = ref(1), fitMode = ref(false);
 const setupIssues = computed(() => setupNeeds(form));
 const moduleMatches = m => { const g = moduleGuide(m.kind); return [g.title,g.description,g.input,g.output,g.example,g.technicalName].join(' ').toLocaleLowerCase().includes(moduleQuery.value.trim().toLocaleLowerCase()); };
@@ -536,6 +551,7 @@ function discard() {
   return !dirty.value || window.confirm('目前有尚未儲存的變更。確定捨棄這些變更？');
 }
 function setForm(data) {
+  invalidateTest();
   const next = blank();
   for (const key of Object.keys(next)) {
     if (data?.[key] !== undefined) next[key] = clone(data[key]);
@@ -685,6 +701,11 @@ async function saveTemplate(update) {
 }
 async function save() {
   if (busy.value || !editable.value) return;
+  if (!form.name.trim() || !form.model_id) {
+    error.value = '請先填寫助手名稱並選擇平台模型（CONFIGURATION_REQUIRED）。';
+    await goToSetting({key:!form.name.trim() ? 'name' : 'model'});
+    return;
+  }
   error.value = '';
   busy.value = true;
   try {
@@ -752,6 +773,7 @@ function selectNode(id, open = false) {
 async function goToSetting(issue) {
   panel.value = 'canvas';
   if (issue.nodeId) selectNode(issue.nodeId, true);
+  else if (metadataDetails.value) metadataDetails.value.open = true;
   await nextTick();
   const target = issue.nodeId ? document.getElementById('qb-step-settings') : document.querySelector(issue.key === 'model' ? '.qb-metadata select' : '.qb-metadata input');
   target?.scrollIntoView?.({block:'nearest'});
@@ -761,80 +783,212 @@ function editTestStep(id) {
   if (id) goToSetting({nodeId:id});
   else panel.value = 'canvas';
 }
-function sessionPointer(state, run, versionIdValue = version.value?.id) {
-  return {actor:actor.actorId.value,assistant:detail.value?.id,version:versionIdValue,state,run};
+function stopTracking() {
+  ++trackEpoch;
+  clearTimeout(trackTimer);
+  trackController?.abort();
+  trackController = null;
+  checkingTest.value = false;
+}
+function invalidateTest() {
+  ++testEpoch;
+  testController?.abort();
+  testController = null;
+  stopTracking();
+  trackedTest.value = null;
+  recentTests.value = [];
+  testing.value = false;
+  waitingStopped.value = false;
+}
+function trackingCurrent(pointer, epoch) {
+  return epoch === trackEpoch && !identityChanged.value && actor.actorId.value === pointer.actor && detail.value?.id === pointer.assistant && String(versionId.value) === String(trackSelectedVersion);
+}
+function rememberTest(pointer) {
+  return saveTestSession(testStorage(), pointer);
+}
+function scheduleTracking(pointer, epoch) {
+  if (!trackingCurrent(pointer, epoch) || trackAttempts >= 60) return;
+  clearTimeout(trackTimer);
+  trackTimer = setTimeout(() => queryTracked(pointer, epoch), trackAttempts < 10 ? 1500 : 5000);
+}
+function acceptRun(raw, pointer, epoch, restored = false) {
+  if (!trackingCurrent(pointer, epoch)) return;
+  if (!Number.isSafeInteger(raw?.id) || raw.id <= 0 || pointer.run && raw.id !== pointer.run || raw.version_id !== undefined && raw.version_id !== pointer.version || pointer.request_id && (raw.version_id !== pointer.version || raw.request_id !== pointer.request_id)) throw new Error('TEST_RESULT_INVALID');
+  const status = ['running','completed','failed','cancelled'].includes(raw.status) ? raw.status : 'unknown';
+  const current = {...pointer,run:raw.id,state:status === 'running' ? 'waiting' : status === 'unknown' ? 'unknown' : 'finished'};
+  trackedTest.value = {...current,serverStatus:status};
+  const stored = rememberTest(current);
+  if (status === 'running' || status === 'unknown') {
+    testNotice.value = status === 'running' ? (waitingStopped.value ? '已停止等待回覆，伺服器仍在執行；這裡會繼續查詢同一次試跑。' : '已找到同一次試跑，伺服器仍在執行；尚未提供逐步進度。') : '這次試跑的伺服器狀態尚未確認（TEST_RESULT_UNKNOWN），查詢不會重新執行。';
+    scheduleTracking(current, epoch);
+    return;
+  }
+  stopTracking();
+  const sourceVersion = versions.value.find(v => v.id === pointer.version);
+  if (!sourceVersion) throw new Error('TEST_RESULT_INVALID');
+  testResult.value = completionTestResult(raw, maskTrace(raw));
+  testedGraph.value = clone(sourceVersion.graph);
+  testedRevision.value = sourceVersion.revision;
+  if (!testedQuestion.value) {
+    const inputId = sourceVersion.graph.nodes.find(n => n.kind === 'input')?.id;
+    const input = raw.steps?.find(step => step.node_id === inputId)?.input;
+    testedQuestion.value = typeof input === 'string' ? maskTrace(input) : typeof input?.text === 'string' ? maskTrace(input.text) : '';
+  }
+  testing.value = false;
+  busy.value = false;
+  ++testEpoch;
+  testController?.abort();
+  testController = null;
+  testNotice.value = restored ? `已重新取得第 ${sourceVersion.revision} 版的同一次試跑結果；這不是新的執行。` : '';
+  if (!stored) testNotice.value += ' 瀏覽器未保留執行指標（TEST_HISTORY_UNAVAILABLE）；重載後可從「查詢我的試跑」找回。';
+}
+async function queryTracked(pointer = trackedTest.value, epoch = trackEpoch) {
+  if (!pointer || !trackingCurrent(pointer, epoch) || checkingTest.value) return;
+  checkingTest.value = true;
+  trackAttempts++;
+  const controller = new AbortController();
+  trackController = controller;
+  try {
+    let current = pointer;
+    if (!current.run) {
+      const rows = (await api.getTestRuns(pointer.assistant, {version_id:pointer.version,...(pointer.request_id ? {request_id:pointer.request_id} : {})}, {...actor.mutationOptions(),signal:controller.signal})).data.runs;
+      if (!trackingCurrent(pointer, epoch)) return;
+      const row = pointer.request_id ? rows.find(run => run.request_id === pointer.request_id && run.version_id === pointer.version) : null;
+      if (!row) {
+        trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
+        rememberTest(trackedTest.value);
+        testNotice.value = '尚未找到這次試跑紀錄（TEST_RESULT_UNKNOWN）。請求可能仍在處理或連線中斷；查詢不會重新執行。';
+        scheduleTracking(pointer, epoch);
+        return;
+      }
+      current = {...pointer,run:row.id};
+    }
+    const raw = (await api.getRun(current.run, {...actor.mutationOptions(),signal:controller.signal})).data;
+    if (!trackingCurrent(pointer, epoch)) return;
+    acceptRun(raw, current, epoch, !testing.value);
+  } catch (e) {
+    if (!trackingCurrent(pointer, epoch)) return;
+    if (errorType(e) === 'IDENTITY_CHANGED') { actor.lockIdentity(); return; }
+    trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
+    rememberTest(trackedTest.value);
+    if ([401,403,404].includes(e?.response?.status)) {
+      testResult.value = null;
+      testNotice.value = '無法讀取這次試跑結果（TEST_RESULT_UNAVAILABLE）。可能已無權限或資料已不可用；請確認登入身分與助手版本。';
+    } else {
+      testNotice.value = '暫時無法確認試跑狀態（TEST_RESULT_UNKNOWN）。伺服器可能仍在執行，可繼續查詢同一次試跑。';
+      scheduleTracking(pointer, epoch);
+    }
+  } finally {
+    if (epoch === trackEpoch) checkingTest.value = false;
+    if (trackController === controller) trackController = null;
+  }
+}
+function trackTest(pointer) {
+  stopTracking();
+  trackSelectedVersion = versionId.value;
+  trackAttempts = 0;
+  trackedTest.value = {...pointer,serverStatus:'unknown'};
+  return trackEpoch;
 }
 async function restoreTest() {
   const current = readTestSession(testStorage(), actor.actorId.value, detail.value?.id);
   if (!current || identityChanged.value) return;
-  if (current.state !== 'finished') {
-    testNotice.value = '上次試跑的結果尚未確認（TEST_RESULT_UNKNOWN）。可能仍在伺服器執行，請先確認後再試，不代表執行成功或已停止。';
+  if (!current.run && !current.request_id) {
+    testNotice.value = '上次試跑未保留可查詢的識別碼（TEST_RESULT_UNKNOWN）。可用「查詢我的試跑」查看本人有權限的紀錄。';
     return;
   }
-  const token = ++testEpoch;
+  if (!versions.value.some(v => v.id === current.version)) return;
+  const epoch = trackTest(current);
+  await queryTracked(current, epoch);
+}
+async function findMyTests() {
+  if (checkingTest.value || !detail.value || !version.value || identityChanged.value) return;
+  const context = {actor:actor.actorId.value,assistant:detail.value.id,version:version.value.id};
+  const epoch = trackEpoch;
+  checkingTest.value = true;
   try {
-    const response = await api.getRun(current.run);
-    if (token !== testEpoch || identityChanged.value || actor.actorId.value !== current.actor || detail.value?.id !== current.assistant) return;
-    const sourceVersion = versions.value.find(v => v.id === current.version);
-    if (!sourceVersion) return;
-    testResult.value = completionTestResult(response.data, maskTrace(response.data));
-    testedGraph.value = clone(sourceVersion.graph);
-    testedRevision.value = sourceVersion.revision;
-    testedQuestion.value = '';
-    testNotice.value = `已重新取得第 ${sourceVersion.revision} 版的上次試跑結果；這不是新的執行。`;
-  } catch {
-    if (token === testEpoch && !identityChanged.value) testNotice.value = '無法讀取上次試跑結果（TEST_RESULT_UNAVAILABLE）。可能已無權限或資料已不可用；請確認登入身分與助手版本。';
-  }
+    const rows = (await api.getTestRuns(context.assistant, {version_id:context.version}, actor.mutationOptions())).data.runs;
+    if (epoch !== trackEpoch || identityChanged.value || context.actor !== actor.actorId.value || context.assistant !== detail.value?.id || context.version !== version.value?.id) return;
+    recentTests.value = rows.filter(run => run.version_id === context.version);
+    testNotice.value = rows.length ? '請選擇要查看的本人試跑紀錄；查詢不會重新執行。' : '目前沒有可查詢的本人試跑紀錄。尚未找到不代表先前請求一定未執行。';
+  } catch (e) {
+    if (epoch === trackEpoch && errorType(e) === 'IDENTITY_CHANGED') { actor.lockIdentity(); return; }
+    if (epoch === trackEpoch && !identityChanged.value) testNotice.value = '無法讀取本人試跑紀錄（TEST_RESULT_UNAVAILABLE）。請確認登入身分與助手版本。';
+  } finally { if (epoch === trackEpoch) checkingTest.value = false; }
+}
+async function selectTestRun(row) {
+  if (testing.value || identityChanged.value || row.version_id !== version.value?.id) return;
+  testResult.value = null;
+  testedQuestion.value = '';
+  const pointer = {actor:actor.actorId.value,assistant:detail.value.id,version:row.version_id,run:row.id,state:row.status === 'running' ? 'waiting' : 'finished',...(row.request_id ? {request_id:row.request_id} : {})};
+  const epoch = trackTest(pointer);
+  rememberTest(pointer);
+  await queryTracked(pointer, epoch);
 }
 function stopTest() {
   if (!testing.value) return;
   ++testEpoch;
   testController?.abort();
-  saveTestSession(testStorage(), sessionPointer('unknown'));
+  testController = null;
   testing.value = false;
   busy.value = false;
-  testNotice.value = '已停止等待（TEST_RESULT_UNKNOWN）。無法確認伺服器執行是否已結束；請先確認後再試，這不是執行成功或已停止的證明。';
+  waitingStopped.value = true;
+  testNotice.value = '已停止等待回覆，沒有取消伺服器執行。會用同一個識別碼查詢結果；重新整理後也可找回。';
+  queryTracked();
+}
+function leaveUnknownTest() {
+  if (testing.value || !unresolvedTest.value) return;
+  if (!window.confirm('先前試跑可能仍在執行。建立另一個測試可能產生額外執行；確定不再追蹤目前紀錄？')) return;
+  stopTracking();
+  trackedTest.value = null;
+  testNotice.value = '已結束目前的查詢；先前試跑的伺服器狀態仍未確認。';
 }
 async function test() {
-  if (blocked.value || dirty.value || !version.value || !message.value.trim()) return;
+  if (blocked.value || unresolvedTest.value || dirty.value || !version.value || !message.value.trim()) return;
+  let requestId;
+  try { requestId = newTestRequestId(); } catch { testNotice.value = '瀏覽器無法建立試跑識別碼，請重新開啟頁面（TEST_REQUEST_ID_UNAVAILABLE）。'; return; }
   busy.value = true;
   testing.value = true;
+  waitingStopped.value = false;
   error.value = '';
   testNotice.value = '';
   testResult.value = null;
   const token = ++testEpoch;
-  const pointer = sessionPointer('waiting');
+  const pointer = {actor:actor.actorId.value,assistant:detail.value.id,version:version.value.id,state:'waiting',request_id:requestId};
   testedGraph.value = clone(version.value.graph);
   testedRevision.value = version.value.revision;
   testedQuestion.value = maskTrace(message.value);
-  saveTestSession(testStorage(), pointer);
-  testController = new AbortController();
+  rememberTest(pointer);
+  const epoch = trackTest(pointer);
+  const controller = new AbortController();
+  testController = controller;
+  scheduleTracking(pointer, epoch);
   try {
-    const raw = (await api.assistantAction(detail.value.id, 'test', {
-      version_id: version.value.id,
-      message: message.value
-    }, {...actor.mutationOptions(), signal:testController.signal})).data;
-    if (token !== testEpoch || identityChanged.value || actor.actorId.value !== pointer.actor || detail.value?.id !== pointer.assistant) return;
-    testResult.value = completionTestResult(raw, maskTrace(raw));
-    if (!saveTestSession(testStorage(), {...pointer,state:'finished',run:raw.id})) testNotice.value = '已取得這次結果，但瀏覽器未保留執行指標（TEST_HISTORY_UNAVAILABLE）；重載後不會自動找回這次結果。';
+    const raw = (await api.assistantAction(pointer.assistant, 'test', {
+      version_id: pointer.version,
+      message: message.value,
+      request_id: pointer.request_id
+    }, {...actor.mutationOptions(), signal:controller.signal})).data;
+    if (token !== testEpoch || !trackingCurrent(pointer, epoch)) return;
+    acceptRun(raw, pointer, epoch);
   } catch (e) {
-    if (token !== testEpoch || identityChanged.value) return;
-    saveTestSession(testStorage(), {...pointer,state:'unknown'});
-    testNotice.value = '尚未取得可確認的試跑結果（TEST_RESULT_UNKNOWN）。請確認連線或服務狀態後再試。';
+    if (token !== testEpoch || !trackingCurrent(pointer, epoch)) return;
+    trackedTest.value = {...pointer,state:'unknown',serverStatus:'unknown'};
+    rememberTest(trackedTest.value);
+    testNotice.value = '尚未取得可確認的試跑結果（TEST_RESULT_UNKNOWN）。會查詢同一次試跑，連線中斷不代表執行已取消。';
     fail(e);
+    scheduleTracking(pointer, epoch);
   } finally {
+    if (testController === controller) testController = null;
     if (token === testEpoch) {
       busy.value = false;
       testing.value = false;
-      testController = null;
     }
   }
 }
 watch(identityChanged, changed => {
   if (!changed) return;
-  ++testEpoch;
-  testController?.abort();
-  testing.value = false;
+  invalidateTest();
   busy.value = false;
   testResult.value = null;
   testNotice.value = '';
@@ -976,7 +1130,7 @@ onMounted(() => {
   }
   window.addEventListener('beforeunload', beforeUnload);
 });
-onBeforeUnmount(() => { ++testEpoch; testController?.abort(); window.removeEventListener('beforeunload', beforeUnload); canvasObserver?.disconnect(); });
+onBeforeUnmount(() => { invalidateTest(); window.removeEventListener('beforeunload', beforeUnload); canvasObserver?.disconnect(); });
 onBeforeRouteLeave(() => discard());
 </script>
 <style src="../quickBuilder/builder.css"></style>

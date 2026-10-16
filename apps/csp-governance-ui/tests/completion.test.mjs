@@ -157,3 +157,5 @@ test('模型完成資訊使用列表優先與安全固定標籤，缺資料明�
   assert.equal(invalid.usageStatus, '用量資料尚未完整提供。');
   assert.doesNotMatch(JSON.stringify(invalid), /PROVIDER_CANARY/);
 });
+
+test('伺服器已取消的試跑不顯示完成或未知，也不採最後step成功判斷',()=>{assert.equal(testRunStatus({status:'cancelled',output:'部分',steps:[{status:'completed'}]}),'執行已取消；沒有完整答案');});

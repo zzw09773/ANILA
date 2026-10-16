@@ -32,10 +32,12 @@ test('結果指標只保存白名單，不保存正文或跨帳號沿用',()=>{
   assert.doesNotMatch([...store.map.values()].join(),/PRIVATE_CANARY|question|answer|token/);
   assert.deepEqual(readTestSession(store,1,2),{actor:1,assistant:2,version:3,state:'finished',run:4});assert.equal(readTestSession(store,8,2),null);assert.equal(readTestSession(store,1,8),null);
 });
-test('等待或未知狀態不得保留可冒充完成的run指標',()=>{
-  for(const state of ['waiting','unknown']){const store=memory();saveTestSession(store,{actor:1,assistant:2,version:3,state,run:4});assert.deepEqual(readTestSession(store,1,2),{actor:1,assistant:2,version:3,state});}
+test('等待或未知可保留run和UUID，狀態不能冒充完成',()=>{
+  for(const state of ['waiting','unknown']){const store=memory();saveTestSession(store,{actor:1,assistant:2,version:3,state,run:4});assert.deepEqual(readTestSession(store,1,2),{actor:1,assistant:2,version:3,state,run:4});}
 });
 test('非法或無法存取的瀏覽器儲存保守失敗，不阻止基本流程',()=>{
   const store=memory();for(const value of [null,{},[],{actor:1,assistant:2,version:3,state:'complete',run:4},{actor:1,assistant:2,version:3,state:'finished',run:0}]){store.setItem('anila:quick-builder:test:1:2',JSON.stringify(value));assert.equal(readTestSession(store,1,2),null);}
   const denied={getItem(){throw Error('denied')},setItem(){throw Error('denied')}};assert.equal(readTestSession(denied,1,2),null);assert.equal(saveTestSession(denied,{actor:1,assistant:2,version:3,state:'unknown'}),false);
 });
+
+test('識別碼只接受UUID並canonical，額外訊息不儲存',()=>{const store=memory();const request_id='12345678-ABCD-4234-8234-123456789ABC';assert.equal(saveTestSession(store,{actor:1,assistant:2,version:3,state:'waiting',run:4,request_id,question:'PRIVATE_CANARY'}),true);assert.equal(readTestSession(store,1,2).request_id,request_id.toLowerCase());assert.doesNotMatch([...store.map.values()].join(),/PRIVATE_CANARY/);assert.equal(saveTestSession(store,{actor:1,assistant:2,version:3,state:'waiting',request_id:'not-a-uuid'}),false)});

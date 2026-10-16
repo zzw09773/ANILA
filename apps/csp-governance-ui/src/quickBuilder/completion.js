@@ -82,6 +82,7 @@ export function completionErrorIsShown(step) {
 }
 export function testRunStatus(result) {
   if (result.status === 'failed') return '失敗';
+  if (result.status === 'cancelled') return '執行已取消；沒有完整答案';
   if (result.status !== 'completed') return '狀態無法辨識';
   return result.answer_complete === false || completionNotices(result).length ? '執行已結束；回答尚未完成' : '完成';
 }
