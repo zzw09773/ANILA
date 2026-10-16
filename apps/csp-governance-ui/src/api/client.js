@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import router from '../router'
+import { announceIdentity, currentIdentityEpoch, invalidateIdentity } from './identityEpoch'
 
 // Sprint 5 X / H5: 全面改走 backend 既有的 httpOnly cookie 流程，停止把
 // access / refresh token 寫進 localStorage（XSS 即洩漏的 7 天 refresh
@@ -14,6 +15,12 @@ import router from '../router'
 const CSRF_COOKIE_NAME = 'anila_csrf'
 const CSRF_HEADER_NAME = 'X-CSRF-Token'
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+function identityChangedError() {
+  const error = new Error('登入身分已變更，請重新確認（IDENTITY_CHANGED）')
+  error.code = 'IDENTITY_CHANGED'
+  return error
+}
 
 function readCookie(name) {
   if (typeof document === 'undefined') return null
@@ -40,6 +47,11 @@ const client = axios.create({
 // Request interceptor: 不再附 Authorization header（cookie 自動帶）；
 // 對 mutating 請求補 CSRF header。
 client.interceptors.request.use((config) => {
+  const epoch = currentIdentityEpoch()
+  if (config._identityEpoch !== undefined && config._identityEpoch !== epoch) {
+    return Promise.reject(identityChangedError())
+  }
+  config._identityEpoch = epoch
   const method = (config.method || 'get').toUpperCase()
   if (!SAFE_METHODS.has(method)) {
     const csrf = readCookie(CSRF_COOKIE_NAME)
@@ -70,8 +82,14 @@ const NO_RETRY_PATHS = [
 client.interceptors.response.use(
   (response) => {
     // 任何 /me 更新都通知仍開著的草稿頁，避免在同一頁默默換身分。
-    if (response.config?.url?.split('?')[0] === '/api/auth/me' && typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('anila:identity', { detail: { userId: response.data?.id } }))
+    const path = response.config?.url?.split('?')[0]
+    const stale = response.config?._identityEpoch !== currentIdentityEpoch()
+    const loginChangedCookies = path === '/api/auth/login' || path === '/api/auth/logout'
+      || (path === '/api/auth/card/verify' && response.status === 200)
+    if (loginChangedCookies || (stale && path === '/api/auth/refresh')) invalidateIdentity()
+    if (stale && !loginChangedCookies) return Promise.reject(identityChangedError())
+    if (path === '/api/auth/me') {
+      announceIdentity(response.data?.id)
     }
     return response
   },
@@ -80,6 +98,11 @@ client.interceptors.response.use(
     if (!originalRequest) return Promise.reject(error)
 
     const url = originalRequest.url || ''
+    const epoch = originalRequest._identityEpoch
+    if (epoch !== currentIdentityEpoch()) {
+      if (url.split('?')[0] === '/api/auth/refresh') invalidateIdentity()
+      return Promise.reject(identityChangedError())
+    }
     const skipRetry = NO_RETRY_PATHS.some((p) => url.includes(p))
 
     if (error.response?.status === 401 && !skipRetry && !originalRequest._retry) {
@@ -88,8 +111,10 @@ client.interceptors.response.use(
 
       try {
         await authStore.refreshToken()
+        if (epoch !== currentIdentityEpoch()) return Promise.reject(identityChangedError())
         return client(originalRequest)
       } catch {
+        if (epoch !== currentIdentityEpoch()) return Promise.reject(identityChangedError())
         authStore.logout()
         // During the initial /login navigation, currentRoute can still be the
         // previous route while /me/refresh fails. Check the browser URL too so

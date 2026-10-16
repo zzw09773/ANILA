@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, onScopeDispose } from 'vue'
 import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
 import { loginWithCard as runCardLogin } from '../api/caAuth'
+import { invalidateIdentity, onIdentityInvalidated } from '../api/identityEpoch'
 
 // Sprint 5 X / H5: cookie-only auth store. Tokens 不再進 localStorage —
 // 認證狀態由 backend 設的 httpOnly cookie 決定，前端只記住目前登入的
@@ -10,6 +11,7 @@ import { loginWithCard as runCardLogin } from '../api/caAuth'
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const initialized = ref(false)
+  let fetchSequence = 0
 
   const isAuthenticated = computed(() => !!user.value)
   // Tier hierarchy (high → low): owner > admin > developer ≈ user.
@@ -58,24 +60,34 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function fetchUser() {
+    const sequence = ++fetchSequence
     try {
       const { data } = await getMe()
-      user.value = data
+      if (sequence === fetchSequence) user.value = data
     } catch {
-      user.value = null
+      if (sequence === fetchSequence) user.value = null
     } finally {
-      initialized.value = true
+      if (sequence === fetchSequence) initialized.value = true
     }
   }
 
   async function logout() {
+    invalidateIdentity()
+    const sequence = fetchSequence
     try {
       await logoutApi()
     } catch {
       // 後端 logout 失敗也要清前端狀態，避免使用者卡在 ghost session。
     }
-    user.value = null
+    if (sequence === fetchSequence) user.value = null
   }
+
+  const unsubscribeIdentity = onIdentityInvalidated((reason) => {
+    fetchSequence += 1
+    user.value = null
+    if (reason === 'remote') fetchUser()
+  })
+  onScopeDispose(unsubscribeIdentity)
 
   // 在第一次取用 store 時嘗試載入 /me：cookie 還在 → 自動還原 user；
   // 不在 → user 為 null，路由守衛會把使用者送去 /login。
