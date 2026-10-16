@@ -423,19 +423,21 @@ def test_single_page_document_reports_no_page_boundaries(
 
 # ── the only check against the physical document ────────────────────────────
 #
-# Everything above compares the extractor to itself. If the extractor
-# under-reports pages, the parser, the flag and the chunker all agree with
-# each other and are wrong together: a real 5-page PDF read as 3 tells the
-# reader 「第 3 頁／共 3 頁」 with nothing objecting. ``fitz`` is already open
-# in ``parse()``, so the physical count costs nothing.
+# A page-count mismatch selects direct text-layer recovery. Its result has
+# exactly one field per physical page, without using the mismatched extractor
+# output to number pages.
 
 
-def test_parser_warns_when_the_extractor_under_reports_pages(
+def test_parser_recovers_physical_pages_when_the_extractor_under_reports(
     tmp_path, stub_extractor, caplog
 ) -> None:
-    """Disagreeing case: loud. Real 5-page PDF, extractor returns 3."""
+    """The native text layer supplies all five physical pages after a mismatch."""
     stub_extractor(_page_texts(3))
     path = _build_pdf(tmp_path / "under.pdf", 5, 1)
+    with fitz.open(path) as pdf:
+        for index, page in enumerate(pdf):
+            page.insert_textbox(fitz.Rect(60, 300, 520, 600), _page_texts(5)[index], fontsize=10)
+        pdf.saveIncr()
 
     with caplog.at_level("WARNING"):
         parsed = parser_registry.PdfParser().parse(path)
@@ -444,8 +446,10 @@ def test_parser_warns_when_the_extractor_under_reports_pages(
     assert len(warnings) == 1, warnings
     assert "returned 3 page(s)" in warnings[0]
     assert "document has 5" in warnings[0]
-    # Warn, don't fail the document — the text extracted is still useful.
-    assert parsed.metadata["pages"] == 3
+    assert parsed.metadata["pages"] == 5
+    assert parsed.metadata["actual_parser"] == "pymupdf-native-text"
+    assert len(parsed.content.split("\f")) == 5
+    assert "echo" in parsed.content
 
 
 @pytest.mark.parametrize(

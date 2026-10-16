@@ -837,9 +837,10 @@ class PdfParser:
     page's markdown as ``[[IMAGE:<id>]]`` placeholders so the
     HierarchicalChunker can attach them under the surrounding heading.
 
-    When digital extraction yields little or mostly ``<?>`` placeholders
-    (a scan or a font-subsetted PDF), parsing stops with a message that
-    Docling is required. This parser does not call a vision model.
+    If the Markdown extractor is unavailable or returns inconsistent pages,
+    the existing PyMuPDF reader extracts the text layer directly. This path
+    preserves physical pages and reports reduced layout quality. Insufficient
+    text still requires the independent local OCR adapter.
 
     ⚠ The ``[[IMAGE:<id>]]`` tokens this parser inserts are **not** text.
     ``needs_ocr_fallback`` strips them before measuring; do not hand it a
@@ -847,13 +848,43 @@ class PdfParser:
     or a captioned scan will read as a text document.
     """
 
+    _NATIVE_MAX_PAGES = 500
+    _NATIVE_MAX_PAGE_BYTES = 1024 * 1024
+    _NATIVE_MAX_TEXT_BYTES = 8 * 1024 * 1024
+
+    @classmethod
+    def _native_text_pages(cls, doc: Any) -> list[dict[str, str]]:
+        """Bound retained UTF-8 output; PyMuPDF materializes one page per call."""
+        from .errors import ParseError
+
+        if doc.page_count > cls._NATIVE_MAX_PAGES:
+            raise ParseError.too_large(
+                "PDF 離線文字備援超過 500 頁，請分成較小的檔案上傳。",
+                details={"reason": "native_pdf_page_limit", "pages": doc.page_count,
+                         "max_pages": cls._NATIVE_MAX_PAGES},
+            )
+        pages: list[dict[str, str]] = []
+        total = 0
+        for page in doc:
+            text = page.get_text(sort=True)
+            size = len(text.encode("utf-8"))
+            total += size
+            if size > cls._NATIVE_MAX_PAGE_BYTES or total > cls._NATIVE_MAX_TEXT_BYTES:
+                raise ParseError.too_large(
+                    "PDF 離線文字備援超過處理上限，請分成較小的檔案上傳。",
+                    details={"reason": "native_pdf_text_limit", "page": len(pages) + 1,
+                             "max_page_bytes": cls._NATIVE_MAX_PAGE_BYTES,
+                             "max_text_bytes": cls._NATIVE_MAX_TEXT_BYTES},
+                )
+            pages.append({"text": text})
+        return pages
+
     def parse(self, file_path: str) -> ParsedDocument:
         try:
-            import pymupdf4llm  # type: ignore[import-untyped]  # no type stubs
             import fitz  # type: ignore[import-untyped]  # pymupdf fitz shim has no stubs
         except ImportError as exc:
             raise ImportError(
-                "pymupdf4llm and pymupdf are required for PDF parsing. "
+                "pymupdf is required for PDF parsing. "
                 "Install with: pip install 'agentic-rag[rag]'"
             ) from exc
 
@@ -867,29 +898,41 @@ class PdfParser:
                     details={"reason": "encrypted_pdf"},
                 )
 
-        # Per-page markdown lets us interleave image placeholders with text.
-        page_chunks = pymupdf4llm.to_markdown(file_path, page_chunks=True)
-
         images: dict[str, ImageRef] = {}
+        native_reason = None
+        page_chunks: Any = None
         doc = fitz.open(file_path)
         try:
-            # Everything below numbers pages by the extractor's own output:
-            # ``page_chunks`` decides the count and ``doc[pno - 1]`` trusts
-            # the index to line up with the physical document. Both the
-            # ``has_page_boundaries`` check and the chunker's guard compare
-            # the extractor to *itself*, so an extractor that silently drops
-            # pages is self-consistent and invisible to them — a real 5-page
-            # PDF read as 3 would tell the reader 「第 3 頁／共 3 頁」 and
-            # every mechanism downstream would agree. ``doc`` is already open,
-            # so the physical count is free; this is the only comparison
-            # against ground truth in the whole path.
-            if len(page_chunks) != doc.page_count:
+            try:
+                import pymupdf4llm  # type: ignore[import-untyped]
+            except Exception:
+                native_reason = "markdown_extractor_unavailable"
+            else:
+                try:
+                    page_chunks = pymupdf4llm.to_markdown(file_path, page_chunks=True)
+                except Exception:
+                    native_reason = "markdown_extraction_failed"
+            if native_reason is None and (
+                not isinstance(page_chunks, (list, tuple))
+                or any(not isinstance(entry, str) and not (
+                    isinstance(entry, dict) and isinstance(entry.get("text", ""), str)
+                ) for entry in page_chunks)
+            ):
+                native_reason = "markdown_invalid_output"
+            if native_reason is None and len(page_chunks) != doc.page_count:
                 logger.warning(
                     "PDF %s: text extractor returned %d page(s) but the "
-                    "document has %d — page numbers derived from this "
-                    "extraction will be wrong",
+                    "document has %d; using physical-page text extraction",
                     path.name, len(page_chunks), doc.page_count,
                 )
+                native_reason = "markdown_page_count_mismatch"
+            if native_reason is None and not any(
+                has_recovered_text(entry.get("text", "") if isinstance(entry, dict) else entry)
+                for entry in page_chunks
+            ):
+                native_reason = "markdown_empty_output"
+            if native_reason:
+                page_chunks = self._native_text_pages(doc)
 
             parts: list[str] = []
             # Kept separately from ``parts``: this is the per-page extraction
@@ -971,7 +1014,9 @@ class PdfParser:
         content = "\f\n".join(parts)
         from .ocr import needs_ocr_fallback
 
-        if needs_ocr_fallback(content, page_texts=page_texts):
+        if (
+            native_reason and any(not has_recovered_text(page) for page in page_texts)
+        ) or needs_ocr_fallback(content, page_texts=page_texts):
             from .local_ocr import pdf_document
             return cast(ParsedDocument, pdf_document(file_path))
 
@@ -981,6 +1026,13 @@ class PdfParser:
             "embedded_images": len(images),
             "ocr_used": False,
         }
+        if native_reason:
+            metadata.update({
+                "actual_parser": "pymupdf-native-text",
+                "pdf_text_fallback_reason": native_reason,
+                "quality": "native_text_only",
+                "quality_notice": "PDF 已使用本機文字層備援並保留實體頁碼；標題、表格與多欄閱讀順序可能不完整，請核對原檔。",
+            })
 
         return ParsedDocument(
             content=content,
