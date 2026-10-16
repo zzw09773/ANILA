@@ -284,6 +284,10 @@ def test_sql_filters_test_owner_nonce_before_limit_and_uses_row_status(
                 user_id=colleague.id,
                 status="completed",
                 result={"test_tracking": marker},
+                is_test=True,
+                test_request_id=str(uuid4()),
+                test_request_hash=marker["request_hash"],
+                test_actor_department_id=colleague.department_id,
             )
         )
         db.add(
@@ -292,6 +296,10 @@ def test_sql_filters_test_owner_nonce_before_limit_and_uses_row_status(
                 user_id=owner.id,
                 status="running",
                 result={"test_tracking": {**marker, "request_id": str(uuid4())}},
+                is_test=True,
+                test_request_id=str(uuid4()),
+                test_request_hash=marker["request_hash"],
+                test_actor_department_id=owner.department_id,
             )
         )
     # Deliberately conflict JSON status/version with authoritative row fields.

@@ -23,6 +23,7 @@ from app.schemas.quick_builder import (
     Review,
     TemplateWrite,
     TestInput,
+    TestCancelInput,
     VersionRef,
     VersionWrite,
 )
@@ -307,7 +308,7 @@ def _run_access(db, user, run_id):
     version = db.get(QuickVersion, run.version_id, populate_existing=True)
     if not version:
         service.fail(404, "NOT_FOUND", "找不到這筆執行紀錄")
-    if "test_tracking" in (run.result or {}):
+    if run.is_test or "test_tracking" in (run.result or {}):
         tracking = test_tracking(run)
         if run.user_id != user.id or tracking is None:
             service.fail(404, "NOT_FOUND", "找不到這筆執行紀錄")
@@ -337,11 +338,56 @@ def read_run(
     db: Session = Depends(get_db),
     request: Request = None,
 ):
-    from app.services.quick_execution import stored_public_result
+    from app.services.quick_execution import stored_public_result, recover_test_runs
 
     _ensure_test_read_identity(request, user)
-    run, version, _ = _run_access(db, user, run_id)
-    return stored_public_result(run, version)
+    run, version, assistant = _run_access(db, user, run_id)
+    if run.is_test:
+        recover_test_runs(db, user, assistant.id, run_id=run.id)
+        db.refresh(run)
+    result = stored_public_result(run, version)
+    db.commit()
+    return result
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_test_run(
+    run_id: int,
+    body: TestCancelInput,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.quick_execution import (
+        invalidate_test_artifacts,
+        recover_test_runs,
+        stored_public_result,
+    )
+    from app.services.quick_test_lifecycle import cancel_run_in_session
+    from app.services.quick_test_stream import cancel_local
+
+    row, version, assistant = _run_access(db, user, run_id)
+    if (
+        not row.is_test
+        or row.user_id != user.id
+        or body.version_id != version.id
+        or str(body.request_id) != row.test_request_id
+    ):
+        service.fail(404, "NOT_FOUND", "找不到這筆可停止的試跑")
+    recover_test_runs(db, user, assistant.id, run_id=row.id)
+    cancelled = cancel_run_in_session(db, user_id=user.id, run_id=row.id)
+    if cancelled:
+        invalidate_test_artifacts(
+            db, user, assistant.id, row.id, "cancelled", "CANCELLED"
+        )
+        service.audit(
+            db, user, "execute_cancel", assistant.id, run_id=row.id, status="cancelled"
+        )
+    db.refresh(row)
+    result = stored_public_result(row, version)
+    db.commit()  # Revoke persistent authority before cancelling a local coroutine.
+    if cancelled:
+        cancel_local(run_id)
+    return result
 
 
 @router.get("/runs/{run_id}/artifacts/{artifact_id}")
@@ -575,6 +621,13 @@ async def test(
 ):
     from app.services.quick_execution import run
 
+    if body.stream:
+        from app.services.quick_test_stream import start_test_stream
+
+        return await start_test_stream(
+            db, user, assistant_id, body.version_id, body.message, body.request_id
+        )
+
     return await run(
         db,
         user,
@@ -595,7 +648,11 @@ def test_runs(
     db: Session = Depends(get_db),
     request: Request = None,
 ):
-    from app.services.quick_execution import authorize_test_read, test_tracking
+    from app.services.quick_execution import (
+        authorize_test_read,
+        test_tracking,
+        recover_test_runs,
+    )
 
     _ensure_test_read_identity(request, user)
     authorize_test_read(db, user, assistant_id, version_id)
@@ -605,18 +662,14 @@ def test_runs(
         .filter(
             QuickRun.user_id == user.id,
             QuickVersion.assistant_id == assistant_id,
-            QuickRun.result["test_tracking"]["testing"].as_boolean().is_(True),
-            QuickRun.result["test_tracking"]["actor_department_id"].as_integer()
-            == user.department_id,
+            QuickRun.is_test.is_(True),
+            QuickRun.test_actor_department_id == user.department_id,
         )
     )
     if version_id is not None:
         query = query.filter(QuickRun.version_id == version_id)
     if request_id is not None:
-        query = query.filter(
-            QuickRun.result["test_tracking"]["request_id"].as_string()
-            == str(request_id)
-        )
+        query = query.filter(QuickRun.test_request_id == str(request_id))
     rows = query.order_by(QuickRun.id.desc()).limit(20).populate_existing().all()
     results = []
     for row, version in rows:
@@ -624,6 +677,8 @@ def test_runs(
         if tracking is None:
             continue
         authorize_test_read(db, user, assistant_id, version.id, tracking=tracking)
+        recover_test_runs(db, user, assistant_id, run_id=row.id)
+        db.refresh(row)
         results.append(
             {
                 "id": row.id,
@@ -634,4 +689,5 @@ def test_runs(
                 "request_id": tracking["request_id"],
             }
         )
+    db.commit()
     return {"runs": results}

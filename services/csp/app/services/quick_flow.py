@@ -4,6 +4,7 @@
 核准版本模型、資料權限、唯讀工具」的 async 回呼傳入，不能從圖內取得身分。
 文件範本只支援字面文字及 {{text}}，沒有運算式或模板程式語言。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -94,6 +95,7 @@ ModelCall = Callable[[list[dict], float], Awaitable[str | dict]]
 RagCall = Callable[..., Awaitable[list]]
 ToolCall = Callable[[int, dict], Awaitable[dict]]
 DocumentCall = Callable[..., Awaitable[dict]]
+StepCall = Callable[[str, dict], Awaitable[None]]
 
 
 class QuickFlowValidationError(ValueError):
@@ -214,7 +216,9 @@ def _config(kind: str, value: Any, path: str) -> dict:
         _ids(config["collection_ids"], path + ".collection_ids", collections=True)
         _integer(config["top_k"], path + ".top_k", 1, 20)
         if config["mode"] not in ("hybrid", "fulltext"):
-            _invalid("請選擇混合搜尋或小文件全文", path + ".mode", "UNKNOWN_RETRIEVAL_MODE")
+            _invalid(
+                "請選擇混合搜尋或小文件全文", path + ".mode", "UNKNOWN_RETRIEVAL_MODE"
+            )
     elif kind == "mcp":
         if config["tool_id"] is not None:
             _integer(config["tool_id"], path + ".tool_id", 1, 2**63 - 1)
@@ -251,7 +255,9 @@ def _config(kind: str, value: Any, path: str) -> dict:
         literal = template.replace("{{text}}", "")
         if any(mark in literal for mark in ("{{", "}}", "{%", "%}", "{#", "#}")):
             _invalid(
-                "範本僅支援 {{text}}，不可使用運算式", path + ".template", "UNSUPPORTED_TEMPLATE"
+                "範本僅支援 {{text}}，不可使用運算式",
+                path + ".template",
+                "UNSUPPORTED_TEMPLATE",
             )
         template_id = config["template_id"]
         if template_id is not None:
@@ -422,7 +428,9 @@ def validate_history(history: Any) -> list[dict[str, str]]:
             _invalid("對話歷史僅能包含角色與文字內容", path, "INVALID_HISTORY")
         role, content = item["role"], item["content"]
         if type(role) is not str or role not in ("user", "assistant"):
-            _invalid("對話歷史僅接受使用者與助手角色", path + ".role", "INVALID_HISTORY")
+            _invalid(
+                "對話歷史僅接受使用者與助手角色", path + ".role", "INVALID_HISTORY"
+            )
         if type(content) is not str or not content.strip():
             _invalid("對話歷史內容必須是非空文字", path + ".content", "INVALID_HISTORY")
         total += len(content)
@@ -468,7 +476,9 @@ def _merge(states: list[_State]) -> _State:
             texts.append(state.text)
         for key, value in state.fields.items():
             if key in merged.fields and merged.fields[key] != value:
-                raise QuickFlowExecutionError("MERGE_CONFLICT", "合流的擷取欄位內容衝突，請調整連線")
+                raise QuickFlowExecutionError(
+                    "MERGE_CONFLICT", "合流的擷取欄位內容衝突，請調整連線"
+                )
             merged.fields[key] = value
         for attr in ("sources", "instructions", "artifacts"):
             destination = getattr(merged, attr)
@@ -533,7 +543,9 @@ def _condition(config: dict, state: _State) -> bool:
         if not math.isfinite(left) or not math.isfinite(right):
             raise ValueError
     except (ValueError, TypeError, OverflowError):
-        raise QuickFlowExecutionError("CONDITION_VALUE", "數值條件的欄位或比較值不是有效數字") from None
+        raise QuickFlowExecutionError(
+            "CONDITION_VALUE", "數值條件的欄位或比較值不是有效數字"
+        ) from None
     return {
         "gt": left > right,
         "gte": left >= right,
@@ -551,6 +563,7 @@ class _Runtime:
         tool_call: ToolCall,
         document_call: DocumentCall,
         stream_model_call: ModelCall | None = None,
+        on_step: StepCall | None = None,
     ):
         self.message = message
         self.history: list[dict[str, str]] = []
@@ -564,6 +577,7 @@ class _Runtime:
         self.completions: list[dict] = []
         self.model_usage_complete = True
         self.error_service: str | None = None
+        self.on_step = on_step
 
     def completion_fields(self, *, succeeded: bool) -> dict:
         if not self.completions:
@@ -574,7 +588,12 @@ class _Runtime:
         )
         usage = {}
         usage_overflow = False
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens"):
+        for key in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "reasoning_tokens",
+        ):
             if all(key in item["usage"] for item in items):
                 total = sum(item["usage"][key] for item in items)
                 if total <= 2**53 - 1:
@@ -605,7 +624,9 @@ class _Runtime:
         self.tick()
         if callback is None:
             self.error_service = _service
-            raise QuickFlowExecutionError("PROVIDER_UNAVAILABLE", "此步驟需要的服務尚未設定")
+            raise QuickFlowExecutionError(
+                "PROVIDER_UNAVAILABLE", "此步驟需要的服務尚未設定"
+            )
         _json_data([list(args), kwargs], "callback_arguments", maximum=MAX_GRAPH_BYTES)
         try:
             result = await callback(*copy.deepcopy(args), **copy.deepcopy(kwargs))
@@ -616,7 +637,9 @@ class _Runtime:
         try:
             _json_data(result, "callback_result")
         except QuickFlowValidationError as exc:
-            raise QuickFlowExecutionError(exc.code, "服務回傳的資料格式或大小超過限制") from None
+            raise QuickFlowExecutionError(
+                exc.code, "服務回傳的資料格式或大小超過限制"
+            ) from None
         return copy.deepcopy(result)
 
     def messages(self, state: _State, instruction: str = "") -> list[dict]:
@@ -679,7 +702,9 @@ class _Runtime:
         if record and before != after:
             events = self.current.setdefault("context_replacements", [])
             if len(events) >= MAX_EXECUTION_STEPS:
-                raise QuickFlowExecutionError("STEP_LIMIT", "模型內容調整次數已達上限，請縮小文件範圍")
+                raise QuickFlowExecutionError(
+                    "STEP_LIMIT", "模型內容調整次數已達上限，請縮小文件範圍"
+                )
         self._state_retrieval(state, request, result)
         # Completed steps are historical evidence. Only the pending model's
         # input changes; the replacement is an additional, bounded event.
@@ -713,7 +738,9 @@ class _Runtime:
         rows = copy.deepcopy(result)
         for row in rows:
             if type(row) is not dict:
-                raise QuickFlowExecutionError("RAG_RESPONSE", "檢索結果必須包含完整片段資料")
+                raise QuickFlowExecutionError(
+                    "RAG_RESPONSE", "檢索結果必須包含完整片段資料"
+                )
             metadata = row.get("metadata")
             if type(metadata) is not dict:
                 metadata = {}
@@ -749,7 +776,8 @@ class _Runtime:
             )
             if type(result) is not list or len(result) > request["top_k"]:
                 raise QuickFlowExecutionError(
-                    "RAG_CONTEXT_LIMIT", "全文超過模型內容上限，混合搜尋沒有可用的完整片段，請縮小來源或問題"
+                    "RAG_CONTEXT_LIMIT",
+                    "全文超過模型內容上限，混合搜尋沒有可用的完整片段，請縮小來源或問題",
                 )
             request["fulltext"] = False
             request["fallback"] = True
@@ -767,7 +795,8 @@ class _Runtime:
             )
             if total == 0:
                 raise QuickFlowExecutionError(
-                    "RAG_CONTEXT_LIMIT", "全文超過模型內容上限，混合搜尋沒有可用的完整片段，請縮小來源或問題"
+                    "RAG_CONTEXT_LIMIT",
+                    "全文超過模型內容上限，混合搜尋沒有可用的完整片段，請縮小來源或問題",
                 )
             try:
                 messages = self._model_arguments(state, instruction)
@@ -794,7 +823,8 @@ class _Runtime:
             ]
             if not candidates:
                 raise QuickFlowExecutionError(
-                    "RAG_CONTEXT_LIMIT", "問題、提示詞與來源合計超過模型內容上限，請縮小來源或問題"
+                    "RAG_CONTEXT_LIMIT",
+                    "問題、提示詞與來源合計超過模型內容上限，請縮小來源或問題",
                 )
             request = max(
                 candidates,
@@ -820,7 +850,9 @@ class _Runtime:
         )
         messages = await self._fit_model_context(state, instruction)
         try:
-            result = await self.call(callback, messages, state.temperature, _service="model")
+            result = await self.call(
+                callback, messages, state.temperature, _service="model"
+            )
         except BaseException:
             self.model_usage_complete = False
             raise
@@ -833,7 +865,9 @@ class _Runtime:
             ) from None
         metadata = normalized["completion"]
         metadata["can_continue"] = False
-        self.completions.append({"node_id": self.current["node_id"], "completion": metadata})
+        self.completions.append(
+            {"node_id": self.current["node_id"], "completion": metadata}
+        )
         self.current["completion"] = copy.deepcopy(metadata)
         self.current.setdefault("model_completions", []).append(copy.deepcopy(metadata))
         state.answer_complete = metadata["answer_complete"]
@@ -846,7 +880,9 @@ class _Runtime:
 
     async def agent(self, config: dict, state: _State, trace: dict) -> _State:
         if not config["tool_ids"]:
-            raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先勾選代理可使用的已核准查詢工具")
+            raise QuickFlowExecutionError(
+                "CONFIGURATION_REQUIRED", "請先勾選代理可使用的已核准查詢工具"
+            )
         instruction = (
             "規劃下一步並僅回傳一個 JSON 物件。查詢時用 "
             '{"action":"tool","tool_id":整數,"arguments":{}}；'
@@ -902,7 +938,10 @@ class _Runtime:
                 started = time.monotonic()
                 try:
                     result = await self.call(
-                        self.tool_call, plan["tool_id"], plan["arguments"], _service="tool"
+                        self.tool_call,
+                        plan["tool_id"],
+                        plan["arguments"],
+                        _service="tool",
                     )
                     if type(result) is not dict:
                         raise QuickFlowExecutionError("TOOL_RESPONSE", "工具未回傳物件")
@@ -925,7 +964,9 @@ class _Runtime:
                     break
                 finally:
                     record["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
-        raise QuickFlowExecutionError("STEP_LIMIT", "代理已達最多步數，仍未產生最終回答")
+        raise QuickFlowExecutionError(
+            "STEP_LIMIT", "代理已達最多步數，仍未產生最終回答"
+        )
 
     async def node(
         self, node: dict, state: _State, trace: dict
@@ -942,7 +983,9 @@ class _Runtime:
             )
         elif kind == "rag":
             if not config["collection_ids"]:
-                raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇有權限使用的文件集")
+                raise QuickFlowExecutionError(
+                    "CONFIGURATION_REQUIRED", "請先選擇有權限使用的文件集"
+                )
             kwargs = {"mode": "fulltext"} if config["mode"] == "fulltext" else {}
             result = await self.call(
                 self.rag_call,
@@ -956,7 +999,9 @@ class _Runtime:
                 MAX_FULLTEXT_CHUNKS if config["mode"] == "fulltext" else config["top_k"]
             )
             if type(result) is not list or len(result) > maximum:
-                raise QuickFlowExecutionError("RAG_RESPONSE", "檢索結果格式或筆數不正確")
+                raise QuickFlowExecutionError(
+                    "RAG_RESPONSE", "檢索結果格式或筆數不正確"
+                )
             trace["retrieval"] = copy.deepcopy(result)
             state.sources.extend(result)
             state.retrievals.append(
@@ -980,7 +1025,9 @@ class _Runtime:
             state.external.append({"retrieval": result})
         elif kind == "mcp":
             if config["tool_id"] is None:
-                raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇已核准的查詢工具")
+                raise QuickFlowExecutionError(
+                    "CONFIGURATION_REQUIRED", "請先選擇已核准的查詢工具"
+                )
             arguments = _substitute_arguments(config["arguments"], state)
             record = {
                 "tool_id": config["tool_id"],
@@ -988,7 +1035,9 @@ class _Runtime:
                 "result": None,
             }
             trace["tool"].append(record)
-            result = await self.call(self.tool_call, config["tool_id"], arguments, _service="tool")
+            result = await self.call(
+                self.tool_call, config["tool_id"], arguments, _service="tool"
+            )
             if type(result) is not dict:
                 raise QuickFlowExecutionError("TOOL_RESPONSE", "工具未回傳物件")
             record["result"] = copy.deepcopy(result)
@@ -1000,7 +1049,9 @@ class _Runtime:
             return state, _condition(config, state)
         elif kind == "extract":
             raw = await self.model(
-                state, "僅回傳 JSON 物件，擷取下列欄位；缺資料填 null，不要推測：" + _dump(config["fields"])
+                state,
+                "僅回傳 JSON 物件，擷取下列欄位；缺資料填 null，不要推測："
+                + _dump(config["fields"]),
             )
             try:
                 result = json.loads(raw)
@@ -1026,22 +1077,35 @@ class _Runtime:
             }
             state.text = await self.model(
                 state,
-                "將提供的內容整理成" + styles[config["style"]] + "，保留事實，不新增資料。",
+                "將提供的內容整理成"
+                + styles[config["style"]]
+                + "，保留事實，不新增資料。",
                 stream=node["id"] == self.stream_node_id,
             )
         elif kind == "document":
             if config["mode"] == "text" and not config["template"].strip():
-                raise QuickFlowExecutionError("CONFIGURATION_REQUIRED", "請先選擇或填寫文件範本")
+                raise QuickFlowExecutionError(
+                    "CONFIGURATION_REQUIRED", "請先選擇或填寫文件範本"
+                )
             if config["mode"] == "studio":
                 result = await self.call(
-                    self.document_call, config["template"], state.text, _service="document", config=config
+                    self.document_call,
+                    config["template"],
+                    state.text,
+                    _service="document",
+                    config=config,
                 )
             else:
                 result = await self.call(
-                    self.document_call, config["template"], state.text, _service="document"
+                    self.document_call,
+                    config["template"],
+                    state.text,
+                    _service="document",
                 )
             if type(result) is not dict:
-                raise QuickFlowExecutionError("DOCUMENT_RESPONSE", "文件服務未回傳產物資料")
+                raise QuickFlowExecutionError(
+                    "DOCUMENT_RESPONSE", "文件服務未回傳產物資料"
+                )
             if result.get("error"):
                 raise QuickFlowExecutionError("DOCUMENT_FAILED", "文件產生失敗")
             state.artifacts.append(result)
@@ -1121,6 +1185,8 @@ class _Runtime:
                 self.tick()
                 state = _merge(active) if active else _State(text=self.message)
                 trace["input"] = state.public()
+                if self.on_step is not None:
+                    await self.on_step("step_started", copy.deepcopy(trace))
                 state, decision = await self.node(node, state, trace)
                 _json_data(state.public(), "node_output", maximum=MAX_GRAPH_BYTES)
                 trace["output"] = state.public()
@@ -1132,7 +1198,15 @@ class _Runtime:
                 if node["kind"] == "output":
                     outputs.append(state)
             except Exception as exc:
-                trace["error"], trace["status"] = _error(exc, service=self.error_service), "failed"
+                trace["error"], trace["status"] = (
+                    _error(exc, service=self.error_service),
+                    "failed",
+                )
+            finally:
+                trace["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
+            if self.on_step is not None:
+                await self.on_step("step_finished", copy.deepcopy(trace))
+            if trace["status"] == "failed":
                 return {
                     "output": "",
                     "steps": self.steps,
@@ -1140,8 +1214,6 @@ class _Runtime:
                     "error": trace["error"],
                     **self.completion_fields(succeeded=False),
                 }
-            finally:
-                trace["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
         if not outputs:
             raise QuickFlowExecutionError("NO_OUTPUT", "本次執行沒有抵達輸出模組")
         artifacts = []
@@ -1170,16 +1242,40 @@ def _substitute_arguments(value: Any, state: _State) -> Any:
 
 
 _SERVICE_FAILURES = {
-    "model": ("MODEL_SERVICE_ERROR", "模型服務未能完成這次回答，請稍後重試或聯絡管理員"),
-    "rag": ("RAG_SERVICE_ERROR", "文件檢索服務未能完成這次查詢，請稍後重試或聯絡資料管理者"),
-    "tool": ("TOOL_SERVICE_ERROR", "查詢工具服務未能完成這次查詢，請稍後重試或聯絡管理員"),
-    "document": ("DOCUMENT_SERVICE_ERROR", "文件輸出服務未能完成這份草稿，請稍後重試或聯絡管理員"),
+    "model": (
+        "MODEL_SERVICE_ERROR",
+        "模型服務未能完成這次回答，請稍後重試或聯絡管理員",
+    ),
+    "rag": (
+        "RAG_SERVICE_ERROR",
+        "文件檢索服務未能完成這次查詢，請稍後重試或聯絡資料管理者",
+    ),
+    "tool": (
+        "TOOL_SERVICE_ERROR",
+        "查詢工具服務未能完成這次查詢，請稍後重試或聯絡管理員",
+    ),
+    "document": (
+        "DOCUMENT_SERVICE_ERROR",
+        "文件輸出服務未能完成這份草稿，請稍後重試或聯絡管理員",
+    ),
 }
 _SERVICE_UNAVAILABLE = {
-    "model": ("MODEL_SERVICE_UNAVAILABLE", "模型服務目前無法使用，請聯絡管理員確認服務狀態"),
-    "rag": ("RAG_SERVICE_UNAVAILABLE", "文件檢索服務目前無法使用，請聯絡資料管理者確認服務狀態"),
-    "tool": ("TOOL_SERVICE_UNAVAILABLE", "查詢工具服務目前無法使用，請聯絡管理員確認服務狀態"),
-    "document": ("DOCUMENT_SERVICE_UNAVAILABLE", "文件輸出服務目前無法使用，請聯絡管理員確認服務狀態"),
+    "model": (
+        "MODEL_SERVICE_UNAVAILABLE",
+        "模型服務目前無法使用，請聯絡管理員確認服務狀態",
+    ),
+    "rag": (
+        "RAG_SERVICE_UNAVAILABLE",
+        "文件檢索服務目前無法使用，請聯絡資料管理者確認服務狀態",
+    ),
+    "tool": (
+        "TOOL_SERVICE_UNAVAILABLE",
+        "查詢工具服務目前無法使用，請聯絡管理員確認服務狀態",
+    ),
+    "document": (
+        "DOCUMENT_SERVICE_UNAVAILABLE",
+        "文件輸出服務目前無法使用，請聯絡管理員確認服務狀態",
+    ),
 }
 # Only first-party error identifiers select these copies; status codes and free text do not.
 _KNOWN_CALLBACK_ERRORS = {
@@ -1255,7 +1351,9 @@ _KNOWN_FLOW_ERRORS = {
 }
 for _reason in ("length", "content_filter", "tool_calls"):
     _notice = completion_metadata(finish_reason=_reason)
-    _KNOWN_FLOW_ERRORS[_notice["type"]] = _notice["message"].removesuffix(f"（{_notice['type']}）")
+    _KNOWN_FLOW_ERRORS[_notice["type"]] = _notice["message"].removesuffix(
+        f"（{_notice['type']}）"
+    )
 
 
 def _fixed_error(code: str, message: str) -> dict:
@@ -1283,12 +1381,18 @@ def _error(exc: Exception, *, service: str | None = None) -> dict:
         return _fixed_error("FLOW_FAILED", "這個步驟未能完成，請聯絡助手建立者確認")
     if known_service:
         detail = getattr(exc, "detail", None)
-        code = detail.get("type", detail.get("error_type")) if type(detail) is dict else None
+        code = (
+            detail.get("type", detail.get("error_type"))
+            if type(detail) is dict
+            else None
+        )
         if type(code) is str and code in _KNOWN_CALLBACK_ERRORS:
             return _fixed_error(code, _KNOWN_CALLBACK_ERRORS[code])
         return _fixed_error(*_SERVICE_FAILURES[service])
     # Unknown failures do not imply a model or authorization problem.
-    return _fixed_error("PROVIDER_ERROR", "這個步驟的服務未能完成處理，請稍後重試或聯絡管理員")
+    return _fixed_error(
+        "PROVIDER_ERROR", "這個步驟的服務未能完成處理，請稍後重試或聯絡管理員"
+    )
 
 
 async def execute_graph(
@@ -1301,6 +1405,7 @@ async def execute_graph(
     document_call: DocumentCall,
     history: list[dict[str, str]] | None = None,
     stream_model_call: ModelCall | None = None,
+    on_step: StepCall | None = None,
 ) -> dict:
     """執行一個有界限的流程，回傳 output、steps、status 與產物／錯誤。
 
@@ -1311,7 +1416,13 @@ async def execute_graph(
     資料權限及密等；其他角色與超量歷史會在任何模組執行前明確失敗。
     """
     runtime = _Runtime(
-        message, model_call, rag_call, tool_call, document_call, stream_model_call
+        message,
+        model_call,
+        rag_call,
+        tool_call,
+        document_call,
+        stream_model_call,
+        on_step,
     )
     try:
         normalized = validate_graph(graph)
@@ -1321,7 +1432,10 @@ async def execute_graph(
             runtime.run(normalized), timeout=EXECUTION_TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
-        error = {"type": "TIMEOUT", "message": "流程執行超過時間上限，請縮短流程或稍後重試（TIMEOUT）"}
+        error = {
+            "type": "TIMEOUT",
+            "message": "流程執行超過時間上限，請縮短流程或稍後重試（TIMEOUT）",
+        }
         if runtime.current:
             runtime.current.update(error=error, status="failed")
         return {

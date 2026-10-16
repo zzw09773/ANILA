@@ -13,6 +13,7 @@ import uuid
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy import func
 from sqlalchemy.exc import DBAPIError
 
 from app.models.agent import Agent
@@ -43,11 +44,23 @@ _IDENTITY = re.compile(r"\b[A-Z][12]\d{8}\b")
 _QUOTED_FIELD = re.compile(
     r"(?P<label>(?P<quote>[\"'])(?P<key>(?:\\.|(?!(?P=quote))[^\\])+)(?P=quote)\s*[:=：]\s*)"
 )
+TEST_LEASE_HEARTBEAT_SECONDS = 5
+TEST_LEASE_BUSY_RETRY_SECONDS = 1
+MAX_ACTOR_TEST_RUNS = 2
 
 
 def test_tracking(run_row):
     """Read only the server-created recovery marker; never expose its hash."""
-    value = (run_row.result or {}).get("test_tracking")
+    value = (
+        {
+            "testing": True,
+            "request_id": run_row.test_request_id,
+            "request_hash": run_row.test_request_hash,
+            "actor_department_id": run_row.test_actor_department_id,
+        }
+        if run_row.is_test
+        else (run_row.result or {}).get("test_tracking")
+    )
     if not isinstance(value, dict) or value.get("testing") is not True:
         return None
     if set(value) != {"testing", "request_id", "request_hash", "actor_department_id"}:
@@ -128,7 +141,9 @@ def stored_public_result(run_row, version):
     return public_result(run_row.id, result, artifacts)
 
 
-def _start_test(db, user, assistant_id, version_id, message, request_id):
+def _start_test(db, user, assistant_id, version_id, message, request_id, *, admit=None):
+    from app.services.quick_test_lifecycle import claim_new
+
     # Preserve the authenticated identity before populate_existing can refresh it.
     actor_id, token_version, department_id = (
         user.id,
@@ -161,8 +176,8 @@ def _start_test(db, user, assistant_id, version_id, message, request_id):
                 db.query(QuickRun)
                 .filter(
                     QuickRun.user_id == actor_id,
-                    QuickRun.result["test_tracking"]["testing"].as_boolean().is_(True),
-                    QuickRun.result["test_tracking"]["request_id"].as_string() == nonce,
+                    QuickRun.is_test.is_(True),
+                    QuickRun.test_request_id == nonce,
                 )
                 .order_by(QuickRun.id)
                 .populate_existing()
@@ -195,6 +210,10 @@ def _start_test(db, user, assistant_id, version_id, message, request_id):
                         "TEST_REQUEST_CONFLICT",
                         "這個試跑識別碼已用於不同內容或版本，請重新開始試跑",
                     )
+                recover_test_runs(
+                    db, current, previous_version.assistant_id, run_id=previous.id
+                )
+                db.refresh(previous)
                 response = stored_public_result(previous, previous_version)
                 db.commit()
                 return None, response
@@ -207,6 +226,31 @@ def _start_test(db, user, assistant_id, version_id, message, request_id):
             fail(409, "ASSISTANT_DISABLED", "助手已停用，無法執行")
         payload = deepcopy(version.payload)
         validate_sources(db, current, payload, complete=True, check_model_access=True)
+        clock = (
+            func.clock_timestamp()
+            if db.get_bind().dialect.name == "postgresql"
+            else func.current_timestamp()
+        )
+        active = (
+            db.query(QuickRun.id)
+            .filter(
+                QuickRun.user_id == actor_id,
+                QuickRun.is_test.is_(True),
+                QuickRun.status == "running",
+                QuickRun.execution_owner_token.is_not(None),
+                QuickRun.lease_expires_at > clock,
+            )
+            .limit(MAX_ACTOR_TEST_RUNS)
+            .all()
+        )
+        if len(active) >= MAX_ACTOR_TEST_RUNS:
+            fail(
+                429,
+                "TEST_RUN_BUSY",
+                "本人已有兩筆試跑正在執行，請先等待或停止其中一筆；系統未建立新執行。",
+            )
+        if admit is not None:
+            admit()
         marker = {
             "testing": True,
             "request_id": nonce,
@@ -225,7 +269,13 @@ def _start_test(db, user, assistant_id, version_id, message, request_id):
             },
         )
         db.add(row)
-        db.flush()
+        lease = claim_new(
+            db,
+            row,
+            request_id=nonce,
+            message=message,
+            actor_department_id=department_id,
+        )
         audit(
             db,
             current,
@@ -246,6 +296,7 @@ def _start_test(db, user, assistant_id, version_id, message, request_id):
             actor_id,
             department_id,
             token_version,
+            lease,
         ), None
     except DBAPIError as exc:
         db.rollback()
@@ -515,6 +566,51 @@ def artifact_execution_level(db, run, version, artifact=None):
     return level
 
 
+def _resume_test(db, user, assistant_id, version_id, message, request_id, lease):
+    from app.services.quick_test_lifecycle import RunLease, check_in_session
+
+    actor_id, department_id, token_version = (
+        user.id,
+        user.department_id,
+        user.token_version,
+    )
+    row = (
+        db.get(QuickRun, lease.run_id, populate_existing=True)
+        if isinstance(lease, RunLease)
+        else None
+    )
+    if (
+        row is None
+        or row.user_id != actor_id
+        or lease.user_id != actor_id
+        or not row.is_test
+        or row.version_id != version_id
+        or row.test_request_id != str(request_id)
+        or row.test_request_hash != hashlib.sha256(message.encode("utf-8")).hexdigest()
+        or row.test_actor_department_id != department_id
+        or not check_in_session(db, lease)
+    ):
+        db.rollback()
+        fail(409, "TEST_RUN_INACTIVE", "這筆試跑的執行權已失效，請查詢原執行紀錄")
+    assistant, version = authorize_test_read(
+        db, user, assistant_id, version_id, tracking=test_tracking(row)
+    )
+    agent = db.get(Agent, version.agent_id) if version.agent_id else None
+    payload = deepcopy(version.payload)
+    db.commit()
+    return (
+        assistant,
+        version,
+        agent,
+        payload,
+        row,
+        actor_id,
+        department_id,
+        token_version,
+        lease,
+    )
+
+
 async def run(
     db,
     user,
@@ -529,16 +625,110 @@ async def run(
     dispatch_claims=None,
     history=None,
     on_delta=None,
+    on_step=None,
     test_request_id=None,
+    test_lease=None,
+    on_lease_lost=None,
+):
+    """Execute once; a detached Builder observer never owns this task's lifetime."""
+    started = None
+    heartbeat = None
+    lease_state = {"lost": False}
+    if testing:
+        if test_lease is None:
+            started, previous = _start_test(
+                db, user, assistant_id, version_id, message, test_request_id
+            )
+            if previous is not None:
+                return previous
+        else:
+            started = _resume_test(
+                db, user, assistant_id, version_id, message, test_request_id, test_lease
+            )
+        lease = started[-1]
+        owner_task = asyncio.current_task()
+        bind = db.get_bind()
+
+        async def maintain():
+            from app.services.quick_test_lifecycle import renew_lease
+
+            delay = TEST_LEASE_HEARTBEAT_SECONDS
+            while True:
+                await asyncio.sleep(delay)
+                try:
+                    valid = await asyncio.to_thread(renew_lease, bind, lease)
+                except DBAPIError as exc:
+                    if (
+                        getattr(exc.orig, "sqlstate", None) == "55P03"
+                        or getattr(exc.orig, "pgcode", None) == "55P03"
+                    ):
+                        delay = TEST_LEASE_BUSY_RETRY_SECONDS
+                        continue
+                    valid = False
+                except Exception:
+                    valid = False
+                if not valid:
+                    lease_state["lost"] = True
+                    if on_lease_lost is not None:
+                        on_lease_lost()
+                    owner_task.cancel()
+                    return
+                delay = TEST_LEASE_HEARTBEAT_SECONDS
+
+        heartbeat = asyncio.create_task(maintain())
+    elif test_lease is not None:
+        fail(422, "INVALID_INPUT", "執行租約僅供試跑使用")
+    try:
+        return await _execute_run(
+            db,
+            user,
+            assistant_id,
+            version_id,
+            message,
+            testing=testing,
+            api_key_id=api_key_id,
+            task_ctx=task_ctx,
+            conversation_id=conversation_id,
+            dispatch_claims=dispatch_claims,
+            history=history,
+            on_delta=on_delta,
+            on_step=on_step,
+            test_request_id=test_request_id,
+            _started=started,
+            _lease_state=lease_state,
+        )
+    except asyncio.CancelledError:
+        if lease_state["lost"]:
+            fail(409, "TEST_RUN_INACTIVE", "試跑的執行權無法確認，請查詢原執行紀錄")
+        raise
+    finally:
+        if heartbeat is not None:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+
+async def _execute_run(
+    db,
+    user,
+    assistant_id,
+    version_id,
+    message,
+    *,
+    testing=False,
+    api_key_id=None,
+    task_ctx=None,
+    conversation_id=None,
+    dispatch_claims=None,
+    history=None,
+    on_delta=None,
+    test_request_id=None,
+    on_step=None,
+    _started=None,
+    _lease_state=None,
 ):
     from app.services.quick_flow import execute_graph
 
     if testing:
-        started, previous = _start_test(
-            db, user, assistant_id, version_id, message, test_request_id
-        )
-        if previous is not None:
-            return previous
         (
             assistant,
             version,
@@ -548,13 +738,15 @@ async def run(
             captured_user_id,
             captured_department,
             captured_token_version,
-        ) = started
+            run_lease,
+        ) = _started
         test_provenance = {
             "version_id": version.id,
             "revision": version.revision,
             "request_id": test_tracking(run_row)["request_id"],
         }
     else:
+        run_lease = None
         if test_request_id is not None:
             fail(422, "INVALID_INPUT", "試跑識別碼僅供測試流程使用")
         assistant = load(db, user, assistant_id)
@@ -637,6 +829,15 @@ async def run(
     artifacts = []
 
     def reauthorize():
+        if _lease_state is not None and _lease_state["lost"]:
+            fail(409, "TEST_RUN_INACTIVE", "試跑的執行權無法確認，請查詢原執行紀錄")
+        if run_lease is not None:
+            from app.services.quick_test_lifecycle import check_in_session
+
+            if not _lease_phase(db, lambda: check_in_session(db, run_lease)):
+                fail(
+                    409, "TEST_RUN_INACTIVE", "這筆試跑的執行權已失效，請查詢原執行紀錄"
+                )
         if dispatch_claims and dispatch_claims.get("exp", 0) <= int(time.time()):
             fail(401, "DISPATCH_EXPIRED", "這次執行的身分憑證已到期，請重新提問")
         current = (
@@ -741,6 +942,8 @@ async def run(
             ClassificationLevel.from_storage(payload["classification_level"])
         ):
             fail(403, "EXPORT_CLASSIFICATION", "任務或來源密等已提高，文件回答已中止")
+        if run_lease is not None:
+            db.commit()  # Never carry the execution-row fence lock into an await.
         return current
 
     def model_context(messages):
@@ -939,6 +1142,23 @@ async def run(
                 before_send=document_before_send,
             )
             current = reauthorize()
+
+            def document_before_persist():
+                # Called within the synchronous registration phase and its
+                # nested before_commit hooks. Never commit/retry here: acquire
+                # the execution row before any pending Artifact can autoflush,
+                # and retain it until the existing service commits this phase.
+                from app.services.quick_test_lifecycle import check_in_session
+
+                if (_lease_state is not None and _lease_state["lost"]) or not (
+                    check_in_session(db, run_lease)
+                ):
+                    fail(
+                        409,
+                        "TEST_RUN_INACTIVE",
+                        "這筆試跑的執行權已失效，請查詢原執行紀錄",
+                    )
+
             metadata = register_document_artifact(
                 db,
                 current,
@@ -950,6 +1170,9 @@ async def run(
                 agent_id=captured_agent_id,
                 model_id=payload["model_id"],
                 artifact_index=len(artifacts),
+                before_persist=(
+                    document_before_persist if run_lease is not None else None
+                ),
             )
             artifact = {
                 **metadata,
@@ -985,6 +1208,36 @@ async def run(
         reauthorize()
         db.commit()
 
+    observed_steps = []
+
+    async def observe_step(event, trace):
+        reauthorize()
+        safe = _mask_flow_result({"steps": [trace]})["steps"][0]
+        index = next(
+            (
+                i
+                for i, step in enumerate(observed_steps)
+                if step["node_id"] == safe["node_id"]
+            ),
+            None,
+        )
+        if index is None:
+            observed_steps.append(safe)
+        else:
+            observed_steps[index] = safe
+        if run_lease is not None:
+            from app.services.quick_test_lifecycle import checkpoint_in_session
+
+            if not _lease_phase(
+                db, lambda: checkpoint_in_session(db, run_lease, steps=observed_steps)
+            ):
+                fail(
+                    409, "TEST_RUN_INACTIVE", "這筆試跑的執行權已失效，請查詢原執行紀錄"
+                )
+        db.commit()
+        if on_step is not None:
+            await on_step(event, deepcopy(safe), before_send=authorize_final_delivery)
+
     try:
         if on_delta is not None:
             await on_delta("", before_send=authorize_final_delivery)
@@ -998,6 +1251,7 @@ async def run(
                 document_call=document_call,
                 history=history,
                 stream_model_call=stream_model_call if on_delta is not None else None,
+                on_step=observe_step if testing or on_step is not None else None,
             ),
             timeout=120,
         )
@@ -1009,10 +1263,22 @@ async def run(
                 403, "EXPORT_CLASSIFICATION", "任務或對話的密等已提高，這次文件不能匯出"
             )
     except (asyncio.CancelledError, GeneratorExit):
+        if _lease_state is not None and _lease_state["lost"]:
+            # Failed renewal proves neither a user cancel nor safe completion.
+            # Stop side effects and let the persisted DB expiry revoke authority.
+            db.rollback()
+            raise
         result = {
             "output": "",
             "status": "cancelled",
-            "steps": [],
+            "steps": [
+                {**step, "status": "cancelled"} if step["status"] == "running" else step
+                for step in observed_steps
+            ]
+            if testing
+            else [],
+            "answer_complete": False,
+            "usage_complete": False,
             "error": {"type": "CANCELLED", "message": "連線已中斷，流程已停止"},
         }
         _finish(
@@ -1028,6 +1294,7 @@ async def run(
                 "source_snapshot_id": source_snapshot_id,
                 "conversation_id": conv_id,
             },
+            lease=run_lease,
         )
         raise
     except Exception as exc:
@@ -1047,6 +1314,9 @@ async def run(
         }
     if result["status"] != "completed":
         artifacts = []
+    if _lease_state is not None and _lease_state["lost"]:
+        db.rollback()
+        fail(409, "TEST_RUN_INACTIVE", "試跑的執行權無法確認，較晚回覆未保存")
     _finish(
         db,
         user,
@@ -1060,6 +1330,7 @@ async def run(
             "source_snapshot_id": source_snapshot_id,
             "conversation_id": conv_id,
         },
+        lease=run_lease,
     )
     response = public_result(run_id, result, artifacts)
     if testing:
@@ -1067,49 +1338,107 @@ async def run(
     return response
 
 
-def _finish(db, user, assistant_id, run_id, result, artifacts, execution_context):
+def _lease_phase(db, operation):
+    """Retry only a bounded NOWAIT metadata collision, never a provider call."""
+    for attempt in range(3):
+        try:
+            return operation()
+        except DBAPIError as exc:
+            db.rollback()
+            busy = (
+                getattr(exc.orig, "sqlstate", None) == "55P03"
+                or getattr(exc.orig, "pgcode", None) == "55P03"
+            )
+            if not busy or attempt == 2:
+                raise
+
+
+def invalidate_test_artifacts(db, user, assistant_id, run_id, status, error_type):
+    from app.models.artifact import Artifact, ArtifactVersion
+
+    for artifact in (
+        db.query(Artifact)
+        .filter(
+            Artifact.owner_user_id == user.id,
+            Artifact.metadata_json["quick_run_id"].as_integer() == run_id,
+        )
+        .all()
+    ):
+        artifact.status = "failed"
+        artifact.metadata_json = {
+            **(artifact.metadata_json or {}),
+            "quick_run_status": status,
+            "failure_reason": error_type,
+        }
+        for version in (
+            db.query(ArtifactVersion).filter_by(artifact_id=artifact.id).all()
+        ):
+            version.storage_ref = None
+            version.file_refs = []
+        audit(
+            db,
+            user,
+            "artifact_invalidate",
+            assistant_id,
+            run_id=run_id,
+            artifact_id=artifact.id,
+            status=status,
+        )
+
+
+def recover_test_runs(db, user, assistant_id, *, run_id):
+    from app.services.quick_test_lifecycle import recover_in_session
+
+    recovered = recover_in_session(db, user_id=user.id, run_id=run_id)
+    for recovered_id in recovered:
+        invalidate_test_artifacts(
+            db, user, assistant_id, recovered_id, "interrupted", "RESULT_UNCONFIRMED"
+        )
+        audit(
+            db,
+            user,
+            "execute_recover",
+            assistant_id,
+            run_id=recovered_id,
+            status="interrupted",
+        )
+    return recovered
+
+
+def _finish(
+    db, user, assistant_id, run_id, result, artifacts, execution_context, *, lease=None
+):
     db.rollback()
     stored = db.get(QuickRun, run_id)
     tracking = test_tracking(stored)
-    if result["status"] != "completed":
-        from app.models.artifact import Artifact, ArtifactVersion
-
-        for artifact in (
-            db.query(Artifact)
-            .filter(
-                Artifact.owner_user_id == stored.user_id,
-                Artifact.metadata_json["quick_run_id"].as_integer() == run_id,
-            )
-            .all()
-        ):
-            artifact.status = "failed"
-            artifact.metadata_json = {
-                **(artifact.metadata_json or {}),
-                "quick_run_status": result["status"],
-                "failure_reason": result.get("error", {}).get("type", "FLOW_FAILED"),
-            }
-            for version in (
-                db.query(ArtifactVersion).filter_by(artifact_id=artifact.id).all()
-            ):
-                version.storage_ref = None
-                version.file_refs = []
-            audit(
-                db,
-                user,
-                "artifact_invalidate",
-                assistant_id,
-                run_id=run_id,
-                artifact_id=artifact.id,
-                status=result["status"],
-            )
-    stored.status = result["status"]
-    stored.result = {
+    safe = {
         **_mask_flow_result(result),
         "artifacts": artifacts,
         "execution_context": execution_context,
     }
     if tracking is not None:
-        stored.result["test_tracking"] = tracking
+        safe["test_tracking"] = tracking
+    if lease is not None:
+        from app.services.quick_test_lifecycle import finish_in_session
+
+        if not _lease_phase(
+            db,
+            lambda: finish_in_session(db, lease, status=result["status"], result=safe),
+        ):
+            db.rollback()
+            fail(409, "TEST_RUN_INACTIVE", "試跑已失去執行權，較晚回覆未覆寫原紀錄")
+    else:
+        stored.status = result["status"]
+        stored.result = safe
+    if result["status"] != "completed":
+        invalidate_test_artifacts(
+            db,
+            user,
+            assistant_id,
+            run_id,
+            result["status"],
+            result.get("error", {}).get("type", "FLOW_FAILED"),
+        )
     audit(
         db, user, "execute_finish", assistant_id, run_id=run_id, status=result["status"]
     )
@@ -1118,6 +1447,17 @@ def _finish(db, user, assistant_id, run_id, result, artifacts, execution_context
 
 def _mask_flow_result(result):
     safe = mask(result)
+
+    def strip_artifact_handles(state):
+        if not isinstance(state, dict):
+            return
+        for artifact in state.get("artifacts", []):
+            if isinstance(artifact, dict):
+                for key in ("download_url", "storage_ref", "file_refs"):
+                    artifact.pop(key, None)
+        # These are flow state containers, not arbitrary retrieval/source data.
+        for key in ("input", "output", "state"):
+            strip_artifact_handles(state.get(key))
 
     def project(original, destination):
         if "completion" in original:
@@ -1133,8 +1473,10 @@ def _mask_flow_result(result):
     # Only validated server completion records bypass the generic token-key mask.
     # Arbitrary tool, retrieval and model content retain the existing mask.
     project(result, safe)
+    strip_artifact_handles(safe)
     for original, destination in zip(result.get("steps", []), safe.get("steps", [])):
         project(original, destination)
+        strip_artifact_handles(destination)
     return safe
 
 

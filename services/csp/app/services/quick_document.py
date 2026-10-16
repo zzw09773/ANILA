@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
@@ -20,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException
 import httpx
 from jose import jwt
+from sqlalchemy import event
 
 from app.models.quick_builder import QuickRun
 from app.models.registered_service import RegisteredService
@@ -135,21 +137,36 @@ def _studio_origin(entry_url: str) -> str:
             or parsed.fragment
             or port == 0
         ):
-            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務位址不能含帳密、參數或片段")
+            _fail(
+                503,
+                "DOCUMENT_RENDERER_ENDPOINT",
+                "文件排版服務位址不能含帳密、參數或片段",
+            )
         return parsed, host, port
 
     parsed, host, port = parts(entry_url)
     if not parsed.scheme and not parsed.netloc:
-        if (
-            not re.fullmatch(r"/studio(?:/[A-Za-z0-9._~-]+)*/?", parsed.path)
-            or any(segment in (".", "..") for segment in parsed.path.split("/"))
+        if not re.fullmatch(r"/studio(?:/[A-Za-z0-9._~-]+)*/?", parsed.path) or any(
+            segment in (".", "..") for segment in parsed.path.split("/")
         ):
-            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "同源文件服務入口必須是 /studio/ 路徑")
+            _fail(
+                503,
+                "DOCUMENT_RENDERER_ENDPOINT",
+                "同源文件服務入口必須是 /studio/ 路徑",
+            )
         parsed, host, port = parts(settings.SITE_URL)
         if parsed.path not in ("", "/"):
-            _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "平台站台位址必須是完整的 HTTP 或 HTTPS origin")
+            _fail(
+                503,
+                "DOCUMENT_RENDERER_ENDPOINT",
+                "平台站台位址必須是完整的 HTTP 或 HTTPS origin",
+            )
     if parsed.scheme not in ("http", "https") or not host:
-        _fail(503, "DOCUMENT_RENDERER_ENDPOINT", "文件排版服務需要完整的院內 HTTP 或 HTTPS origin")
+        _fail(
+            503,
+            "DOCUMENT_RENDERER_ENDPOINT",
+            "文件排版服務需要完整的院內 HTTP 或 HTTPS origin",
+        )
     authority = f"[{host}]" if ":" in host else host
     if port is not None:
         authority += f":{port}"
@@ -353,6 +370,33 @@ async def render_document(
     }
 
 
+@contextmanager
+def _document_persistence_guard(db, before_persist):
+    """Fence every nested service commit on this producer Session only.
+
+    The callback must only check/lock the execution row, without committing.
+    Run-row-first lock order matches cancellation and recovery. Suppressing
+    autoflush is essential: an Artifact pending in a nested service must not
+    reach the database before the execution fence has been acquired.
+    """
+    if before_persist is None:
+        yield lambda: None
+        return
+
+    def check(session=None):
+        with db.no_autoflush:
+            before_persist()
+
+    event.listen(db, "before_commit", check)
+    try:
+        yield check
+    except BaseException:
+        db.rollback()
+        raise
+    finally:
+        event.remove(db, "before_commit", check)
+
+
 def register_document_artifact(
     db,
     user,
@@ -365,6 +409,43 @@ def register_document_artifact(
     agent_id: int | None = None,
     model_id: int | None = None,
     artifact_index: int = 0,
+    before_persist: Callable[[], None] | None = None,
+) -> dict:
+    """Register using existing policy, with an optional synchronous run fence.
+
+    A fenced caller checks before each phase and each commit hidden inside the
+    existing Artifact/export services. The lock lasts until that phase commits;
+    no network await occurs here. Runtime callers retain the existing behavior.
+    """
+    with _document_persistence_guard(db, before_persist) as check:
+        return _register_document_artifact(
+            db,
+            user,
+            run_id=run_id,
+            rendered=rendered,
+            classification_level=classification_level,
+            task_id=task_id,
+            source_snapshot_id=source_snapshot_id,
+            agent_id=agent_id,
+            model_id=model_id,
+            artifact_index=artifact_index,
+            before_persist=check,
+        )
+
+
+def _register_document_artifact(
+    db,
+    user,
+    *,
+    run_id: int,
+    rendered: dict,
+    classification_level,
+    task_id: int | None = None,
+    source_snapshot_id: int | None = None,
+    agent_id: int | None = None,
+    model_id: int | None = None,
+    artifact_index: int = 0,
+    before_persist: Callable[[], None],
 ) -> dict:
     """Register under the actual requester and invoke the existing export gate."""
     from app.modules import artifacts, policy
@@ -408,6 +489,7 @@ def register_document_artifact(
     ):
         _fail(422, "DOCUMENT_RESPONSE", "文件產物不完整或驗證失敗")
     if not task:
+        before_persist()
         task = Task(
             title=rendered["title"],
             task_type="generate_artifact",
@@ -435,6 +517,7 @@ def register_document_artifact(
             "format": rendered["format"],
         },
     )
+    before_persist()
     artifact = artifacts.create_artifact(
         db,
         payload=payload,
@@ -444,6 +527,7 @@ def register_document_artifact(
         trace_id=task.trace_id,
         initial_level=ClassificationLevel.UNCLASSIFIED,
     )
+    before_persist()
     policy.apply_classification(
         db,
         resource_type="artifact",
@@ -456,6 +540,7 @@ def register_document_artifact(
         source="quick_document",
     )
     db.refresh(artifact)
+    before_persist()
     version = artifacts.create_version(
         db,
         artifact=artifact,
@@ -468,6 +553,7 @@ def register_document_artifact(
         generated_by_studio_job_id=rendered["job_id"],
         level=_level(artifact.classification_level),
     )
+    before_persist()
     exported = export_artifact(
         artifact.id,
         ArtifactExportIn(

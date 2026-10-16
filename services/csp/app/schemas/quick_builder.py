@@ -98,6 +98,11 @@ class Review(VersionRef):
 class TestInput(VersionRef):
     message: str = Field(min_length=1, max_length=16000)
     request_id: UUID | None = None
+    stream: bool = False
+
+
+class TestCancelInput(VersionRef):
+    request_id: UUID
 
 
 class TemplateWrite(StrictInput):
